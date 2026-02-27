@@ -1,18 +1,25 @@
 package main
 
 import (
+	"log"
 	"net/http"
+	"os"
 
-	"github.com/go-chi/chi/v5"
+	"deciscope-core-api/internal/app"
 )
 
 func main() {
-	r := chi.NewRouter()
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("hello chi"))
-	})
+	server, err := app.NewServer()
+	if err != nil {
+		log.Fatalf("build server: %v", err)
+	}
 
-	if err := http.ListenAndServe(":8080", r); err != nil {
-		panic(err)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	if err := http.ListenAndServe(":"+port, server); err != nil {
+		log.Fatalf("listen: %v", err)
 	}
 }
