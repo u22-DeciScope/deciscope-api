@@ -9,20 +9,13 @@ import (
 
 func (h AuthHandler) handleAuthLogout() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessionCookie, err := r.Cookie("sid")
-		if err != nil || !domain.IsUUID(sessionCookie.Value) {
-			clearAuthCookies(w)
-			w.WriteHeader(http.StatusNoContent)
+		authContext, ok := currentAuthContext(r.Context())
+		if !ok {
+			presenter.WriteAppError(w, domain.Internal("internal_error"))
 			return
 		}
 
-		csrfCookie, err := r.Cookie("csrf")
-		if err != nil || csrfCookie.Value == "" || csrfCookie.Value != r.Header.Get("X-CSRF-Token") {
-			presenter.WriteAppError(w, domain.Forbidden("csrf"))
-			return
-		}
-
-		_ = h.logout.Execute(r.Context(), sessionCookie.Value, h.clock.Now())
+		_ = h.logout.Execute(r.Context(), authContext.Session.ID, h.clock.Now())
 		clearAuthCookies(w)
 		w.WriteHeader(http.StatusNoContent)
 	}

@@ -14,6 +14,10 @@ import (
 )
 
 func NewServer() (http.Handler, error) {
+	if err := LoadLocalEnv(); err != nil {
+		return nil, err
+	}
+
 	clock := system.RealClock{}
 	repository, err := postgres.NewAuthRepository(os.Getenv("DATABASE_URL"))
 	if err != nil {

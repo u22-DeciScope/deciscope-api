@@ -38,7 +38,7 @@ func NewExchangeSession(repository contract.AuthRepository, verifier contract.To
 func (u ExchangeSession) Execute(ctx context.Context, input ExchangeSessionInput) (ExchangeSessionOutput, error) {
 	verified, err := u.verifier.VerifyIDToken(ctx, input.IDToken)
 	if err != nil {
-		return ExchangeSessionOutput{}, domain.Unauthorized("invalid_firebase_token")
+		return ExchangeSessionOutput{}, domain.Unauthorized("invalid_identity_token")
 	}
 
 	identity, seed := mapper.MapVerifiedIdentity(verified)

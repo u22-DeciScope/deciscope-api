@@ -52,7 +52,7 @@ func (h AuthHandler) Router() http.Handler {
 
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/exchange", h.handleAuthExchange())
-		r.Post("/logout", h.handleAuthLogout())
+		r.With(h.requireSession, h.csrfProtected).Post("/logout", h.handleAuthLogout())
 
 		r.With(h.requireSession).Get("/me", h.handleAuthMe())
 		r.With(h.requireSession).Get("/sessions", h.handleAuthSessionsList())

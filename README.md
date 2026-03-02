@@ -12,7 +12,15 @@ Go + `chi` API for Firebase token exchange and DB-backed cookie sessions.
 - `FIREBASE_CREDENTIALS_JSON` (optional): Firebase service account JSON string
 - `GOOGLE_APPLICATION_CREDENTIALS` (optional): Firebase service account file path
 - `FIREBASE_PROJECT_ID` (optional): explicit Firebase project ID
-- `ALLOWED_ORIGINS` (optional): comma-separated CORS allowlist for frontend testing
+- `ALLOWED_ORIGINS` (recommended for browser clients): comma-separated CORS allowlist for frontend origins
+
+Create local env file:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+For local frontend development, keep `ALLOWED_ORIGINS=http://localhost:5173` so credentialed browser requests can include cookies.
 
 If no Firebase credentials are provided, the server falls back to a dev verifier and accepts `Authorization: Bearer dev:<uid>`.
 
@@ -27,7 +35,7 @@ docker compose up -d
 Example connection string:
 
 ```powershell
-$env:DATABASE_URL='postgres://deciscope:deciscope@localhost:5432/deciscope?sslmode=disable'
+$env:DATABASE_URL='postgres://deciscope:deciscope@localhost:55432/deciscope?sslmode=disable'
 ```
 
 ## Migrations (`golang-migrate`)

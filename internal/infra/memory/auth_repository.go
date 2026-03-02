@@ -51,17 +51,20 @@ func (r *AuthRepository) CreateUserWithIdentity(_ context.Context, identity doma
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	_ = seed
+
 	key := identityKey(identity)
 	if _, exists := r.identities[key]; exists {
 		return domain.User{}, domain.ErrIdentityConflict
 	}
 
+	now := time.Now().UTC()
+
 	user := domain.User{
-		ID:          domain.NewID(),
-		Status:      domain.UserStatusActive,
-		Email:       seed.Email,
-		DisplayName: seed.DisplayName,
-		AvatarURL:   seed.AvatarURL,
+		ID:        domain.NewID(),
+		Status:    domain.UserStatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	r.users[user.ID] = user

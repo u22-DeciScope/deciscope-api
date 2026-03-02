@@ -21,12 +21,11 @@ type UserSeed struct {
 }
 
 type User struct {
-	ID          string
-	Status      string
-	Email       string
-	DisplayName string
-	AvatarURL   string
-	DeletedAt   *time.Time
+	ID        string
+	Status    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt *time.Time
 }
 
 func (u User) NormalizedStatus() string {
