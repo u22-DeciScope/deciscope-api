@@ -13,6 +13,7 @@ type AuthRepository interface {
 	CreateUserWithIdentity(ctx context.Context, identity domain.IdentityInput, seed domain.UserSeed) (domain.User, error)
 	AttachIdentityToUser(ctx context.Context, userID string, identity domain.IdentityInput) error
 	FindUserByID(ctx context.Context, userID string) (domain.User, bool, error)
+	MarkUserDeleted(ctx context.Context, userID string, deletedAt time.Time) error
 	CreateSession(ctx context.Context, seed domain.SessionSeed) (domain.Session, error)
 	FindSessionByID(ctx context.Context, sessionID string) (domain.Session, bool, error)
 	RevokeSession(ctx context.Context, sessionID string, revokedAt time.Time, reason string) error

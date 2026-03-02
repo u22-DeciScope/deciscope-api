@@ -117,6 +117,44 @@ func TestExchangeSessionLinksNewIdentityToExistingEmailUser(t *testing.T) {
 	}
 }
 
+func TestExchangeSessionRejectsDeletedUser(t *testing.T) {
+	repository := memory.NewAuthRepository()
+	clock := fixedClock{now: time.Date(2026, time.March, 2, 0, 0, 0, 0, time.UTC)}
+	usecase := NewExchangeSession(
+		repository,
+		auth.NewDevelopmentTokenVerifier("dev:"),
+		clock,
+	)
+
+	firstOutput, err := usecase.Execute(context.Background(), ExchangeSessionInput{
+		IDToken:     "dev:deleted-user",
+		LoginMethod: "password",
+	})
+	if err != nil {
+		t.Fatalf("expected initial exchange to succeed, got %v", err)
+	}
+
+	if err := repository.MarkUserDeleted(context.Background(), firstOutput.User.ID, clock.Now()); err != nil {
+		t.Fatalf("expected delete to succeed, got %v", err)
+	}
+
+	_, err = usecase.Execute(context.Background(), ExchangeSessionInput{
+		IDToken:     "dev:deleted-user",
+		LoginMethod: "password",
+	})
+	if err == nil {
+		t.Fatal("expected deleted user to be rejected")
+	}
+
+	appErr, ok := err.(*domain.AppError)
+	if !ok {
+		t.Fatalf("expected AppError, got %T", err)
+	}
+	if appErr.Code != "user_deleted" {
+		t.Fatalf("expected user_deleted, got %q", appErr.Code)
+	}
+}
+
 type stubTokenVerifier struct {
 	identity contract.VerifiedIdentity
 	err      error

@@ -84,6 +84,7 @@ func newTestAuthServer() (http.Handler, *memory.AuthRepository) {
 	return NewAuthHandler(
 		usecase.NewExchangeSession(repository, auth.NewDevelopmentTokenVerifier("dev:"), clock),
 		usecase.NewGetMe(),
+		usecase.NewDeleteAccount(repository),
 		usecase.NewLogout(repository),
 		usecase.NewLogoutAll(repository),
 		usecase.NewListSessions(repository),

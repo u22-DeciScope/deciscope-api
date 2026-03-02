@@ -12,6 +12,7 @@ import (
 type AuthHandler struct {
 	exchangeSession usecase.ExchangeSession
 	getMe           usecase.GetMe
+	deleteAccount   usecase.DeleteAccount
 	logout          usecase.Logout
 	logoutAll       usecase.LogoutAll
 	listSessions    usecase.ListSessions
@@ -24,6 +25,7 @@ type AuthHandler struct {
 func NewAuthHandler(
 	exchangeSession usecase.ExchangeSession,
 	getMe usecase.GetMe,
+	deleteAccount usecase.DeleteAccount,
 	logout usecase.Logout,
 	logoutAll usecase.LogoutAll,
 	listSessions usecase.ListSessions,
@@ -35,6 +37,7 @@ func NewAuthHandler(
 	return AuthHandler{
 		exchangeSession: exchangeSession,
 		getMe:           getMe,
+		deleteAccount:   deleteAccount,
 		logout:          logout,
 		logoutAll:       logoutAll,
 		listSessions:    listSessions,
@@ -52,6 +55,7 @@ func (h AuthHandler) Router() http.Handler {
 
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/exchange", h.handleAuthExchange())
+		r.With(h.requireSession, h.csrfProtected).Post("/delete", h.handleAuthDelete())
 		r.With(h.requireSession, h.csrfProtected).Post("/logout", h.handleAuthLogout())
 
 		r.With(h.requireSession).Get("/me", h.handleAuthMe())

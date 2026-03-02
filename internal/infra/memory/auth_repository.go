@@ -133,6 +133,22 @@ func (r *AuthRepository) FindUserByID(_ context.Context, userID string) (domain.
 	return user, ok, nil
 }
 
+func (r *AuthRepository) MarkUserDeleted(_ context.Context, userID string, deletedAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	user, ok := r.users[userID]
+	if !ok {
+		return nil
+	}
+
+	user.Status = domain.UserStatusDeleted
+	user.UpdatedAt = deletedAt
+	user.DeletedAt = &deletedAt
+	r.users[userID] = user
+	return nil
+}
+
 func (r *AuthRepository) CreateSession(_ context.Context, seed domain.SessionSeed) (domain.Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

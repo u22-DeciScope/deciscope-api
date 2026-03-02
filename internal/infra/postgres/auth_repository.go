@@ -140,6 +140,17 @@ func (r *AuthRepository) FindUserByID(ctx context.Context, userID string) (domai
 	return user, found, nil
 }
 
+func (r *AuthRepository) MarkUserDeleted(ctx context.Context, userID string, deletedAt time.Time) error {
+	const query = `
+		UPDATE users
+		SET status = $1, updated_at = $2, deleted_at = $2
+		WHERE id = $3 AND deleted_at IS NULL
+	`
+
+	_, err := r.db.ExecContext(ctx, query, domain.UserStatusDeleted, deletedAt, userID)
+	return err
+}
+
 func (r *AuthRepository) AttachIdentityToUser(ctx context.Context, userID string, identity domain.IdentityInput) error {
 	const query = `
 		INSERT INTO user_identities (id, provider, provider_subject, user_id, created_at)

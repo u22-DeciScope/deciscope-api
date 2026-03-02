@@ -36,6 +36,7 @@ func NewServer() (http.Handler, error) {
 
 	exchangeSession := usecase.NewExchangeSession(repository, verifier, clock)
 	getMe := usecase.NewGetMe()
+	deleteAccount := usecase.NewDeleteAccount(repository)
 	logout := usecase.NewLogout(repository)
 	logoutAll := usecase.NewLogoutAll(repository)
 	listSessions := usecase.NewListSessions(repository)
@@ -44,6 +45,7 @@ func NewServer() (http.Handler, error) {
 	authHandler := handler.NewAuthHandler(
 		exchangeSession,
 		getMe,
+		deleteAccount,
 		logout,
 		logoutAll,
 		listSessions,
