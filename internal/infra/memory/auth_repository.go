@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ type storedIdentity struct {
 type AuthRepository struct {
 	mu         sync.RWMutex
 	users      map[string]domain.User
+	emails     map[string]string
 	identities map[string]storedIdentity
 	sessions   map[string]domain.Session
 }
@@ -25,6 +27,7 @@ type AuthRepository struct {
 func NewAuthRepository() *AuthRepository {
 	return &AuthRepository{
 		users:      make(map[string]domain.User),
+		emails:     make(map[string]string),
 		identities: make(map[string]storedIdentity),
 		sessions:   make(map[string]domain.Session),
 	}
@@ -68,6 +71,9 @@ func (r *AuthRepository) CreateUserWithIdentity(_ context.Context, identity doma
 	}
 
 	r.users[user.ID] = user
+	if seed.Email != "" {
+		r.emails[strings.ToLower(seed.Email)] = user.ID
+	}
 	r.identities[key] = storedIdentity{
 		provider: identity.Provider,
 		subject:  identity.Subject,
@@ -75,6 +81,48 @@ func (r *AuthRepository) CreateUserWithIdentity(_ context.Context, identity doma
 	}
 
 	return user, nil
+}
+
+func (r *AuthRepository) FindUserByEmail(_ context.Context, email string) (domain.User, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	userID, ok := r.emails[strings.ToLower(strings.TrimSpace(email))]
+	if !ok {
+		return domain.User{}, false, nil
+	}
+
+	user, ok := r.users[userID]
+	if !ok {
+		return domain.User{}, false, nil
+	}
+
+	return user, true, nil
+}
+
+func (r *AuthRepository) AttachIdentityToUser(_ context.Context, userID string, identity domain.IdentityInput) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.users[userID]; !ok {
+		return nil
+	}
+
+	key := identityKey(identity)
+	if existing, exists := r.identities[key]; exists {
+		if existing.userID == userID {
+			return nil
+		}
+		return domain.ErrIdentityConflict
+	}
+
+	r.identities[key] = storedIdentity{
+		provider: identity.Provider,
+		subject:  identity.Subject,
+		userID:   userID,
+	}
+
+	return nil
 }
 
 func (r *AuthRepository) FindUserByID(_ context.Context, userID string) (domain.User, bool, error) {
@@ -90,12 +138,14 @@ func (r *AuthRepository) CreateSession(_ context.Context, seed domain.SessionSee
 	defer r.mu.Unlock()
 
 	session := domain.Session{
-		ID:         domain.NewID(),
-		UserID:     seed.UserID,
-		DeviceType: seed.DeviceType,
-		DeviceName: seed.DeviceName,
-		CreatedAt:  seed.CreatedAt,
-		LastSeenAt: seed.CreatedAt,
+		ID:          domain.NewID(),
+		UserID:      seed.UserID,
+		DeviceType:  seed.DeviceType,
+		DeviceName:  seed.DeviceName,
+		LoginMethod: seed.LoginMethod,
+		UserAgent:   seed.UserAgent,
+		CreatedAt:   seed.CreatedAt,
+		LastSeenAt:  seed.CreatedAt,
 	}
 
 	r.sessions[session.ID] = session

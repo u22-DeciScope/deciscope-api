@@ -49,6 +49,7 @@ func Sessions(items []domain.Session) []map[string]any {
 			"id":           item.ID,
 			"device_type":  item.DeviceType,
 			"device_name":  item.DeviceName,
+			"login_method": item.LoginMethod,
 			"last_seen_at": item.LastSeenAt.Format(time.RFC3339),
 		})
 	}

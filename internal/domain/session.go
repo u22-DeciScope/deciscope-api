@@ -9,10 +9,12 @@ const (
 )
 
 type SessionSeed struct {
-	UserID     string
-	DeviceType string
-	DeviceName string
-	CreatedAt  time.Time
+	UserID      string
+	DeviceType  string
+	DeviceName  string
+	LoginMethod string
+	UserAgent   string
+	CreatedAt   time.Time
 }
 
 type Session struct {
@@ -20,6 +22,8 @@ type Session struct {
 	UserID       string
 	DeviceType   string
 	DeviceName   string
+	LoginMethod  string
+	UserAgent    string
 	CreatedAt    time.Time
 	LastSeenAt   time.Time
 	RevokedAt    *time.Time

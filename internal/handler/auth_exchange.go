@@ -19,9 +19,11 @@ func (h AuthHandler) handleAuthExchange() http.HandlerFunc {
 		}
 
 		output, err := h.exchangeSession.Execute(r.Context(), usecase.ExchangeSessionInput{
-			IDToken:    bearerToken(r.Header.Get("Authorization")),
-			DeviceType: request.DeviceType,
-			DeviceName: request.DeviceName,
+			IDToken:     bearerToken(r.Header.Get("Authorization")),
+			DeviceType:  request.DeviceType,
+			DeviceName:  request.DeviceName,
+			LoginMethod: request.LoginMethod,
+			UserAgent:   r.UserAgent(),
 		})
 		if err != nil {
 			presenter.WriteError(w, err)

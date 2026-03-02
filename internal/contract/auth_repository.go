@@ -9,7 +9,9 @@ import (
 
 type AuthRepository interface {
 	FindUserByIdentity(ctx context.Context, identity domain.IdentityInput) (domain.User, bool, error)
+	FindUserByEmail(ctx context.Context, email string) (domain.User, bool, error)
 	CreateUserWithIdentity(ctx context.Context, identity domain.IdentityInput, seed domain.UserSeed) (domain.User, error)
+	AttachIdentityToUser(ctx context.Context, userID string, identity domain.IdentityInput) error
 	FindUserByID(ctx context.Context, userID string) (domain.User, bool, error)
 	CreateSession(ctx context.Context, seed domain.SessionSeed) (domain.Session, error)
 	FindSessionByID(ctx context.Context, sessionID string) (domain.Session, bool, error)

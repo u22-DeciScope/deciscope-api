@@ -53,6 +53,25 @@ func (r *AuthRepository) FindUserByIdentity(ctx context.Context, identity domain
 	return user, found, nil
 }
 
+func (r *AuthRepository) FindUserByEmail(ctx context.Context, email string) (domain.User, bool, error) {
+	const query = `
+		SELECT u.id, u.status, u.created_at, u.updated_at, u.deleted_at
+		FROM user_emails ue
+		INNER JOIN users u ON u.id = ue.user_id
+		WHERE LOWER(ue.email) = LOWER($1)
+		ORDER BY ue.is_primary DESC, ue.created_at ASC
+		LIMIT 1
+	`
+
+	row := r.db.QueryRowContext(ctx, query, strings.TrimSpace(email))
+	user, found, err := scanUser(row)
+	if err != nil {
+		return domain.User{}, false, err
+	}
+
+	return user, found, nil
+}
+
 func (r *AuthRepository) CreateUserWithIdentity(ctx context.Context, identity domain.IdentityInput, seed domain.UserSeed) (domain.User, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -121,21 +140,51 @@ func (r *AuthRepository) FindUserByID(ctx context.Context, userID string) (domai
 	return user, found, nil
 }
 
+func (r *AuthRepository) AttachIdentityToUser(ctx context.Context, userID string, identity domain.IdentityInput) error {
+	const query = `
+		INSERT INTO user_identities (id, provider, provider_subject, user_id, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`
+
+	_, err := r.db.ExecContext(ctx, query, domain.NewID(), identity.Provider, identity.Subject, userID, time.Now().UTC())
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return domain.ErrIdentityConflict
+		}
+		return err
+	}
+
+	return nil
+}
+
 func (r *AuthRepository) CreateSession(ctx context.Context, seed domain.SessionSeed) (domain.Session, error) {
 	session := domain.Session{
-		ID:         domain.NewID(),
-		UserID:     seed.UserID,
-		DeviceType: seed.DeviceType,
-		DeviceName: seed.DeviceName,
-		CreatedAt:  seed.CreatedAt,
-		LastSeenAt: seed.CreatedAt,
+		ID:          domain.NewID(),
+		UserID:      seed.UserID,
+		DeviceType:  seed.DeviceType,
+		DeviceName:  seed.DeviceName,
+		LoginMethod: seed.LoginMethod,
+		UserAgent:   seed.UserAgent,
+		CreatedAt:   seed.CreatedAt,
+		LastSeenAt:  seed.CreatedAt,
 	}
 
 	const query = `
-		INSERT INTO user_sessions (id, user_id, device_type, device_name, created_at, last_seen_at, revoked_at, revoke_reason)
-		VALUES ($1, $2, $3, $4, $5, $6, NULL, '')
+		INSERT INTO user_sessions (id, user_id, device_type, device_name, user_agent, login_method, created_at, last_seen_at, revoked_at, revoke_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, '')
 	`
-	_, err := r.db.ExecContext(ctx, query, session.ID, session.UserID, session.DeviceType, session.DeviceName, session.CreatedAt, session.LastSeenAt)
+	_, err := r.db.ExecContext(
+		ctx,
+		query,
+		session.ID,
+		session.UserID,
+		session.DeviceType,
+		session.DeviceName,
+		session.UserAgent,
+		session.LoginMethod,
+		session.CreatedAt,
+		session.LastSeenAt,
+	)
 	if err != nil {
 		return domain.Session{}, err
 	}
@@ -145,7 +194,7 @@ func (r *AuthRepository) CreateSession(ctx context.Context, seed domain.SessionS
 
 func (r *AuthRepository) FindSessionByID(ctx context.Context, sessionID string) (domain.Session, bool, error) {
 	const query = `
-		SELECT id, user_id, device_type, device_name, created_at, last_seen_at, revoked_at, revoke_reason
+		SELECT id, user_id, device_type, device_name, user_agent, login_method, created_at, last_seen_at, revoked_at, revoke_reason
 		FROM user_sessions
 		WHERE id = $1
 	`
@@ -181,7 +230,7 @@ func (r *AuthRepository) RevokeAllSessionsByUserID(ctx context.Context, userID s
 
 func (r *AuthRepository) ListActiveSessionsByUserID(ctx context.Context, userID string) ([]domain.Session, error) {
 	const query = `
-		SELECT id, user_id, device_type, device_name, created_at, last_seen_at, revoked_at, revoke_reason
+		SELECT id, user_id, device_type, device_name, user_agent, login_method, created_at, last_seen_at, revoked_at, revoke_reason
 		FROM user_sessions
 		WHERE user_id = $1 AND revoked_at IS NULL
 		ORDER BY created_at DESC
@@ -256,6 +305,8 @@ func scanSessionRow(row interface{ Scan(dest ...any) error }) (domain.Session, e
 		&session.UserID,
 		&session.DeviceType,
 		&session.DeviceName,
+		&session.UserAgent,
+		&session.LoginMethod,
 		&session.CreatedAt,
 		&session.LastSeenAt,
 		&revokedAt,
