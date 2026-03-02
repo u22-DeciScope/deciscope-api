@@ -7,12 +7,17 @@ import (
 	"os"
 	"path/filepath"
 
+	"deciscope-core-api/internal/app"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
 
 func main() {
+	if err := app.LoadLocalEnv(); err != nil {
+		log.Fatalf("load .env: %v", err)
+	}
+
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
