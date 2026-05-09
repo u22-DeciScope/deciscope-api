@@ -1,3 +1,8 @@
+// register.go
+// 会員登録 API (/register) を実装するハンドラ。
+// JSON で送られた name / email / password を受け取り、
+// パスワードを bcrypt でハッシュ化し、SQLite にユーザー情報を保存する。
+// 成功時には {"status":"ok"} を返す。
 package handlers
 
 import (

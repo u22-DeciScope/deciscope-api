@@ -1,3 +1,7 @@
+// main.go
+// DeciScope API サーバーのエントリーポイント。
+// app.NewServer() により HTTP サーバーを構築し、指定ポートで起動する。
+// このファイル自体はルーティングやロジックを持たず、サーバー起動のみを担当する。
 package main
 
 import (

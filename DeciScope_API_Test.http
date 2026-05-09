@@ -1,0 +1,17 @@
+### サーバー生存確認（GET）
+GET http://localhost:8080/health
+
+
+### 会員登録フォーム（GET）
+GET http://localhost:8080/register-form
+
+
+### 会員登録API（POST）
+POST http://localhost:8080/register
+Content-Type: application/json
+
+{
+  "name": "test-user",
+  "email": "ttessss@example.com",
+  "password": "pass123"
+}
