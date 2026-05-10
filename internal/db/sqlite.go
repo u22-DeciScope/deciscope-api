@@ -1,50 +1,44 @@
 // sqlite.go
-// SQLite データベースの初期化と接続管理を行うモジュール。
-// db.sqlite の作成、t_Users テーブルの作成、DB 接続の保持などを担当する。
-// アプリ起動時に一度だけ呼び出される。
+// SQLite データベースの初期化と接続管理を行う。
+// Conn はアプリ全体で共有される *sql.DB。
+
 package db
 
 import (
 	"database/sql"
 	"fmt"
-	"io/ioutil"
-	"log"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var DB *sql.DB
+var Conn *sql.DB
 
-// InitSQLite は SQLite を初期化して、init_users.sql を流す
 func InitSQLite() error {
 	var err error
 
-	// DB ファイルを開く（なければ作られる）
-	DB, err = sql.Open("sqlite3", "./db.sqlite")
+	Conn, err = sql.Open("sqlite3", "./db.sqlite")
 	if err != nil {
-		return fmt.Errorf("failed to open sqlite: %w", err)
+		return fmt.Errorf("open sqlite: %w", err)
 	}
 
-	// 実際に接続できるかチェック
-	if err := DB.Ping(); err != nil {
-		return fmt.Errorf("failed to ping sqlite: %w", err)
+	// 接続確認
+	if err := Conn.Ping(); err != nil {
+		return fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	log.Println("SQLite connected")
-
-	// 初期化 SQL を読み込む
-	sqlBytes, err := ioutil.ReadFile("internal/db/init_users.sql")
+	// テーブル作成
+	_, err = Conn.Exec(`
+        CREATE TABLE IF NOT EXISTS t_Users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `)
 	if err != nil {
-		return fmt.Errorf("failed to read init_users.sql: %w", err)
+		return fmt.Errorf("create table: %w", err)
 	}
-
-	// 初期化 SQL を実行
-	_, err = DB.Exec(string(sqlBytes))
-	if err != nil {
-		return fmt.Errorf("failed to exec init_users.sql: %w", err)
-	}
-
-	log.Println("SQLite initialized (t_Users ready)")
 
 	return nil
 }
