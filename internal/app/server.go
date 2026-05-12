@@ -23,6 +23,7 @@ func NewServer() (http.Handler, error) {
 	mux.HandleFunc("/register", handlers.Register)
 	mux.HandleFunc("/register-form", handlers.RegisterForm)
 	mux.HandleFunc("/health", handlers.Health)
+	mux.HandleFunc("/login", handlers.Login)
 
 	return mux, nil
 }

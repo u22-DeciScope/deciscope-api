@@ -15,3 +15,13 @@ Content-Type: application/json
   "email": "kokoko@example.com",
   "password": "pass123"
 }
+
+
+### ログイン
+POST http://localhost:8080/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "pass123"
+}
