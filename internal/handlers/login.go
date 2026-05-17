@@ -1,24 +1,22 @@
 // login.go
 // ログイン API (/login) を実装するハンドラ。
-// email でユーザーを検索し、bcrypt でパスワードを照合する。
+// フロントから送られた Firebase の ID トークンを検証し、ユーザーを確認する。
 // 成功時には {"status":"ok"} を返す。
-// JWT などの認証トークンは後で追加可能。
 
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 
 	"deciscope-core-api/internal/db"
-
-	"golang.org/x/crypto/bcrypt"
+	"deciscope-core-api/internal/firebase" // ⭕️ ここを追加！
 )
 
 type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	IDToken string `json:"idToken"` // フロントから送られてくるFirebaseのIDトークン
 }
 
 func Login(w http.ResponseWriter, r *http.Request) {
@@ -33,29 +31,43 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Email == "" || req.Password == "" {
-		http.Error(w, "missing fields", http.StatusBadRequest)
+	if req.IDToken == "" {
+		http.Error(w, "missing idToken", http.StatusBadRequest)
 		return
 	}
 
-	// DB からユーザー取得
-	var storedHash string
-	err := db.Conn.QueryRow(`
-        SELECT password FROM t_Users WHERE email = ?
-    `, req.Email).Scan(&storedHash)
+	// 1. Firebase ID トークンの検証
+	// ※ internal/firebase/client.go 等で初期化した auth.Client (例: firebase.AuthClient) を使います
+	ctx := context.Background()
+	token, err := firebase.AuthClient.VerifyIDToken(ctx, req.IDToken)
+	if err != nil {
+		// トークンが無効、または期限切れ
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	// トークンからメールアドレスを取得
+	email, ok := token.Claims["email"].(string)
+	if !ok || email == "" {
+		http.Error(w, "email not found in token", http.StatusUnauthorized)
+		return
+	}
+
+	// 2. DB からユーザー取得（既存のロジックを活用）
+	// パスワードの照合(bcrypt)は不要になったので、ユーザーが存在するかどうかだけチェックします
+	var userID int // 必要に応じて、idやemailをスキャンする
+	err = db.Conn.QueryRow(`
+		SELECT id FROM t_Users WHERE email = ?
+	`, email).Scan(&userID)
 
 	if err == sql.ErrNoRows {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		// 【ヒント】もし「Googleログインした時点で自動会員登録」にしたい場合は、
+		// ここでエラーにせず、INSERT文を発行してユーザーを新規作成するとフロントがとても楽になります！
+		http.Error(w, "user not registered in database", http.StatusUnauthorized)
 		return
 	}
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-
-	// パスワード照合
-	if err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(req.Password)); err != nil {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
