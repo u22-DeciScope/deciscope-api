@@ -11,6 +11,7 @@ import (
 type contextKey string
 
 const UserContextKey contextKey = "firebase_user"
+const UIDContextKey contextKey = "uid"
 
 func FirebaseAuthMiddleware(authClient *auth.Client) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -32,6 +33,7 @@ func FirebaseAuthMiddleware(authClient *auth.Client) func(http.Handler) http.Han
 
 			// 後続のハンドラーでユーザー情報(UID等)を使えるように Context に仕込む
 			ctx := context.WithValue(r.Context(), UserContextKey, token)
+			ctx = context.WithValue(ctx, UIDContextKey, token.UID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

@@ -9,10 +9,15 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/joho/godotenv"
+
 	"deciscope-core-api/internal/app"
 )
 
 func main() {
+	// Load .env file (ignore error if not present)
+	_ = godotenv.Load()
+
 	server, err := app.NewServer()
 	if err != nil {
 		log.Fatalf("build server: %v", err)
