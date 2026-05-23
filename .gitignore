@@ -17,3 +17,7 @@
 .idea/go.imports.xml
 .idea/copilot.data.migration.ask2agent.xml
 .idea/inspectionProfiles/
+
+# 秘密鍵
+serviceAccountKey.json
+.env
