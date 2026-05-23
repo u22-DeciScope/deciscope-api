@@ -20,4 +20,4 @@
 
 # 秘密鍵
 serviceAccountKey.json
-*.json
+.env
