@@ -60,6 +60,18 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. DB（t_Users）にユーザーが存在するか確認
+	if db.Conn == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":        "ok",
+			"uid":           token.UID,
+			"email":         email,
+			"name":          name,
+			"auth_provider": "firebase",
+			"user_store":    "none",
+		})
+		return
+	}
 	var userID int
 	err = db.Conn.QueryRow(`
 		SELECT id FROM t_Users WHERE email = ?
@@ -91,9 +103,12 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	// 成功レスポンス（フロントにユーザー情報を返す）
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "ok",
-		"id":     userID,
-		"email":  email,
-		"name":   name,
+		"status":        "ok",
+		"id":            userID,
+		"uid":           token.UID,
+		"email":         email,
+		"name":          name,
+		"auth_provider": "firebase",
+		"user_store":    "sqlite",
 	})
 }

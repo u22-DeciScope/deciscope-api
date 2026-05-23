@@ -15,8 +15,9 @@ import (
 )
 
 func main() {
-	// Load .env file (ignore error if not present)
-	_ = godotenv.Load()
+	// Load .env then .env.local (.env.local takes precedence)
+	_ = godotenv.Load(".env")
+	_ = godotenv.Overload(".env.local")
 
 	server, err := app.NewServer()
 	if err != nil {

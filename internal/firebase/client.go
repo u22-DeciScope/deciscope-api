@@ -13,6 +13,7 @@ package firebase
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	firebase "firebase.google.com/go/v4"
@@ -66,15 +67,28 @@ func Init() {
 	ctx := context.Background()
 
 	saPath := os.Getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+	if saPath == "" {
+		saPath = os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	}
+	saJSON := os.Getenv("FIREBASE_CREDENTIALS_JSON")
 	projectID := os.Getenv("FIREBASE_PROJECT_ID")
 	if projectID == "" {
 		projectID = "deciscope-2733c"
 	}
 
+	if saPath == "" && saJSON == "" && os.Getenv("AUTH_PROVIDER") != "firebase" {
+		fbApp = nil
+		globalAuthClient = nil
+		return
+	}
+
 	var app *firebase.App
 	var err error
 
-	if saPath != "" {
+	if saJSON != "" {
+		opt := option.WithCredentialsJSON([]byte(saJSON))
+		app, err = firebase.NewApp(ctx, nil, opt)
+	} else if saPath != "" {
 		// JSON が指定されている場合
 		opt := option.WithCredentialsFile(saPath)
 		app, err = firebase.NewApp(ctx, nil, opt)
@@ -85,12 +99,14 @@ func Init() {
 	}
 
 	if err != nil {
-		panic("init firebase: " + err.Error())
+		log.Printf("init firebase skipped: %v", err)
+		return
 	}
 
 	authClient, err := app.Auth(ctx)
 	if err != nil {
-		panic("init firebase auth client: " + err.Error())
+		log.Printf("init firebase auth skipped: %v", err)
+		return
 	}
 
 	fbApp = app
@@ -100,7 +116,7 @@ func Init() {
 // AuthClient: ミドルウェアなどから Auth クライアントを取得するための関数
 func AuthClient() (*auth.Client, error) {
 	if globalAuthClient == nil {
-		return nil, fmt.Errorf("firebase auth client is not initialized; call firebase.Init() first")
+		return nil, fmt.Errorf("firebase auth client is not configured")
 	}
 	return globalAuthClient, nil
 }

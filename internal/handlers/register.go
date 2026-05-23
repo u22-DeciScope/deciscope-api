@@ -50,6 +50,10 @@ func Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SQLite に INSERT
+	if db.Conn == nil {
+		http.Error(w, "sqlite is unavailable in this local runtime", http.StatusServiceUnavailable)
+		return
+	}
 	_, err = db.Conn.Exec(`
 		INSERT INTO t_Users (name, email, password)
 		VALUES (?, ?, ?)

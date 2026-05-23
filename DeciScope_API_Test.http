@@ -2,6 +2,46 @@
 GET http://localhost:8080/health
 
 
+### DeciScope v1 health
+GET http://localhost:8080/v1/health
+
+
+### 会議作成
+POST http://localhost:8080/v1/meetings
+Content-Type: application/json
+
+{
+  "title": "価格改定デモ会議",
+  "source": "fixture_replay"
+}
+
+
+### fixture一覧
+GET http://localhost:8080/v1/fixtures
+
+
+### fixture replay start
+POST http://localhost:8080/v1/meetings/{{meeting_id}}/replay/start
+Content-Type: application/json
+
+{
+  "fixture": "demo.jsonl"
+}
+
+
+### durable events
+GET http://localhost:8080/v1/meetings/{{meeting_id}}/events?after_seq=0
+
+
+### transcript segments
+GET http://localhost:8080/v1/meetings/{{meeting_id}}/segments?after_seq=0
+
+
+### markdown report
+GET http://localhost:8080/v1/meetings/{{meeting_id}}/report
+Accept: text/markdown
+
+
 ### 会員登録フォーム（GET）
 GET http://localhost:8080/register-form
 

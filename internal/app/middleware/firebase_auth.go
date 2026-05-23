@@ -23,6 +23,20 @@ func FirebaseAuthMiddleware(authClient *auth.Client) func(http.Handler) http.Han
 			}
 
 			idToken := strings.TrimPrefix(authHeader, "Bearer ")
+			if strings.HasPrefix(idToken, "dev:") {
+				uid := strings.TrimPrefix(idToken, "dev:")
+				if uid == "" {
+					uid = "local-dev-user"
+				}
+				ctx := context.WithValue(r.Context(), UIDContextKey, uid)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			if authClient == nil {
+				http.Error(w, "Unauthorized: Firebase is disabled locally; use Bearer dev:<uid>", http.StatusUnauthorized)
+				return
+			}
 
 			// Firebase Admin SDK でトークン検証
 			token, err := authClient.VerifyIDToken(r.Context(), idToken)

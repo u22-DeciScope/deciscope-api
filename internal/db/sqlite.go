@@ -7,6 +7,8 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -16,14 +18,36 @@ var Conn *sql.DB
 func InitSQLite() error {
 	var err error
 
-	Conn, err = sql.Open("sqlite3", "./db.sqlite")
+	dbPath := os.Getenv("SQLITE_PATH")
+	if dbPath == "" {
+		dbPath = os.Getenv("AUTH_SQLITE_PATH")
+	}
+	if dbPath == "" {
+		dbPath = "./db.sqlite"
+	}
+
+	dsn := dbPath
+	if !strings.Contains(dsn, "?") {
+		dsn += "?_foreign_keys=on&_busy_timeout=5000"
+	}
+
+	Conn, err = sql.Open("sqlite3", dsn)
 	if err != nil {
 		return fmt.Errorf("open sqlite: %w", err)
 	}
+	Conn.SetMaxOpenConns(1)
 
 	// 接続確認
 	if err := Conn.Ping(); err != nil {
+		_ = Conn.Close()
+		Conn = nil
 		return fmt.Errorf("ping sqlite: %w", err)
+	}
+
+	if _, err := Conn.Exec(`PRAGMA journal_mode = WAL;`); err != nil {
+		_ = Conn.Close()
+		Conn = nil
+		return fmt.Errorf("enable sqlite wal: %w", err)
 	}
 
 	// テーブル作成
@@ -37,6 +61,8 @@ func InitSQLite() error {
         );
     `)
 	if err != nil {
+		_ = Conn.Close()
+		Conn = nil
 		return fmt.Errorf("create table: %w", err)
 	}
 
