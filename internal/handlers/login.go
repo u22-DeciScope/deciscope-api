@@ -50,7 +50,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// トークンから情報を取り出す（FirebaseがGoogleから自動取得してくれています）
+	// トークンから情報を取り出す（FirebaseがMicrosoftから取得した情報を含みます）
 	email, _ := token.Claims["email"].(string)
 	name, _ := token.Claims["name"].(string) // ユーザーの表示名（「山田太郎」など）
 

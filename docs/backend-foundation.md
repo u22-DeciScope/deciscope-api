@@ -1,6 +1,6 @@
 # DeciScope Core API Backend Foundation
 
-このディレクトリは、`C:\U-22\doc` の要件をもとにしたローカルMVP0向けバックエンド基盤の実装メモです。
+このディレクトリは、DeciScope の要件をもとにしたローカルMVP0向けバックエンド基盤の実装メモです。
 
 ## 実装方針
 

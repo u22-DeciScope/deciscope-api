@@ -18,7 +18,7 @@ If `go-sqlite3` cannot open SQLite in the local Go runtime, `/v1` automatically 
 - `FIREBASE_CREDENTIALS_JSON` (optional): Firebase service account JSON string
 - `GOOGLE_APPLICATION_CREDENTIALS` (optional): Firebase service account file path
 - `FIREBASE_PROJECT_ID` (optional): explicit Firebase project ID
-- `ALLOWED_ORIGINS` (optional): comma-separated CORS allowlist for frontend testing
+- `ALLOWED_ORIGINS` (optional): comma-separated CORS allowlist for web app testing
 
 If no Firebase credentials are provided, `/v1` still works without auth and protected legacy `/api` routes accept `Authorization: Bearer dev:<uid>`.
 

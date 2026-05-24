@@ -1,43 +1,43 @@
-# Firebase Google Authentication
+# Firebase Microsoft Authentication
 
 DeciScope currently uses Firebase in two places.
 
-- Frontend: Firebase Web SDK opens the Google sign-in flow and obtains a Firebase ID token.
+- Web: Firebase Web SDK opens the Microsoft sign-in flow and obtains a Firebase ID token.
 - Backend: Firebase Admin SDK verifies that ID token and returns the authenticated user.
 
-The local MVP `/v1` meeting APIs still work without Firebase. Firebase is required for Google login and protected legacy `/api` routes.
+The local MVP `/v1` meeting APIs still work without Firebase. Firebase is required for Microsoft login and protected legacy `/api` routes.
 
 ## Firebase Console Setup
 
 1. Open the Firebase console for the project.
-2. In Authentication, enable the Google sign-in provider.
+2. In Authentication, enable the Microsoft sign-in provider and set its OAuth client ID and secret.
 3. In Project settings, add or select a Web app.
-4. Copy the Web app config values into `C:\U-22\deciscope-web\.env.local`.
+4. Copy the Web app config values into the `web` repo's `.env.local`.
 5. In Project settings, Service accounts, generate a new private key for the Admin SDK.
-6. Save the JSON file outside git, for example `C:\U-22\secrets\firebase-service-account.json`.
+6. Save the JSON file outside git, for example under the `web` repo's ignored `secrets` directory.
 7. Point the backend `.env` to that JSON file.
 
-## Frontend Env
+## Web Env
 
-Create `C:\U-22\deciscope-web\.env.local`.
+Create `.env.local` in the `web` repo.
 
 ```env
 VITE_API_BASE_URL=http://localhost:8080
 VITE_WS_BASE_URL=ws://localhost:8080
 
 VITE_FIREBASE_API_KEY=...
-VITE_FIREBASE_AUTH_DOMAIN=deciscope-2733c.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=deciscope-2733c
+VITE_FIREBASE_AUTH_DOMAIN=deciscope-app.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=deciscope-app
 VITE_FIREBASE_APP_ID=...
-VITE_FIREBASE_STORAGE_BUCKET=deciscope-2733c.appspot.com
+VITE_FIREBASE_STORAGE_BUCKET=deciscope-app.firebasestorage.app
 VITE_FIREBASE_MESSAGING_SENDER_ID=...
 ```
 
-`VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID` are required by the current frontend.
+`VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID` are required by the current web app.
 
 ## Backend Env
 
-Create or update `C:\U-22\deciscope-core-api\.env`.
+Create or update `deciscope-api\.env`.
 
 ```env
 PORT=8080
@@ -47,33 +47,33 @@ UPLOAD_DIR=./uploads
 ALLOWED_ORIGINS=http://localhost:5173
 
 AUTH_PROVIDER=firebase
-FIREBASE_PROJECT_ID=deciscope-2733c
-GOOGLE_APPLICATION_CREDENTIALS=C:\U-22\secrets\firebase-service-account.json
+FIREBASE_PROJECT_ID=deciscope-app
+GOOGLE_APPLICATION_CREDENTIALS=<path-to-service-account-json>
 ```
 
-You can also use `FIREBASE_CREDENTIALS_JSON` instead of `GOOGLE_APPLICATION_CREDENTIALS`, but keeping the service account in a separate ignored file is usually easier locally.
+Use a path that matches your local checkout. You can also use `FIREBASE_CREDENTIALS_JSON` instead of `GOOGLE_APPLICATION_CREDENTIALS`, but keeping the service account in a separate ignored file is usually easier locally.
 
 ## Local Flow
 
 1. Start the backend.
 
 ```powershell
-cd C:\U-22\deciscope-core-api
+cd <backend-repo>
 go run .
 ```
 
-2. Start the frontend.
+2. Start the web app.
 
 ```powershell
-cd C:\U-22\deciscope-web
+cd <web-repo>
 npm run dev
 ```
 
 3. Open `http://localhost:5173`.
-4. Click `Googleでログイン`.
-5. The frontend calls `POST /login` with the Firebase ID token.
+4. Click `Microsoft でログイン`.
+5. The web app calls `POST /login` with the Firebase ID token.
 6. The backend verifies the token with Firebase Admin SDK.
-7. Click `Backend認証を確認` to call `GET /api/me` with `Authorization: Bearer <idToken>`.
+7. The web app syncs the signed-in Microsoft account to the backend with `POST /login`.
 
 ## Notes
 

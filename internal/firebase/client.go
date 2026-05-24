@@ -35,11 +35,8 @@ func newFirebaseApp(ctx context.Context) (*firebase.App, error) {
 	// サービスアカウントJSONのパス（推奨）
 	saPath := os.Getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
 
-	// プロジェクトID（なければデフォルト値）
+	// プロジェクトID
 	projectID := os.Getenv("FIREBASE_PROJECT_ID")
-	if projectID == "" {
-		projectID = "deciscope-2733c"
-	}
 
 	var app *firebase.App
 	var err error
@@ -48,11 +45,13 @@ func newFirebaseApp(ctx context.Context) (*firebase.App, error) {
 		// サービスアカウントJSONを使った初期化（本番でもローカルでもこれが一番確実）
 		opt := option.WithCredentialsFile(saPath)
 		app, err = firebase.NewApp(ctx, nil, opt)
-	} else {
+	} else if projectID != "" {
 		// JSONがない場合はプロジェクトIDのみで初期化を試みる
 		// 環境によっては動かないこともあるので、基本は JSON 推奨
 		config := &firebase.Config{ProjectID: projectID}
 		app, err = firebase.NewApp(ctx, config)
+	} else {
+		app, err = firebase.NewApp(ctx, nil)
 	}
 
 	if err != nil {
@@ -72,9 +71,6 @@ func Init() {
 	}
 	saJSON := os.Getenv("FIREBASE_CREDENTIALS_JSON")
 	projectID := os.Getenv("FIREBASE_PROJECT_ID")
-	if projectID == "" {
-		projectID = "deciscope-2733c"
-	}
 
 	if saPath == "" && saJSON == "" && os.Getenv("AUTH_PROVIDER") != "firebase" {
 		fbApp = nil
@@ -92,10 +88,12 @@ func Init() {
 		// JSON が指定されている場合
 		opt := option.WithCredentialsFile(saPath)
 		app, err = firebase.NewApp(ctx, nil, opt)
-	} else {
+	} else if projectID != "" {
 		// JSON が無い場合は ProjectID で初期化（ローカル限定）
 		config := &firebase.Config{ProjectID: projectID}
 		app, err = firebase.NewApp(ctx, config)
+	} else {
+		app, err = firebase.NewApp(ctx, nil)
 	}
 
 	if err != nil {
