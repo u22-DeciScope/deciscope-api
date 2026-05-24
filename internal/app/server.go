@@ -56,6 +56,7 @@ func NewServer() (http.Handler, error) {
 	r.HandleFunc("/register-form", handlers.RegisterForm)
 	r.HandleFunc("/health", handlers.Health)
 	r.HandleFunc("/login", handlers.Login)
+	r.Get("/debug", handlers.APIDebug)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", coreAPI.Health)

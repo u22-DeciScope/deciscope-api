@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeciScope API Debug</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7f4;
+      --panel: #ffffff;
+      --ink: #1f2933;
+      --muted: #6b7280;
+      --line: #d8d8d2;
+      --accent: #2563eb;
+      --accent-ink: #ffffff;
+      --ok: #047857;
+      --warn: #a16207;
+      --bad: #b91c1c;
+      --code: #111827;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    main,
+    header > div {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    header > div {
+      padding: 18px 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .api-base {
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 13px;
+    }
+
+    main {
+      padding: 20px 0 28px;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    input,
+    select {
+      width: 230px;
+      max-width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: #ffffff;
+      color: var(--ink);
+      font: inherit;
+    }
+
+    button {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 12px;
+      background: #ffffff;
+      color: var(--ink);
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: var(--accent-ink);
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    .status-row {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(130px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .status {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      padding: 10px 12px;
+      min-height: 72px;
+    }
+
+    .status strong {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .status span {
+      overflow-wrap: anywhere;
+      font-weight: 700;
+    }
+
+    .ok span {
+      color: var(--ok);
+    }
+
+    .warn span {
+      color: var(--warn);
+    }
+
+    .bad span {
+      color: var(--bad);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    section {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    section.full {
+      grid-column: 1 / -1;
+    }
+
+    h2 {
+      margin: 0;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+      background: #fafafa;
+    }
+
+    pre,
+    .list {
+      margin: 0;
+      padding: 12px;
+      min-height: 180px;
+      max-height: 360px;
+      overflow: auto;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: var(--code);
+      color: #f9fafb;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .empty {
+      color: var(--muted);
+    }
+
+    .segment,
+    .event {
+      border-left: 3px solid var(--line);
+      padding: 2px 0 2px 9px;
+    }
+
+    .segment b,
+    .event b {
+      display: inline-block;
+      margin-right: 6px;
+    }
+
+    @media (max-width: 860px) {
+      .status-row,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      input,
+      select,
+      button {
+        width: 100%;
+      }
+
+      .toolbar {
+        align-items: stretch;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>DeciScope API Debug</h1>
+      <div class="api-base" id="api-base"></div>
+    </div>
+  </header>
+
+  <main>
+    <div class="toolbar">
+      <label>
+        Meeting title
+        <input id="meeting-title" value="Debug fixture replay">
+      </label>
+      <label>
+        Fixture
+        <select id="fixture-select">
+          <option value="demo.jsonl">demo.jsonl</option>
+        </select>
+      </label>
+      <button class="primary" id="run-check">Run full check</button>
+      <button id="create-meeting">Create meeting</button>
+      <button id="connect-ws" disabled>Connect WS</button>
+      <button id="start-replay" disabled>Start replay</button>
+      <button id="refresh-data" disabled>Refresh</button>
+    </div>
+
+    <div class="status-row">
+      <div class="status warn" id="status-health"><strong>Health</strong><span>未確認</span></div>
+      <div class="status warn" id="status-meeting"><strong>Meeting</strong><span>未作成</span></div>
+      <div class="status warn" id="status-ws"><strong>WebSocket</strong><span>未接続</span></div>
+      <div class="status warn" id="status-replay"><strong>Replay</strong><span>未実行</span></div>
+      <div class="status warn" id="status-report"><strong>Report</strong><span>未取得</span></div>
+    </div>
+
+    <div class="grid">
+      <section>
+        <h2>Events</h2>
+        <div class="list" id="events-list"><div class="empty">No events</div></div>
+      </section>
+      <section>
+        <h2>Transcript</h2>
+        <div class="list" id="segments-list"><div class="empty">No segments</div></div>
+      </section>
+      <section class="full">
+        <h2>Markdown Report</h2>
+        <pre id="report-output">No report</pre>
+      </section>
+      <section class="full">
+        <h2>Request Log</h2>
+        <pre id="log-output"></pre>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const apiBase = window.location.origin;
+    const state = {
+      meetingId: "",
+      lastSeq: 0,
+      ws: null,
+      pollTimer: 0,
+      events: [],
+      segments: []
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    $("api-base").textContent = apiBase;
+    $("run-check").addEventListener("click", runFullCheck);
+    $("create-meeting").addEventListener("click", createMeeting);
+    $("connect-ws").addEventListener("click", connectWebSocket);
+    $("start-replay").addEventListener("click", startReplay);
+    $("refresh-data").addEventListener("click", refreshData);
+
+    boot();
+
+    async function boot() {
+      await checkHealth();
+      await loadFixtures();
+    }
+
+    async function runFullCheck() {
+      setBusy(true);
+      try {
+        resetView();
+        await checkHealth();
+        await loadFixtures();
+        await createMeeting();
+        await connectWebSocket();
+        await startReplay();
+        await waitForReportReady();
+        await refreshData();
+      } catch (error) {
+        log("ERROR", error.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function checkHealth() {
+      const data = await request("GET", "/v1/health");
+      setStatus("health", "ok", data.status || "ok");
+      return data;
+    }
+
+    async function loadFixtures() {
+      const data = await request("GET", "/v1/fixtures");
+      const select = $("fixture-select");
+      select.innerHTML = "";
+      const fixtures = data.fixtures || [];
+      if (fixtures.length === 0) {
+        select.append(new Option("demo.jsonl", "demo.jsonl"));
+        return;
+      }
+      for (const fixture of fixtures) {
+        select.append(new Option(fixture.name, fixture.name));
+      }
+    }
+
+    async function createMeeting() {
+      closeWebSocket();
+      state.lastSeq = 0;
+      state.events = [];
+      state.segments = [];
+      renderEvents();
+      renderSegments();
+      $("report-output").textContent = "No report";
+      const title = $("meeting-title").value.trim() || "Debug fixture replay";
+      const meeting = await request("POST", "/v1/meetings", {
+        title,
+        source: "debug_frontend"
+      });
+      state.meetingId = meeting.id;
+      setStatus("meeting", "ok", meeting.id);
+      setStatus("ws", "warn", "未接続");
+      setStatus("replay", "warn", "未実行");
+      setStatus("report", "warn", "未取得");
+      $("connect-ws").disabled = false;
+      $("start-replay").disabled = false;
+      $("refresh-data").disabled = false;
+      return meeting;
+    }
+
+    function connectWebSocket() {
+      if (!state.meetingId) {
+        throw new Error("meeting is not created");
+      }
+      closeWebSocket();
+      return new Promise((resolve, reject) => {
+        const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const url = `${wsScheme}//${window.location.host}/v1/realtime?meeting_id=${encodeURIComponent(state.meetingId)}&last_seq=${state.lastSeq}`;
+        const ws = new WebSocket(url);
+        let settled = false;
+        state.ws = ws;
+        setStatus("ws", "warn", "接続中");
+
+        ws.addEventListener("open", () => {
+          ws.send(JSON.stringify({
+            type: "client.hello",
+            meeting_id: state.meetingId,
+            last_seq: state.lastSeq
+          }));
+          setStatus("ws", "ok", "connected");
+          log("WS", "connected");
+          settled = true;
+          resolve();
+        });
+
+        ws.addEventListener("message", (message) => {
+          const event = JSON.parse(message.data);
+          if (event.seq && event.seq > state.lastSeq) {
+            state.lastSeq = event.seq;
+          }
+          state.events = upsertBySeq(state.events, event);
+          renderEvents();
+          if (event.type === "transcript.final") {
+            refreshSegments();
+          }
+          if (event.type === "report.ready") {
+            setStatus("report", "ok", "ready");
+            refreshReport();
+          }
+        });
+
+        ws.addEventListener("close", () => {
+          if (state.ws === ws) {
+            setStatus("ws", "warn", "closed");
+          }
+        });
+
+        ws.addEventListener("error", () => {
+          setStatus("ws", "bad", "error");
+          if (!settled) {
+            reject(new Error("websocket connection failed"));
+          }
+        });
+      });
+    }
+
+    async function startReplay() {
+      if (!state.meetingId) {
+        throw new Error("meeting is not created");
+      }
+      const fixture = $("fixture-select").value || "demo.jsonl";
+      const data = await request("POST", `/v1/meetings/${encodeURIComponent(state.meetingId)}/replay/start`, {
+        fixture
+      });
+      setStatus("replay", "ok", data.status || "accepted");
+      startPolling();
+      return data;
+    }
+
+    async function refreshData() {
+      await refreshEvents();
+      await refreshSegments();
+      await refreshReport();
+    }
+
+    async function refreshEvents() {
+      if (!state.meetingId) {
+        return;
+      }
+      const data = await request("GET", `/v1/meetings/${encodeURIComponent(state.meetingId)}/events?after_seq=0`, null, false);
+      state.events = data.events || [];
+      const maxSeq = state.events.reduce((max, event) => Math.max(max, event.seq || 0), state.lastSeq);
+      state.lastSeq = maxSeq;
+      renderEvents();
+      if (state.events.some((event) => event.type === "report.ready")) {
+        setStatus("report", "ok", "ready");
+      }
+    }
+
+    async function refreshSegments() {
+      if (!state.meetingId) {
+        return;
+      }
+      const data = await request("GET", `/v1/meetings/${encodeURIComponent(state.meetingId)}/segments?after_seq=0`, null, false);
+      state.segments = data.segments || [];
+      renderSegments();
+    }
+
+    async function refreshReport() {
+      if (!state.meetingId) {
+        return;
+      }
+      const response = await fetch(`/v1/meetings/${encodeURIComponent(state.meetingId)}/report`, {
+        headers: { Accept: "text/markdown" }
+      });
+      if (!response.ok) {
+        setStatus("report", "warn", `HTTP ${response.status}`);
+        return;
+      }
+      const text = await response.text();
+      $("report-output").textContent = text || "No report";
+      setStatus("report", "ok", "fetched");
+    }
+
+    function startPolling() {
+      window.clearInterval(state.pollTimer);
+      state.pollTimer = window.setInterval(async () => {
+        try {
+          await refreshEvents();
+          await refreshSegments();
+          if (state.events.some((event) => event.type === "report.ready")) {
+            window.clearInterval(state.pollTimer);
+            await refreshReport();
+          }
+        } catch (error) {
+          log("POLL", error.message);
+        }
+      }, 700);
+    }
+
+    async function waitForReportReady() {
+      const started = Date.now();
+      while (Date.now() - started < 10000) {
+        await refreshEvents();
+        await refreshSegments();
+        if (state.events.some((event) => event.type === "report.ready")) {
+          await refreshReport();
+          return;
+        }
+        await sleep(350);
+      }
+      throw new Error("report.ready was not received within 10 seconds");
+    }
+
+    async function request(method, path, body, shouldLog = true) {
+      const options = {
+        method,
+        headers: {}
+      };
+      if (body) {
+        options.headers["Content-Type"] = "application/json";
+        options.body = JSON.stringify(body);
+      }
+      const response = await fetch(path, options);
+      const text = await response.text();
+      let data = {};
+      if (text) {
+        data = JSON.parse(text);
+      }
+      if (shouldLog) {
+        log(method, `${path} -> ${response.status}`);
+      }
+      if (!response.ok) {
+        throw new Error(`${method} ${path} failed: ${response.status} ${text}`);
+      }
+      return data;
+    }
+
+    function renderEvents() {
+      const target = $("events-list");
+      if (state.events.length === 0) {
+        target.innerHTML = '<div class="empty">No events</div>';
+        return;
+      }
+      target.replaceChildren(...state.events.map((event) => {
+        const row = document.createElement("div");
+        row.className = "event";
+        row.innerHTML = `<b>#${event.seq || "-"}</b>${escapeHTML(event.type)}<br><small>${escapeHTML(JSON.stringify(event.payload || {}))}</small>`;
+        return row;
+      }));
+    }
+
+    function renderSegments() {
+      const target = $("segments-list");
+      if (state.segments.length === 0) {
+        target.innerHTML = '<div class="empty">No segments</div>';
+        return;
+      }
+      target.replaceChildren(...state.segments.map((segment) => {
+        const row = document.createElement("div");
+        row.className = "segment";
+        row.innerHTML = `<b>${escapeHTML(segment.speaker_label || "Speaker")}</b>${escapeHTML(segment.text || "")}`;
+        return row;
+      }));
+    }
+
+    function setStatus(name, tone, text) {
+      const el = $(`status-${name}`);
+      el.className = `status ${tone}`;
+      el.querySelector("span").textContent = text;
+    }
+
+    function setBusy(isBusy) {
+      $("run-check").disabled = isBusy;
+      $("create-meeting").disabled = isBusy;
+      $("connect-ws").disabled = isBusy || !state.meetingId;
+      $("start-replay").disabled = isBusy || !state.meetingId;
+      $("refresh-data").disabled = isBusy || !state.meetingId;
+    }
+
+    function resetView() {
+      state.meetingId = "";
+      state.lastSeq = 0;
+      state.events = [];
+      state.segments = [];
+      closeWebSocket();
+      window.clearInterval(state.pollTimer);
+      $("log-output").textContent = "";
+      $("report-output").textContent = "No report";
+      renderEvents();
+      renderSegments();
+      setStatus("meeting", "warn", "未作成");
+      setStatus("ws", "warn", "未接続");
+      setStatus("replay", "warn", "未実行");
+      setStatus("report", "warn", "未取得");
+    }
+
+    function closeWebSocket() {
+      if (state.ws) {
+        state.ws.close();
+        state.ws = null;
+      }
+    }
+
+    function upsertBySeq(events, event) {
+      if (!event.seq) {
+        return [...events, event];
+      }
+      const next = events.filter((item) => item.seq !== event.seq);
+      next.push(event);
+      next.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      return next;
+    }
+
+    function log(label, message) {
+      const time = new Date().toLocaleTimeString();
+      $("log-output").textContent += `[${time}] ${label} ${message}\n`;
+      $("log-output").scrollTop = $("log-output").scrollHeight;
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+
+    function escapeHTML(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+  </script>
+</body>
+</html>

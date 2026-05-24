@@ -36,6 +36,8 @@ If `go` is not on PATH yet:
 
 Server starts on `http://localhost:8080`.
 
+Open `http://localhost:8080/debug` to run a minimal browser-based backend check.
+
 ## Main Local APIs
 
 - `GET /v1/health`

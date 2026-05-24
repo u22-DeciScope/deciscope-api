@@ -72,6 +72,29 @@ func TestV1MeetingFixtureReplayFlow(t *testing.T) {
 	}
 }
 
+func TestDebugFrontendIsServed(t *testing.T) {
+	t.Setenv("SQLITE_PATH", filepath.Join(t.TempDir(), "test.sqlite"))
+
+	handler, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/debug", nil)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("debug frontend status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte("DeciScope API Debug")) {
+		t.Fatalf("debug frontend body does not include title: %s", resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte("/v1/meetings")) {
+		t.Fatalf("debug frontend body does not include API flow")
+	}
+}
+
 func postJSON(t *testing.T, handler http.Handler, path string, payload any) *httptest.ResponseRecorder {
 	t.Helper()
 	body, err := json.Marshal(payload)
