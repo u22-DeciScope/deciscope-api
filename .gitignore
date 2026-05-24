@@ -27,3 +27,5 @@ serviceAccountKey.json
 .cache/
 uploads/
 .tmp-server.*
+
+bin
