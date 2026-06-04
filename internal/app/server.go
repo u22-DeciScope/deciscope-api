@@ -42,7 +42,7 @@ func NewServer() (http.Handler, error) {
 	// Firebase Auth クライアント（グローバル初期化済みのものを取得）
 	authClient, err := firebase.AuthClient()
 	if err != nil {
-		log.Printf("firebase auth disabled; protected /api routes accept Bearer dev:<uid>: %v", err)
+		log.Printf("firebase auth disabled; protected /v1/auth routes accept Bearer dev:<uid>: %v", err)
 	}
 
 	r := chi.NewRouter()
@@ -51,15 +51,14 @@ func NewServer() (http.Handler, error) {
 	r.Use(corsMiddleware)
 	r.Use(chimiddleware.AllowContentType("application/json", "multipart/form-data"))
 
-	// 認証不要
-	r.HandleFunc("/register", handlers.Register)
-	r.HandleFunc("/register-form", handlers.RegisterForm)
-	r.HandleFunc("/health", handlers.Health)
-	r.HandleFunc("/login", handlers.Login)
-	r.Get("/debug", handlers.APIDebug)
-
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", coreAPI.Health)
+		r.Post("/auth/login", handlers.Login)
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.FirebaseAuthMiddleware(authClient))
+			r.Get("/auth/me", handlers.MeHandler)
+			r.Get("/auth/health", handlers.Health)
+		})
 		r.Get("/meetings", coreAPI.ListMeetings)
 		r.Post("/meetings", coreAPI.CreateMeeting)
 		r.Get("/meetings/{meeting_id}", coreAPI.GetMeeting)
@@ -76,14 +75,6 @@ func NewServer() (http.Handler, error) {
 		r.Post("/uploads", coreAPI.Upload)
 		r.Get("/jobs/{job_id}", coreAPI.GetJob)
 		r.Get("/realtime", hub.ServeWS(store))
-	})
-
-	// 認証が必要
-	r.Route("/api", func(r chi.Router) {
-		r.Use(middleware.FirebaseAuthMiddleware(authClient))
-		r.Get("/me", handlers.MeHandler)
-		r.Post("/login", handlers.Login)
-		r.Get("/health", handlers.Health)
 	})
 
 	return r, nil
