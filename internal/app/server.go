@@ -86,7 +86,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 		allowedOrigin := os.Getenv("FRONTEND_URL")
 		if allowedOrigin == "" {
-			allowedOrigin = "http://localhost:5173"
+			allowedOrigin = "http://localhost:5193"
 		}
 		responseOrigin := allowedOrigin
 		if list := os.Getenv("ALLOWED_ORIGINS"); list != "" {
