@@ -40,7 +40,7 @@ func (api *CoreAPI) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *CoreAPI) ListMeetings(w http.ResponseWriter, r *http.Request) {
-	meetings, err := api.service.Store().ListMeetings(r.Context())
+	meetings, err := api.service.ListMeetings(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list_meetings_failed", err.Error())
 		return
@@ -66,7 +66,7 @@ func (api *CoreAPI) CreateMeeting(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *CoreAPI) GetMeeting(w http.ResponseWriter, r *http.Request) {
-	meeting, err := api.service.Store().GetMeeting(r.Context(), chi.URLParam(r, "meeting_id"))
+	meeting, err := api.service.GetMeeting(r.Context(), chi.URLParam(r, "meeting_id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -76,7 +76,7 @@ func (api *CoreAPI) GetMeeting(w http.ResponseWriter, r *http.Request) {
 
 func (api *CoreAPI) CreateJoinToken(w http.ResponseWriter, r *http.Request) {
 	meetingID := chi.URLParam(r, "meeting_id")
-	if _, err := api.service.Store().GetMeeting(r.Context(), meetingID); err != nil {
+	if _, err := api.service.GetMeeting(r.Context(), meetingID); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -102,7 +102,7 @@ func (api *CoreAPI) EndMeeting(w http.ResponseWriter, r *http.Request) {
 
 func (api *CoreAPI) ListEvents(w http.ResponseWriter, r *http.Request) {
 	afterSeq := parseSeq(r.URL.Query().Get("after_seq"))
-	events, err := api.service.Store().ListEvents(r.Context(), chi.URLParam(r, "meeting_id"), afterSeq)
+	events, err := api.service.ListEvents(r.Context(), chi.URLParam(r, "meeting_id"), afterSeq)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list_events_failed", err.Error())
 		return
@@ -112,7 +112,7 @@ func (api *CoreAPI) ListEvents(w http.ResponseWriter, r *http.Request) {
 
 func (api *CoreAPI) ListSegments(w http.ResponseWriter, r *http.Request) {
 	afterSeq := parseSeq(r.URL.Query().Get("after_seq"))
-	segments, err := api.service.Store().ListSegments(r.Context(), chi.URLParam(r, "meeting_id"), afterSeq)
+	segments, err := api.service.ListSegments(r.Context(), chi.URLParam(r, "meeting_id"), afterSeq)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list_segments_failed", err.Error())
 		return
@@ -122,14 +122,14 @@ func (api *CoreAPI) ListSegments(w http.ResponseWriter, r *http.Request) {
 
 func (api *CoreAPI) GetReport(w http.ResponseWriter, r *http.Request) {
 	meetingID := chi.URLParam(r, "meeting_id")
-	report, err := api.service.Store().LatestReport(r.Context(), meetingID)
+	report, err := api.service.LatestReport(r.Context(), meetingID)
 	if errors.Is(err, core.ErrNotFound) {
 		content, buildErr := api.service.BuildMarkdownReport(r.Context(), meetingID)
 		if buildErr != nil {
 			writeStoreError(w, buildErr)
 			return
 		}
-		report, err = api.service.Store().SaveReport(r.Context(), meetingID, content)
+		report, err = api.service.SaveReport(r.Context(), meetingID, content)
 	}
 	if err != nil {
 		writeStoreError(w, err)
@@ -217,7 +217,7 @@ func (api *CoreAPI) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filename := sanitizeFilename(header.Filename)
-	job, err := api.service.Store().CreateJob(r.Context(), "file.extract_audio", "", "completed")
+	job, err := api.service.CreateJob(r.Context(), "file.extract_audio", "", "completed")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create_job_failed", err.Error())
 		return
@@ -242,16 +242,16 @@ func (api *CoreAPI) Upload(w http.ResponseWriter, r *http.Request) {
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
 	}
-	upload, err := api.service.Store().SaveUpload(r.Context(), filename, mediaType, dstPath, job.ID)
+	upload, err := api.service.SaveUpload(r.Context(), filename, mediaType, dstPath, job.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "record_upload_failed", err.Error())
 		return
 	}
-	_ = api.service.Store().CompleteJob(r.Context(), job.ID, map[string]any{
+	_ = api.service.CompleteJob(r.Context(), job.ID, map[string]any{
 		"upload_id": upload.ID,
 		"mode":      "mock-local",
 	})
-	job, _ = api.service.Store().GetJob(r.Context(), job.ID)
+	job, _ = api.service.GetJob(r.Context(), job.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"upload": upload,
 		"job":    job,
@@ -259,7 +259,7 @@ func (api *CoreAPI) Upload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *CoreAPI) GetJob(w http.ResponseWriter, r *http.Request) {
-	job, err := api.service.Store().GetJob(r.Context(), chi.URLParam(r, "job_id"))
+	job, err := api.service.GetJob(r.Context(), chi.URLParam(r, "job_id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return

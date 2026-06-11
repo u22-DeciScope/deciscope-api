@@ -18,7 +18,7 @@ import (
 type Service interface {
 	AppendAndPublish(ctx context.Context, meetingID, eventType string, payload any) (*core.Event, error)
 	EndMeeting(ctx context.Context, meetingID string) (*core.Report, []core.Event, error)
-	Store() core.MeetingStore
+	ResetMeeting(ctx context.Context, meetingID string) error
 }
 
 type Manager struct {
@@ -162,7 +162,7 @@ func (m *Manager) Reset(ctx context.Context, meetingID string) error {
 	}
 	m.mu.Unlock()
 
-	if err := m.service.Store().ResetMeeting(ctx, meetingID); err != nil {
+	if err := m.service.ResetMeeting(ctx, meetingID); err != nil {
 		return err
 	}
 	_, err := m.service.AppendAndPublish(ctx, meetingID, core.EventMeetingState, map[string]any{

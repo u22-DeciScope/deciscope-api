@@ -20,10 +20,6 @@ func NewService(store MeetingStore, publisher Publisher) *Service {
 	return &Service{store: store, publisher: publisher}
 }
 
-func (s *Service) Store() MeetingStore {
-	return s.store
-}
-
 func (s *Service) CreateMeeting(ctx context.Context, title, source string) (*Meeting, error) {
 	meeting, err := s.store.CreateMeeting(ctx, title, source)
 	if err != nil {
@@ -40,6 +36,50 @@ func (s *Service) CreateMeeting(ctx context.Context, title, source string) (*Mee
 	}
 	_ = event
 	return s.store.GetMeeting(ctx, meeting.ID)
+}
+
+func (s *Service) ListMeetings(ctx context.Context) ([]Meeting, error) {
+	return s.store.ListMeetings(ctx)
+}
+
+func (s *Service) GetMeeting(ctx context.Context, meetingID string) (*Meeting, error) {
+	return s.store.GetMeeting(ctx, meetingID)
+}
+
+func (s *Service) ListEvents(ctx context.Context, meetingID string, afterSeq int64) ([]Event, error) {
+	return s.store.ListEvents(ctx, meetingID, afterSeq)
+}
+
+func (s *Service) ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]Segment, error) {
+	return s.store.ListSegments(ctx, meetingID, afterSeq)
+}
+
+func (s *Service) ResetMeeting(ctx context.Context, meetingID string) error {
+	return s.store.ResetMeeting(ctx, meetingID)
+}
+
+func (s *Service) LatestReport(ctx context.Context, meetingID string) (*Report, error) {
+	return s.store.LatestReport(ctx, meetingID)
+}
+
+func (s *Service) SaveReport(ctx context.Context, meetingID, content string) (*Report, error) {
+	return s.store.SaveReport(ctx, meetingID, content)
+}
+
+func (s *Service) CreateJob(ctx context.Context, jobType, meetingID, status string) (*Job, error) {
+	return s.store.CreateJob(ctx, jobType, meetingID, status)
+}
+
+func (s *Service) CompleteJob(ctx context.Context, jobID string, result any) error {
+	return s.store.CompleteJob(ctx, jobID, result)
+}
+
+func (s *Service) GetJob(ctx context.Context, jobID string) (*Job, error) {
+	return s.store.GetJob(ctx, jobID)
+}
+
+func (s *Service) SaveUpload(ctx context.Context, filename, mediaType, path, jobID string) (*Upload, error) {
+	return s.store.SaveUpload(ctx, filename, mediaType, path, jobID)
 }
 
 func (s *Service) AppendAndPublish(ctx context.Context, meetingID, eventType string, payload any) (*Event, error) {
