@@ -11,7 +11,7 @@ import (
 	"deciscope-core-api/internal/app/middleware"
 	appauth "deciscope-core-api/internal/auth"
 	"deciscope-core-api/internal/core"
-	"deciscope-core-api/internal/db"
+	"deciscope-core-api/internal/database"
 	"deciscope-core-api/internal/firebase"
 	"deciscope-core-api/internal/fixture"
 	"deciscope-core-api/internal/handlers"
@@ -28,17 +28,17 @@ func NewServer() (http.Handler, error) {
 
 	var store core.MeetingStore
 	var userRepository users.Repository
-	conn, err := db.InitSQLite()
+	databaseConfig := database.ConfigFromEnv()
+	conn, err := database.Open(context.Background(), databaseConfig)
 	if err != nil {
-		log.Printf("sqlite unavailable; /v1 uses in-memory local store: %v", err)
+		log.Printf("database unavailable; /v1 uses in-memory local store: %v", err)
 		store = core.NewMemoryStore()
 	} else {
-		sqliteStore := core.NewStore(conn)
-		if err := sqliteStore.Migrate(context.Background()); err != nil {
+		if err := database.Migrate(context.Background(), conn, databaseConfig.Driver); err != nil {
 			_ = conn.Close()
-			return nil, fmt.Errorf("migrate core schema: %w", err)
+			return nil, fmt.Errorf("migrate database: %w", err)
 		}
-		store = sqliteStore
+		store = core.NewStore(conn)
 		userRepository = users.NewSQLiteRepository(conn)
 	}
 	hub := realtime.NewHub()

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"deciscope-core-api/internal/database"
+
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -83,7 +85,7 @@ func newTestStore(t *testing.T) *Store {
 		_ = db.Close()
 	})
 	store := NewStore(db)
-	if err := store.Migrate(context.Background()); err != nil {
+	if err := database.Migrate(context.Background(), db, "sqlite"); err != nil {
 		if strings.Contains(err.Error(), "go-sqlite3 requires cgo") {
 			t.Skipf("sqlite runtime requires CGO: %v", err)
 		}
