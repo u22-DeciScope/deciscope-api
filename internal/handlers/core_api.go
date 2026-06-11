@@ -3,11 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -75,16 +72,15 @@ func (api *CoreAPI) GetMeeting(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *CoreAPI) CreateJoinToken(w http.ResponseWriter, r *http.Request) {
-	meetingID := chi.URLParam(r, "meeting_id")
-	if _, err := api.service.GetMeeting(r.Context(), meetingID); err != nil {
+	token, err := api.service.CreateJoinToken(r.Context(), chi.URLParam(r, "meeting_id"))
+	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	expiresAt := time.Now().UTC().Add(2 * time.Hour)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token":      fmt.Sprintf("local.%s.%d", meetingID, expiresAt.Unix()),
-		"token_type": "local-dev",
-		"expires_at": expiresAt.Format(time.RFC3339),
+		"token":      token.Token,
+		"token_type": token.TokenType,
+		"expires_at": token.ExpiresAt,
 	})
 }
 
@@ -121,16 +117,7 @@ func (api *CoreAPI) ListSegments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *CoreAPI) GetReport(w http.ResponseWriter, r *http.Request) {
-	meetingID := chi.URLParam(r, "meeting_id")
-	report, err := api.service.LatestReport(r.Context(), meetingID)
-	if errors.Is(err, core.ErrNotFound) {
-		content, buildErr := api.service.BuildMarkdownReport(r.Context(), meetingID)
-		if buildErr != nil {
-			writeStoreError(w, buildErr)
-			return
-		}
-		report, err = api.service.SaveReport(r.Context(), meetingID, content)
-	}
+	report, err := api.service.GetOrCreateReport(r.Context(), chi.URLParam(r, "meeting_id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -212,49 +199,16 @@ func (api *CoreAPI) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	if err := os.MkdirAll(api.uploadDir, 0o755); err != nil {
-		writeError(w, http.StatusInternalServerError, "upload_dir_failed", err.Error())
-		return
-	}
 	filename := sanitizeFilename(header.Filename)
-	job, err := api.service.CreateJob(r.Context(), "file.extract_audio", "", "completed")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create_job_failed", err.Error())
-		return
-	}
-
-	dstPath := filepath.Join(api.uploadDir, job.ID+"_"+filename)
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "save_upload_failed", err.Error())
-		return
-	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, file); err != nil {
-		writeError(w, http.StatusInternalServerError, "write_upload_failed", err.Error())
-		return
-	}
-
 	mediaType := header.Header.Get("Content-Type")
-	if mediaType == "" {
-		mediaType = mime.TypeByExtension(filepath.Ext(filename))
-	}
-	if mediaType == "" {
-		mediaType = "application/octet-stream"
-	}
-	upload, err := api.service.SaveUpload(r.Context(), filename, mediaType, dstPath, job.ID)
+	result, err := api.service.UploadFile(r.Context(), api.uploadDir, filename, mediaType, file)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "record_upload_failed", err.Error())
+		writeError(w, http.StatusInternalServerError, "upload_failed", err.Error())
 		return
 	}
-	_ = api.service.CompleteJob(r.Context(), job.ID, map[string]any{
-		"upload_id": upload.ID,
-		"mode":      "mock-local",
-	})
-	job, _ = api.service.GetJob(r.Context(), job.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"upload": upload,
-		"job":    job,
+		"upload": result.Upload,
+		"job":    result.Job,
 	})
 }
 

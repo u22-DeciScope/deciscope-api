@@ -4,7 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 type Publisher interface {
@@ -12,16 +17,27 @@ type Publisher interface {
 }
 
 type Service struct {
-	store     MeetingStore
+	repos     Repositories
 	publisher Publisher
 }
 
-func NewService(store MeetingStore, publisher Publisher) *Service {
-	return &Service{store: store, publisher: publisher}
+type JoinToken struct {
+	Token     string
+	TokenType string
+	ExpiresAt string
+}
+
+type UploadResult struct {
+	Upload *Upload
+	Job    *Job
+}
+
+func NewService(repos Repositories, publisher Publisher) *Service {
+	return &Service{repos: repos, publisher: publisher}
 }
 
 func (s *Service) CreateMeeting(ctx context.Context, title, source string) (*Meeting, error) {
-	meeting, err := s.store.CreateMeeting(ctx, title, source)
+	meeting, err := s.repos.Meetings.CreateMeeting(ctx, title, source)
 	if err != nil {
 		return nil, err
 	}
@@ -35,55 +51,107 @@ func (s *Service) CreateMeeting(ctx context.Context, title, source string) (*Mee
 		return nil, err
 	}
 	_ = event
-	return s.store.GetMeeting(ctx, meeting.ID)
+	return s.repos.Meetings.GetMeeting(ctx, meeting.ID)
 }
 
 func (s *Service) ListMeetings(ctx context.Context) ([]Meeting, error) {
-	return s.store.ListMeetings(ctx)
+	return s.repos.Meetings.ListMeetings(ctx)
 }
 
 func (s *Service) GetMeeting(ctx context.Context, meetingID string) (*Meeting, error) {
-	return s.store.GetMeeting(ctx, meetingID)
+	return s.repos.Meetings.GetMeeting(ctx, meetingID)
+}
+
+func (s *Service) CreateJoinToken(ctx context.Context, meetingID string) (*JoinToken, error) {
+	if _, err := s.repos.Meetings.GetMeeting(ctx, meetingID); err != nil {
+		return nil, err
+	}
+	expiresAt := time.Now().UTC().Add(2 * time.Hour)
+	return &JoinToken{
+		Token:     fmt.Sprintf("local.%s.%d", meetingID, expiresAt.Unix()),
+		TokenType: "local-dev",
+		ExpiresAt: expiresAt.Format(time.RFC3339),
+	}, nil
 }
 
 func (s *Service) ListEvents(ctx context.Context, meetingID string, afterSeq int64) ([]Event, error) {
-	return s.store.ListEvents(ctx, meetingID, afterSeq)
+	return s.repos.Events.ListEvents(ctx, meetingID, afterSeq)
 }
 
 func (s *Service) ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]Segment, error) {
-	return s.store.ListSegments(ctx, meetingID, afterSeq)
+	return s.repos.Events.ListSegments(ctx, meetingID, afterSeq)
 }
 
 func (s *Service) ResetMeeting(ctx context.Context, meetingID string) error {
-	return s.store.ResetMeeting(ctx, meetingID)
-}
-
-func (s *Service) LatestReport(ctx context.Context, meetingID string) (*Report, error) {
-	return s.store.LatestReport(ctx, meetingID)
-}
-
-func (s *Service) SaveReport(ctx context.Context, meetingID, content string) (*Report, error) {
-	return s.store.SaveReport(ctx, meetingID, content)
-}
-
-func (s *Service) CreateJob(ctx context.Context, jobType, meetingID, status string) (*Job, error) {
-	return s.store.CreateJob(ctx, jobType, meetingID, status)
-}
-
-func (s *Service) CompleteJob(ctx context.Context, jobID string, result any) error {
-	return s.store.CompleteJob(ctx, jobID, result)
+	return s.repos.Meetings.ResetMeeting(ctx, meetingID)
 }
 
 func (s *Service) GetJob(ctx context.Context, jobID string) (*Job, error) {
-	return s.store.GetJob(ctx, jobID)
+	return s.repos.Jobs.GetJob(ctx, jobID)
 }
 
-func (s *Service) SaveUpload(ctx context.Context, filename, mediaType, path, jobID string) (*Upload, error) {
-	return s.store.SaveUpload(ctx, filename, mediaType, path, jobID)
+func (s *Service) GetOrCreateReport(ctx context.Context, meetingID string) (*Report, error) {
+	report, err := s.repos.Reports.LatestReport(ctx, meetingID)
+	if err == nil {
+		return report, nil
+	}
+	if err != ErrNotFound {
+		return nil, err
+	}
+	content, err := s.BuildMarkdownReport(ctx, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	return s.repos.Reports.SaveReport(ctx, meetingID, content)
+}
+
+func (s *Service) UploadFile(ctx context.Context, uploadDir, filename, mediaType string, src io.Reader) (*UploadResult, error) {
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create upload directory: %w", err)
+	}
+	job, err := s.repos.Jobs.CreateJob(ctx, "file.extract_audio", "", "completed")
+	if err != nil {
+		return nil, fmt.Errorf("create upload job: %w", err)
+	}
+
+	path := filepath.Join(uploadDir, job.ID+"_"+filename)
+	dst, err := os.Create(path)
+	if err != nil {
+		return nil, fmt.Errorf("create upload file: %w", err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return nil, fmt.Errorf("write upload file: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		return nil, fmt.Errorf("close upload file: %w", err)
+	}
+
+	if mediaType == "" {
+		mediaType = mime.TypeByExtension(filepath.Ext(filename))
+	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	upload, err := s.repos.Uploads.SaveUpload(ctx, filename, mediaType, path, job.ID)
+	if err != nil {
+		return nil, fmt.Errorf("save upload record: %w", err)
+	}
+	if err := s.repos.Jobs.CompleteJob(ctx, job.ID, map[string]any{
+		"upload_id": upload.ID,
+		"mode":      "mock-local",
+	}); err != nil {
+		return nil, fmt.Errorf("complete upload job: %w", err)
+	}
+	job, err = s.repos.Jobs.GetJob(ctx, job.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load upload job: %w", err)
+	}
+	return &UploadResult{Upload: upload, Job: job}, nil
 }
 
 func (s *Service) AppendAndPublish(ctx context.Context, meetingID, eventType string, payload any) (*Event, error) {
-	event, err := s.store.AppendEvent(ctx, meetingID, eventType, payload)
+	event, err := s.repos.Events.AppendEvent(ctx, meetingID, eventType, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +162,7 @@ func (s *Service) AppendAndPublish(ctx context.Context, meetingID, eventType str
 }
 
 func (s *Service) EndMeeting(ctx context.Context, meetingID string) (*Report, []Event, error) {
-	if _, err := s.store.GetMeeting(ctx, meetingID); err != nil {
+	if _, err := s.repos.Meetings.GetMeeting(ctx, meetingID); err != nil {
 		return nil, nil, err
 	}
 
@@ -110,21 +178,21 @@ func (s *Service) EndMeeting(ctx context.Context, meetingID string) (*Report, []
 	}
 	events = append(events, *stateEvent)
 
-	job, err := s.store.CreateJob(ctx, "report.final", meetingID, "running")
+	job, err := s.repos.Jobs.CreateJob(ctx, "report.final", meetingID, "running")
 	if err != nil {
 		return nil, events, err
 	}
 	content, err := s.BuildMarkdownReport(ctx, meetingID)
 	if err != nil {
-		_ = s.store.FailJob(ctx, job.ID, err.Error())
+		_ = s.repos.Jobs.FailJob(ctx, job.ID, err.Error())
 		return nil, events, err
 	}
-	report, err := s.store.SaveReport(ctx, meetingID, content)
+	report, err := s.repos.Reports.SaveReport(ctx, meetingID, content)
 	if err != nil {
-		_ = s.store.FailJob(ctx, job.ID, err.Error())
+		_ = s.repos.Jobs.FailJob(ctx, job.ID, err.Error())
 		return nil, events, err
 	}
-	if err := s.store.CompleteJob(ctx, job.ID, map[string]any{"artifact_id": report.ArtifactID}); err != nil {
+	if err := s.repos.Jobs.CompleteJob(ctx, job.ID, map[string]any{"artifact_id": report.ArtifactID}); err != nil {
 		return nil, events, err
 	}
 	readyEvent, err := s.AppendAndPublish(ctx, meetingID, EventReportReady, map[string]any{
@@ -139,15 +207,15 @@ func (s *Service) EndMeeting(ctx context.Context, meetingID string) (*Report, []
 }
 
 func (s *Service) BuildMarkdownReport(ctx context.Context, meetingID string) (string, error) {
-	meeting, err := s.store.GetMeeting(ctx, meetingID)
+	meeting, err := s.repos.Meetings.GetMeeting(ctx, meetingID)
 	if err != nil {
 		return "", err
 	}
-	segments, err := s.store.ListSegments(ctx, meetingID, 0)
+	segments, err := s.repos.Events.ListSegments(ctx, meetingID, 0)
 	if err != nil {
 		return "", err
 	}
-	events, err := s.store.ListEvents(ctx, meetingID, 0)
+	events, err := s.repos.Events.ListEvents(ctx, meetingID, 0)
 	if err != nil {
 		return "", err
 	}

@@ -34,7 +34,21 @@ type Store struct {
 	db *sql.DB
 }
 
-var _ core.MeetingStore = (*Store)(nil)
+var _ core.MeetingRepository = (*Store)(nil)
+var _ core.EventRepository = (*Store)(nil)
+var _ core.ReportRepository = (*Store)(nil)
+var _ core.JobRepository = (*Store)(nil)
+var _ core.UploadRepository = (*Store)(nil)
+
+func Repositories(store *Store) core.Repositories {
+	return core.Repositories{
+		Meetings: store,
+		Events:   store,
+		Reports:  store,
+		Jobs:     store,
+		Uploads:  store,
+	}
+}
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}

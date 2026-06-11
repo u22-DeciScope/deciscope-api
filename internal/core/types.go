@@ -20,6 +20,8 @@ const (
 	EventError               = "error"
 )
 
+// Persisted timestamp fields remain RFC3339 UTC strings to preserve the API
+// contract. Repository implementations own any database-native time conversion.
 type Meeting struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`

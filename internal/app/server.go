@@ -27,23 +27,23 @@ func NewServer() (http.Handler, error) {
 	// Firebase 初期化（global AuthClient を初期化）
 	firebase.Init()
 
-	var store core.MeetingStore
+	var repositories core.Repositories
 	var userRepository users.Repository
 	databaseConfig := database.ConfigFromEnv()
 	conn, err := database.Open(context.Background(), databaseConfig)
 	if err != nil {
 		log.Printf("database unavailable; /v1 uses in-memory local store: %v", err)
-		store = core.NewMemoryStore()
+		repositories = core.RepositoriesFromMemory(core.NewMemoryStore())
 	} else {
 		if err := database.Migrate(context.Background(), conn, databaseConfig.Driver); err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("migrate database: %w", err)
 		}
-		store = sqliterepository.NewStore(conn)
+		repositories = sqliterepository.Repositories(sqliterepository.NewStore(conn))
 		userRepository = sqliterepository.NewUserRepository(conn)
 	}
 	hub := realtime.NewHub()
-	service := core.NewService(store, hub)
+	service := core.NewService(repositories, hub)
 	replay := fixture.NewManager(service, os.Getenv("FIXTURE_DIR"))
 	coreAPI := handlers.NewCoreAPI(service, replay, os.Getenv("UPLOAD_DIR"))
 
@@ -84,7 +84,7 @@ func NewServer() (http.Handler, error) {
 		r.Post("/meetings/{meeting_id}/replay/reset", coreAPI.ReplayReset)
 		r.Post("/uploads", coreAPI.Upload)
 		r.Get("/jobs/{job_id}", coreAPI.GetJob)
-		r.Get("/realtime", hub.ServeWS(store))
+		r.Get("/realtime", hub.ServeWS(service))
 	})
 
 	return r, nil
