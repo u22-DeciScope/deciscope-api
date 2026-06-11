@@ -10,23 +10,15 @@ import (
 	"time"
 )
 
-type Store struct {
-	db  *sql.DB
-	mem *memoryStore
+type SQLiteStore struct {
+	db *sql.DB
 }
 
-func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
+func NewSQLiteStore(db *sql.DB) *SQLiteStore {
+	return &SQLiteStore{db: db}
 }
 
-func NewMemoryStore() *Store {
-	return &Store{mem: newMemoryStore()}
-}
-
-func (s *Store) CreateMeeting(ctx context.Context, title, source string) (*Meeting, error) {
-	if s.mem != nil {
-		return s.mem.CreateMeeting(ctx, title, source)
-	}
+func (s *SQLiteStore) CreateMeeting(ctx context.Context, title, source string) (*Meeting, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		title = "Untitled meeting"
@@ -54,10 +46,7 @@ func (s *Store) CreateMeeting(ctx context.Context, title, source string) (*Meeti
 	return meeting, nil
 }
 
-func (s *Store) ListMeetings(ctx context.Context) ([]Meeting, error) {
-	if s.mem != nil {
-		return s.mem.ListMeetings(ctx)
-	}
+func (s *SQLiteStore) ListMeetings(ctx context.Context) ([]Meeting, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, title, status, source, created_at, updated_at, COALESCE(ended_at, '')
 		FROM meetings
@@ -79,10 +68,7 @@ func (s *Store) ListMeetings(ctx context.Context) ([]Meeting, error) {
 	return meetings, rows.Err()
 }
 
-func (s *Store) GetMeeting(ctx context.Context, meetingID string) (*Meeting, error) {
-	if s.mem != nil {
-		return s.mem.GetMeeting(ctx, meetingID)
-	}
+func (s *SQLiteStore) GetMeeting(ctx context.Context, meetingID string) (*Meeting, error) {
 	var meeting Meeting
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, title, status, source, created_at, updated_at, COALESCE(ended_at, '')
@@ -98,10 +84,7 @@ func (s *Store) GetMeeting(ctx context.Context, meetingID string) (*Meeting, err
 	return &meeting, nil
 }
 
-func (s *Store) AppendEvent(ctx context.Context, meetingID, eventType string, payload any) (*Event, error) {
-	if s.mem != nil {
-		return s.mem.AppendEvent(ctx, meetingID, eventType, payload)
-	}
+func (s *SQLiteStore) AppendEvent(ctx context.Context, meetingID, eventType string, payload any) (*Event, error) {
 	payloadBytes, err := jsonPayload(payload)
 	if err != nil {
 		return nil, err
@@ -182,10 +165,7 @@ func (s *Store) AppendEvent(ctx context.Context, meetingID, eventType string, pa
 	}, nil
 }
 
-func (s *Store) ListEvents(ctx context.Context, meetingID string, afterSeq int64) ([]Event, error) {
-	if s.mem != nil {
-		return s.mem.ListEvents(ctx, meetingID, afterSeq)
-	}
+func (s *SQLiteStore) ListEvents(ctx context.Context, meetingID string, afterSeq int64) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT type, meeting_id, seq, ts_ms, payload
 		FROM meeting_events
@@ -210,10 +190,7 @@ func (s *Store) ListEvents(ctx context.Context, meetingID string, afterSeq int64
 	return events, rows.Err()
 }
 
-func (s *Store) ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]Segment, error) {
-	if s.mem != nil {
-		return s.mem.ListSegments(ctx, meetingID, afterSeq)
-	}
+func (s *SQLiteStore) ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]Segment, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT meeting_id, seq, segment_id, speaker_label, text, start_ms, end_ms, created_at
 		FROM meeting_segments
@@ -236,10 +213,7 @@ func (s *Store) ListSegments(ctx context.Context, meetingID string, afterSeq int
 	return segments, rows.Err()
 }
 
-func (s *Store) ResetMeeting(ctx context.Context, meetingID string) error {
-	if s.mem != nil {
-		return s.mem.ResetMeeting(ctx, meetingID)
-	}
+func (s *SQLiteStore) ResetMeeting(ctx context.Context, meetingID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -266,10 +240,7 @@ func (s *Store) ResetMeeting(ctx context.Context, meetingID string) error {
 	return tx.Commit()
 }
 
-func (s *Store) CreateJob(ctx context.Context, jobType, meetingID, status string) (*Job, error) {
-	if s.mem != nil {
-		return s.mem.CreateJob(ctx, jobType, meetingID, status)
-	}
+func (s *SQLiteStore) CreateJob(ctx context.Context, jobType, meetingID, status string) (*Job, error) {
 	if status == "" {
 		status = "queued"
 	}
@@ -292,10 +263,7 @@ func (s *Store) CreateJob(ctx context.Context, jobType, meetingID, status string
 	return job, nil
 }
 
-func (s *Store) CompleteJob(ctx context.Context, jobID string, result any) error {
-	if s.mem != nil {
-		return s.mem.CompleteJob(ctx, jobID, result)
-	}
+func (s *SQLiteStore) CompleteJob(ctx context.Context, jobID string, result any) error {
 	resultBytes, err := jsonPayload(result)
 	if err != nil {
 		return err
@@ -313,10 +281,7 @@ func (s *Store) CompleteJob(ctx context.Context, jobID string, result any) error
 	return nil
 }
 
-func (s *Store) FailJob(ctx context.Context, jobID, message string) error {
-	if s.mem != nil {
-		return s.mem.FailJob(ctx, jobID, message)
-	}
+func (s *SQLiteStore) FailJob(ctx context.Context, jobID, message string) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE jobs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?
 	`, message, time.Now().UTC().Format(time.RFC3339), jobID)
@@ -330,10 +295,7 @@ func (s *Store) FailJob(ctx context.Context, jobID, message string) error {
 	return nil
 }
 
-func (s *Store) GetJob(ctx context.Context, jobID string) (*Job, error) {
-	if s.mem != nil {
-		return s.mem.GetJob(ctx, jobID)
-	}
+func (s *SQLiteStore) GetJob(ctx context.Context, jobID string) (*Job, error) {
 	var job Job
 	var result, errText sql.NullString
 	var meetingID sql.NullString
@@ -356,10 +318,7 @@ func (s *Store) GetJob(ctx context.Context, jobID string) (*Job, error) {
 	return &job, nil
 }
 
-func (s *Store) SaveReport(ctx context.Context, meetingID, content string) (*Report, error) {
-	if s.mem != nil {
-		return s.mem.SaveReport(ctx, meetingID, content)
-	}
+func (s *SQLiteStore) SaveReport(ctx context.Context, meetingID, content string) (*Report, error) {
 	report := &Report{
 		ArtifactID: NewID("art"),
 		MeetingID:  meetingID,
@@ -377,10 +336,7 @@ func (s *Store) SaveReport(ctx context.Context, meetingID, content string) (*Rep
 	return report, nil
 }
 
-func (s *Store) LatestReport(ctx context.Context, meetingID string) (*Report, error) {
-	if s.mem != nil {
-		return s.mem.LatestReport(ctx, meetingID)
-	}
+func (s *SQLiteStore) LatestReport(ctx context.Context, meetingID string) (*Report, error) {
 	var report Report
 	err := s.db.QueryRowContext(ctx, `
 		SELECT artifact_id, meeting_id, format, content, created_at
@@ -398,10 +354,7 @@ func (s *Store) LatestReport(ctx context.Context, meetingID string) (*Report, er
 	return &report, nil
 }
 
-func (s *Store) SaveUpload(ctx context.Context, filename, mediaType, path, jobID string) (*Upload, error) {
-	if s.mem != nil {
-		return s.mem.SaveUpload(ctx, filename, mediaType, path, jobID)
-	}
+func (s *SQLiteStore) SaveUpload(ctx context.Context, filename, mediaType, path, jobID string) (*Upload, error) {
 	upload := &Upload{
 		ID:        NewID("upl"),
 		Filename:  filename,

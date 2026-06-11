@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-type memoryStore struct {
+type MemoryStore struct {
 	mu       sync.Mutex
 	meetings map[string]Meeting
 	nextSeq  map[string]int64
@@ -20,8 +20,8 @@ type memoryStore struct {
 	uploads  map[string]Upload
 }
 
-func newMemoryStore() *memoryStore {
-	return &memoryStore{
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{
 		meetings: make(map[string]Meeting),
 		nextSeq:  make(map[string]int64),
 		events:   make(map[string][]Event),
@@ -32,7 +32,7 @@ func newMemoryStore() *memoryStore {
 	}
 }
 
-func (m *memoryStore) CreateMeeting(_ context.Context, title, source string) (*Meeting, error) {
+func (m *MemoryStore) CreateMeeting(_ context.Context, title, source string) (*Meeting, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -57,7 +57,7 @@ func (m *memoryStore) CreateMeeting(_ context.Context, title, source string) (*M
 	return cloneMeeting(meeting), nil
 }
 
-func (m *memoryStore) ListMeetings(_ context.Context) ([]Meeting, error) {
+func (m *MemoryStore) ListMeetings(_ context.Context) ([]Meeting, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	meetings := make([]Meeting, 0, len(m.meetings))
@@ -70,7 +70,7 @@ func (m *memoryStore) ListMeetings(_ context.Context) ([]Meeting, error) {
 	return meetings, nil
 }
 
-func (m *memoryStore) GetMeeting(_ context.Context, meetingID string) (*Meeting, error) {
+func (m *MemoryStore) GetMeeting(_ context.Context, meetingID string) (*Meeting, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	meeting, ok := m.meetings[meetingID]
@@ -80,7 +80,7 @@ func (m *memoryStore) GetMeeting(_ context.Context, meetingID string) (*Meeting,
 	return cloneMeeting(meeting), nil
 }
 
-func (m *memoryStore) AppendEvent(_ context.Context, meetingID, eventType string, payload any) (*Event, error) {
+func (m *MemoryStore) AppendEvent(_ context.Context, meetingID, eventType string, payload any) (*Event, error) {
 	payloadBytes, err := jsonPayload(payload)
 	if err != nil {
 		return nil, err
@@ -146,7 +146,7 @@ func (m *memoryStore) AppendEvent(_ context.Context, meetingID, eventType string
 	return cloneEvent(event), nil
 }
 
-func (m *memoryStore) ListEvents(_ context.Context, meetingID string, afterSeq int64) ([]Event, error) {
+func (m *MemoryStore) ListEvents(_ context.Context, meetingID string, afterSeq int64) ([]Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.meetings[meetingID]; !ok {
@@ -161,7 +161,7 @@ func (m *memoryStore) ListEvents(_ context.Context, meetingID string, afterSeq i
 	return events, nil
 }
 
-func (m *memoryStore) ListSegments(_ context.Context, meetingID string, afterSeq int64) ([]Segment, error) {
+func (m *MemoryStore) ListSegments(_ context.Context, meetingID string, afterSeq int64) ([]Segment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.meetings[meetingID]; !ok {
@@ -176,7 +176,7 @@ func (m *memoryStore) ListSegments(_ context.Context, meetingID string, afterSeq
 	return segments, nil
 }
 
-func (m *memoryStore) ResetMeeting(_ context.Context, meetingID string) error {
+func (m *MemoryStore) ResetMeeting(_ context.Context, meetingID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	meeting, ok := m.meetings[meetingID]
@@ -194,7 +194,7 @@ func (m *memoryStore) ResetMeeting(_ context.Context, meetingID string) error {
 	return nil
 }
 
-func (m *memoryStore) CreateJob(_ context.Context, jobType, meetingID, status string) (*Job, error) {
+func (m *MemoryStore) CreateJob(_ context.Context, jobType, meetingID, status string) (*Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if status == "" {
@@ -213,7 +213,7 @@ func (m *memoryStore) CreateJob(_ context.Context, jobType, meetingID, status st
 	return cloneJob(job), nil
 }
 
-func (m *memoryStore) CompleteJob(_ context.Context, jobID string, result any) error {
+func (m *MemoryStore) CompleteJob(_ context.Context, jobID string, result any) error {
 	resultBytes, err := jsonPayload(result)
 	if err != nil {
 		return err
@@ -232,7 +232,7 @@ func (m *memoryStore) CompleteJob(_ context.Context, jobID string, result any) e
 	return nil
 }
 
-func (m *memoryStore) FailJob(_ context.Context, jobID, message string) error {
+func (m *MemoryStore) FailJob(_ context.Context, jobID, message string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job, ok := m.jobs[jobID]
@@ -246,7 +246,7 @@ func (m *memoryStore) FailJob(_ context.Context, jobID, message string) error {
 	return nil
 }
 
-func (m *memoryStore) GetJob(_ context.Context, jobID string) (*Job, error) {
+func (m *MemoryStore) GetJob(_ context.Context, jobID string) (*Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job, ok := m.jobs[jobID]
@@ -256,7 +256,7 @@ func (m *memoryStore) GetJob(_ context.Context, jobID string) (*Job, error) {
 	return cloneJob(job), nil
 }
 
-func (m *memoryStore) SaveReport(_ context.Context, meetingID, content string) (*Report, error) {
+func (m *MemoryStore) SaveReport(_ context.Context, meetingID, content string) (*Report, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.meetings[meetingID]; !ok {
@@ -273,7 +273,7 @@ func (m *memoryStore) SaveReport(_ context.Context, meetingID, content string) (
 	return cloneReport(report), nil
 }
 
-func (m *memoryStore) LatestReport(_ context.Context, meetingID string) (*Report, error) {
+func (m *MemoryStore) LatestReport(_ context.Context, meetingID string) (*Report, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	reports := m.reports[meetingID]
@@ -283,7 +283,7 @@ func (m *memoryStore) LatestReport(_ context.Context, meetingID string) (*Report
 	return cloneReport(reports[len(reports)-1]), nil
 }
 
-func (m *memoryStore) SaveUpload(_ context.Context, filename, mediaType, path, jobID string) (*Upload, error) {
+func (m *MemoryStore) SaveUpload(_ context.Context, filename, mediaType, path, jobID string) (*Upload, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.jobs[jobID]; !ok {

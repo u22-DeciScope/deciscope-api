@@ -38,7 +38,7 @@ func NewServer() (http.Handler, error) {
 			_ = conn.Close()
 			return nil, fmt.Errorf("migrate database: %w", err)
 		}
-		store = core.NewStore(conn)
+		store = core.NewSQLiteStore(conn)
 		userRepository = users.NewSQLiteRepository(conn)
 	}
 	hub := realtime.NewHub()
