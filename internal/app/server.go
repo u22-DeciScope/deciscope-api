@@ -16,6 +16,7 @@ import (
 	"deciscope-core-api/internal/fixture"
 	"deciscope-core-api/internal/handlers"
 	"deciscope-core-api/internal/realtime"
+	sqliterepository "deciscope-core-api/internal/repository/sqlite"
 	"deciscope-core-api/internal/users"
 
 	"github.com/go-chi/chi/v5"
@@ -38,8 +39,8 @@ func NewServer() (http.Handler, error) {
 			_ = conn.Close()
 			return nil, fmt.Errorf("migrate database: %w", err)
 		}
-		store = core.NewSQLiteStore(conn)
-		userRepository = users.NewSQLiteRepository(conn)
+		store = sqliterepository.NewStore(conn)
+		userRepository = sqliterepository.NewUserRepository(conn)
 	}
 	hub := realtime.NewHub()
 	service := core.NewService(store, hub)

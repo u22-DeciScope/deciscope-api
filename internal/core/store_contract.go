@@ -19,5 +19,4 @@ type MeetingStore interface {
 	SaveUpload(ctx context.Context, filename, mediaType, path, jobID string) (*Upload, error)
 }
 
-var _ MeetingStore = (*SQLiteStore)(nil)
 var _ MeetingStore = (*MemoryStore)(nil)

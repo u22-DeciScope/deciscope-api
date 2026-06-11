@@ -1,4 +1,4 @@
-package users
+package sqlite
 
 import (
 	"context"
@@ -6,17 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"deciscope-core-api/internal/users"
 )
 
-type SQLiteRepository struct {
+type UserRepository struct {
 	db *sql.DB
 }
 
-func NewSQLiteRepository(db *sql.DB) *SQLiteRepository {
-	return &SQLiteRepository{db: db}
+func NewUserRepository(db *sql.DB) *UserRepository {
+	return &UserRepository{db: db}
 }
 
-func (r *SQLiteRepository) FindOrCreateFirebaseUser(ctx context.Context, email, name string) (*User, error) {
+func (r *UserRepository) FindOrCreateFirebaseUser(ctx context.Context, email, name string) (*users.User, error) {
 	user, err := r.findByEmail(ctx, email)
 	if err == nil {
 		return user, nil
@@ -40,8 +42,8 @@ func (r *SQLiteRepository) FindOrCreateFirebaseUser(ctx context.Context, email, 
 	return user, nil
 }
 
-func (r *SQLiteRepository) findByEmail(ctx context.Context, email string) (*User, error) {
-	var user User
+func (r *UserRepository) findByEmail(ctx context.Context, email string) (*users.User, error) {
+	var user users.User
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, name, email
 		FROM t_Users
@@ -54,4 +56,4 @@ func isUniqueConstraint(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
-var _ Repository = (*SQLiteRepository)(nil)
+var _ users.Repository = (*UserRepository)(nil)

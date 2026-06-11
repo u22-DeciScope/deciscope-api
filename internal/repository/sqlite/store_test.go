@@ -1,4 +1,4 @@
-package core
+package sqlite
 
 import (
 	"context"
@@ -121,7 +121,7 @@ func TestStoreAppendEventSequencesConcurrentDurableEvents(t *testing.T) {
 	}
 }
 
-func newTestStore(t *testing.T) *SQLiteStore {
+func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
 	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on")
@@ -132,7 +132,7 @@ func newTestStore(t *testing.T) *SQLiteStore {
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
-	store := NewSQLiteStore(db)
+	store := NewStore(db)
 	if err := database.Migrate(context.Background(), db, "sqlite"); err != nil {
 		if strings.Contains(err.Error(), "go-sqlite3 requires cgo") {
 			t.Skipf("sqlite runtime requires CGO: %v", err)

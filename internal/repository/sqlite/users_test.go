@@ -1,4 +1,4 @@
-package users
+package sqlite
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func TestSQLiteRepositoryCreatesAndFindsFirebaseUser(t *testing.T) {
+func TestUserRepositoryCreatesAndFindsFirebaseUser(t *testing.T) {
 	repository := newTestSQLiteRepository(t)
 	ctx := context.Background()
 
@@ -27,7 +27,7 @@ func TestSQLiteRepositoryCreatesAndFindsFirebaseUser(t *testing.T) {
 	}
 }
 
-func newTestSQLiteRepository(t *testing.T) *SQLiteRepository {
+func newTestSQLiteRepository(t *testing.T) *UserRepository {
 	t.Helper()
 	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "users.sqlite"))
 	if err != nil {
@@ -49,5 +49,5 @@ func newTestSQLiteRepository(t *testing.T) *SQLiteRepository {
 		}
 		t.Fatalf("create users table: %v", err)
 	}
-	return NewSQLiteRepository(db)
+	return NewUserRepository(db)
 }
