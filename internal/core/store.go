@@ -105,17 +105,23 @@ func (s *SQLiteStore) AppendEvent(ctx context.Context, meetingID, eventType stri
 	}
 	defer tx.Rollback()
 
+	now := time.Now().UTC()
+	tsMS := now.UnixMilli()
+	nowText := now.Format(time.RFC3339)
+
 	var seq int64
-	if err := tx.QueryRowContext(ctx, `SELECT next_seq FROM meetings WHERE id = ?`, meetingID).Scan(&seq); err != nil {
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE meetings
+		SET next_seq = next_seq + 1, updated_at = ?
+		WHERE id = ?
+		RETURNING next_seq - 1
+	`, nowText, meetingID).Scan(&seq); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 
-	now := time.Now().UTC()
-	tsMS := now.UnixMilli()
-	nowText := now.Format(time.RFC3339)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO meeting_events (meeting_id, seq, type, ts_ms, payload, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
@@ -149,9 +155,6 @@ func (s *SQLiteStore) AppendEvent(ctx context.Context, meetingID, eventType stri
 		}
 	}
 
-	if _, err := tx.ExecContext(ctx, `UPDATE meetings SET next_seq = ?, updated_at = ? WHERE id = ?`, seq+1, nowText, meetingID); err != nil {
-		return nil, err
-	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}

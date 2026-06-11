@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"deciscope-core-api/internal/database"
@@ -74,6 +76,51 @@ func TestStoreAppendEventSequencesDurableEvents(t *testing.T) {
 	}
 }
 
+func TestStoreAppendEventSequencesConcurrentDurableEvents(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	meeting, err := store.CreateMeeting(ctx, "Concurrent sequence test", "fixture_replay")
+	if err != nil {
+		t.Fatalf("CreateMeeting() error = %v", err)
+	}
+
+	const eventCount = 20
+	seqs := make(chan int64, eventCount)
+	errs := make(chan error, eventCount)
+	var wg sync.WaitGroup
+	for range eventCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			event, err := store.AppendEvent(ctx, meeting.ID, EventAnalysisDelta, map[string]any{"items": []any{}})
+			if err != nil {
+				errs <- err
+				return
+			}
+			seqs <- event.Seq
+		}()
+	}
+	wg.Wait()
+	close(seqs)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	got := make([]int, 0, eventCount)
+	for seq := range seqs {
+		got = append(got, int(seq))
+	}
+	sort.Ints(got)
+	for i, seq := range got {
+		want := i + 1
+		if seq != want {
+			t.Fatalf("sequences = %v, want contiguous 1..%d", got, eventCount)
+		}
+	}
+}
+
 func newTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
@@ -81,6 +128,7 @@ func newTestStore(t *testing.T) *SQLiteStore {
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
