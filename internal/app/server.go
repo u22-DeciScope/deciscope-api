@@ -9,12 +9,14 @@ import (
 	"strings"
 
 	"deciscope-core-api/internal/app/middleware"
+	appauth "deciscope-core-api/internal/auth"
 	"deciscope-core-api/internal/core"
 	"deciscope-core-api/internal/db"
 	"deciscope-core-api/internal/firebase"
 	"deciscope-core-api/internal/fixture"
 	"deciscope-core-api/internal/handlers"
 	"deciscope-core-api/internal/realtime"
+	"deciscope-core-api/internal/users"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -24,15 +26,20 @@ func NewServer() (http.Handler, error) {
 	// Firebase 初期化（global AuthClient を初期化）
 	firebase.Init()
 
-	var store *core.Store
-	if err := db.InitSQLite(); err != nil {
+	var store core.MeetingStore
+	var userRepository users.Repository
+	conn, err := db.InitSQLite()
+	if err != nil {
 		log.Printf("sqlite unavailable; /v1 uses in-memory local store: %v", err)
 		store = core.NewMemoryStore()
 	} else {
-		store = core.NewStore(db.Conn)
-		if err := store.Migrate(context.Background()); err != nil {
+		sqliteStore := core.NewStore(conn)
+		if err := sqliteStore.Migrate(context.Background()); err != nil {
+			_ = conn.Close()
 			return nil, fmt.Errorf("migrate core schema: %w", err)
 		}
+		store = sqliteStore
+		userRepository = users.NewSQLiteRepository(conn)
 	}
 	hub := realtime.NewHub()
 	service := core.NewService(store, hub)
@@ -44,6 +51,8 @@ func NewServer() (http.Handler, error) {
 	if err != nil {
 		log.Printf("firebase auth disabled; protected /v1/auth routes accept Bearer dev:<uid>: %v", err)
 	}
+	authService := appauth.NewService(userRepository, firebase.NewTokenVerifier(authClient))
+	authAPI := handlers.NewAuthAPI(authService)
 
 	r := chi.NewRouter()
 
@@ -53,7 +62,7 @@ func NewServer() (http.Handler, error) {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", coreAPI.Health)
-		r.Post("/auth/login", handlers.Login)
+		r.Post("/auth/login", authAPI.Login)
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.FirebaseAuthMiddleware(authClient))
 			r.Get("/auth/me", handlers.MeHandler)

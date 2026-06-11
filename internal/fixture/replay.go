@@ -18,7 +18,7 @@ import (
 type Service interface {
 	AppendAndPublish(ctx context.Context, meetingID, eventType string, payload any) (*core.Event, error)
 	EndMeeting(ctx context.Context, meetingID string) (*core.Report, []core.Event, error)
-	Store() *core.Store
+	Store() core.MeetingStore
 }
 
 type Manager struct {

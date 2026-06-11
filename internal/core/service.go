@@ -12,15 +12,15 @@ type Publisher interface {
 }
 
 type Service struct {
-	store     *Store
+	store     MeetingStore
 	publisher Publisher
 }
 
-func NewService(store *Store, publisher Publisher) *Service {
+func NewService(store MeetingStore, publisher Publisher) *Service {
 	return &Service{store: store, publisher: publisher}
 }
 
-func (s *Service) Store() *Store {
+func (s *Service) Store() MeetingStore {
 	return s.store
 }
 

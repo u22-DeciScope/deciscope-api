@@ -13,11 +13,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var Conn *sql.DB
-
-func InitSQLite() error {
-	var err error
-
+func InitSQLite() (*sql.DB, error) {
 	dbPath := os.Getenv("SQLITE_PATH")
 	if dbPath == "" {
 		dbPath = os.Getenv("AUTH_SQLITE_PATH")
@@ -31,27 +27,25 @@ func InitSQLite() error {
 		dsn += "?_foreign_keys=on&_busy_timeout=5000"
 	}
 
-	Conn, err = sql.Open("sqlite3", dsn)
+	conn, err := sql.Open("sqlite3", dsn)
 	if err != nil {
-		return fmt.Errorf("open sqlite: %w", err)
+		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	Conn.SetMaxOpenConns(1)
+	conn.SetMaxOpenConns(1)
 
 	// 接続確認
-	if err := Conn.Ping(); err != nil {
-		_ = Conn.Close()
-		Conn = nil
-		return fmt.Errorf("ping sqlite: %w", err)
+	if err := conn.Ping(); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	if _, err := Conn.Exec(`PRAGMA journal_mode = WAL;`); err != nil {
-		_ = Conn.Close()
-		Conn = nil
-		return fmt.Errorf("enable sqlite wal: %w", err)
+	if _, err := conn.Exec(`PRAGMA journal_mode = WAL;`); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("enable sqlite wal: %w", err)
 	}
 
 	// テーブル作成
-	_, err = Conn.Exec(`
+	_, err = conn.Exec(`
         CREATE TABLE IF NOT EXISTS t_Users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -61,10 +55,9 @@ func InitSQLite() error {
         );
     `)
 	if err != nil {
-		_ = Conn.Close()
-		Conn = nil
-		return fmt.Errorf("create table: %w", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("create table: %w", err)
 	}
 
-	return nil
+	return conn, nil
 }
