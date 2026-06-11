@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	appauth "deciscope-core-api/internal/auth"
-	"deciscope-core-api/internal/users"
 )
 
 type AuthAPI struct {
@@ -56,37 +55,4 @@ func (api *AuthAPI) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
-}
-
-func (api *AuthAPI) Register(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name     string `json:"name"`
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	if req.Name == "" || req.Email == "" || req.Password == "" {
-		http.Error(w, "missing fields", http.StatusBadRequest)
-		return
-	}
-
-	err := api.service.Register(r.Context(), req.Name, req.Email, req.Password)
-	if errors.Is(err, users.ErrEmailExists) {
-		http.Error(w, "email already exists", http.StatusConflict)
-		return
-	}
-	if errors.Is(err, appauth.ErrUnavailable) {
-		http.Error(w, "user store is unavailable in this local runtime", http.StatusServiceUnavailable)
-		return
-	}
-	if err != nil {
-		http.Error(w, "failed to register", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }

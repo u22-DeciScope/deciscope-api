@@ -6,8 +6,6 @@ import (
 	"fmt"
 
 	"deciscope-core-api/internal/users"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -72,19 +70,4 @@ func (s *Service) Login(ctx context.Context, idToken string) (*LoginResult, erro
 	}
 	result.UserID = user.ID
 	return result, nil
-}
-
-func (s *Service) Register(ctx context.Context, name, email, password string) error {
-	if s.users == nil {
-		return ErrUnavailable
-	}
-
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
-	}
-	if _, err := s.users.CreatePasswordUser(ctx, name, email, string(passwordHash)); err != nil {
-		return fmt.Errorf("create password user: %w", err)
-	}
-	return nil
 }

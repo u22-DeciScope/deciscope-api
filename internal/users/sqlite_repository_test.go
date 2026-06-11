@@ -3,7 +3,6 @@ package users
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,18 +24,6 @@ func TestSQLiteRepositoryCreatesAndFindsFirebaseUser(t *testing.T) {
 	}
 	if found.ID != created.ID || found.Name != "First Name" {
 		t.Fatalf("found user = %+v, want original user %+v", found, created)
-	}
-}
-
-func TestSQLiteRepositoryMapsDuplicateEmailError(t *testing.T) {
-	repository := newTestSQLiteRepository(t)
-	ctx := context.Background()
-
-	if _, err := repository.CreatePasswordUser(ctx, "First", "user@example.com", "hash"); err != nil {
-		t.Fatalf("CreatePasswordUser() first error = %v", err)
-	}
-	if _, err := repository.CreatePasswordUser(ctx, "Second", "user@example.com", "hash"); !errors.Is(err, ErrEmailExists) {
-		t.Fatalf("CreatePasswordUser() duplicate error = %v, want ErrEmailExists", err)
 	}
 }
 

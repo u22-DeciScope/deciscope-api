@@ -26,10 +26,6 @@ func (r *fakeUserRepository) FindOrCreateFirebaseUser(context.Context, string, s
 	return r.user, r.err
 }
 
-func (r *fakeUserRepository) CreatePasswordUser(context.Context, string, string, string) (*users.User, error) {
-	return r.user, r.err
-}
-
 func TestLoginUsesVerifierAndUserRepository(t *testing.T) {
 	service := NewService(
 		&fakeUserRepository{user: &users.User{ID: 42}},

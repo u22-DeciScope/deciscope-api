@@ -40,25 +40,6 @@ func (r *SQLiteRepository) FindOrCreateFirebaseUser(ctx context.Context, email, 
 	return user, nil
 }
 
-func (r *SQLiteRepository) CreatePasswordUser(ctx context.Context, name, email, passwordHash string) (*User, error) {
-	result, err := r.db.ExecContext(ctx, `
-		INSERT INTO t_Users (name, email, password)
-		VALUES (?, ?, ?)
-	`, name, email, passwordHash)
-	if isUniqueConstraint(err) {
-		return nil, ErrEmailExists
-	}
-	if err != nil {
-		return nil, fmt.Errorf("insert password user: %w", err)
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("load inserted user id: %w", err)
-	}
-	return &User{ID: id, Name: name, Email: email}, nil
-}
-
 func (r *SQLiteRepository) findByEmail(ctx context.Context, email string) (*User, error) {
 	var user User
 	err := r.db.QueryRowContext(ctx, `
