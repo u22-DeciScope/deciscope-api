@@ -105,9 +105,6 @@ func replayStatusDTO(v application.ReplayStatus) replayStatusResponse {
 }
 
 func fixtureDTOs(values []application.FixtureInfo) []fixtureResponse {
-	if values == nil {
-		return nil
-	}
 	result := make([]fixtureResponse, len(values))
 	for i, value := range values {
 		result[i] = fixtureResponse(value)
@@ -116,9 +113,6 @@ func fixtureDTOs(values []application.FixtureInfo) []fixtureResponse {
 }
 
 func meetingDTOs(values []domain.Meeting) []meetingResponse {
-	if values == nil {
-		return nil
-	}
 	result := make([]meetingResponse, len(values))
 	for i, value := range values {
 		result[i] = meetingDTO(value)
@@ -127,9 +121,6 @@ func meetingDTOs(values []domain.Meeting) []meetingResponse {
 }
 
 func eventDTOs(values []domain.Event) []eventResponse {
-	if values == nil {
-		return nil
-	}
 	result := make([]eventResponse, len(values))
 	for i, value := range values {
 		result[i] = eventDTO(value)
@@ -138,9 +129,6 @@ func eventDTOs(values []domain.Event) []eventResponse {
 }
 
 func segmentDTOs(values []domain.Segment) []segmentResponse {
-	if values == nil {
-		return nil
-	}
 	result := make([]segmentResponse, len(values))
 	for i, value := range values {
 		result[i] = segmentDTO(value)

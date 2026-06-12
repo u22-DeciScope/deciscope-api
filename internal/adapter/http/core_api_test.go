@@ -22,10 +22,17 @@ func TestCoreAPIHTTPContractWithFakeUseCases(t *testing.T) {
 	useCases := &fakeCoreUseCases{}
 	api := NewCoreAPI(useCases, nil)
 	router := chi.NewRouter()
+	router.Get("/meetings", api.ListMeetings)
 	router.Post("/meetings", api.CreateMeeting)
 	router.Get("/meetings/{meeting_id}", api.GetMeeting)
+	router.Get("/meetings/{meeting_id}/events", api.ListEvents)
+	router.Get("/meetings/{meeting_id}/segments", api.ListSegments)
 	router.Get("/meetings/{meeting_id}/report", api.GetReport)
 	router.Post("/uploads", api.Upload)
+
+	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/meetings", nil), "meetings")
+	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/meetings/m_http/events", nil), "events")
+	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/meetings/m_http/segments", nil), "segments")
 
 	create := serveJSON(t, router, http.MethodPost, "/meetings", map[string]any{"title": "HTTP contract"})
 	if create.Code != http.StatusCreated || !bytes.Contains(create.Body.Bytes(), []byte(`"id":"m_http"`)) {
@@ -147,4 +154,18 @@ func serveJSON(t *testing.T, handler http.Handler, method, path string, payload 
 	resp := httptest.NewRecorder()
 	handler.ServeHTTP(resp, req)
 	return resp
+}
+
+func assertJSONEmptyArray(t *testing.T, resp *httptest.ResponseRecorder, field string) {
+	t.Helper()
+	if resp.Code != http.StatusOK {
+		t.Fatalf("%s response = %d %s", field, resp.Code, resp.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s response: %v", field, err)
+	}
+	if string(body[field]) != "[]" {
+		t.Fatalf("%s = %s, want []", field, body[field])
+	}
 }
