@@ -6,39 +6,67 @@
 go run .
 ```
 
-既定では `http://localhost:8080` で起動します。`PORT` を指定するとポートを変更できます。
+既定では `http://localhost:9090` で起動します。
 
 ```powershell
 $env:PORT="18080"
 go run .
 ```
 
-起動時には `.env` を読み込み、その後に `.env.local` を上書き読み込みします。同じ環境変数がある場合は `.env.local` が優先されます。
+起動時は `.env` を読み込み、その後 `.env.local` で上書きします。
 
-## 推奨の動作確認
+## データベース設定
 
-ブラウザで次を開きます。
-
-```text
-http://localhost:8080/debug
+```env
+DATABASE_DRIVER=sqlite
+DATABASE_URL=./db.sqlite
 ```
 
-`Run full check` ボタンを押すと、以下の流れをまとめて確認できます。
+- `DATABASE_DRIVER`: 現在は `sqlite` を指定します。
+- `DATABASE_URL`: SQLiteファイルパスです。
+- `SQLITE_PATH` と `AUTH_SQLITE_PATH` は互換用のフォールバックです。
+- 未指定の場合は `./db.sqlite` を使用します。
 
-1. `/v1/health` の疎通確認。
-2. fixture 一覧の取得。
-3. 会議作成。
-4. WebSocket 接続。
-5. fixture replay 開始。
-6. durable event と transcript segment の取得。
-7. Markdown レポートの取得。
+接続生成は `internal/infrastructure/database` の `database.Open`、
+スキーマ更新は埋め込みMigrationを実行する `database.Migrate` が担当します。
+SQLite向けSQLは `internal/adapter/repository/sqlite` に隔離されています。
+
+SQLiteを開けない環境では、会議APIはMemory Repositoryへフォールバックします。
+この場合、永続化はされませんがfixture replayとAPI確認は実行できます。
+
+## その他の環境変数
+
+```env
+PORT=9090
+FIXTURE_DIR=./fixtures/meetings
+UPLOAD_DIR=./uploads
+FRONTEND_URL=http://localhost:5193
+ALLOWED_ORIGINS=http://localhost:5193
+```
+
+- `FIXTURE_DIR`: fixture JSONLディレクトリ。
+- `UPLOAD_DIR`: mock uploadの保存先。
+- `FRONTEND_URL`: CORSの基準origin。未指定時は `http://localhost:5193`。
+- `ALLOWED_ORIGINS`: CORS許可originのカンマ区切り。
+
+## 動作確認
+
+まずヘルスチェックを確認します。
+
+```http
+GET http://localhost:9090/v1/health
+```
+
+現在、ブラウザ用の `/debug` 画面は提供していません。以下のAPIとWebSocketを
+使ってfixture replay、durable event、transcript segment、Markdown reportを
+確認します。
 
 ## 手動クイックデモ
 
-1. 会議を作成します。
+会議を作成します。
 
 ```http
-POST http://localhost:8080/v1/meetings
+POST http://localhost:9090/v1/meetings
 Content-Type: application/json
 
 {
@@ -47,13 +75,13 @@ Content-Type: application/json
 }
 ```
 
-2. 返ってきた `id` で WebSocket に接続します。
+返された`id`でWebSocketへ接続します。
 
 ```text
-ws://localhost:8080/v1/realtime?meeting_id={meeting_id}
+ws://localhost:9090/v1/realtime?meeting_id={meeting_id}
 ```
 
-接続後、必要に応じて次の hello を送ります。
+接続後、必要に応じて `client.hello` を送信できます。
 
 ```json
 {
@@ -63,10 +91,10 @@ ws://localhost:8080/v1/realtime?meeting_id={meeting_id}
 }
 ```
 
-3. fixture replay を開始します。
+fixture replayを開始します。
 
 ```http
-POST http://localhost:8080/v1/meetings/{meeting_id}/replay/start
+POST http://localhost:9090/v1/meetings/{meeting_id}/replay/start
 Content-Type: application/json
 
 {
@@ -74,49 +102,30 @@ Content-Type: application/json
 }
 ```
 
-4. イベントと発話を確認します。
+イベント、発話、レポートを確認します。
 
 ```http
-GET http://localhost:8080/v1/meetings/{meeting_id}/events?after_seq=0
-GET http://localhost:8080/v1/meetings/{meeting_id}/segments?after_seq=0
-```
-
-5. レポートを確認します。
-
-```http
-GET http://localhost:8080/v1/meetings/{meeting_id}/report
+GET http://localhost:9090/v1/meetings/{meeting_id}/events?after_seq=0
+GET http://localhost:9090/v1/meetings/{meeting_id}/segments?after_seq=0
+GET http://localhost:9090/v1/meetings/{meeting_id}/report
 Accept: text/markdown
 ```
 
-## curl 例
-
-PowerShell では `curl` が `Invoke-WebRequest` のエイリアスになることがあります。必要に応じて `curl.exe` を使ってください。
+## テスト
 
 ```powershell
-curl.exe -X POST http://localhost:8080/v1/meetings -H "Content-Type: application/json" -d "{\"title\":\"Demo meeting\",\"source\":\"fixture_replay\"}"
+go test ./...
+go vet ./...
 ```
 
-## REST Client 例
+Repository契約テストはMemoryとSQLiteへ同じスイートを実行します。
+ApplicationとHTTP HandlerはFake Port・Fake Use Caseでテストします。
+Fixture、Realtime、サーバー結合、依存方向のテストも実行されます。
 
-VS Code の REST Client を使う場合は、リポジトリ直下の `DeciScope_API_Test.http` から主要 API を呼び出せます。`{{meeting_id}}` は、会議作成レスポンスの `id` に置き換えてください。
+WindowsのApplication Controlが自動生成されたtest exeを拒否する環境では、
+対象Packageを固定名でbuildして実行すると検証できます。
 
-## よく使う環境変数
-
-```env
-PORT=8080
-SQLITE_PATH=./db.sqlite
-FIXTURE_DIR=./fixtures/meetings
-UPLOAD_DIR=./uploads
-ALLOWED_ORIGINS=http://localhost:5173
+```powershell
+go test -c -o .gotmp/realtime-check.exe ./internal/adapter/realtime
+.\.gotmp\realtime-check.exe -test.v
 ```
-
-- `SQLITE_PATH`: SQLite ファイルパスです。未指定の場合は `AUTH_SQLITE_PATH`、それも未指定なら `./db.sqlite` を使います。
-- `FIXTURE_DIR`: fixture JSONL のディレクトリです。
-- `UPLOAD_DIR`: mock upload の保存先です。
-- `ALLOWED_ORIGINS`: CORS 許可 origin のカンマ区切りです。未指定の場合は `FRONTEND_URL`、localhost、127.0.0.1 をローカル向けに許可します。
-
-## SQLite が使えない場合
-
-`go-sqlite3` が使えない環境では、`/v1` API はインメモリストアにフォールバックします。この場合でも `/debug` と fixture replay の確認はできます。
-
-ただし、legacy の `/register` は SQLite の `t_Users` テーブルを使うため、SQLite が使えない場合は `503` を返します。

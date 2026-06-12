@@ -1,0 +1,45 @@
+package application
+
+import (
+	"context"
+	"io"
+
+	"deciscope-core-api/internal/domain"
+)
+
+type MeetingRepository interface {
+	CreateMeeting(ctx context.Context, title, source string) (*domain.Meeting, error)
+	ListMeetings(ctx context.Context) ([]domain.Meeting, error)
+	GetMeeting(ctx context.Context, meetingID string) (*domain.Meeting, error)
+	ResetMeeting(ctx context.Context, meetingID string) error
+}
+
+type EventRepository interface {
+	AppendEvent(ctx context.Context, meetingID, eventType string, payload any) (*domain.Event, error)
+	ListEvents(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Event, error)
+	ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Segment, error)
+}
+
+type ReportRepository interface {
+	SaveReport(ctx context.Context, meetingID, content string) (*domain.Report, error)
+	LatestReport(ctx context.Context, meetingID string) (*domain.Report, error)
+}
+
+type JobRepository interface {
+	CreateJob(ctx context.Context, jobType, meetingID, status string) (*domain.Job, error)
+	CompleteJob(ctx context.Context, jobID string, result any) error
+	FailJob(ctx context.Context, jobID, message string) error
+	GetJob(ctx context.Context, jobID string) (*domain.Job, error)
+}
+
+type UploadRepository interface {
+	SaveUpload(ctx context.Context, filename, mediaType, path, jobID string) (*domain.Upload, error)
+}
+
+type Publisher interface {
+	Publish(event domain.Event)
+}
+
+type ObjectStorage interface {
+	Save(ctx context.Context, key string, src io.Reader) (string, error)
+}

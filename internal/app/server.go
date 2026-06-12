@@ -5,111 +5,84 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"strings"
 
-	"deciscope-core-api/internal/app/middleware"
-	"deciscope-core-api/internal/core"
-	"deciscope-core-api/internal/db"
-	"deciscope-core-api/internal/firebase"
-	"deciscope-core-api/internal/fixture"
-	"deciscope-core-api/internal/handlers"
-	"deciscope-core-api/internal/realtime"
-
-	"github.com/go-chi/chi/v5"
-	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"deciscope-core-api/internal/adapter/fixture"
+	httpadapter "deciscope-core-api/internal/adapter/http"
+	"deciscope-core-api/internal/adapter/realtime"
+	"deciscope-core-api/internal/adapter/repository/memory"
+	sqliterepository "deciscope-core-api/internal/adapter/repository/sqlite"
+	"deciscope-core-api/internal/application"
+	appauth "deciscope-core-api/internal/application/auth"
+	"deciscope-core-api/internal/infrastructure/database"
+	"deciscope-core-api/internal/infrastructure/firebase"
+	"deciscope-core-api/internal/infrastructure/storage"
 )
 
 func NewServer() (http.Handler, error) {
-	// Firebase 初期化（global AuthClient を初期化）
-	firebase.Init()
-
-	var store *core.Store
-	if err := db.InitSQLite(); err != nil {
-		log.Printf("sqlite unavailable; /v1 uses in-memory local store: %v", err)
-		store = core.NewMemoryStore()
-	} else {
-		store = core.NewStore(db.Conn)
-		if err := store.Migrate(context.Background()); err != nil {
-			return nil, fmt.Errorf("migrate core schema: %w", err)
-		}
-	}
-	hub := realtime.NewHub()
-	service := core.NewService(store, hub)
-	replay := fixture.NewManager(service, os.Getenv("FIXTURE_DIR"))
-	coreAPI := handlers.NewCoreAPI(service, replay, os.Getenv("UPLOAD_DIR"))
-
-	// Firebase Auth クライアント（グローバル初期化済みのものを取得）
-	authClient, err := firebase.AuthClient()
+	ctx := context.Background()
+	config := ConfigFromEnv()
+	repositories, userRepository, err := buildRepositories(ctx, config.Database)
 	if err != nil {
-		log.Printf("firebase auth disabled; protected /v1/auth routes accept Bearer dev:<uid>: %v", err)
+		return nil, err
 	}
 
-	r := chi.NewRouter()
+	authClient, err := firebase.NewAuthClient(ctx, config.Firebase)
+	if err != nil {
+		log.Printf("firebase auth disabled; protected routes accept Bearer dev:<uid>: %v", err)
+	}
 
-	// CORS
-	r.Use(corsMiddleware)
-	r.Use(chimiddleware.AllowContentType("application/json", "multipart/form-data"))
+	hub := realtime.NewHub()
+	tokenVerifier := firebase.NewTokenVerifier(authClient)
+	service := application.NewService(
+		repositories.Meetings, repositories.Events, repositories.Reports,
+		repositories.Jobs, repositories.Uploads, hub, storage.NewLocal(config.UploadDir),
+	)
+	replay := fixture.NewManager(service, fixture.NewLocalLoader(config.FixtureDir))
 
-	r.Route("/v1", func(r chi.Router) {
-		r.Get("/health", coreAPI.Health)
-		r.Post("/auth/login", handlers.Login)
-		r.Group(func(r chi.Router) {
-			r.Use(middleware.FirebaseAuthMiddleware(authClient))
-			r.Get("/auth/me", handlers.MeHandler)
-			r.Get("/auth/health", handlers.Health)
-		})
-		r.Get("/meetings", coreAPI.ListMeetings)
-		r.Post("/meetings", coreAPI.CreateMeeting)
-		r.Get("/meetings/{meeting_id}", coreAPI.GetMeeting)
-		r.Post("/meetings/{meeting_id}/join-token", coreAPI.CreateJoinToken)
-		r.Post("/meetings/{meeting_id}/end", coreAPI.EndMeeting)
-		r.Get("/meetings/{meeting_id}/events", coreAPI.ListEvents)
-		r.Get("/meetings/{meeting_id}/segments", coreAPI.ListSegments)
-		r.Get("/meetings/{meeting_id}/report", coreAPI.GetReport)
-		r.Get("/fixtures", coreAPI.ListFixtures)
-		r.Post("/meetings/{meeting_id}/replay/start", coreAPI.ReplayStart)
-		r.Post("/meetings/{meeting_id}/replay/pause", coreAPI.ReplayPause)
-		r.Post("/meetings/{meeting_id}/replay/resume", coreAPI.ReplayResume)
-		r.Post("/meetings/{meeting_id}/replay/reset", coreAPI.ReplayReset)
-		r.Post("/uploads", coreAPI.Upload)
-		r.Get("/jobs/{job_id}", coreAPI.GetJob)
-		r.Get("/realtime", hub.ServeWS(store))
-	})
-
-	return r, nil
+	return httpadapter.NewRouter(httpadapter.RouterDependencies{
+		CoreAPI:      httpadapter.NewCoreAPI(service, replay),
+		AuthAPI:      httpadapter.NewAuthAPI(appauth.NewService(userRepository, tokenVerifier)),
+		Realtime:     hub.ServeWS(service),
+		AuthVerifier: tokenVerifier,
+		CORS: httpadapter.CORSConfig{
+			FrontendURL: config.FrontendURL, AllowedOrigins: config.AllowedOrigins,
+		},
+	}), nil
 }
 
-// CORSミドルウェア
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		allowedOrigin := os.Getenv("FRONTEND_URL")
-		if allowedOrigin == "" {
-			allowedOrigin = "http://localhost:5173"
-		}
-		responseOrigin := allowedOrigin
-		if list := os.Getenv("ALLOWED_ORIGINS"); list != "" {
-			for _, candidate := range strings.Split(list, ",") {
-				candidate = strings.TrimSpace(candidate)
-				if candidate == "*" || candidate == origin {
-					responseOrigin = candidate
-					break
-				}
-			}
-		} else if origin != "" && (origin == allowedOrigin || strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:")) {
-			responseOrigin = origin
-		}
-		w.Header().Set("Access-Control-Allow-Origin", responseOrigin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Upgrade, Connection")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
+type repositorySet struct {
+	Meetings application.MeetingRepository
+	Events   application.EventRepository
+	Reports  application.ReportRepository
+	Jobs     application.JobRepository
+	Uploads  application.UploadRepository
+}
 
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+func buildRepositories(ctx context.Context, config database.Config) (repositorySet, appauth.UserRepository, error) {
+	conn, err := database.Open(ctx, config)
+	if err != nil {
+		log.Printf("database unavailable; /v1 uses in-memory local store: %v", err)
+		store := memory.NewMemoryStore()
+		return repositoriesFromStore(store), nil, nil
+	}
+	if err := database.Migrate(ctx, conn, config.Driver); err != nil {
+		_ = conn.Close()
+		return repositorySet{}, nil, fmt.Errorf("migrate database: %w", err)
+	}
+	store := sqliterepository.NewStore(conn)
+	return repositoriesFromStore(store), sqliterepository.NewUserRepository(conn), nil
+}
 
-		next.ServeHTTP(w, r)
-	})
+type repositoryStore interface {
+	application.MeetingRepository
+	application.EventRepository
+	application.ReportRepository
+	application.JobRepository
+	application.UploadRepository
+}
+
+func repositoriesFromStore(store repositoryStore) repositorySet {
+	return repositorySet{
+		Meetings: store, Events: store, Reports: store, Jobs: store, Uploads: store,
+	}
 }

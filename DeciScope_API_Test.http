@@ -1,13 +1,13 @@
 ### サーバー生存確認（GET）
-GET http://localhost:8080/health
+GET http://localhost:9090/health
 
 
 ### DeciScope v1 health
-GET http://localhost:8080/v1/health
+GET http://localhost:9090/v1/health
 
 
 ### 会議作成
-POST http://localhost:8080/v1/meetings
+POST http://localhost:9090/v1/meetings
 Content-Type: application/json
 
 {
@@ -17,11 +17,11 @@ Content-Type: application/json
 
 
 ### fixture一覧
-GET http://localhost:8080/v1/fixtures
+GET http://localhost:9090/v1/fixtures
 
 
 ### fixture replay start
-POST http://localhost:8080/v1/meetings/{{meeting_id}}/replay/start
+POST http://localhost:9090/v1/meetings/{{meeting_id}}/replay/start
 Content-Type: application/json
 
 {
@@ -30,24 +30,24 @@ Content-Type: application/json
 
 
 ### durable events
-GET http://localhost:8080/v1/meetings/{{meeting_id}}/events?after_seq=0
+GET http://localhost:9090/v1/meetings/{{meeting_id}}/events?after_seq=0
 
 
 ### transcript segments
-GET http://localhost:8080/v1/meetings/{{meeting_id}}/segments?after_seq=0
+GET http://localhost:9090/v1/meetings/{{meeting_id}}/segments?after_seq=0
 
 
 ### markdown report
-GET http://localhost:8080/v1/meetings/{{meeting_id}}/report
+GET http://localhost:9090/v1/meetings/{{meeting_id}}/report
 Accept: text/markdown
 
 
 ### 会員登録フォーム（GET）
-GET http://localhost:8080/register-form
+GET http://localhost:9090/register-form
 
 
 ### 会員登録API（POST）
-POST http://localhost:8080/register
+POST http://localhost:9090/register
 Content-Type: application/json
 
 {
@@ -58,7 +58,7 @@ Content-Type: application/json
 
 
 ### ログイン
-POST http://localhost:8080/login
+POST http://localhost:9090/login
 Content-Type: application/json
 
 {
