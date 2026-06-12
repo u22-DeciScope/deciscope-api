@@ -33,3 +33,14 @@ func TestMigrateSQLiteIsIdempotent(t *testing.T) {
 		t.Fatalf("migration count = %d, want 1", count)
 	}
 }
+
+func TestBindPlaceholders(t *testing.T) {
+	query := "SELECT * FROM schema_migrations WHERE version = ? OR version = ?"
+	if got := bindPlaceholders("sqlite", query); got != query {
+		t.Fatalf("sqlite query = %q, want unchanged", got)
+	}
+	want := "SELECT * FROM schema_migrations WHERE version = $1 OR version = $2"
+	if got := bindPlaceholders("postgres", query); got != want {
+		t.Fatalf("postgres query = %q, want %q", got, want)
+	}
+}

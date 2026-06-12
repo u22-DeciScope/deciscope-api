@@ -7,9 +7,32 @@ import (
 	"testing"
 
 	"deciscope-core-api/internal/application"
+	"deciscope-core-api/internal/domain"
 )
 
-type Factory func(t *testing.T) application.Repositories
+type Repositories struct {
+	Meetings application.MeetingRepository
+	Events   application.EventRepository
+	Reports  application.ReportRepository
+	Jobs     application.JobRepository
+	Uploads  application.UploadRepository
+}
+
+type Factory func(t *testing.T) Repositories
+
+type Store interface {
+	application.MeetingRepository
+	application.EventRepository
+	application.ReportRepository
+	application.JobRepository
+	application.UploadRepository
+}
+
+func FromStore(store Store) Repositories {
+	return Repositories{
+		Meetings: store, Events: store, Reports: store, Jobs: store, Uploads: store,
+	}
+}
 
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
@@ -45,10 +68,10 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("ListMeetings() = %+v", meetings)
 		}
 
-		if _, err := repos.Meetings.GetMeeting(ctx, "missing"); !errors.Is(err, application.ErrNotFound) {
+		if _, err := repos.Meetings.GetMeeting(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("GetMeeting(missing) error = %v, want ErrNotFound", err)
 		}
-		if err := repos.Meetings.ResetMeeting(ctx, "missing"); !errors.Is(err, application.ErrNotFound) {
+		if err := repos.Meetings.ResetMeeting(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("ResetMeeting(missing) error = %v, want ErrNotFound", err)
 		}
 	})
@@ -58,7 +81,7 @@ func Run(t *testing.T, factory Factory) {
 		ctx := context.Background()
 		meeting := createMeeting(t, ctx, repos)
 
-		partial, err := repos.Events.AppendEvent(ctx, meeting.ID, application.EventTranscriptPartial, map[string]any{"text": "draft"})
+		partial, err := repos.Events.AppendEvent(ctx, meeting.ID, domain.EventTranscriptPartial, map[string]any{"text": "draft"})
 		if err != nil {
 			t.Fatalf("AppendEvent(partial) error = %v", err)
 		}
@@ -66,7 +89,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("partial seq = %d, want 0", partial.Seq)
 		}
 
-		final, err := repos.Events.AppendEvent(ctx, meeting.ID, application.EventTranscriptFinal, map[string]any{
+		final, err := repos.Events.AppendEvent(ctx, meeting.ID, domain.EventTranscriptFinal, map[string]any{
 			"segment_id":    "seg_001",
 			"speaker_label": "Speaker A",
 			"text":          "final",
@@ -76,7 +99,7 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatalf("AppendEvent(final) error = %v", err)
 		}
-		state, err := repos.Events.AppendEvent(ctx, meeting.ID, application.EventMeetingState, map[string]any{"status": "ended"})
+		state, err := repos.Events.AppendEvent(ctx, meeting.ID, domain.EventMeetingState, map[string]any{"status": "ended"})
 		if err != nil {
 			t.Fatalf("AppendEvent(state) error = %v", err)
 		}
@@ -127,7 +150,7 @@ func Run(t *testing.T, factory Factory) {
 		ctx := context.Background()
 		meeting := createMeeting(t, ctx, repos)
 
-		if _, err := repos.Reports.LatestReport(ctx, meeting.ID); !errors.Is(err, application.ErrNotFound) {
+		if _, err := repos.Reports.LatestReport(ctx, meeting.ID); !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("LatestReport(empty) error = %v, want ErrNotFound", err)
 		}
 		first, err := repos.Reports.SaveReport(ctx, meeting.ID, "first")
@@ -192,13 +215,13 @@ func Run(t *testing.T, factory Factory) {
 		if failed.Status != "failed" || failed.Error != "boom" {
 			t.Fatalf("failed job = %+v", failed)
 		}
-		if _, err := repos.Jobs.GetJob(ctx, "missing"); !errors.Is(err, application.ErrNotFound) {
+		if _, err := repos.Jobs.GetJob(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("GetJob(missing) error = %v, want ErrNotFound", err)
 		}
 	})
 }
 
-func createMeeting(t *testing.T, ctx context.Context, repos application.Repositories) *application.Meeting {
+func createMeeting(t *testing.T, ctx context.Context, repos Repositories) *domain.Meeting {
 	t.Helper()
 	meeting, err := repos.Meetings.CreateMeeting(ctx, "Contract test", "fixture_replay")
 	if err != nil {

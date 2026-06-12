@@ -1,25 +1,29 @@
 package application_test
 
 import (
+	"bytes"
 	"context"
-	"os"
-	"path/filepath"
+	"encoding/json"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
-	"deciscope-core-api/internal/adapter/repository/memory"
 	"deciscope-core-api/internal/application"
-	"deciscope-core-api/internal/infrastructure/storage"
+	"deciscope-core-api/internal/domain"
 )
 
-func TestServiceCoreUseCases(t *testing.T) {
+func TestServiceCoreUseCasesWithFakePorts(t *testing.T) {
 	ctx := context.Background()
-	uploadDir := t.TempDir()
-	service := application.NewService(memory.Repositories(memory.NewMemoryStore()), nil, storage.NewLocal(uploadDir))
+	ports := newFakePorts()
+	service := application.NewService(ports, ports, ports, ports, ports, ports, ports)
 
 	meeting, err := service.CreateMeeting(ctx, "Service use cases", "fixture_replay")
 	if err != nil {
 		t.Fatalf("CreateMeeting() error = %v", err)
+	}
+	if len(ports.published) != 1 || ports.published[0].Type != domain.EventMeetingState {
+		t.Fatalf("published events = %+v", ports.published)
 	}
 
 	token, err := service.CreateJoinToken(ctx, meeting.ID)
@@ -34,22 +38,160 @@ func TestServiceCoreUseCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateReport() error = %v", err)
 	}
-	if report.MeetingID != meeting.ID {
-		t.Fatalf("report meeting = %q, want %q", report.MeetingID, meeting.ID)
+	if report.MeetingID != meeting.ID || !strings.Contains(report.Content, "# Service use cases") {
+		t.Fatalf("report = %+v", report)
 	}
 
-	result, err := service.UploadFile(ctx, "notes.txt", "text/plain", strings.NewReader("hello"))
+	result, err := service.UploadFile(ctx, "notes.txt", "", strings.NewReader("hello"))
 	if err != nil {
 		t.Fatalf("UploadFile() error = %v", err)
 	}
-	if result.Job.Status != "completed" {
-		t.Fatalf("job status = %q, want completed", result.Job.Status)
+	if result.Job.Status != "completed" || result.Upload.MediaType != "application/octet-stream" {
+		t.Fatalf("upload result = %+v", result)
 	}
-	got, err := os.ReadFile(filepath.Join(uploadDir, result.Job.ID+"_notes.txt"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if string(got) != "hello" {
+	if got := ports.savedObjects[result.Job.ID+"_notes.txt"]; !bytes.Equal(got, []byte("hello")) {
 		t.Fatalf("uploaded content = %q, want hello", got)
 	}
+}
+
+type fakePorts struct {
+	meeting      *domain.Meeting
+	events       []domain.Event
+	reports      []domain.Report
+	jobs         map[string]domain.Job
+	uploads      []domain.Upload
+	published    []domain.Event
+	savedObjects map[string][]byte
+}
+
+func newFakePorts() *fakePorts {
+	return &fakePorts{jobs: make(map[string]domain.Job), savedObjects: make(map[string][]byte)}
+}
+
+func (f *fakePorts) CreateMeeting(_ context.Context, title, source string) (*domain.Meeting, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	f.meeting = &domain.Meeting{ID: "m_test", Title: title, Status: "created", Source: source, CreatedAt: now, UpdatedAt: now}
+	return f.meeting, nil
+}
+
+func (f *fakePorts) ListMeetings(context.Context) ([]domain.Meeting, error) {
+	if f.meeting == nil {
+		return nil, nil
+	}
+	return []domain.Meeting{*f.meeting}, nil
+}
+
+func (f *fakePorts) GetMeeting(_ context.Context, meetingID string) (*domain.Meeting, error) {
+	if f.meeting == nil || f.meeting.ID != meetingID {
+		return nil, domain.ErrNotFound
+	}
+	copy := *f.meeting
+	return &copy, nil
+}
+
+func (f *fakePorts) ResetMeeting(_ context.Context, meetingID string) error {
+	if f.meeting == nil || f.meeting.ID != meetingID {
+		return domain.ErrNotFound
+	}
+	f.events = nil
+	f.meeting.Status = "created"
+	return nil
+}
+
+func (f *fakePorts) AppendEvent(_ context.Context, meetingID, eventType string, payload any) (*domain.Event, error) {
+	if f.meeting == nil || f.meeting.ID != meetingID {
+		return nil, domain.ErrNotFound
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	event := domain.Event{MeetingID: meetingID, Type: eventType, Seq: int64(len(f.events) + 1), TsMS: domain.NowMS(), Payload: payloadJSON}
+	f.events = append(f.events, event)
+	return &event, nil
+}
+
+func (f *fakePorts) ListEvents(_ context.Context, meetingID string, afterSeq int64) ([]domain.Event, error) {
+	if f.meeting == nil || f.meeting.ID != meetingID {
+		return nil, domain.ErrNotFound
+	}
+	var events []domain.Event
+	for _, event := range f.events {
+		if event.Seq > afterSeq {
+			events = append(events, event)
+		}
+	}
+	return events, nil
+}
+
+func (f *fakePorts) ListSegments(context.Context, string, int64) ([]domain.Segment, error) {
+	return nil, nil
+}
+
+func (f *fakePorts) SaveReport(_ context.Context, meetingID, content string) (*domain.Report, error) {
+	report := domain.Report{ArtifactID: "art_test", MeetingID: meetingID, Format: "markdown", Content: content}
+	f.reports = append(f.reports, report)
+	return &report, nil
+}
+
+func (f *fakePorts) LatestReport(context.Context, string) (*domain.Report, error) {
+	if len(f.reports) == 0 {
+		return nil, domain.ErrNotFound
+	}
+	report := f.reports[len(f.reports)-1]
+	return &report, nil
+}
+
+func (f *fakePorts) CreateJob(_ context.Context, jobType, meetingID, status string) (*domain.Job, error) {
+	job := domain.Job{ID: "job_test", Type: jobType, MeetingID: meetingID, Status: status}
+	f.jobs[job.ID] = job
+	return &job, nil
+}
+
+func (f *fakePorts) CompleteJob(_ context.Context, jobID string, result any) error {
+	job, ok := f.jobs[jobID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	job.Status = "completed"
+	job.Result, _ = json.Marshal(result)
+	f.jobs[jobID] = job
+	return nil
+}
+
+func (f *fakePorts) FailJob(_ context.Context, jobID, message string) error {
+	job, ok := f.jobs[jobID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	job.Status, job.Error = "failed", message
+	f.jobs[jobID] = job
+	return nil
+}
+
+func (f *fakePorts) GetJob(_ context.Context, jobID string) (*domain.Job, error) {
+	job, ok := f.jobs[jobID]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return &job, nil
+}
+
+func (f *fakePorts) SaveUpload(_ context.Context, filename, mediaType, path, jobID string) (*domain.Upload, error) {
+	upload := domain.Upload{ID: "upl_test", Filename: filename, MediaType: mediaType, Path: path, JobID: jobID}
+	f.uploads = append(f.uploads, upload)
+	return &upload, nil
+}
+
+func (f *fakePorts) Publish(event domain.Event) {
+	f.published = append(f.published, event)
+}
+
+func (f *fakePorts) Save(_ context.Context, key string, src io.Reader) (string, error) {
+	content, err := io.ReadAll(src)
+	if err != nil {
+		return "", err
+	}
+	f.savedObjects[key] = content
+	return "/fake/" + key, nil
 }

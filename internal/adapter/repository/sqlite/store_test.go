@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"deciscope-core-api/internal/domain"
 	"deciscope-core-api/internal/infrastructure/database"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -23,7 +24,7 @@ func TestStoreAppendEventSequencesDurableEvents(t *testing.T) {
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}
 
-	partial, err := store.AppendEvent(ctx, meeting.ID, EventTranscriptPartial, map[string]any{
+	partial, err := store.AppendEvent(ctx, meeting.ID, domain.EventTranscriptPartial, map[string]any{
 		"partial_id":    "p_001",
 		"speaker_label": "Speaker A",
 		"text":          "hello",
@@ -35,7 +36,7 @@ func TestStoreAppendEventSequencesDurableEvents(t *testing.T) {
 		t.Fatalf("partial seq = %d, want 0", partial.Seq)
 	}
 
-	final, err := store.AppendEvent(ctx, meeting.ID, EventTranscriptFinal, map[string]any{
+	final, err := store.AppendEvent(ctx, meeting.ID, domain.EventTranscriptFinal, map[string]any{
 		"segment_id":    "seg_001",
 		"speaker_label": "Speaker A",
 		"text":          "hello world",
@@ -49,7 +50,7 @@ func TestStoreAppendEventSequencesDurableEvents(t *testing.T) {
 		t.Fatalf("final seq = %d, want 1", final.Seq)
 	}
 
-	analysis, err := store.AppendEvent(ctx, meeting.ID, EventAnalysisDelta, map[string]any{
+	analysis, err := store.AppendEvent(ctx, meeting.ID, domain.EventAnalysisDelta, map[string]any{
 		"items": []any{},
 	})
 	if err != nil {
@@ -93,7 +94,7 @@ func TestStoreAppendEventSequencesConcurrentDurableEvents(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			event, err := store.AppendEvent(ctx, meeting.ID, EventAnalysisDelta, map[string]any{"items": []any{}})
+			event, err := store.AppendEvent(ctx, meeting.ID, domain.EventAnalysisDelta, map[string]any{"items": []any{}})
 			if err != nil {
 				errs <- err
 				return
@@ -158,7 +159,7 @@ func TestStoreAppendEventSequencesConcurrentDatabaseConnections(t *testing.T) {
 		wg.Add(1)
 		go func(store *Store) {
 			defer wg.Done()
-			event, err := store.AppendEvent(ctx, meeting.ID, EventAnalysisDelta, map[string]any{"items": []any{}})
+			event, err := store.AppendEvent(ctx, meeting.ID, domain.EventAnalysisDelta, map[string]any{"items": []any{}})
 			if err != nil {
 				errs <- err
 				return

@@ -43,11 +43,3 @@ type Publisher interface {
 type ObjectStorage interface {
 	Save(ctx context.Context, key string, src io.Reader) (string, error)
 }
-
-type Repositories struct {
-	Meetings MeetingRepository
-	Events   EventRepository
-	Reports  ReportRepository
-	Jobs     JobRepository
-	Uploads  UploadRepository
-}

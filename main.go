@@ -7,29 +7,19 @@ package main
 import (
 	"log"
 	"net/http"
-	"os"
-
-	"github.com/joho/godotenv"
 
 	"deciscope-core-api/internal/app"
 )
 
 func main() {
-	// Load .env then .env.local (.env.local takes precedence)
-	_ = godotenv.Load(".env")
-	_ = godotenv.Overload(".env.local")
+	app.LoadEnvironmentFiles()
 
 	server, err := app.NewServer()
 	if err != nil {
 		log.Fatalf("build server: %v", err)
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "9090"
-	}
-
-	if err := http.ListenAndServe(":"+port, server); err != nil {
+	if err := http.ListenAndServe(app.ListenAddressFromEnv(), server); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
 }

@@ -7,12 +7,11 @@ import (
 
 	"deciscope-core-api/internal/adapter/repository/contracttest"
 	"deciscope-core-api/internal/adapter/repository/sqlite"
-	"deciscope-core-api/internal/application"
 	"deciscope-core-api/internal/infrastructure/database"
 )
 
 func TestRepositoryContract(t *testing.T) {
-	contracttest.Run(t, func(t *testing.T) application.Repositories {
+	contracttest.Run(t, func(t *testing.T) contracttest.Repositories {
 		t.Helper()
 		db, err := database.Open(context.Background(), database.Config{
 			Driver: "sqlite",
@@ -28,6 +27,6 @@ func TestRepositoryContract(t *testing.T) {
 		if err := database.Migrate(context.Background(), db, "sqlite"); err != nil {
 			t.Fatalf("database.Migrate() error = %v", err)
 		}
-		return sqlite.Repositories(sqlite.NewStore(db))
+		return contracttest.FromStore(sqlite.NewStore(db))
 	})
 }

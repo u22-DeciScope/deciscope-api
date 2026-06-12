@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"firebase.google.com/go/v4/auth"
+	appauth "deciscope-core-api/internal/application/auth"
 )
 
 type contextKey string
@@ -13,7 +13,11 @@ type contextKey string
 const UserContextKey contextKey = "firebase_user"
 const UIDContextKey contextKey = "uid"
 
-func FirebaseAuthMiddleware(authClient *auth.Client) func(http.Handler) http.Handler {
+type TokenVerifier interface {
+	VerifyIDToken(ctx context.Context, idToken string) (*appauth.Identity, error)
+}
+
+func FirebaseAuthMiddleware(verifier TokenVerifier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -28,26 +32,21 @@ func FirebaseAuthMiddleware(authClient *auth.Client) func(http.Handler) http.Han
 				if uid == "" {
 					uid = "local-dev-user"
 				}
-				ctx := context.WithValue(r.Context(), UIDContextKey, uid)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), UIDContextKey, uid)))
 				return
 			}
-
-			if authClient == nil {
+			if verifier == nil {
 				http.Error(w, "Unauthorized: Firebase is disabled locally; use Bearer dev:<uid>", http.StatusUnauthorized)
 				return
 			}
 
-			// Firebase Admin SDK でトークン検証
-			token, err := authClient.VerifyIDToken(r.Context(), idToken)
+			identity, err := verifier.VerifyIDToken(r.Context(), idToken)
 			if err != nil {
 				http.Error(w, "Unauthorized: Invalid token", http.StatusUnauthorized)
 				return
 			}
-
-			// 後続のハンドラーでユーザー情報(UID等)を使えるように Context に仕込む
-			ctx := context.WithValue(r.Context(), UserContextKey, token)
-			ctx = context.WithValue(ctx, UIDContextKey, token.UID)
+			ctx := context.WithValue(r.Context(), UserContextKey, identity)
+			ctx = context.WithValue(ctx, UIDContextKey, identity.UID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

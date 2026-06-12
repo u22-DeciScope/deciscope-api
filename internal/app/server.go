@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 
 	"deciscope-core-api/internal/adapter/fixture"
 	httpadapter "deciscope-core-api/internal/adapter/http"
@@ -21,39 +20,69 @@ import (
 
 func NewServer() (http.Handler, error) {
 	ctx := context.Background()
-	repositories, userRepository, err := buildRepositories(ctx)
+	config := ConfigFromEnv()
+	repositories, userRepository, err := buildRepositories(ctx, config.Database)
 	if err != nil {
 		return nil, err
 	}
 
-	authClient, err := firebase.NewAuthClient(ctx)
+	authClient, err := firebase.NewAuthClient(ctx, config.Firebase)
 	if err != nil {
 		log.Printf("firebase auth disabled; protected routes accept Bearer dev:<uid>: %v", err)
 	}
 
 	hub := realtime.NewHub()
-	service := application.NewService(repositories, hub, storage.NewLocal(os.Getenv("UPLOAD_DIR")))
-	replay := fixture.NewManager(service, os.Getenv("FIXTURE_DIR"))
+	tokenVerifier := firebase.NewTokenVerifier(authClient)
+	service := application.NewService(
+		repositories.Meetings, repositories.Events, repositories.Reports,
+		repositories.Jobs, repositories.Uploads, hub, storage.NewLocal(config.UploadDir),
+	)
+	replay := fixture.NewManager(service, fixture.NewLocalLoader(config.FixtureDir))
 
 	return httpadapter.NewRouter(httpadapter.RouterDependencies{
-		CoreAPI:    httpadapter.NewCoreAPI(service, replay),
-		AuthAPI:    httpadapter.NewAuthAPI(appauth.NewService(userRepository, firebase.NewTokenVerifier(authClient))),
-		Realtime:   hub.ServeWS(service),
-		AuthClient: authClient,
+		CoreAPI:      httpadapter.NewCoreAPI(service, replay),
+		AuthAPI:      httpadapter.NewAuthAPI(appauth.NewService(userRepository, tokenVerifier)),
+		Realtime:     hub.ServeWS(service),
+		AuthVerifier: tokenVerifier,
+		CORS: httpadapter.CORSConfig{
+			FrontendURL: config.FrontendURL, AllowedOrigins: config.AllowedOrigins,
+		},
 	}), nil
 }
 
-func buildRepositories(ctx context.Context) (application.Repositories, appauth.UserRepository, error) {
-	config := database.ConfigFromEnv()
+type repositorySet struct {
+	Meetings application.MeetingRepository
+	Events   application.EventRepository
+	Reports  application.ReportRepository
+	Jobs     application.JobRepository
+	Uploads  application.UploadRepository
+}
+
+func buildRepositories(ctx context.Context, config database.Config) (repositorySet, appauth.UserRepository, error) {
 	conn, err := database.Open(ctx, config)
 	if err != nil {
 		log.Printf("database unavailable; /v1 uses in-memory local store: %v", err)
-		return memory.Repositories(memory.NewMemoryStore()), nil, nil
+		store := memory.NewMemoryStore()
+		return repositoriesFromStore(store), nil, nil
 	}
 	if err := database.Migrate(ctx, conn, config.Driver); err != nil {
 		_ = conn.Close()
-		return application.Repositories{}, nil, fmt.Errorf("migrate database: %w", err)
+		return repositorySet{}, nil, fmt.Errorf("migrate database: %w", err)
 	}
 	store := sqliterepository.NewStore(conn)
-	return sqliterepository.Repositories(store), sqliterepository.NewUserRepository(conn), nil
+	return repositoriesFromStore(store), sqliterepository.NewUserRepository(conn), nil
+}
+
+type repositoryStore interface {
+	application.MeetingRepository
+	application.EventRepository
+	application.ReportRepository
+	application.JobRepository
+	application.UploadRepository
+}
+
+func repositoriesFromStore(store repositoryStore) repositorySet {
+	return repositorySet{
+		Meetings: store, Events: store, Reports: store, Jobs: store, Uploads: store,
+	}
 }

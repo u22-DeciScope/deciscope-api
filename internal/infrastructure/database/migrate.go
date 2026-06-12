@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 //go:embed migrations/sqlite/*.sql
@@ -32,18 +34,18 @@ func Migrate(ctx context.Context, db *sql.DB, driver string) error {
 	}
 
 	for _, path := range entries {
-		if err := applyMigration(ctx, db, path); err != nil {
+		if err := applyMigration(ctx, db, driver, path); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func applyMigration(ctx context.Context, db *sql.DB, path string) error {
+func applyMigration(ctx context.Context, db *sql.DB, driver, path string) error {
 	var applied bool
-	if err := db.QueryRowContext(ctx, `
+	if err := db.QueryRowContext(ctx, bindPlaceholders(driver, `
 		SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?)
-	`, path).Scan(&applied); err != nil {
+	`), path).Scan(&applied); err != nil {
 		return fmt.Errorf("check migration %s: %w", path, err)
 	}
 	if applied {
@@ -63,13 +65,33 @@ func applyMigration(ctx context.Context, db *sql.DB, path string) error {
 	if _, err := tx.ExecContext(ctx, string(sqlBytes)); err != nil {
 		return fmt.Errorf("apply migration %s: %w", path, err)
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, bindPlaceholders(driver, `
 		INSERT INTO schema_migrations (version) VALUES (?)
-	`, path); err != nil {
+	`), path); err != nil {
 		return fmt.Errorf("record migration %s: %w", path, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration %s: %w", path, err)
 	}
 	return nil
+}
+
+func bindPlaceholders(driver, query string) string {
+	if driver != "postgres" && driver != "postgresql" {
+		return query
+	}
+	var (
+		builder strings.Builder
+		index   = 1
+	)
+	for _, char := range query {
+		if char == '?' {
+			builder.WriteByte('$')
+			builder.WriteString(strconv.Itoa(index))
+			index++
+			continue
+		}
+		builder.WriteRune(char)
+	}
+	return builder.String()
 }

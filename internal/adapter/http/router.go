@@ -2,33 +2,37 @@ package httpadapter
 
 import (
 	"net/http"
-	"os"
 	"strings"
 
 	authmiddleware "deciscope-core-api/internal/adapter/http/middleware"
 
-	firebaseauth "firebase.google.com/go/v4/auth"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
 type RouterDependencies struct {
-	CoreAPI    *CoreAPI
-	AuthAPI    *AuthAPI
-	Realtime   http.HandlerFunc
-	AuthClient *firebaseauth.Client
+	CoreAPI      *CoreAPI
+	AuthAPI      *AuthAPI
+	Realtime     http.HandlerFunc
+	AuthVerifier authmiddleware.TokenVerifier
+	CORS         CORSConfig
+}
+
+type CORSConfig struct {
+	FrontendURL    string
+	AllowedOrigins string
 }
 
 func NewRouter(deps RouterDependencies) http.Handler {
 	r := chi.NewRouter()
-	r.Use(corsMiddleware)
+	r.Use(corsMiddleware(deps.CORS))
 	r.Use(chimiddleware.AllowContentType("application/json", "multipart/form-data"))
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", deps.CoreAPI.Health)
 		r.Post("/auth/login", deps.AuthAPI.Login)
 		r.Group(func(r chi.Router) {
-			r.Use(authmiddleware.FirebaseAuthMiddleware(deps.AuthClient))
+			r.Use(authmiddleware.FirebaseAuthMiddleware(deps.AuthVerifier))
 			r.Get("/auth/me", MeHandler)
 			r.Get("/auth/health", Health)
 		})
@@ -52,33 +56,35 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	return r
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		allowedOrigin := os.Getenv("FRONTEND_URL")
-		if allowedOrigin == "" {
-			allowedOrigin = "http://localhost:5193"
-		}
-		responseOrigin := allowedOrigin
-		if list := os.Getenv("ALLOWED_ORIGINS"); list != "" {
-			for _, candidate := range strings.Split(list, ",") {
-				candidate = strings.TrimSpace(candidate)
-				if candidate == "*" || candidate == origin {
-					responseOrigin = candidate
-					break
-				}
+func corsMiddleware(config CORSConfig) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			allowedOrigin := config.FrontendURL
+			if allowedOrigin == "" {
+				allowedOrigin = "http://localhost:5193"
 			}
-		} else if origin != "" && (origin == allowedOrigin || strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:")) {
-			responseOrigin = origin
-		}
-		w.Header().Set("Access-Control-Allow-Origin", responseOrigin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Upgrade, Connection")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+			responseOrigin := allowedOrigin
+			if list := config.AllowedOrigins; list != "" {
+				for _, candidate := range strings.Split(list, ",") {
+					candidate = strings.TrimSpace(candidate)
+					if candidate == "*" || candidate == origin {
+						responseOrigin = candidate
+						break
+					}
+				}
+			} else if origin != "" && (origin == allowedOrigin || strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:")) {
+				responseOrigin = origin
+			}
+			w.Header().Set("Access-Control-Allow-Origin", responseOrigin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Upgrade, Connection")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

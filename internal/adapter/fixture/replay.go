@@ -4,28 +4,26 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"deciscope-core-api/internal/application"
+	"deciscope-core-api/internal/domain"
 )
 
 type Service interface {
-	AppendAndPublish(ctx context.Context, meetingID, eventType string, payload any) (*application.Event, error)
-	EndMeeting(ctx context.Context, meetingID string) (*application.Report, []application.Event, error)
+	AppendAndPublish(ctx context.Context, meetingID, eventType string, payload any) (*domain.Event, error)
+	EndMeeting(ctx context.Context, meetingID string) (*domain.Report, []domain.Event, error)
 	ResetMeeting(ctx context.Context, meetingID string) error
 }
 
 type Manager struct {
-	service    Service
-	fixtureDir string
-	mu         sync.Mutex
-	runs       map[string]*runState
+	service Service
+	loader  Loader
+	mu      sync.Mutex
+	runs    map[string]*runState
 }
 
 type runState struct {
@@ -38,72 +36,33 @@ type runState struct {
 	startedAt time.Time
 }
 
-type RunStatus struct {
-	MeetingID string `json:"meeting_id"`
-	Fixture   string `json:"fixture"`
-	Status    string `json:"status"`
-	StartedAt string `json:"started_at,omitempty"`
-}
-
-type FixtureInfo struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-}
-
 type line struct {
 	WaitMS  int             `json:"wait_ms"`
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload"`
 }
 
-func NewManager(service Service, fixtureDir string) *Manager {
-	if fixtureDir == "" {
-		fixtureDir = "./fixtures/meetings"
-	}
+func NewManager(service Service, loader Loader) *Manager {
 	return &Manager{
-		service:    service,
-		fixtureDir: fixtureDir,
-		runs:       make(map[string]*runState),
+		service: service, loader: loader, runs: make(map[string]*runState),
 	}
 }
 
 func (m *Manager) FixtureDir() string {
-	return m.fixtureDir
+	return m.loader.Dir()
 }
 
-func (m *Manager) ListFixtures() ([]FixtureInfo, error) {
-	entries, err := os.ReadDir(m.fixtureDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []FixtureInfo{}, nil
-		}
-		return nil, err
-	}
-	var fixtures []FixtureInfo
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		fixtures = append(fixtures, FixtureInfo{
-			Name: entry.Name(),
-			Path: filepath.Join(m.fixtureDir, entry.Name()),
-		})
-	}
-	return fixtures, nil
+func (m *Manager) ListFixtures() ([]application.FixtureInfo, error) {
+	return m.loader.List()
 }
 
-func (m *Manager) Start(ctx context.Context, meetingID, fixtureName string) (*RunStatus, error) {
-	fixtureName = application.NormalizeFixtureName(fixtureName)
-	path, err := m.safeFixturePath(fixtureName)
+func (m *Manager) Start(ctx context.Context, meetingID, fixtureName string) (*application.ReplayStatus, error) {
+	fixtureName = domain.NormalizeFixtureName(fixtureName)
+	file, err := m.loader.Open(fixtureName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fixture not found: %s: %w", fixtureName, err)
 	}
-	if _, err := os.Stat(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("fixture not found: %s", fixtureName)
-		}
-		return nil, err
-	}
+	_ = file.Close()
 
 	m.mu.Lock()
 	if existing, ok := m.runs[meetingID]; ok {
@@ -121,31 +80,32 @@ func (m *Manager) Start(ctx context.Context, meetingID, fixtureName string) (*Ru
 	}
 	state.cond = sync.NewCond(&m.mu)
 	m.runs[meetingID] = state
+	status := statusFromState(state)
 	m.mu.Unlock()
 
-	go m.run(runCtx, state, path)
+	go m.run(runCtx, state)
 
-	return statusFromState(state), nil
+	return status, nil
 }
 
-func (m *Manager) Pause(meetingID string) (*RunStatus, error) {
+func (m *Manager) Pause(meetingID string) (*application.ReplayStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	state, ok := m.runs[meetingID]
 	if !ok {
-		return nil, application.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	state.paused = true
 	state.status = "paused"
 	return statusFromState(state), nil
 }
 
-func (m *Manager) Resume(meetingID string) (*RunStatus, error) {
+func (m *Manager) Resume(meetingID string) (*application.ReplayStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	state, ok := m.runs[meetingID]
 	if !ok {
-		return nil, application.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	state.paused = false
 	state.status = "running"
@@ -165,7 +125,7 @@ func (m *Manager) Reset(ctx context.Context, meetingID string) error {
 	if err := m.service.ResetMeeting(ctx, meetingID); err != nil {
 		return err
 	}
-	_, err := m.service.AppendAndPublish(ctx, meetingID, application.EventMeetingState, map[string]any{
+	_, err := m.service.AppendAndPublish(ctx, meetingID, domain.EventMeetingState, map[string]any{
 		"status":       "created",
 		"recording":    false,
 		"analyzing":    false,
@@ -174,7 +134,7 @@ func (m *Manager) Reset(ctx context.Context, meetingID string) error {
 	return err
 }
 
-func (m *Manager) run(ctx context.Context, state *runState, path string) {
+func (m *Manager) run(ctx context.Context, state *runState) {
 	defer func() {
 		m.mu.Lock()
 		if current, ok := m.runs[state.meetingID]; ok && current == state {
@@ -184,14 +144,14 @@ func (m *Manager) run(ctx context.Context, state *runState, path string) {
 		m.mu.Unlock()
 	}()
 
-	_, _ = m.service.AppendAndPublish(ctx, state.meetingID, application.EventMeetingState, map[string]any{
+	_, _ = m.service.AppendAndPublish(ctx, state.meetingID, domain.EventMeetingState, map[string]any{
 		"status":       "started",
 		"recording":    true,
 		"analyzing":    true,
 		"participants": []string{"Speaker A", "Speaker B", "Speaker C"},
 	})
 
-	file, err := os.Open(path)
+	file, err := m.loader.Open(state.fixture)
 	if err != nil {
 		m.publishError(ctx, state.meetingID, "fixture_open_failed", err.Error())
 		return
@@ -252,35 +212,15 @@ func (m *Manager) waitIfPaused(ctx context.Context, state *runState) {
 }
 
 func (m *Manager) publishError(ctx context.Context, meetingID, code, message string) {
-	_, _ = m.service.AppendAndPublish(ctx, meetingID, application.EventError, map[string]any{
+	_, _ = m.service.AppendAndPublish(ctx, meetingID, domain.EventError, map[string]any{
 		"code":      code,
 		"message":   message,
 		"retryable": false,
 	})
 }
 
-func (m *Manager) safeFixturePath(name string) (string, error) {
-	name = application.NormalizeFixtureName(name)
-	if strings.Contains(name, "..") {
-		return "", errors.New("invalid fixture name")
-	}
-	fullPath := filepath.Join(m.fixtureDir, name)
-	base, err := filepath.Abs(m.fixtureDir)
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.Abs(fullPath)
-	if err != nil {
-		return "", err
-	}
-	if resolved != base && !strings.HasPrefix(resolved, base+string(os.PathSeparator)) {
-		return "", errors.New("fixture path escapes fixture directory")
-	}
-	return resolved, nil
-}
-
-func statusFromState(state *runState) *RunStatus {
-	status := &RunStatus{
+func statusFromState(state *runState) *application.ReplayStatus {
+	status := &application.ReplayStatus{
 		MeetingID: state.meetingID,
 		Fixture:   state.fixture,
 		Status:    state.status,

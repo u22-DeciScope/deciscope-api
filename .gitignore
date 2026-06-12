@@ -29,3 +29,6 @@ uploads/
 .tmp-server.*
 
 bin
+
+.gocache/
+.gotmp/

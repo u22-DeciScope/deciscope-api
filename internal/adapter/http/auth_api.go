@@ -1,6 +1,7 @@
 package httpadapter
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,11 +9,15 @@ import (
 	appauth "deciscope-core-api/internal/application/auth"
 )
 
-type AuthAPI struct {
-	service *appauth.Service
+type AuthUseCases interface {
+	Login(ctx context.Context, idToken string) (*appauth.LoginResult, error)
 }
 
-func NewAuthAPI(service *appauth.Service) *AuthAPI {
+type AuthAPI struct {
+	service AuthUseCases
+}
+
+func NewAuthAPI(service AuthUseCases) *AuthAPI {
 	return &AuthAPI{service: service}
 }
 

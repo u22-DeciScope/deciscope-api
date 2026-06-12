@@ -21,60 +21,60 @@ const (
 )
 
 type Meeting struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Status    string `json:"status"`
-	Source    string `json:"source"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-	EndedAt   string `json:"ended_at,omitempty"`
+	ID        string
+	Title     string
+	Status    string
+	Source    string
+	CreatedAt string
+	UpdatedAt string
+	EndedAt   string
 }
 
 type Event struct {
-	Type      string          `json:"type"`
-	MeetingID string          `json:"meeting_id"`
-	Seq       int64           `json:"seq,omitempty"`
-	TsMS      int64           `json:"ts_ms"`
-	Payload   json.RawMessage `json:"payload"`
+	Type      string
+	MeetingID string
+	Seq       int64
+	TsMS      int64
+	Payload   json.RawMessage
 }
 
 type Segment struct {
-	MeetingID    string `json:"meeting_id"`
-	Seq          int64  `json:"seq"`
-	SegmentID    string `json:"segment_id"`
-	SpeakerLabel string `json:"speaker_label"`
-	Text         string `json:"text"`
-	StartMS      int64  `json:"start_ms"`
-	EndMS        int64  `json:"end_ms"`
-	CreatedAt    string `json:"created_at"`
+	MeetingID    string
+	Seq          int64
+	SegmentID    string
+	SpeakerLabel string
+	Text         string
+	StartMS      int64
+	EndMS        int64
+	CreatedAt    string
 }
 
 type Job struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type"`
-	Status    string          `json:"status"`
-	MeetingID string          `json:"meeting_id,omitempty"`
-	Result    json.RawMessage `json:"result,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	CreatedAt string          `json:"created_at"`
-	UpdatedAt string          `json:"updated_at"`
+	ID        string
+	Type      string
+	Status    string
+	MeetingID string
+	Result    json.RawMessage
+	Error     string
+	CreatedAt string
+	UpdatedAt string
 }
 
 type Report struct {
-	ArtifactID string `json:"artifact_id"`
-	MeetingID  string `json:"meeting_id"`
-	Format     string `json:"format"`
-	Content    string `json:"content"`
-	CreatedAt  string `json:"created_at"`
+	ArtifactID string
+	MeetingID  string
+	Format     string
+	Content    string
+	CreatedAt  string
 }
 
 type Upload struct {
-	ID        string `json:"id"`
-	Filename  string `json:"filename"`
-	MediaType string `json:"media_type"`
-	Path      string `json:"path"`
-	JobID     string `json:"job_id"`
-	CreatedAt string `json:"created_at"`
+	ID        string
+	Filename  string
+	MediaType string
+	Path      string
+	JobID     string
+	CreatedAt string
 }
 
 type User struct {
