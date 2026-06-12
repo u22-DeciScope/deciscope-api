@@ -55,8 +55,12 @@ func TestManagerStartPauseResumeAndReset(t *testing.T) {
 
 func TestManagerRejectsUnknownFixture(t *testing.T) {
 	manager := NewManager(&fakeReplayService{}, fakeLoader{})
-	if _, err := manager.Start(context.Background(), "m_test", "missing.jsonl"); err == nil {
+	_, err := manager.Start(context.Background(), "m_test", "missing.jsonl")
+	if err == nil {
 		t.Fatal("Start() error = nil, want unknown fixture error")
+	}
+	if got, want := err.Error(), "fixture not found: missing.jsonl"; got != want {
+		t.Fatalf("Start() error = %q, want %q", got, want)
 	}
 }
 

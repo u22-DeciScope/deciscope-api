@@ -60,7 +60,7 @@ func (m *Manager) Start(ctx context.Context, meetingID, fixtureName string) (*ap
 	fixtureName = domain.NormalizeFixtureName(fixtureName)
 	file, err := m.loader.Open(fixtureName)
 	if err != nil {
-		return nil, fmt.Errorf("fixture not found: %s: %w", fixtureName, err)
+		return nil, fmt.Errorf("fixture not found: %s", fixtureName)
 	}
 	_ = file.Close()
 
