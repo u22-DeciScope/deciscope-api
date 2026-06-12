@@ -49,3 +49,29 @@ func (h *Hub) unsubscribe(c *client) {
 	}
 	close(c.done)
 }
+
+func (h *Hub) CloseSession(sessionID string) {
+	h.closeMatching(func(c *client) bool { return c.sessionID == sessionID })
+}
+
+func (h *Hub) CloseWorkspaceMember(workspaceID, userID string) {
+	h.closeMatching(func(c *client) bool {
+		return c.workspaceID == workspaceID && c.userID == userID
+	})
+}
+
+func (h *Hub) closeMatching(matches func(*client) bool) {
+	h.mu.RLock()
+	var clients []*client
+	for _, room := range h.rooms {
+		for c := range room {
+			if matches(c) {
+				clients = append(clients, c)
+			}
+		}
+	}
+	h.mu.RUnlock()
+	for _, c := range clients {
+		_ = c.conn.Close()
+	}
+}

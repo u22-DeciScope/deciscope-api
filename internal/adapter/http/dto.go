@@ -8,13 +8,14 @@ import (
 )
 
 type meetingResponse struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Status    string `json:"status"`
-	Source    string `json:"source"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-	EndedAt   string `json:"ended_at,omitempty"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Title       string `json:"title"`
+	Status      string `json:"status"`
+	Source      string `json:"source"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	EndedAt     string `json:"ended_at,omitempty"`
 }
 
 type eventResponse struct {
@@ -45,23 +46,25 @@ type reportResponse struct {
 }
 
 type jobResponse struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type"`
-	Status    string          `json:"status"`
-	MeetingID string          `json:"meeting_id,omitempty"`
-	Result    json.RawMessage `json:"result,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	CreatedAt string          `json:"created_at"`
-	UpdatedAt string          `json:"updated_at"`
+	ID          string          `json:"id"`
+	WorkspaceID string          `json:"workspace_id"`
+	Type        string          `json:"type"`
+	Status      string          `json:"status"`
+	MeetingID   string          `json:"meeting_id,omitempty"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	CreatedAt   string          `json:"created_at"`
+	UpdatedAt   string          `json:"updated_at"`
 }
 
 type uploadResponse struct {
-	ID        string `json:"id"`
-	Filename  string `json:"filename"`
-	MediaType string `json:"media_type"`
-	Path      string `json:"path"`
-	JobID     string `json:"job_id"`
-	CreatedAt string `json:"created_at"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Filename    string `json:"filename"`
+	MediaType   string `json:"media_type"`
+	Path        string `json:"path"`
+	JobID       string `json:"job_id"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type replayStatusResponse struct {

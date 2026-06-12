@@ -13,9 +13,13 @@ import (
 type RouterDependencies struct {
 	CoreAPI      *CoreAPI
 	AuthAPI      *AuthAPI
-	Realtime     http.HandlerFunc
-	AuthVerifier authmiddleware.TokenVerifier
-	CORS         CORSConfig
+	WorkspaceAPI *WorkspaceAPI
+	AuthService  interface {
+		authmiddleware.SessionAuthenticator
+		AccessUseCases
+	}
+	Realtime http.HandlerFunc
+	CORS     CORSConfig
 }
 
 type CORSConfig struct {
@@ -32,26 +36,41 @@ func NewRouter(deps RouterDependencies) http.Handler {
 		r.Get("/health", deps.CoreAPI.Health)
 		r.Post("/auth/login", deps.AuthAPI.Login)
 		r.Group(func(r chi.Router) {
-			r.Use(authmiddleware.FirebaseAuthMiddleware(deps.AuthVerifier))
-			r.Get("/auth/me", MeHandler)
-			r.Get("/auth/health", Health)
+			r.Use(authmiddleware.SessionAuth(deps.AuthService))
+			r.Get("/auth/me", deps.AuthAPI.Me)
+			r.Post("/auth/logout", deps.AuthAPI.Logout)
+			r.Put("/session/current-workspace", deps.AuthAPI.SetCurrentWorkspace)
+			r.Get("/workspaces", deps.WorkspaceAPI.List)
+			r.Route("/workspaces/{workspace_code}", func(r chi.Router) {
+				r.Use(requireWorkspaceAccess(deps.AuthService))
+				r.Get("/", deps.WorkspaceAPI.Get)
+				r.Patch("/", deps.WorkspaceAPI.Update)
+				r.Get("/members", deps.WorkspaceAPI.ListMembers)
+				r.Delete("/members/{member_id}", deps.WorkspaceAPI.RemoveMember)
+				r.Get("/invitations", deps.WorkspaceAPI.ListInvitations)
+				r.Post("/invitations", deps.WorkspaceAPI.CreateInvitation)
+				r.Delete("/invitations/{invitation_id}", deps.WorkspaceAPI.RevokeInvitation)
+				r.Get("/meetings", deps.CoreAPI.ListMeetings)
+				r.Post("/meetings", deps.CoreAPI.CreateMeeting)
+				r.Post("/uploads", deps.CoreAPI.Upload)
+			})
+			r.Route("/meetings/{meeting_id}", func(r chi.Router) {
+				r.Use(requireMeetingAccess(deps.AuthService))
+				r.Get("/", deps.CoreAPI.GetMeeting)
+				r.Post("/join-token", deps.CoreAPI.CreateJoinToken)
+				r.Post("/end", deps.CoreAPI.EndMeeting)
+				r.Get("/events", deps.CoreAPI.ListEvents)
+				r.Get("/segments", deps.CoreAPI.ListSegments)
+				r.Get("/report", deps.CoreAPI.GetReport)
+				r.Post("/replay/start", deps.CoreAPI.ReplayStart)
+				r.Post("/replay/pause", deps.CoreAPI.ReplayPause)
+				r.Post("/replay/resume", deps.CoreAPI.ReplayResume)
+				r.Post("/replay/reset", deps.CoreAPI.ReplayReset)
+			})
+			r.Get("/fixtures", deps.CoreAPI.ListFixtures)
+			r.With(requireJobAccess(deps.AuthService)).Get("/jobs/{job_id}", deps.CoreAPI.GetJob)
+			r.With(requireRealtimeAccess(deps.AuthService)).Get("/realtime", deps.Realtime)
 		})
-		r.Get("/meetings", deps.CoreAPI.ListMeetings)
-		r.Post("/meetings", deps.CoreAPI.CreateMeeting)
-		r.Get("/meetings/{meeting_id}", deps.CoreAPI.GetMeeting)
-		r.Post("/meetings/{meeting_id}/join-token", deps.CoreAPI.CreateJoinToken)
-		r.Post("/meetings/{meeting_id}/end", deps.CoreAPI.EndMeeting)
-		r.Get("/meetings/{meeting_id}/events", deps.CoreAPI.ListEvents)
-		r.Get("/meetings/{meeting_id}/segments", deps.CoreAPI.ListSegments)
-		r.Get("/meetings/{meeting_id}/report", deps.CoreAPI.GetReport)
-		r.Get("/fixtures", deps.CoreAPI.ListFixtures)
-		r.Post("/meetings/{meeting_id}/replay/start", deps.CoreAPI.ReplayStart)
-		r.Post("/meetings/{meeting_id}/replay/pause", deps.CoreAPI.ReplayPause)
-		r.Post("/meetings/{meeting_id}/replay/resume", deps.CoreAPI.ReplayResume)
-		r.Post("/meetings/{meeting_id}/replay/reset", deps.CoreAPI.ReplayReset)
-		r.Post("/uploads", deps.CoreAPI.Upload)
-		r.Get("/jobs/{job_id}", deps.CoreAPI.GetJob)
-		r.Get("/realtime", deps.Realtime)
 	})
 	return r
 }
@@ -77,7 +96,7 @@ func corsMiddleware(config CORSConfig) func(http.Handler) http.Handler {
 				responseOrigin = origin
 			}
 			w.Header().Set("Access-Control-Allow-Origin", responseOrigin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Upgrade, Connection")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			if r.Method == http.MethodOptions {

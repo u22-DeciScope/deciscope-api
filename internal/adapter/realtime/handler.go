@@ -13,19 +13,32 @@ type EventStore interface {
 	GetMeeting(ctx context.Context, meetingID string) (*domain.Meeting, error)
 }
 
-func (h *Hub) ServeWS(store EventStore) http.HandlerFunc {
+type ClientIdentity struct {
+	UserID    string
+	SessionID string
+}
+
+type IdentityResolver func(r *http.Request) (ClientIdentity, bool)
+
+func (h *Hub) ServeWS(store EventStore, resolveIdentity IdentityResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		meetingID := r.URL.Query().Get("meeting_id")
 		if meetingID == "" {
 			http.Error(w, "missing meeting_id", http.StatusBadRequest)
 			return
 		}
-		if _, err := store.GetMeeting(r.Context(), meetingID); err != nil {
+		meeting, err := store.GetMeeting(r.Context(), meetingID)
+		if err != nil {
 			status := http.StatusInternalServerError
 			if errors.Is(err, domain.ErrNotFound) {
 				status = http.StatusNotFound
 			}
 			http.Error(w, "meeting not found", status)
+			return
+		}
+		identity, ok := resolveIdentity(r)
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -41,7 +54,7 @@ func (h *Hub) ServeWS(store EventStore) http.HandlerFunc {
 			lastSeq = helloSeq
 		}
 
-		c := newClient(meetingID, conn, reader, lastSeq)
+		c := newClient(meetingID, meeting.WorkspaceID, identity.UserID, identity.SessionID, conn, reader, lastSeq)
 		h.subscribe(c)
 		defer h.unsubscribe(c)
 

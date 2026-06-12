@@ -8,23 +8,23 @@ import (
 )
 
 type client struct {
-	meetingID string
-	conn      netConn
-	reader    frameReader
-	send      chan domain.Event
-	done      chan struct{}
-	writeMu   sync.Mutex
-	lastSeq   int64
+	meetingID   string
+	workspaceID string
+	userID      string
+	sessionID   string
+	conn        netConn
+	reader      frameReader
+	send        chan domain.Event
+	done        chan struct{}
+	writeMu     sync.Mutex
+	lastSeq     int64
 }
 
-func newClient(meetingID string, conn netConn, reader frameReader, lastSeq int64) *client {
+func newClient(meetingID, workspaceID, userID, sessionID string, conn netConn, reader frameReader, lastSeq int64) *client {
 	return &client{
-		meetingID: meetingID,
-		conn:      conn,
-		reader:    reader,
-		send:      make(chan domain.Event, 128),
-		done:      make(chan struct{}),
-		lastSeq:   lastSeq,
+		meetingID: meetingID, workspaceID: workspaceID, userID: userID, sessionID: sessionID,
+		conn: conn, reader: reader, send: make(chan domain.Event, 128), done: make(chan struct{}),
+		lastSeq: lastSeq,
 	}
 }
 

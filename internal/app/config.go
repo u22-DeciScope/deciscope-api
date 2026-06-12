@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"strings"
 
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/firebase"
@@ -10,12 +11,13 @@ import (
 )
 
 type Config struct {
-	Database       database.Config
-	Firebase       firebase.Config
-	UploadDir      string
-	FixtureDir     string
-	FrontendURL    string
-	AllowedOrigins string
+	Database            database.Config
+	Firebase            firebase.Config
+	UploadDir           string
+	FixtureDir          string
+	FrontendURL         string
+	AllowedOrigins      string
+	SessionCookieSecure bool
 }
 
 func ConfigFromEnv() Config {
@@ -35,10 +37,11 @@ func ConfigFromEnv() Config {
 			ProjectID:       os.Getenv("FIREBASE_PROJECT_ID"),
 			Enabled:         os.Getenv("AUTH_PROVIDER") == "firebase",
 		},
-		UploadDir:      os.Getenv("UPLOAD_DIR"),
-		FixtureDir:     os.Getenv("FIXTURE_DIR"),
-		FrontendURL:    os.Getenv("FRONTEND_URL"),
-		AllowedOrigins: os.Getenv("ALLOWED_ORIGINS"),
+		UploadDir:           os.Getenv("UPLOAD_DIR"),
+		FixtureDir:          os.Getenv("FIXTURE_DIR"),
+		FrontendURL:         os.Getenv("FRONTEND_URL"),
+		AllowedOrigins:      os.Getenv("ALLOWED_ORIGINS"),
+		SessionCookieSecure: strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
 	}
 }
 

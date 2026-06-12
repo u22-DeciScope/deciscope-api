@@ -26,9 +26,8 @@ func (v *TokenVerifier) VerifyIDToken(ctx context.Context, idToken string) (*app
 	}
 	email, _ := token.Claims["email"].(string)
 	name, _ := token.Claims["name"].(string)
+	emailVerified, _ := token.Claims["email_verified"].(bool)
 	return &appauth.Identity{
-		UID:   token.UID,
-		Email: email,
-		Name:  name,
+		UID: token.UID, Email: email, Name: name, EmailVerified: emailVerified,
 	}, nil
 }

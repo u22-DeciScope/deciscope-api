@@ -41,7 +41,7 @@ func Run(t *testing.T, factory Factory) {
 		repos := factory(t)
 		ctx := context.Background()
 
-		meeting, err := repos.Meetings.CreateMeeting(ctx, "", "")
+		meeting, err := repos.Meetings.CreateMeeting(ctx, "w_test", "", "")
 		if err != nil {
 			t.Fatalf("CreateMeeting() error = %v", err)
 		}
@@ -60,7 +60,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("GetMeeting() id = %q, want %q", got.ID, meeting.ID)
 		}
 
-		meetings, err := repos.Meetings.ListMeetings(ctx)
+		meetings, err := repos.Meetings.ListMeetings(ctx, "w_test")
 		if err != nil {
 			t.Fatalf("ListMeetings() error = %v", err)
 		}
@@ -174,7 +174,7 @@ func Run(t *testing.T, factory Factory) {
 		repos := factory(t)
 		ctx := context.Background()
 
-		job, err := repos.Jobs.CreateJob(ctx, "file.extract_audio", "", "")
+		job, err := repos.Jobs.CreateJob(ctx, "w_test", "file.extract_audio", "", "")
 		if err != nil {
 			t.Fatalf("CreateJob() error = %v", err)
 		}
@@ -193,7 +193,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("completed result = %s, error = %v", completed.Result, err)
 		}
 
-		upload, err := repos.Uploads.SaveUpload(ctx, "notes.txt", "text/plain", "/tmp/notes.txt", job.ID)
+		upload, err := repos.Uploads.SaveUpload(ctx, "w_test", "notes.txt", "text/plain", "/tmp/notes.txt", job.ID)
 		if err != nil {
 			t.Fatalf("SaveUpload() error = %v", err)
 		}
@@ -201,7 +201,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("upload = %+v", upload)
 		}
 
-		failed, err := repos.Jobs.CreateJob(ctx, "report.final", "", "running")
+		failed, err := repos.Jobs.CreateJob(ctx, "w_test", "report.final", "", "running")
 		if err != nil {
 			t.Fatalf("CreateJob(failed) error = %v", err)
 		}
@@ -223,7 +223,7 @@ func Run(t *testing.T, factory Factory) {
 
 func createMeeting(t *testing.T, ctx context.Context, repos Repositories) *domain.Meeting {
 	t.Helper()
-	meeting, err := repos.Meetings.CreateMeeting(ctx, "Contract test", "fixture_replay")
+	meeting, err := repos.Meetings.CreateMeeting(ctx, "w_test", "Contract test", "fixture_replay")
 	if err != nil {
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}

@@ -10,16 +10,16 @@ import (
 	"deciscope-core-api/internal/domain"
 )
 
-func (s *Store) CreateJob(ctx context.Context, jobType, meetingID, status string) (*domain.Job, error) {
+func (s *Store) CreateJob(ctx context.Context, workspaceID, jobType, meetingID, status string) (*domain.Job, error) {
 	if status == "" {
 		status = "queued"
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	job := &domain.Job{ID: domain.NewID("job"), Type: jobType, Status: status, MeetingID: meetingID, CreatedAt: now, UpdatedAt: now}
+	job := &domain.Job{ID: domain.NewID("job"), WorkspaceID: workspaceID, Type: jobType, Status: status, MeetingID: meetingID, CreatedAt: now, UpdatedAt: now}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO jobs (id, type, status, meeting_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, job.ID, job.Type, job.Status, nullable(job.MeetingID), job.CreatedAt, job.UpdatedAt)
+		INSERT INTO jobs (id, workspace_id, type, status, meeting_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, job.ID, job.WorkspaceID, job.Type, job.Status, nullable(job.MeetingID), job.CreatedAt, job.UpdatedAt)
 	return job, err
 }
 
@@ -53,9 +53,9 @@ func (s *Store) GetJob(ctx context.Context, jobID string) (*domain.Job, error) {
 	var job domain.Job
 	var result, errText, meetingID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, type, status, meeting_id, result, error, created_at, updated_at
+		SELECT id, COALESCE(workspace_id, ''), type, status, meeting_id, result, error, created_at, updated_at
 		FROM jobs WHERE id = ?
-	`, jobID).Scan(&job.ID, &job.Type, &job.Status, &meetingID, &result, &errText, &job.CreatedAt, &job.UpdatedAt)
+	`, jobID).Scan(&job.ID, &job.WorkspaceID, &job.Type, &job.Status, &meetingID, &result, &errText, &job.CreatedAt, &job.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}

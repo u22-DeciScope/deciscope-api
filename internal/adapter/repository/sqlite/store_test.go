@@ -19,7 +19,7 @@ func TestStoreAppendEventSequencesDurableEvents(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	meeting, err := store.CreateMeeting(ctx, "Sequence test", "fixture_replay")
+	meeting, err := store.CreateMeeting(ctx, "w_test", "Sequence test", "fixture_replay")
 	if err != nil {
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}
@@ -81,7 +81,7 @@ func TestStoreAppendEventSequencesConcurrentDurableEvents(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	meeting, err := store.CreateMeeting(ctx, "Concurrent sequence test", "fixture_replay")
+	meeting, err := store.CreateMeeting(ctx, "w_test", "Concurrent sequence test", "fixture_replay")
 	if err != nil {
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}
@@ -146,7 +146,7 @@ func TestStoreAppendEventSequencesConcurrentDatabaseConnections(t *testing.T) {
 	t.Cleanup(func() { _ = dbB.Close() })
 
 	stores := []*Store{NewStore(dbA), NewStore(dbB)}
-	meeting, err := stores[0].CreateMeeting(ctx, "Multi-connection sequence test", "fixture_replay")
+	meeting, err := stores[0].CreateMeeting(ctx, "w_test", "Multi-connection sequence test", "fixture_replay")
 	if err != nil {
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}
