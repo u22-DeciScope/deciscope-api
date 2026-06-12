@@ -1,26 +1,62 @@
 # deciscope-core-api
 
-Go + `chi` backend for DeciScope local MVP0.
+DeciScopeのローカルMVP向け、Go + `chi`製バックエンドです。
 
-The current backend provides local-only meeting runtime APIs, WebSocket realtime delivery, fixture replay, SQLite persistence, mock uploads/jobs, and Markdown report generation. It does not connect to Azure, Teams, external STT, or external LLM services.
-
-If `go-sqlite3` cannot open SQLite in the local Go runtime, `/v1` automatically falls back to an in-memory store so the fixture demo can still run.
+会議API、WebSocketリアルタイム配信、fixture replay、SQLite永続化、
+mock upload/job、Markdownレポート生成を提供します。Azure、Teams、外部STT、
+外部LLMには接続しません。
 
 ## Requirements
 
 - Go 1.25+
 
-## Environment
+## Architecture
 
-- `SQLITE_PATH` or `AUTH_SQLITE_PATH` (optional): SQLite file path. Default: `./db.sqlite`
-- `FIXTURE_DIR` (optional): fixture JSONL directory. Default: `./fixtures/meetings`
-- `UPLOAD_DIR` (optional): local upload directory. Default: `./uploads`
-- `FIREBASE_CREDENTIALS_JSON` (optional): Firebase service account JSON string
-- `GOOGLE_APPLICATION_CREDENTIALS` (optional): Firebase service account file path
-- `FIREBASE_PROJECT_ID` (optional): explicit Firebase project ID
-- `ALLOWED_ORIGINS` (optional): comma-separated CORS allowlist for web app testing
+Clean Architectureベースのモジュラーモノリスです。
 
-If no Firebase credentials are provided, `/v1` still works without auth and protected legacy `/api` routes accept `Authorization: Bearer dev:<uid>`.
+```text
+internal/app
+  -> internal/adapter, internal/infrastructure
+    -> internal/application
+      -> internal/domain
+```
+
+- `internal/app`: 設定読込と具体実装の組み立て
+- `internal/domain`: Domain Entity、Error、純粋なRule
+- `internal/application`: Use CaseとOutbound Port
+- `internal/adapter`: HTTP、WebSocket、fixture、Repository実装
+- `internal/infrastructure`: DB接続、Migration、Firebase、filesystem storage
+
+詳細は [docs/backend-architecture.md](docs/backend-architecture.md) を参照してください。
+
+## Database
+
+現在サポートするDB driverはSQLiteのみです。
+
+- `database.Open` creates the configured database connection.
+- `database.Migrate` applies embedded, versioned migrations.
+- Application services depend on purpose-specific Repository interfaces.
+- SQLite SQL is isolated under `internal/adapter/repository/sqlite`.
+- If SQLite cannot be opened, meeting APIs use the in-memory Repository
+  implementation for local fixture testing.
+- PostgreSQL向けにPort、Repository共通契約テスト、Migration管理SQLのplaceholder
+  変換は準備済みです。
+- PostgreSQL接続には、driver、Migration、Repository、UserRepositoryの追加が
+  必要です。現時点で `DATABASE_DRIVER=postgres` は使用できません。
+
+主な環境変数:
+
+- `PORT`: listen port。既定値は `9090`
+- `DATABASE_DRIVER`: 現在は `sqlite` のみ
+- `DATABASE_URL`: SQLite file path。既定値は `./db.sqlite`
+- `FIXTURE_DIR`: fixture JSONL directory。既定値は `./fixtures/meetings`
+- `UPLOAD_DIR`: local upload directory。既定値は `./uploads`
+- `FRONTEND_URL`: CORSの基準origin。既定値は `http://localhost:5193`
+- `ALLOWED_ORIGINS`: CORS許可originのカンマ区切り
+- `AUTH_PROVIDER`, `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`:
+  Firebase Admin SDK設定
+
+完全な例は [.env.example](.env.example) を参照してください。
 
 ## Run
 
@@ -28,15 +64,17 @@ If no Firebase credentials are provided, `/v1` still works without auth and prot
 go run .
 ```
 
-If `go` is not on PATH yet:
+既定では `http://localhost:9090` で起動します。
+
+## Test
 
 ```powershell
-& 'C:\Program Files\Go\bin\go.exe' run .
+go test ./...
+go vet ./...
 ```
 
-Server starts on `http://localhost:8080`.
-
-Open `http://localhost:8080/debug` to run a minimal browser-based backend check.
+Repository契約テストはMemoryとSQLiteに同じSuiteを実行します。依存方向、
+Adapter間依存、環境変数読込の配置もArchitecture Testで検査します。
 
 ## Main Local APIs
 
@@ -50,6 +88,5 @@ Open `http://localhost:8080/debug` to run a minimal browser-based backend check.
 - `GET /v1/fixtures`
 - `POST /v1/meetings/{meeting_id}/replay/start`
 
-See `docs/` for the backend foundation, REST API, realtime event contract, and local demo flow.
-
-For Google login setup, see `docs/firebase-auth.md`.
+API一覧は [docs/api.md](docs/api.md)、ローカル起動手順は
+[docs/local-dev.md](docs/local-dev.md) を参照してください。
