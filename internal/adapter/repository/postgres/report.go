@@ -1,4 +1,4 @@
-package sqlite
+package postgres
 
 import (
 	"context"
@@ -16,7 +16,7 @@ func (s *Store) SaveReport(ctx context.Context, meetingID, content string) (*dom
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO meeting_reports (artifact_id, meeting_id, format, content, created_at)
-		VALUES (?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5)
 	`, report.ArtifactID, report.MeetingID, report.Format, report.Content, report.CreatedAt)
 	return report, err
 }
@@ -25,7 +25,7 @@ func (s *Store) LatestReport(ctx context.Context, meetingID string) (*domain.Rep
 	var report domain.Report
 	err := s.db.QueryRowContext(ctx, `
 		SELECT artifact_id, meeting_id, format, content, created_at FROM meeting_reports
-		WHERE meeting_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
+		WHERE meeting_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1
 	`, meetingID).Scan(&report.ArtifactID, &report.MeetingID, &report.Format, &report.Content, &report.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound

@@ -2,22 +2,18 @@ package app
 
 import "testing"
 
-func TestConfigFromEnvPrefersDatabaseSettings(t *testing.T) {
-	t.Setenv("DATABASE_DRIVER", "sqlite")
-	t.Setenv("DATABASE_URL", "database.sqlite")
-	t.Setenv("SQLITE_PATH", "legacy.sqlite")
+func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://deciscope:secret@localhost:5432/deciscope")
 	config := ConfigFromEnv()
-	if config.Database.Driver != "sqlite" || config.Database.URL != "database.sqlite" {
+	if config.Database.URL != "postgres://deciscope:secret@localhost:5432/deciscope" {
 		t.Fatalf("ConfigFromEnv() = %+v", config)
 	}
 }
 
-func TestConfigFromEnvSupportsLegacySQLitePath(t *testing.T) {
-	t.Setenv("DATABASE_DRIVER", "")
+func TestConfigFromEnvLeavesMissingDatabaseURLBlank(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
-	t.Setenv("SQLITE_PATH", "legacy.sqlite")
 	config := ConfigFromEnv()
-	if config.Database.Driver != "sqlite" || config.Database.URL != "legacy.sqlite" {
+	if config.Database.URL != "" {
 		t.Fatalf("ConfigFromEnv() = %+v", config)
 	}
 }

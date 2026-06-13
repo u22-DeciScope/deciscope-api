@@ -21,16 +21,8 @@ type Config struct {
 }
 
 func ConfigFromEnv() Config {
-	databaseDriver := os.Getenv("DATABASE_DRIVER")
-	if databaseDriver == "" {
-		databaseDriver = "sqlite"
-	}
-	databaseURL := firstNonEmpty(
-		os.Getenv("DATABASE_URL"), os.Getenv("SQLITE_PATH"),
-		os.Getenv("AUTH_SQLITE_PATH"), "./db.sqlite",
-	)
 	return Config{
-		Database: database.Config{Driver: databaseDriver, URL: databaseURL},
+		Database: database.Config{URL: os.Getenv("DATABASE_URL")},
 		Firebase: firebase.Config{
 			CredentialsFile: firstNonEmpty(os.Getenv("FIREBASE_SERVICE_ACCOUNT_JSON"), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")),
 			CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"),

@@ -11,8 +11,7 @@ import (
 	httpadapter "deciscope-core-api/internal/adapter/http"
 	authmiddleware "deciscope-core-api/internal/adapter/http/middleware"
 	"deciscope-core-api/internal/adapter/realtime"
-	"deciscope-core-api/internal/adapter/repository/memory"
-	sqliterepository "deciscope-core-api/internal/adapter/repository/sqlite"
+	postgresrepository "deciscope-core-api/internal/adapter/repository/postgres"
 	"deciscope-core-api/internal/application"
 	appaccess "deciscope-core-api/internal/application/access"
 	appauth "deciscope-core-api/internal/application/auth"
@@ -83,17 +82,15 @@ type authWorkspaceRepository interface {
 func buildRepositories(ctx context.Context, config database.Config) (repositorySet, authWorkspaceRepository, error) {
 	conn, err := database.Open(ctx, config)
 	if err != nil {
-		log.Printf("database unavailable; /v1 uses in-memory local store: %v", err)
-		store := memory.NewMemoryStore()
-		return repositoriesFromStore(store), memory.NewAuthWorkspaceRepository(store), nil
+		return repositorySet{}, nil, fmt.Errorf("open database: %w", err)
 	}
-	if err := database.Migrate(ctx, conn, config.Driver); err != nil {
+	if err := database.Migrate(ctx, conn); err != nil {
 		_ = conn.Close()
 		return repositorySet{}, nil, fmt.Errorf("migrate database: %w", err)
 	}
-	store := sqliterepository.NewStore(conn)
-	log.Printf("database repository ready: driver=%q url=%q", config.Driver, config.URL)
-	return repositoriesFromStore(store), sqliterepository.NewAuthWorkspaceRepository(conn), nil
+	store := postgresrepository.NewStore(conn)
+	log.Printf("postgres database repository ready")
+	return repositoriesFromStore(store), postgresrepository.NewAuthWorkspaceRepository(conn), nil
 }
 
 type repositoryStore interface {
