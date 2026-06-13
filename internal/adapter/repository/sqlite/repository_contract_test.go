@@ -27,6 +27,8 @@ func TestRepositoryContract(t *testing.T) {
 		if err := database.Migrate(context.Background(), db, "sqlite"); err != nil {
 			t.Fatalf("database.Migrate() error = %v", err)
 		}
-		return contracttest.FromStore(sqlite.NewStore(db))
+		repos := contracttest.FromStore(sqlite.NewStore(db))
+		repos.Auth = sqlite.NewAuthWorkspaceRepository(db)
+		return repos
 	})
 }

@@ -14,12 +14,11 @@ type RouterDependencies struct {
 	CoreAPI      *CoreAPI
 	AuthAPI      *AuthAPI
 	WorkspaceAPI *WorkspaceAPI
-	AuthService  interface {
-		authmiddleware.SessionAuthenticator
-		AccessUseCases
-	}
-	Realtime http.HandlerFunc
-	CORS     CORSConfig
+	AuthService  authmiddleware.SessionAuthenticator
+	Workspace    WorkspaceAccessUseCases
+	Access       ResourceAccessUseCases
+	Realtime     http.HandlerFunc
+	CORS         CORSConfig
 }
 
 type CORSConfig struct {
@@ -42,7 +41,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 			r.Put("/session/current-workspace", deps.AuthAPI.SetCurrentWorkspace)
 			r.Get("/workspaces", deps.WorkspaceAPI.List)
 			r.Route("/workspaces/{workspace_code}", func(r chi.Router) {
-				r.Use(requireWorkspaceAccess(deps.AuthService))
+				r.Use(requireWorkspaceAccess(deps.Workspace))
 				r.Get("/", deps.WorkspaceAPI.Get)
 				r.Patch("/", deps.WorkspaceAPI.Update)
 				r.Get("/members", deps.WorkspaceAPI.ListMembers)
@@ -55,7 +54,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 				r.Post("/uploads", deps.CoreAPI.Upload)
 			})
 			r.Route("/meetings/{meeting_id}", func(r chi.Router) {
-				r.Use(requireMeetingAccess(deps.AuthService))
+				r.Use(requireMeetingAccess(deps.Access))
 				r.Get("/", deps.CoreAPI.GetMeeting)
 				r.Post("/join-token", deps.CoreAPI.CreateJoinToken)
 				r.Post("/end", deps.CoreAPI.EndMeeting)
@@ -68,8 +67,8 @@ func NewRouter(deps RouterDependencies) http.Handler {
 				r.Post("/replay/reset", deps.CoreAPI.ReplayReset)
 			})
 			r.Get("/fixtures", deps.CoreAPI.ListFixtures)
-			r.With(requireJobAccess(deps.AuthService)).Get("/jobs/{job_id}", deps.CoreAPI.GetJob)
-			r.With(requireRealtimeAccess(deps.AuthService)).Get("/realtime", deps.Realtime)
+			r.With(requireJobAccess(deps.Access)).Get("/jobs/{job_id}", deps.CoreAPI.GetJob)
+			r.With(requireRealtimeAccess(deps.Access)).Get("/realtime", deps.Realtime)
 		})
 	})
 	return r

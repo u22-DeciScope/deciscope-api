@@ -10,6 +10,9 @@ import (
 func TestMemoryRepositoryContract(t *testing.T) {
 	contracttest.Run(t, func(t *testing.T) contracttest.Repositories {
 		t.Helper()
-		return contracttest.FromStore(memory.NewMemoryStore())
+		store := memory.NewMemoryStore()
+		repos := contracttest.FromStore(store)
+		repos.Auth = memory.NewAuthWorkspaceRepository(store)
+		return repos
 	})
 }

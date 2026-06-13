@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type Identity struct {
 	Email         string
 	Name          string
 	EmailVerified bool
+	Provider      string
 }
 
 type TokenVerifier interface {
@@ -42,14 +44,6 @@ type Repository interface {
 	SetCurrentWorkspace(ctx context.Context, sessionID, workspaceID string) error
 	ListWorkspaces(ctx context.Context, userID string) ([]domain.Workspace, error)
 	GetWorkspace(ctx context.Context, userID, workspaceID string) (*domain.Workspace, error)
-	UpdateWorkspaceName(ctx context.Context, userID, workspaceID, name string) (*domain.Workspace, error)
-	ListMembers(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceMember, error)
-	CreateInvitation(ctx context.Context, userID, workspaceID, email string) (*domain.WorkspaceInvitation, error)
-	ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error)
-	RevokeInvitation(ctx context.Context, userID, workspaceID, invitationID string) error
-	RemoveMember(ctx context.Context, userID, workspaceID, memberID string) error
-	CanAccessMeeting(ctx context.Context, userID, meetingID string) error
-	CanAccessJob(ctx context.Context, userID, jobID string) error
 }
 
 type LoginResult struct {
@@ -87,6 +81,13 @@ func (s *Service) Login(ctx context.Context, idToken string) (*LoginResult, erro
 		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
 	identity.Email = strings.TrimSpace(identity.Email)
+	log.Printf(
+		"firebase login identity: uid_present=%t has_email=%t email_verified=%t provider=%q",
+		strings.TrimSpace(identity.UID) != "",
+		identity.Email != "",
+		identity.EmailVerified,
+		identity.Provider,
+	)
 	if identity.Email == "" {
 		return nil, ErrEmailRequired
 	}
@@ -165,54 +166,6 @@ func (s *Service) SetCurrentWorkspace(ctx context.Context, sessionID, userID, wo
 		return err
 	}
 	return s.repository.SetCurrentWorkspace(ctx, sessionID, workspaceID)
-}
-
-func (s *Service) ListWorkspaces(ctx context.Context, userID string) ([]domain.Workspace, error) {
-	return s.repository.ListWorkspaces(ctx, userID)
-}
-
-func (s *Service) GetWorkspace(ctx context.Context, userID, workspaceID string) (*domain.Workspace, error) {
-	return s.repository.GetWorkspace(ctx, userID, workspaceID)
-}
-
-func (s *Service) UpdateWorkspaceName(ctx context.Context, userID, workspaceID, name string) (*domain.Workspace, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil, errors.New("workspace name is required")
-	}
-	return s.repository.UpdateWorkspaceName(ctx, userID, workspaceID, name)
-}
-
-func (s *Service) ListMembers(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceMember, error) {
-	return s.repository.ListMembers(ctx, userID, workspaceID)
-}
-
-func (s *Service) CreateInvitation(ctx context.Context, userID, workspaceID, email string) (*domain.WorkspaceInvitation, error) {
-	email = strings.TrimSpace(email)
-	if email == "" {
-		return nil, ErrEmailRequired
-	}
-	return s.repository.CreateInvitation(ctx, userID, workspaceID, email)
-}
-
-func (s *Service) ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error) {
-	return s.repository.ListInvitations(ctx, userID, workspaceID)
-}
-
-func (s *Service) RevokeInvitation(ctx context.Context, userID, workspaceID, invitationID string) error {
-	return s.repository.RevokeInvitation(ctx, userID, workspaceID, invitationID)
-}
-
-func (s *Service) RemoveMember(ctx context.Context, userID, workspaceID, memberID string) error {
-	return s.repository.RemoveMember(ctx, userID, workspaceID, memberID)
-}
-
-func (s *Service) CanAccessMeeting(ctx context.Context, userID, meetingID string) error {
-	return s.repository.CanAccessMeeting(ctx, userID, meetingID)
-}
-
-func (s *Service) CanAccessJob(ctx context.Context, userID, jobID string) error {
-	return s.repository.CanAccessJob(ctx, userID, jobID)
 }
 
 func normalizeEmail(value string) string {

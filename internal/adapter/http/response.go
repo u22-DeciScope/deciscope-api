@@ -31,6 +31,14 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, domain.ErrInvalidArgument) {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if errors.Is(err, domain.ErrConflict) {
+		writeError(w, http.StatusConflict, "conflict", err.Error())
+		return
+	}
 	if errors.Is(err, domain.ErrForbidden) {
 		writeError(w, http.StatusForbidden, "forbidden", "forbidden")
 		return

@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -185,7 +184,7 @@ func (r *AuthWorkspaceRepository) CreateInvitation(_ context.Context, userID, wo
 	normalizedEmail := strings.ToLower(strings.TrimSpace(email))
 	for _, existing := range r.invitations {
 		if existing.WorkspaceID == workspaceID && existing.NormalizedEmail == normalizedEmail && existing.Status == "pending" {
-			return nil, errors.New("invitation already exists")
+			return nil, domain.ErrConflict
 		}
 	}
 	invitation := domain.WorkspaceInvitation{ID: domain.NewUUID(), WorkspaceID: workspaceID, Email: strings.TrimSpace(email), NormalizedEmail: normalizedEmail, Role: "member", Status: "pending", InvitedBy: userID, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
@@ -228,6 +227,9 @@ func (r *AuthWorkspaceRepository) RemoveMember(_ context.Context, userID, worksp
 	defer r.mu.Unlock()
 	if r.members[workspaceID][userID] != "owner" {
 		return domain.ErrForbidden
+	}
+	if r.members[workspaceID][memberID] == "" {
+		return domain.ErrNotFound
 	}
 	if r.members[workspaceID][memberID] == "owner" {
 		return domain.ErrForbidden

@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"deciscope-core-api/internal/application"
+	appaccess "deciscope-core-api/internal/application/access"
+	appauth "deciscope-core-api/internal/application/auth"
+	appworkspace "deciscope-core-api/internal/application/workspace"
 	"deciscope-core-api/internal/domain"
 )
 
@@ -16,9 +19,16 @@ type Repositories struct {
 	Reports  application.ReportRepository
 	Jobs     application.JobRepository
 	Uploads  application.UploadRepository
+	Auth     AuthWorkspaceRepository
 }
 
 type Factory func(t *testing.T) Repositories
+
+type AuthWorkspaceRepository interface {
+	appauth.Repository
+	appworkspace.Repository
+	appaccess.Repository
+}
 
 type Store interface {
 	application.MeetingRepository
@@ -219,6 +229,61 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("GetJob(missing) error = %v, want ErrNotFound", err)
 		}
 	})
+
+	t.Run("auth workspace", func(t *testing.T) {
+		repos := factory(t)
+		if repos.Auth == nil {
+			t.Skip("auth workspace repository not provided")
+		}
+		ctx := context.Background()
+
+		owner, err := repos.Auth.FindOrCreateUser(ctx, appauth.Identity{UID: "owner", Email: "owner@example.com", Name: "Owner"})
+		if err != nil {
+			t.Fatalf("FindOrCreateUser(owner) error = %v", err)
+		}
+		member, err := repos.Auth.FindOrCreateUser(ctx, appauth.Identity{UID: "member", Email: "member@example.com", Name: "Member"})
+		if err != nil {
+			t.Fatalf("FindOrCreateUser(member) error = %v", err)
+		}
+		workspace, err := repos.Auth.EnsureInitialWorkspace(ctx, owner.ID, owner.DisplayName, owner.Email)
+		if err != nil {
+			t.Fatalf("EnsureInitialWorkspace() error = %v", err)
+		}
+
+		invitation, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, member.Email)
+		if err != nil {
+			t.Fatalf("CreateInvitation() error = %v", err)
+		}
+		if invitation.NormalizedEmail != "member@example.com" {
+			t.Fatalf("invitation normalized email = %q", invitation.NormalizedEmail)
+		}
+		if _, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, " MEMBER@example.com "); !errors.Is(err, domain.ErrConflict) {
+			t.Fatalf("CreateInvitation(duplicate) error = %v, want ErrConflict", err)
+		}
+		if err := repos.Auth.AcceptInvitations(ctx, member.ID, "member@example.com"); err != nil {
+			t.Fatalf("AcceptInvitations() error = %v", err)
+		}
+		members, err := repos.Auth.ListMembers(ctx, owner.ID, workspace.ID)
+		if err != nil {
+			t.Fatalf("ListMembers() error = %v", err)
+		}
+		if !hasMember(members, member.ID, "member") {
+			t.Fatalf("members = %+v, want accepted member", members)
+		}
+
+		if err := repos.Auth.RemoveMember(ctx, member.ID, workspace.ID, owner.ID); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("RemoveMember(non-owner) error = %v, want ErrForbidden", err)
+		}
+		if err := repos.Auth.RemoveMember(ctx, owner.ID, workspace.ID, "missing"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("RemoveMember(missing) error = %v, want ErrNotFound", err)
+		}
+		if err := repos.Auth.RemoveMember(ctx, owner.ID, workspace.ID, owner.ID); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("RemoveMember(owner) error = %v, want ErrForbidden", err)
+		}
+		if err := repos.Auth.RemoveMember(ctx, owner.ID, workspace.ID, member.ID); err != nil {
+			t.Fatalf("RemoveMember(member) error = %v", err)
+		}
+	})
 }
 
 func createMeeting(t *testing.T, ctx context.Context, repos Repositories) *domain.Meeting {
@@ -228,4 +293,13 @@ func createMeeting(t *testing.T, ctx context.Context, repos Repositories) *domai
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}
 	return meeting
+}
+
+func hasMember(members []domain.WorkspaceMember, userID, role string) bool {
+	for _, member := range members {
+		if member.UserID == userID && member.Role == role {
+			return true
+		}
+	}
+	return false
 }

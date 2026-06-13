@@ -252,7 +252,7 @@ func (r *AuthWorkspaceRepository) CreateInvitation(ctx context.Context, userID, 
 		INSERT INTO workspace_invitations (id, workspace_id, email, normalized_email, role, status, invited_by, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, invitation.ID, invitation.WorkspaceID, invitation.Email, invitation.NormalizedEmail, invitation.Role, invitation.Status, invitation.InvitedBy, invitation.CreatedAt)
-	return &invitation, err
+	return &invitation, uniqueError(err)
 }
 
 func (r *AuthWorkspaceRepository) ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error) {
@@ -377,7 +377,7 @@ var _ appauth.Repository = (*AuthWorkspaceRepository)(nil)
 
 func uniqueError(err error) error {
 	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
-		return fmt.Errorf("already exists: %w", err)
+		return fmt.Errorf("%w: already exists", domain.ErrConflict)
 	}
 	return err
 }

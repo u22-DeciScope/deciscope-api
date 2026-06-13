@@ -14,7 +14,9 @@ import (
 	"deciscope-core-api/internal/adapter/repository/memory"
 	sqliterepository "deciscope-core-api/internal/adapter/repository/sqlite"
 	"deciscope-core-api/internal/application"
+	appaccess "deciscope-core-api/internal/application/access"
 	appauth "deciscope-core-api/internal/application/auth"
+	appworkspace "deciscope-core-api/internal/application/workspace"
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/firebase"
 	"deciscope-core-api/internal/infrastructure/storage"
@@ -41,12 +43,16 @@ func NewServer() (http.Handler, error) {
 	)
 	replay := fixture.NewManager(service, fixture.NewLocalLoader(config.FixtureDir))
 	authService := appauth.NewService(authRepository, tokenVerifier, 7*24*time.Hour)
+	workspaceService := appworkspace.NewService(authRepository)
+	accessService := appaccess.NewService(authRepository)
 
 	return httpadapter.NewRouter(httpadapter.RouterDependencies{
 		CoreAPI:      httpadapter.NewCoreAPI(service, replay),
 		AuthAPI:      httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
-		WorkspaceAPI: httpadapter.NewWorkspaceAPI(authService, hub),
+		WorkspaceAPI: httpadapter.NewWorkspaceAPI(workspaceService, hub),
 		AuthService:  authService,
+		Workspace:    workspaceService,
+		Access:       accessService,
 		Realtime: hub.ServeWS(service, func(r *http.Request) (realtime.ClientIdentity, bool) {
 			session, ok := authmiddleware.SessionFromContext(r.Context())
 			if !ok || session.User == nil || session.Session == nil {
@@ -68,7 +74,13 @@ type repositorySet struct {
 	Uploads  application.UploadRepository
 }
 
-func buildRepositories(ctx context.Context, config database.Config) (repositorySet, appauth.Repository, error) {
+type authWorkspaceRepository interface {
+	appauth.Repository
+	appworkspace.Repository
+	appaccess.Repository
+}
+
+func buildRepositories(ctx context.Context, config database.Config) (repositorySet, authWorkspaceRepository, error) {
 	conn, err := database.Open(ctx, config)
 	if err != nil {
 		log.Printf("database unavailable; /v1 uses in-memory local store: %v", err)

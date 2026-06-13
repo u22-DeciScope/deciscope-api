@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -23,16 +24,16 @@ func SessionAuth(authenticator SessionAuthenticator) func(http.Handler) http.Han
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie(SessionCookieName)
 			if err != nil || cookie.Value == "" {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 				return
 			}
 			session, err := authenticator.Authenticate(r.Context(), cookie.Value)
 			if errors.Is(err, appauth.ErrUnauthorized) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 				return
 			}
 			if err != nil {
-				http.Error(w, "authentication failed", http.StatusInternalServerError)
+				writeError(w, http.StatusInternalServerError, "authentication_failed", "authentication failed")
 				return
 			}
 			ctx := context.WithValue(r.Context(), sessionContextKey, session)
@@ -44,4 +45,10 @@ func SessionAuth(authenticator SessionAuthenticator) func(http.Handler) http.Han
 func SessionFromContext(ctx context.Context) (*appauth.SessionResult, bool) {
 	value, ok := ctx.Value(sessionContextKey).(*appauth.SessionResult)
 	return value, ok
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": code, "message": message}})
 }
