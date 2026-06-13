@@ -1,0 +1,12 @@
+{"wait_ms":0,"type":"transcript.partial","payload":{"partial_id":"p_001","speaker_label":"Speaker A","text":"今日の議題は価格改定です","start_ms":1000}}
+{"wait_ms":250,"type":"transcript.partial","payload":{"partial_id":"p_001","speaker_label":"Speaker A","text":"今日の議題は価格改定です。対象顧客を決めたいです","start_ms":1000}}
+{"wait_ms":250,"type":"transcript.final","payload":{"segment_id":"seg_001","speaker_label":"Speaker A","text":"今日の議題は価格改定です。対象顧客を決めたいです。","start_ms":1000,"end_ms":4300}}
+{"wait_ms":500,"type":"analysis.delta","payload":{"items":[{"op":"add","item":{"id":"an_001","kind":"question","severity":"medium","title":"対象顧客の確認","body":"価格改定の対象顧客がまだ明確ではありません。既存顧客と新規顧客を分けて確認すると議論が進みます。","linked_segment_ids":["seg_001"],"status":"open"}}]}}
+{"wait_ms":400,"type":"transcript.partial","payload":{"partial_id":"p_002","speaker_label":"Speaker B","text":"エンタープライズだけなら影響は限定的かもしれません","start_ms":5000}}
+{"wait_ms":350,"type":"transcript.final","payload":{"segment_id":"seg_002","speaker_label":"Speaker B","text":"エンタープライズだけなら影響は限定的かもしれません。ただ既存契約の更新時期は確認したいです。","start_ms":5000,"end_ms":8800}}
+{"wait_ms":500,"type":"analysis.delta","payload":{"items":[{"op":"add","item":{"id":"an_002","kind":"risk","severity":"high","title":"既存契約への影響","body":"既存契約の価格改定タイミングや解約リスクが未確認です。このまま方針決定すると顧客対応で手戻りが出る可能性があります。","linked_segment_ids":["seg_002"],"status":"open"}}]}}
+{"wait_ms":400,"type":"tree.update","payload":{"version":1,"mode":"snapshot","nodes":[{"id":"n_topic_price","kind":"topic","label":"価格改定"},{"id":"n_scope","kind":"issue","label":"対象顧客"},{"id":"n_contract","kind":"risk","label":"既存契約への影響"}],"edges":[{"id":"e_001","source":"n_topic_price","target":"n_scope","kind":"decomposes"},{"id":"e_002","source":"n_scope","target":"n_contract","kind":"depends_on"}]}}
+{"wait_ms":300,"type":"speaker.summary.delta","payload":{"speaker_label":"Speaker A","summary":{"claims":["価格改定を議題として進めたい"],"questions":["対象顧客を決めたい"],"todos":[]}}}
+{"wait_ms":300,"type":"speaker.summary.delta","payload":{"speaker_label":"Speaker B","summary":{"claims":["エンタープライズに限定すれば影響は限定的"],"questions":["既存契約の更新時期を確認したい"],"todos":["既存契約の更新タイミングを確認する"]}}}
+{"wait_ms":450,"type":"transcript.final","payload":{"segment_id":"seg_003","speaker_label":"Speaker C","text":"次回までに既存契約の一覧と改定対象の候補を出して、影響が大きい顧客を分けましょう。","start_ms":9300,"end_ms":12800}}
+{"wait_ms":500,"type":"analysis.delta","payload":{"items":[{"op":"add","item":{"id":"an_003","kind":"issue","severity":"medium","title":"次回までの確認事項","body":"既存契約一覧、改定対象候補、影響が大きい顧客の分類が次の意思決定材料になります。","linked_segment_ids":["seg_003"],"status":"open"}}]}}

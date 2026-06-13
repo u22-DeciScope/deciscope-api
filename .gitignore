@@ -20,4 +20,15 @@
 
 # 秘密鍵
 serviceAccountKey.json
-.env
+.env*
+!.env.example
+
+# Local runtime artifacts
+.cache/
+uploads/
+.tmp-server.*
+
+bin
+
+.gocache/
+.gotmp/
