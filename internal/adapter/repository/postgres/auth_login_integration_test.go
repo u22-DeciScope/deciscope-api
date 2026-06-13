@@ -1,12 +1,12 @@
-package sqlite_test
+package postgres_test
 
 import (
 	"context"
-	"path/filepath"
+	"os"
 	"testing"
 	"time"
 
-	sqliterepository "deciscope-core-api/internal/adapter/repository/sqlite"
+	postgresrepository "deciscope-core-api/internal/adapter/repository/postgres"
 	appauth "deciscope-core-api/internal/application/auth"
 	"deciscope-core-api/internal/infrastructure/database"
 )
@@ -19,22 +19,30 @@ func (v loginVerifier) VerifyIDToken(context.Context, string) (*appauth.Identity
 	return v.identity, nil
 }
 
-func TestLoginPersistsAccountToSQLite(t *testing.T) {
+func TestLoginPersistsAccountToPostgreSQL(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open(ctx, database.Config{
-		Driver: "sqlite",
-		URL:    filepath.Join(t.TempDir(), "auth.sqlite"),
-	})
+	databaseURL := os.Getenv("DATABASE_TEST_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_TEST_URL is not set")
+	}
+	db, err := database.Open(ctx, database.Config{URL: databaseURL})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := database.Migrate(ctx, db, "sqlite"); err != nil {
+	if err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
+	}
+	if _, err := db.Exec(`
+		TRUNCATE TABLE uploads, jobs, meeting_reports, meeting_segments, meeting_events,
+			meetings, user_sessions, workspace_invitations, workspace_members, workspaces,
+			user_emails, user_identities, users RESTART IDENTITY CASCADE
+	`); err != nil {
+		t.Fatalf("reset test database: %v", err)
 	}
 
 	service := appauth.NewService(
-		sqliterepository.NewAuthWorkspaceRepository(db),
+		postgresrepository.NewAuthWorkspaceRepository(db),
 		loginVerifier{identity: &appauth.Identity{
 			UID: "firebase-uid", Email: "user@example.com", Name: "User", Provider: "microsoft.com",
 		}},

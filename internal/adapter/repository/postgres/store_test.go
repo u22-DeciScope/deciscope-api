@@ -1,8 +1,9 @@
-package sqlite
+package postgres
 
 import (
 	"context"
-	"path/filepath"
+	"database/sql"
+	"os"
 	"sort"
 	"sync"
 	"testing"
@@ -120,17 +121,17 @@ func TestStoreAppendEventSequencesConcurrentDurableEvents(t *testing.T) {
 
 func TestStoreAppendEventSequencesConcurrentDatabaseConnections(t *testing.T) {
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "connections.sqlite")
-	config := database.Config{Driver: "sqlite", URL: dbPath}
+	config := database.Config{URL: testDatabaseURL(t)}
 
 	dbA, err := database.Open(ctx, config)
 	if err != nil {
 		t.Fatalf("database.Open(A) error = %v", err)
 	}
 	t.Cleanup(func() { _ = dbA.Close() })
-	if err := database.Migrate(ctx, dbA, "sqlite"); err != nil {
+	if err := database.Migrate(ctx, dbA); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	resetTestDatabase(t, dbA)
 
 	dbB, err := database.Open(ctx, config)
 	if err != nil {
@@ -187,8 +188,7 @@ func assertContiguousSequences(t *testing.T, seqs <-chan int64, eventCount int) 
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
-	db, err := database.Open(context.Background(), database.Config{Driver: "sqlite", URL: dbPath})
+	db, err := database.Open(context.Background(), database.Config{URL: testDatabaseURL(t)})
 	if err != nil {
 		t.Fatalf("database.Open() error = %v", err)
 	}
@@ -197,8 +197,30 @@ func newTestStore(t *testing.T) *Store {
 		_ = db.Close()
 	})
 	store := NewStore(db)
-	if err := database.Migrate(context.Background(), db, "sqlite"); err != nil {
+	if err := database.Migrate(context.Background(), db); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	resetTestDatabase(t, db)
 	return store
+}
+
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	value := os.Getenv("DATABASE_TEST_URL")
+	if value == "" {
+		t.Skip("DATABASE_TEST_URL is not set")
+	}
+	return value
+}
+
+func resetTestDatabase(t *testing.T, db *sql.DB) {
+	t.Helper()
+	_, err := db.Exec(`
+		TRUNCATE TABLE uploads, jobs, meeting_reports, meeting_segments, meeting_events,
+			meetings, user_sessions, workspace_invitations, workspace_members, workspaces,
+			user_emails, user_identities, users RESTART IDENTITY CASCADE
+	`)
+	if err != nil {
+		t.Fatalf("reset test database: %v", err)
+	}
 }

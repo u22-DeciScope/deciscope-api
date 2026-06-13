@@ -1,4 +1,4 @@
-package sqlite
+package postgres
 
 import (
 	"context"
@@ -27,8 +27,8 @@ func (s *Store) AppendEvent(ctx context.Context, meetingID, eventType string, pa
 	nowText := now.Format(time.RFC3339)
 	var seq int64
 	if err := tx.QueryRowContext(ctx, `
-		UPDATE meetings SET next_seq = next_seq + 1, updated_at = ?
-		WHERE id = ? RETURNING next_seq - 1
+		UPDATE meetings SET next_seq = next_seq + 1, updated_at = $1
+		WHERE id = $2 RETURNING next_seq - 1
 	`, nowText, meetingID).Scan(&seq); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrNotFound
@@ -37,7 +37,7 @@ func (s *Store) AppendEvent(ctx context.Context, meetingID, eventType string, pa
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO meeting_events (meeting_id, seq, type, ts_ms, payload, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6)
 	`, meetingID, seq, eventType, now.UnixMilli(), string(payloadBytes), nowText); err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func (s *Store) AppendEvent(ctx context.Context, meetingID, eventType string, pa
 func (s *Store) ListEvents(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Event, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT type, meeting_id, seq, ts_ms, payload FROM meeting_events
-		WHERE meeting_id = ? AND seq > ? ORDER BY seq ASC
+		WHERE meeting_id = $1 AND seq > $2 ORDER BY seq ASC
 	`, meetingID, afterSeq)
 	if err != nil {
 		return nil, err
@@ -82,7 +82,7 @@ func (s *Store) ListEvents(ctx context.Context, meetingID string, afterSeq int64
 func (s *Store) ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Segment, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT meeting_id, seq, segment_id, speaker_label, text, start_ms, end_ms, created_at
-		FROM meeting_segments WHERE meeting_id = ? AND seq > ? ORDER BY seq ASC
+		FROM meeting_segments WHERE meeting_id = $1 AND seq > $2 ORDER BY seq ASC
 	`, meetingID, afterSeq)
 	if err != nil {
 		return nil, err
@@ -107,9 +107,9 @@ func updateMeetingState(ctx context.Context, tx *sql.Tx, meetingID string, paylo
 		return nil
 	}
 	if state.Status == "ended" {
-		_, err := tx.ExecContext(ctx, `UPDATE meetings SET status = ?, updated_at = ?, ended_at = ? WHERE id = ?`, state.Status, nowText, nowText, meetingID)
+		_, err := tx.ExecContext(ctx, `UPDATE meetings SET status = $1, updated_at = $2, ended_at = $3 WHERE id = $4`, state.Status, nowText, nowText, meetingID)
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE meetings SET status = ?, updated_at = ? WHERE id = ?`, state.Status, nowText, meetingID)
+	_, err := tx.ExecContext(ctx, `UPDATE meetings SET status = $1, updated_at = $2 WHERE id = $3`, state.Status, nowText, meetingID)
 	return err
 }

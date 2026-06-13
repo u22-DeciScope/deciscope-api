@@ -28,6 +28,7 @@ serviceAccountKey.json
 .cache/
 uploads/
 .tmp-server.*
+db.sqlite*
 
 bin
 
