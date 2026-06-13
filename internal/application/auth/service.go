@@ -97,17 +97,17 @@ func (s *Service) Login(ctx context.Context, idToken string) (*LoginResult, erro
 	}
 	user, err := s.repository.FindOrCreateUser(ctx, *identity)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find or create user: %w", err)
 	}
 	if err := s.repository.AcceptInvitations(ctx, user.ID, normalizeEmail(identity.Email)); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("accept invitations: %w", err)
 	}
 	if _, err := s.repository.EnsureInitialWorkspace(ctx, user.ID, user.DisplayName, identity.Email); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ensure initial workspace: %w", err)
 	}
 	workspaces, err := s.repository.ListWorkspaces(ctx, user.ID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list workspaces: %w", err)
 	}
 	rawToken, tokenHash, err := newSessionToken()
 	if err != nil {
@@ -122,8 +122,9 @@ func (s *Service) Login(ctx context.Context, idToken string) (*LoginResult, erro
 		session.CurrentWorkspaceID = workspaces[0].ID
 	}
 	if err := s.repository.CreateSession(ctx, session); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create session: %w", err)
 	}
+	log.Printf("backend login synchronized: user_id=%q workspace_count=%d", user.ID, len(workspaces))
 	return &LoginResult{User: user, Workspaces: workspaces, Session: &session, Token: rawToken}, nil
 }
 

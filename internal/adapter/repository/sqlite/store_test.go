@@ -2,17 +2,13 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"testing"
 
 	"deciscope-core-api/internal/domain"
 	"deciscope-core-api/internal/infrastructure/database"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 func TestStoreAppendEventSequencesDurableEvents(t *testing.T) {
@@ -129,9 +125,6 @@ func TestStoreAppendEventSequencesConcurrentDatabaseConnections(t *testing.T) {
 
 	dbA, err := database.Open(ctx, config)
 	if err != nil {
-		if strings.Contains(err.Error(), "go-sqlite3 requires cgo") {
-			t.Skipf("sqlite runtime requires CGO: %v", err)
-		}
 		t.Fatalf("database.Open(A) error = %v", err)
 	}
 	t.Cleanup(func() { _ = dbA.Close() })
@@ -195,9 +188,9 @@ func assertContiguousSequences(t *testing.T, seqs <-chan int64, eventCount int) 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
-	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on")
+	db, err := database.Open(context.Background(), database.Config{Driver: "sqlite", URL: dbPath})
 	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
+		t.Fatalf("database.Open() error = %v", err)
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() {
@@ -205,9 +198,6 @@ func newTestStore(t *testing.T) *Store {
 	})
 	store := NewStore(db)
 	if err := database.Migrate(context.Background(), db, "sqlite"); err != nil {
-		if strings.Contains(err.Error(), "go-sqlite3 requires cgo") {
-			t.Skipf("sqlite runtime requires CGO: %v", err)
-		}
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	return store

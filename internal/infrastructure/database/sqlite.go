@@ -4,18 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 func openSQLite(ctx context.Context, url string) (*sql.DB, error) {
-	dsn := url
-	if !strings.Contains(dsn, "?") {
-		dsn += "?_foreign_keys=on&_busy_timeout=5000"
-	}
-
-	db, err := sql.Open("sqlite3", dsn)
+	db, err := sql.Open("sqlite", url)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -24,6 +18,14 @@ func openSQLite(ctx context.Context, url string) (*sql.DB, error) {
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON;`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable sqlite foreign keys: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000;`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set sqlite busy timeout: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL;`); err != nil {
 		_ = db.Close()

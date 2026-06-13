@@ -3,12 +3,11 @@ package app
 import (
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 )
 
 func TestServerProtectsWorkspaceAndMeetingAPIs(t *testing.T) {
-	t.Setenv("SQLITE_PATH", filepath.Join(t.TempDir(), "test.sqlite"))
+	t.Setenv("SQLITE_PATH", "file:server_test?mode=memory&cache=shared")
 	handler, err := NewServer()
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)

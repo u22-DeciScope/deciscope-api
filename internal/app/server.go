@@ -92,6 +92,7 @@ func buildRepositories(ctx context.Context, config database.Config) (repositoryS
 		return repositorySet{}, nil, fmt.Errorf("migrate database: %w", err)
 	}
 	store := sqliterepository.NewStore(conn)
+	log.Printf("database repository ready: driver=%q url=%q", config.Driver, config.URL)
 	return repositoriesFromStore(store), sqliterepository.NewAuthWorkspaceRepository(conn), nil
 }
 
