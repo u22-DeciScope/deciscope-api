@@ -8,14 +8,14 @@ import (
 	"deciscope-core-api/internal/domain"
 )
 
-func (m *MemoryStore) CreateJob(_ context.Context, jobType, meetingID, status string) (*domain.Job, error) {
+func (m *MemoryStore) CreateJob(_ context.Context, workspaceID, jobType, meetingID, status string) (*domain.Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if status == "" {
 		status = "queued"
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	job := domain.Job{ID: domain.NewID("job"), Type: jobType, Status: status, MeetingID: meetingID, CreatedAt: now, UpdatedAt: now}
+	job := domain.Job{ID: domain.NewID("job"), WorkspaceID: workspaceID, Type: jobType, Status: status, MeetingID: meetingID, CreatedAt: now, UpdatedAt: now}
 	m.jobs[job.ID] = job
 	return cloneJob(job), nil
 }

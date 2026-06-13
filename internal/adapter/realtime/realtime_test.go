@@ -49,7 +49,7 @@ func TestClientWritesCatchUpUsingProtocolDTO(t *testing.T) {
 		MeetingID: "m_1", Type: domain.EventTranscriptFinal, Seq: 3, TsMS: 42,
 		Payload: json.RawMessage(`{"text":"hello"}`),
 	}}}
-	client := newClient("m_1", server, bufio.NewReader(server), 2)
+	client := newClient("m_1", "w_1", "u_1", "s_1", server, bufio.NewReader(server), 2)
 	done := make(chan error, 1)
 	go func() { done <- client.writeCatchUp(context.Background(), store) }()
 

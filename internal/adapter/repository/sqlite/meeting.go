@@ -10,7 +10,7 @@ import (
 	"deciscope-core-api/internal/domain"
 )
 
-func (s *Store) CreateMeeting(ctx context.Context, title, source string) (*domain.Meeting, error) {
+func (s *Store) CreateMeeting(ctx context.Context, workspaceID, title, source string) (*domain.Meeting, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		title = "Untitled meeting"
@@ -20,24 +20,24 @@ func (s *Store) CreateMeeting(ctx context.Context, title, source string) (*domai
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	meeting := &domain.Meeting{
-		ID: domain.NewID("m"), Title: title, Status: "created", Source: source,
+		ID: domain.NewID("m"), WorkspaceID: workspaceID, Title: title, Status: "created", Source: source,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO meetings (id, title, status, source, next_seq, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 1, ?, ?)
-	`, meeting.ID, meeting.Title, meeting.Status, meeting.Source, meeting.CreatedAt, meeting.UpdatedAt)
+		INSERT INTO meetings (id, workspace_id, title, status, source, next_seq, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+	`, meeting.ID, meeting.WorkspaceID, meeting.Title, meeting.Status, meeting.Source, meeting.CreatedAt, meeting.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return meeting, nil
 }
 
-func (s *Store) ListMeetings(ctx context.Context) ([]domain.Meeting, error) {
+func (s *Store) ListMeetings(ctx context.Context, workspaceID string) ([]domain.Meeting, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, title, status, source, created_at, updated_at, COALESCE(ended_at, '')
-		FROM meetings ORDER BY created_at DESC
-	`)
+		SELECT id, COALESCE(workspace_id, ''), title, status, source, created_at, updated_at, COALESCE(ended_at, '')
+		FROM meetings WHERE workspace_id = ? ORDER BY created_at DESC
+	`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func (s *Store) ListMeetings(ctx context.Context) ([]domain.Meeting, error) {
 	var meetings []domain.Meeting
 	for rows.Next() {
 		var meeting domain.Meeting
-		if err := rows.Scan(&meeting.ID, &meeting.Title, &meeting.Status, &meeting.Source, &meeting.CreatedAt, &meeting.UpdatedAt, &meeting.EndedAt); err != nil {
+		if err := rows.Scan(&meeting.ID, &meeting.WorkspaceID, &meeting.Title, &meeting.Status, &meeting.Source, &meeting.CreatedAt, &meeting.UpdatedAt, &meeting.EndedAt); err != nil {
 			return nil, err
 		}
 		meetings = append(meetings, meeting)
@@ -56,9 +56,9 @@ func (s *Store) ListMeetings(ctx context.Context) ([]domain.Meeting, error) {
 func (s *Store) GetMeeting(ctx context.Context, meetingID string) (*domain.Meeting, error) {
 	var meeting domain.Meeting
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, title, status, source, created_at, updated_at, COALESCE(ended_at, '')
+		SELECT id, COALESCE(workspace_id, ''), title, status, source, created_at, updated_at, COALESCE(ended_at, '')
 		FROM meetings WHERE id = ?
-	`, meetingID).Scan(&meeting.ID, &meeting.Title, &meeting.Status, &meeting.Source, &meeting.CreatedAt, &meeting.UpdatedAt, &meeting.EndedAt)
+	`, meetingID).Scan(&meeting.ID, &meeting.WorkspaceID, &meeting.Title, &meeting.Status, &meeting.Source, &meeting.CreatedAt, &meeting.UpdatedAt, &meeting.EndedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}

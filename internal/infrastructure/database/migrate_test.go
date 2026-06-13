@@ -3,7 +3,6 @@ package database
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -11,9 +10,6 @@ func TestMigrateSQLiteIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(ctx, Config{Driver: "sqlite", URL: filepath.Join(t.TempDir(), "test.sqlite")})
 	if err != nil {
-		if strings.Contains(err.Error(), "go-sqlite3 requires cgo") {
-			t.Skipf("sqlite runtime requires CGO: %v", err)
-		}
 		t.Fatalf("Open() error = %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
@@ -31,6 +27,14 @@ func TestMigrateSQLiteIsIdempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("migration count = %d, want 1", count)
+	}
+
+	var legacyTableExists bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 't_Users')`).Scan(&legacyTableExists); err != nil {
+		t.Fatalf("check legacy table: %v", err)
+	}
+	if legacyTableExists {
+		t.Fatal("legacy t_Users table still exists")
 	}
 }
 
