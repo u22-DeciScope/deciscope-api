@@ -22,19 +22,19 @@ func TestCoreAPIHTTPContractWithFakeUseCases(t *testing.T) {
 	useCases := &fakeCoreUseCases{}
 	api := NewCoreAPI(useCases, nil)
 	router := chi.NewRouter()
-	router.Get("/meetings", api.ListMeetings)
-	router.Post("/meetings", api.CreateMeeting)
+	router.Get("/workspaces/{workspace_code}/meetings", api.ListMeetings)
+	router.Post("/workspaces/{workspace_code}/meetings", api.CreateMeeting)
 	router.Get("/meetings/{meeting_id}", api.GetMeeting)
 	router.Get("/meetings/{meeting_id}/events", api.ListEvents)
 	router.Get("/meetings/{meeting_id}/segments", api.ListSegments)
 	router.Get("/meetings/{meeting_id}/report", api.GetReport)
 	router.Post("/uploads", api.Upload)
 
-	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/meetings", nil), "meetings")
+	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/workspaces/w_test/meetings", nil), "meetings")
 	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/meetings/m_http/events", nil), "events")
 	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/meetings/m_http/segments", nil), "segments")
 
-	create := serveJSON(t, router, http.MethodPost, "/meetings", map[string]any{"title": "HTTP contract"})
+	create := serveJSON(t, router, http.MethodPost, "/workspaces/w_test/meetings", map[string]any{"title": "HTTP contract"})
 	if create.Code != http.StatusCreated || !bytes.Contains(create.Body.Bytes(), []byte(`"id":"m_http"`)) {
 		t.Fatalf("create response = %d %s", create.Code, create.Body.String())
 	}
@@ -87,15 +87,15 @@ type fakeCoreUseCases struct {
 	uploadMediaType string
 }
 
-func (f *fakeCoreUseCases) ListMeetings(context.Context) ([]domain.Meeting, error) {
+func (f *fakeCoreUseCases) ListMeetings(context.Context, string) ([]domain.Meeting, error) {
 	if f.meeting == nil {
 		return nil, nil
 	}
 	return []domain.Meeting{*f.meeting}, nil
 }
 
-func (f *fakeCoreUseCases) CreateMeeting(_ context.Context, title, source string) (*domain.Meeting, error) {
-	f.meeting = &domain.Meeting{ID: "m_http", Title: title, Status: "created", Source: source}
+func (f *fakeCoreUseCases) CreateMeeting(_ context.Context, workspaceID, title, source string) (*domain.Meeting, error) {
+	f.meeting = &domain.Meeting{ID: "m_http", WorkspaceID: workspaceID, Title: title, Status: "created", Source: source}
 	return f.meeting, nil
 }
 
@@ -129,11 +129,11 @@ func (f *fakeCoreUseCases) GetOrCreateReport(_ context.Context, meetingID string
 	return &domain.Report{MeetingID: meetingID, Format: "markdown", Content: "# " + f.meeting.Title}, nil
 }
 
-func (f *fakeCoreUseCases) UploadFile(_ context.Context, filename, mediaType string, _ io.Reader) (*application.UploadResult, error) {
+func (f *fakeCoreUseCases) UploadFile(_ context.Context, workspaceID, filename, mediaType string, _ io.Reader) (*application.UploadResult, error) {
 	f.uploadMediaType = mediaType
 	return &application.UploadResult{
-		Upload: &domain.Upload{ID: "upl_http", Filename: filename, MediaType: mediaType, JobID: "job_http"},
-		Job:    &domain.Job{ID: "job_http", Status: "completed"},
+		Upload: &domain.Upload{ID: "upl_http", WorkspaceID: workspaceID, Filename: filename, MediaType: mediaType, JobID: "job_http"},
+		Job:    &domain.Job{ID: "job_http", WorkspaceID: workspaceID, Status: "completed"},
 	}, nil
 }
 

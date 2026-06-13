@@ -2,24 +2,20 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"testing"
 
 	"deciscope-core-api/internal/domain"
 	"deciscope-core-api/internal/infrastructure/database"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 func TestStoreAppendEventSequencesDurableEvents(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	meeting, err := store.CreateMeeting(ctx, "Sequence test", "fixture_replay")
+	meeting, err := store.CreateMeeting(ctx, "w_test", "Sequence test", "fixture_replay")
 	if err != nil {
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}
@@ -81,7 +77,7 @@ func TestStoreAppendEventSequencesConcurrentDurableEvents(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	meeting, err := store.CreateMeeting(ctx, "Concurrent sequence test", "fixture_replay")
+	meeting, err := store.CreateMeeting(ctx, "w_test", "Concurrent sequence test", "fixture_replay")
 	if err != nil {
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}
@@ -129,9 +125,6 @@ func TestStoreAppendEventSequencesConcurrentDatabaseConnections(t *testing.T) {
 
 	dbA, err := database.Open(ctx, config)
 	if err != nil {
-		if strings.Contains(err.Error(), "go-sqlite3 requires cgo") {
-			t.Skipf("sqlite runtime requires CGO: %v", err)
-		}
 		t.Fatalf("database.Open(A) error = %v", err)
 	}
 	t.Cleanup(func() { _ = dbA.Close() })
@@ -146,7 +139,7 @@ func TestStoreAppendEventSequencesConcurrentDatabaseConnections(t *testing.T) {
 	t.Cleanup(func() { _ = dbB.Close() })
 
 	stores := []*Store{NewStore(dbA), NewStore(dbB)}
-	meeting, err := stores[0].CreateMeeting(ctx, "Multi-connection sequence test", "fixture_replay")
+	meeting, err := stores[0].CreateMeeting(ctx, "w_test", "Multi-connection sequence test", "fixture_replay")
 	if err != nil {
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}
@@ -195,9 +188,9 @@ func assertContiguousSequences(t *testing.T, seqs <-chan int64, eventCount int) 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
-	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on")
+	db, err := database.Open(context.Background(), database.Config{Driver: "sqlite", URL: dbPath})
 	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
+		t.Fatalf("database.Open() error = %v", err)
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() {
@@ -205,9 +198,6 @@ func newTestStore(t *testing.T) *Store {
 	})
 	store := NewStore(db)
 	if err := database.Migrate(context.Background(), db, "sqlite"); err != nil {
-		if strings.Contains(err.Error(), "go-sqlite3 requires cgo") {
-			t.Skipf("sqlite runtime requires CGO: %v", err)
-		}
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	return store

@@ -9,7 +9,7 @@ import (
 	"deciscope-core-api/internal/domain"
 )
 
-func (m *MemoryStore) CreateMeeting(_ context.Context, title, source string) (*domain.Meeting, error) {
+func (m *MemoryStore) CreateMeeting(_ context.Context, workspaceID, title, source string) (*domain.Meeting, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	title = strings.TrimSpace(title)
@@ -21,19 +21,21 @@ func (m *MemoryStore) CreateMeeting(_ context.Context, title, source string) (*d
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	meeting := domain.Meeting{
-		ID: domain.NewID("m"), Title: title, Status: "created", Source: source,
+		ID: domain.NewID("m"), WorkspaceID: workspaceID, Title: title, Status: "created", Source: source,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	m.meetings[meeting.ID], m.nextSeq[meeting.ID] = meeting, 1
 	return cloneMeeting(meeting), nil
 }
 
-func (m *MemoryStore) ListMeetings(_ context.Context) ([]domain.Meeting, error) {
+func (m *MemoryStore) ListMeetings(_ context.Context, workspaceID string) ([]domain.Meeting, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	meetings := make([]domain.Meeting, 0, len(m.meetings))
 	for _, meeting := range m.meetings {
-		meetings = append(meetings, meeting)
+		if meeting.WorkspaceID == workspaceID {
+			meetings = append(meetings, meeting)
+		}
 	}
 	sort.Slice(meetings, func(i, j int) bool { return meetings[i].CreatedAt > meetings[j].CreatedAt })
 	return meetings, nil

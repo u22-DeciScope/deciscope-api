@@ -18,7 +18,7 @@ func TestServiceCoreUseCasesWithFakePorts(t *testing.T) {
 	ports := newFakePorts()
 	service := application.NewService(ports, ports, ports, ports, ports, ports, ports)
 
-	meeting, err := service.CreateMeeting(ctx, "Service use cases", "fixture_replay")
+	meeting, err := service.CreateMeeting(ctx, "w_test", "Service use cases", "fixture_replay")
 	if err != nil {
 		t.Fatalf("CreateMeeting() error = %v", err)
 	}
@@ -42,7 +42,7 @@ func TestServiceCoreUseCasesWithFakePorts(t *testing.T) {
 		t.Fatalf("report = %+v", report)
 	}
 
-	result, err := service.UploadFile(ctx, "notes.txt", "", strings.NewReader("hello"))
+	result, err := service.UploadFile(ctx, "w_test", "notes.txt", "", strings.NewReader("hello"))
 	if err != nil {
 		t.Fatalf("UploadFile() error = %v", err)
 	}
@@ -68,13 +68,13 @@ func newFakePorts() *fakePorts {
 	return &fakePorts{jobs: make(map[string]domain.Job), savedObjects: make(map[string][]byte)}
 }
 
-func (f *fakePorts) CreateMeeting(_ context.Context, title, source string) (*domain.Meeting, error) {
+func (f *fakePorts) CreateMeeting(_ context.Context, workspaceID, title, source string) (*domain.Meeting, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	f.meeting = &domain.Meeting{ID: "m_test", Title: title, Status: "created", Source: source, CreatedAt: now, UpdatedAt: now}
+	f.meeting = &domain.Meeting{ID: "m_test", WorkspaceID: workspaceID, Title: title, Status: "created", Source: source, CreatedAt: now, UpdatedAt: now}
 	return f.meeting, nil
 }
 
-func (f *fakePorts) ListMeetings(context.Context) ([]domain.Meeting, error) {
+func (f *fakePorts) ListMeetings(context.Context, string) ([]domain.Meeting, error) {
 	if f.meeting == nil {
 		return nil, nil
 	}
@@ -142,8 +142,8 @@ func (f *fakePorts) LatestReport(context.Context, string) (*domain.Report, error
 	return &report, nil
 }
 
-func (f *fakePorts) CreateJob(_ context.Context, jobType, meetingID, status string) (*domain.Job, error) {
-	job := domain.Job{ID: "job_test", Type: jobType, MeetingID: meetingID, Status: status}
+func (f *fakePorts) CreateJob(_ context.Context, workspaceID, jobType, meetingID, status string) (*domain.Job, error) {
+	job := domain.Job{ID: "job_test", WorkspaceID: workspaceID, Type: jobType, MeetingID: meetingID, Status: status}
 	f.jobs[job.ID] = job
 	return &job, nil
 }
@@ -177,8 +177,8 @@ func (f *fakePorts) GetJob(_ context.Context, jobID string) (*domain.Job, error)
 	return &job, nil
 }
 
-func (f *fakePorts) SaveUpload(_ context.Context, filename, mediaType, path, jobID string) (*domain.Upload, error) {
-	upload := domain.Upload{ID: "upl_test", Filename: filename, MediaType: mediaType, Path: path, JobID: jobID}
+func (f *fakePorts) SaveUpload(_ context.Context, workspaceID, filename, mediaType, path, jobID string) (*domain.Upload, error) {
+	upload := domain.Upload{ID: "upl_test", WorkspaceID: workspaceID, Filename: filename, MediaType: mediaType, Path: path, JobID: jobID}
 	f.uploads = append(f.uploads, upload)
 	return &upload, nil
 }

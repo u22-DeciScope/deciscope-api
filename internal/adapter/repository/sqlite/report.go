@@ -25,7 +25,7 @@ func (s *Store) LatestReport(ctx context.Context, meetingID string) (*domain.Rep
 	var report domain.Report
 	err := s.db.QueryRowContext(ctx, `
 		SELECT artifact_id, meeting_id, format, content, created_at FROM meeting_reports
-		WHERE meeting_id = ? ORDER BY created_at DESC LIMIT 1
+		WHERE meeting_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
 	`, meetingID).Scan(&report.ArtifactID, &report.MeetingID, &report.Format, &report.Content, &report.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound

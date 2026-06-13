@@ -26,9 +26,12 @@ func (v *TokenVerifier) VerifyIDToken(ctx context.Context, idToken string) (*app
 	}
 	email, _ := token.Claims["email"].(string)
 	name, _ := token.Claims["name"].(string)
+	emailVerified, _ := token.Claims["email_verified"].(bool)
+	provider := ""
+	if firebaseClaim, ok := token.Claims["firebase"].(map[string]interface{}); ok {
+		provider, _ = firebaseClaim["sign_in_provider"].(string)
+	}
 	return &appauth.Identity{
-		UID:   token.UID,
-		Email: email,
-		Name:  name,
+		UID: token.UID, Email: email, Name: name, EmailVerified: emailVerified, Provider: provider,
 	}, nil
 }

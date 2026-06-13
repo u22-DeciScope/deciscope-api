@@ -8,8 +8,8 @@ import (
 )
 
 type MeetingRepository interface {
-	CreateMeeting(ctx context.Context, title, source string) (*domain.Meeting, error)
-	ListMeetings(ctx context.Context) ([]domain.Meeting, error)
+	CreateMeeting(ctx context.Context, workspaceID, title, source string) (*domain.Meeting, error)
+	ListMeetings(ctx context.Context, workspaceID string) ([]domain.Meeting, error)
 	GetMeeting(ctx context.Context, meetingID string) (*domain.Meeting, error)
 	ResetMeeting(ctx context.Context, meetingID string) error
 }
@@ -26,14 +26,14 @@ type ReportRepository interface {
 }
 
 type JobRepository interface {
-	CreateJob(ctx context.Context, jobType, meetingID, status string) (*domain.Job, error)
+	CreateJob(ctx context.Context, workspaceID, jobType, meetingID, status string) (*domain.Job, error)
 	CompleteJob(ctx context.Context, jobID string, result any) error
 	FailJob(ctx context.Context, jobID, message string) error
 	GetJob(ctx context.Context, jobID string) (*domain.Job, error)
 }
 
 type UploadRepository interface {
-	SaveUpload(ctx context.Context, filename, mediaType, path, jobID string) (*domain.Upload, error)
+	SaveUpload(ctx context.Context, workspaceID, filename, mediaType, path, jobID string) (*domain.Upload, error)
 }
 
 type Publisher interface {

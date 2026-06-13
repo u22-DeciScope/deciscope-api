@@ -25,7 +25,7 @@ func (api *CoreAPI) Upload(w http.ResponseWriter, r *http.Request) {
 	if mediaType == "" {
 		mediaType = mime.TypeByExtension(filepath.Ext(filename))
 	}
-	result, err := api.service.UploadFile(r.Context(), filename, mediaType, file)
+	result, err := api.service.UploadFile(r.Context(), chi.URLParam(r, "workspace_code"), filename, mediaType, file)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "upload_failed", err.Error())
 		return

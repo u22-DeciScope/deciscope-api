@@ -7,7 +7,7 @@ import (
 )
 
 func (api *CoreAPI) ListMeetings(w http.ResponseWriter, r *http.Request) {
-	meetings, err := api.service.ListMeetings(r.Context())
+	meetings, err := api.service.ListMeetings(r.Context(), chi.URLParam(r, "workspace_code"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list_meetings_failed", err.Error())
 		return
@@ -24,7 +24,7 @@ func (api *CoreAPI) CreateMeeting(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	meeting, err := api.service.CreateMeeting(r.Context(), req.Title, req.Source)
+	meeting, err := api.service.CreateMeeting(r.Context(), chi.URLParam(r, "workspace_code"), req.Title, req.Source)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create_meeting_failed", err.Error())
 		return

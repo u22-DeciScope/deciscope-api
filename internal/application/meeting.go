@@ -8,8 +8,8 @@ import (
 	"deciscope-core-api/internal/domain"
 )
 
-func (s *Service) CreateMeeting(ctx context.Context, title, source string) (*domain.Meeting, error) {
-	meeting, err := s.meetings.CreateMeeting(ctx, title, source)
+func (s *Service) CreateMeeting(ctx context.Context, workspaceID, title, source string) (*domain.Meeting, error) {
+	meeting, err := s.meetings.CreateMeeting(ctx, workspaceID, title, source)
 	if err != nil {
 		return nil, err
 	}
@@ -21,8 +21,8 @@ func (s *Service) CreateMeeting(ctx context.Context, title, source string) (*dom
 	return s.meetings.GetMeeting(ctx, meeting.ID)
 }
 
-func (s *Service) ListMeetings(ctx context.Context) ([]domain.Meeting, error) {
-	return s.meetings.ListMeetings(ctx)
+func (s *Service) ListMeetings(ctx context.Context, workspaceID string) ([]domain.Meeting, error) {
+	return s.meetings.ListMeetings(ctx, workspaceID)
 }
 
 func (s *Service) GetMeeting(ctx context.Context, meetingID string) (*domain.Meeting, error) {
@@ -64,7 +64,8 @@ func (s *Service) AppendAndPublish(ctx context.Context, meetingID, eventType str
 }
 
 func (s *Service) EndMeeting(ctx context.Context, meetingID string) (*domain.Report, []domain.Event, error) {
-	if _, err := s.meetings.GetMeeting(ctx, meetingID); err != nil {
+	meeting, err := s.meetings.GetMeeting(ctx, meetingID)
+	if err != nil {
 		return nil, nil, err
 	}
 
@@ -76,7 +77,7 @@ func (s *Service) EndMeeting(ctx context.Context, meetingID string) (*domain.Rep
 	}
 	events := []domain.Event{*stateEvent}
 
-	job, err := s.jobs.CreateJob(ctx, "report.final", meetingID, "running")
+	job, err := s.jobs.CreateJob(ctx, meeting.WorkspaceID, "report.final", meetingID, "running")
 	if err != nil {
 		return nil, events, err
 	}
