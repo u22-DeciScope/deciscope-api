@@ -31,10 +31,20 @@ for (const path of paths) {
     errors.push(`${path}: UTF-8 BOM is not allowed`);
   }
 
+  let text;
   try {
-    decoder.decode(data);
+    text = decoder.decode(data);
   } catch (error) {
     errors.push(`${path}: invalid UTF-8 (${error.message})`);
+    continue;
+  }
+
+  const replacementCharacterIndex = text.indexOf("\uFFFD");
+  if (replacementCharacterIndex !== -1) {
+    const line = text.slice(0, replacementCharacterIndex).split("\n").length;
+    errors.push(
+      `${path}:${line}: Unicode replacement character (U+FFFD) is not allowed`,
+    );
   }
 }
 
@@ -44,4 +54,6 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-console.log(`Validated ${paths.length} tracked files as UTF-8 without BOM.`);
+console.log(
+  `Validated ${paths.length} tracked files as UTF-8 without BOM or U+FFFD.`,
+);
