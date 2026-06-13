@@ -118,7 +118,7 @@ func (r *AuthWorkspaceRepository) EnsureInitialWorkspace(ctx context.Context, us
 	if name == "" {
 		name = defaultWorkspaceBase(email)
 	}
-	name += "縺ｮ繝ｯ繝ｼ繧ｯ繧ｹ繝壹・繧ｹ"
+	name += "のワークスペース"
 	workspace := domain.Workspace{ID: domain.NewUUID(), Name: name, Role: "owner", CreatedAt: now, UpdatedAt: now}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
