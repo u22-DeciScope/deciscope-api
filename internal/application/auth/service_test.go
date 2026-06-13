@@ -39,6 +39,36 @@ func TestLoginCreatesUserWorkspaceAndSession(t *testing.T) {
 	}
 }
 
+func TestLoginAllowsMicrosoftIdentityWithoutEmailVerifiedClaim(t *testing.T) {
+	repository := &fakeRepository{}
+	service := appauth.NewService(
+		repository,
+		fakeVerifier{identity: &appauth.Identity{
+			UID: "firebase-uid", Email: "user@example.com", Name: "User", Provider: "microsoft.com",
+		}},
+		time.Hour,
+	)
+
+	if _, err := service.Login(context.Background(), "token"); err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+}
+
+func TestLoginRejectsUnverifiedEmailForOtherProviders(t *testing.T) {
+	service := appauth.NewService(
+		&fakeRepository{},
+		fakeVerifier{identity: &appauth.Identity{
+			UID: "firebase-uid", Email: "user@example.com", Name: "User", Provider: "password",
+		}},
+		time.Hour,
+	)
+
+	_, err := service.Login(context.Background(), "token")
+	if !errors.Is(err, appauth.ErrInvalidToken) {
+		t.Fatalf("Login() error = %v, want ErrInvalidToken", err)
+	}
+}
+
 type fakeRepository struct {
 	appauth.Repository
 	user      domain.User

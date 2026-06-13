@@ -91,7 +91,8 @@ func (s *Service) Login(ctx context.Context, idToken string) (*LoginResult, erro
 	if identity.Email == "" {
 		return nil, ErrEmailRequired
 	}
-	if !identity.EmailVerified {
+	// Firebase Microsoft identities can omit email_verified after a successful OAuth sign-in.
+	if !identity.EmailVerified && identity.Provider != "microsoft.com" {
 		return nil, ErrInvalidToken
 	}
 	user, err := s.repository.FindOrCreateUser(ctx, *identity)
