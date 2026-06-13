@@ -43,7 +43,7 @@ Create or update `deciscope-api\.env`.
 
 ```env
 PORT=9090
-SQLITE_PATH=./db.sqlite
+DATABASE_URL=postgres://deciscope:deciscope@localhost:5432/deciscope?sslmode=disable
 FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 ALLOWED_ORIGINS=http://localhost:5193
@@ -84,5 +84,5 @@ npm run dev
 - If the backend logs that Firebase auth is disabled, the Admin SDK credential env is missing or invalid.
 - Only `/v1/auth/me` and `/v1/auth/health` require the authentication
   middleware today. Meeting and replay routes are currently public.
-- When the backend falls back to Memory Repository, login can verify Firebase
-  identity but cannot attach a local SQLite user ID.
+- PostgreSQL must be available when the backend starts. Authentication state is
+  persisted in PostgreSQL.

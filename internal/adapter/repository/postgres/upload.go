@@ -1,4 +1,4 @@
-package sqlite
+package postgres
 
 import (
 	"context"
@@ -14,7 +14,7 @@ func (s *Store) SaveUpload(ctx context.Context, workspaceID, filename, mediaType
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO uploads (id, workspace_id, filename, media_type, path, job_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, upload.ID, upload.WorkspaceID, upload.Filename, upload.MediaType, upload.Path, upload.JobID, upload.CreatedAt)
 	return upload, err
 }

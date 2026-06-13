@@ -3,6 +3,7 @@
 ## 起動
 
 ```powershell
+docker compose up -d postgres
 go run .
 ```
 
@@ -18,21 +19,15 @@ go run .
 ## データベース設定
 
 ```env
-DATABASE_DRIVER=sqlite
-DATABASE_URL=./db.sqlite
+DATABASE_URL=postgres://deciscope:deciscope@localhost:5432/deciscope?sslmode=disable
 ```
 
-- `DATABASE_DRIVER`: 現在は `sqlite` を指定します。
-- `DATABASE_URL`: SQLiteファイルパスです。
-- `SQLITE_PATH` と `AUTH_SQLITE_PATH` は互換用のフォールバックです。
-- 未指定の場合は `./db.sqlite` を使用します。
+- `DATABASE_URL`: PostgreSQL接続URLです。必須です。
 
 接続生成は `internal/infrastructure/database` の `database.Open`、
 スキーマ更新は埋め込みMigrationを実行する `database.Migrate` が担当します。
-SQLite向けSQLは `internal/adapter/repository/sqlite` に隔離されています。
-
-SQLiteを開けない環境では、会議APIはMemory Repositoryへフォールバックします。
-この場合、永続化はされませんがfixture replayとAPI確認は実行できます。
+PostgreSQL向けSQLは `internal/adapter/repository/postgres` に隔離されています。
+PostgreSQLへ接続できない場合、APIは起動に失敗します。
 
 ## その他の環境変数
 
@@ -118,7 +113,7 @@ go test ./...
 go vet ./...
 ```
 
-Repository契約テストはMemoryとSQLiteへ同じスイートを実行します。
+Repository契約テストはMemoryとPostgreSQLへ同じスイートを実行します。
 ApplicationとHTTP HandlerはFake Port・Fake Use Caseでテストします。
 Fixture、Realtime、サーバー結合、依存方向のテストも実行されます。
 

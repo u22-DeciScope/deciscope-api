@@ -1,4 +1,4 @@
-package sqlite
+package postgres
 
 import (
 	"context"
@@ -22,7 +22,7 @@ func insertSegmentFromPayload(ctx context.Context, tx *sql.Tx, meetingID string,
 	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO meeting_segments (meeting_id, seq, segment_id, speaker_label, text, start_ms, end_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT(meeting_id, segment_id) DO UPDATE SET
 			seq = excluded.seq, speaker_label = excluded.speaker_label, text = excluded.text,
 			start_ms = excluded.start_ms, end_ms = excluded.end_ms

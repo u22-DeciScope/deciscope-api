@@ -2,7 +2,7 @@
 
 DeciScopeのローカルMVP向け、Go + `chi`製バックエンドです。
 
-会議API、WebSocketリアルタイム配信、fixture replay、SQLite永続化、
+会議API、WebSocketリアルタイム配信、fixture replay、PostgreSQL永続化、
 mock upload/job、Markdownレポート生成を提供します。Azure、Teams、外部STT、
 外部LLMには接続しません。
 
@@ -31,24 +31,19 @@ internal/app
 
 ## Database
 
-現在サポートするDB driverはSQLiteのみです。
+PostgreSQLを唯一の実行時データベースとして使用します。
 
 - `database.Open` creates the configured database connection.
 - `database.Migrate` applies embedded, versioned migrations.
 - Application services depend on purpose-specific Repository interfaces.
-- SQLite SQL is isolated under `internal/adapter/repository/sqlite`.
-- If SQLite cannot be opened, meeting APIs use the in-memory Repository
-  implementation for local fixture testing.
-- PostgreSQL向けにPort、Repository共通契約テスト、Migration管理SQLのplaceholder
-  変換は準備済みです。
-- PostgreSQL接続には、driver、Migration、Repository、UserRepositoryの追加が
-  必要です。現時点で `DATABASE_DRIVER=postgres` は使用できません。
+- PostgreSQL SQL is isolated under `internal/adapter/repository/postgres`.
+- Database connection or migration failures stop API startup.
+- Memory Repository remains available only as a test double.
 
 主な環境変数:
 
 - `PORT`: listen port。既定値は `9090`
-- `DATABASE_DRIVER`: 現在は `sqlite` のみ
-- `DATABASE_URL`: SQLite file path。既定値は `./db.sqlite`
+- `DATABASE_URL`: PostgreSQL connection URL。必須
 - `FIXTURE_DIR`: fixture JSONL directory。既定値は `./fixtures/meetings`
 - `UPLOAD_DIR`: local upload directory。既定値は `./uploads`
 - `FRONTEND_URL`: CORSの基準origin。既定値は `http://localhost:5193`
@@ -61,6 +56,7 @@ internal/app
 ## Run
 
 ```powershell
+docker compose up -d postgres
 go run .
 ```
 
@@ -73,7 +69,7 @@ go test ./...
 go vet ./...
 ```
 
-Repository契約テストはMemoryとSQLiteに同じSuiteを実行します。依存方向、
+Repository契約テストはMemoryとPostgreSQLに同じSuiteを実行します。依存方向、
 Adapter間依存、環境変数読込の配置もArchitecture Testで検査します。
 
 ## Main Local APIs

@@ -1,8 +1,8 @@
 # Backend Architecture
 
 DeciScope API is a modular monolith using Clean Architecture boundaries. It
-currently runs with SQLite and can fall back to an in-memory repository when
-the database is unavailable.
+runs with PostgreSQL. Database connection or migration failures stop API
+startup instead of silently falling back to in-memory persistence.
 
 ## Request flow
 
@@ -12,7 +12,7 @@ HTTP/WebSocket
   -> application service
   -> application port
   -> repository/storage adapter
-  -> SQLite/filesystem/external SDK
+  -> PostgreSQL/filesystem/external SDK
 ```
 
 `internal/app/server.go` is the composition root. It creates concrete database,
@@ -30,7 +30,7 @@ internal/
   adapter/http/        router, handlers, DTOs, middleware
   adapter/realtime/    hub, WebSocket handler/client, protocol
   adapter/fixture/     fixture loader and replay manager
-  adapter/repository/  Memory/SQLite repositories and contract tests
+  adapter/repository/  Memory/PostgreSQL repositories and contract tests
   infrastructure/      database, Firebase, local storage
   architecture/        automated dependency checks
 ```
@@ -49,30 +49,14 @@ interfaces. Application use cases depend on ports declared in
 - Repository implementations are split by port responsibility and share one
   contract test suite.
 
-## Database portability
+## Database persistence
 
 Application use cases depend only on repository interfaces declared in
-`internal/application/ports.go`. SQLite-specific SQL and transaction behavior
-are isolated under `internal/adapter/repository/sqlite`.
-
-To add PostgreSQL:
-
-1. Add a PostgreSQL database opener and migrations under `internal/infrastructure/database`.
-2. Implement the existing repository ports under
-   `internal/adapter/repository/postgres`.
-3. Run the shared repository contract tests against PostgreSQL.
-4. Select the implementation in `internal/app/server.go`.
-
-No HTTP handler, domain type, or application use case should require a
-PostgreSQL-specific change.
-
-PostgreSQL is not connected yet. Driver-specific migration placeholders,
-repository ports, and reusable contract tests are prepared; PostgreSQL SQL,
-migrations, and the driver remain future work.
-
-`DATABASE_DRIVER=postgres` must not be enabled yet. `database.Open` supports
-only `sqlite`; an open failure currently causes meeting-related repositories to
-fall back to Memory Repository.
+`internal/application/ports.go`. PostgreSQL-specific SQL and transaction
+behavior are isolated under `internal/adapter/repository/postgres`.
+Connection creation and embedded PostgreSQL migrations live under
+`internal/infrastructure/database`. The Memory implementation remains available
+only as a test double.
 
 ## Runtime boundaries
 
@@ -80,17 +64,16 @@ fall back to Memory Repository.
   HTTP JSON tags.
 - WebSocket messages use protocol DTOs in `internal/adapter/realtime`.
 - Application receives individual Repository/Publisher/ObjectStorage ports.
-- SQLite keeps durable event sequence allocation and related writes inside its
+- PostgreSQL keeps durable event sequence allocation and related writes inside its
   transaction boundary.
 - Environment files and variables are read in `internal/app`.
 
 ## Current limitations
 
 - Meeting, fixture, upload, and realtime routes are not protected by auth.
-- Firebase login uses SQLite UserRepository when available; Memory fallback
-  verifies identity without creating a local user ID.
+- Firebase login persists users, workspaces, and sessions through PostgreSQL.
 - Upload storage is local filesystem only.
-- Queue/worker, external STT, external LLM, and PostgreSQL are not implemented.
+- Queue/worker, external STT, and external LLM are not implemented.
 
 ## Verification
 
