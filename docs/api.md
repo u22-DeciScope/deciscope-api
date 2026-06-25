@@ -2,22 +2,24 @@
 
 このドキュメントは、現在の `deciscope-core-api` が提供しているHTTP APIの一覧です。
 
-既定のベースURL:
+別端末から接続する場合のベースURL例:
 
 ```text
-http://localhost:9090
+http://<PC_TAILSCALE_IP>:8080
 ```
 
 ## ヘルスチェックと認証
 
 ```http
 GET  /v1/health
+GET  /healthz
 POST /v1/auth/login
 GET  /v1/auth/me
 GET  /v1/auth/health
 ```
 
 - `GET /v1/health` はJSONで `status` と現在時刻を返します。
+- `GET /healthz` はJSONで `status` を返し、SQLite transcript DBを確認します。
 - `POST /v1/auth/login` は `idToken` を受け取り、Firebase認証結果を返します。
 - `/v1/auth/me` と `/v1/auth/health` は認証ミドルウェアの対象です。
 - Firebaseが無効なローカル環境では、保護Routeで
@@ -25,8 +27,35 @@ GET  /v1/auth/health
 - 現在、認証必須なのは `/v1/auth/me` と `/v1/auth/health` です。会議、fixture、
   upload、WebSocket Routeは認証必須ではありません。
 
-`/health`、`/debug`、`/login`、`/api/*`、`/register` は現在のRouterには
+`/health`、`/debug`、`/login`、`/register` は現在のRouterには
 登録されていません。
+
+## EchoBot文字起こし取り込み
+
+```http
+POST /api/v1/transcript-segments
+Content-Type: application/json
+X-DeciScope-Api-Key: <shared secret>
+```
+
+```json
+{
+  "eventId": "06008080-91e3-4b88-a8ff-9af629265ced:1",
+  "callId": "06008080-91e3-4b88-a8ff-9af629265ced",
+  "sequenceNo": 1,
+  "recognizedAtUtc": "2026-06-25T13:20:01.1234567+00:00",
+  "offsetTicks": 20300000,
+  "durationTicks": 18000000,
+  "text": "本日の会議を開始します。"
+}
+```
+
+- API keyは `DECISCOPE_INGEST_API_KEY` と定数時間比較します。
+- `recognizedAtUtc` はUTC offsetのみ受け付け、保存時はUTC/RFC3339Nanoへ正規化します。
+- 新規保存は `201 Created`、同一内容の再送は `200 OK` と `duplicate: true` です。
+- 同じ `eventId` の内容違い、または同じ `callId` + `sequenceNo` の別 `eventId` は
+  `409 Conflict` です。
+- body上限は64KiBです。
 
 ## 会議
 

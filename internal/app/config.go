@@ -1,17 +1,24 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/firebase"
+	sqliteinfra "deciscope-core-api/internal/infrastructure/sqlite"
 
 	"github.com/joho/godotenv"
 )
 
+const ingestAPIKeyPlaceholder = "REPLACE_WITH_A_LONG_RANDOM_SECRET"
+const minIngestAPIKeyLength = 32
+
 type Config struct {
 	Database            database.Config
+	TranscriptIngest    TranscriptIngestConfig
+	TranscriptOnly      bool
 	Firebase            firebase.Config
 	UploadDir           string
 	FixtureDir          string
@@ -20,9 +27,19 @@ type Config struct {
 	SessionCookieSecure bool
 }
 
+type TranscriptIngestConfig struct {
+	SQLite sqliteinfra.Config
+	APIKey string
+}
+
 func ConfigFromEnv() Config {
 	return Config{
 		Database: database.Config{URL: os.Getenv("DATABASE_URL")},
+		TranscriptIngest: TranscriptIngestConfig{
+			SQLite: sqliteinfra.Config{Path: os.Getenv("DECISCOPE_GO_SQLITE_PATH")},
+			APIKey: strings.TrimSpace(os.Getenv("DECISCOPE_INGEST_API_KEY")),
+		},
+		TranscriptOnly: strings.EqualFold(os.Getenv("DECISCOPE_TRANSCRIPT_ONLY"), "true"),
 		Firebase: firebase.Config{
 			CredentialsFile: firstNonEmpty(os.Getenv("FIREBASE_SERVICE_ACCOUNT_JSON"), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")),
 			CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"),
@@ -43,11 +60,35 @@ func LoadEnvironmentFiles() {
 }
 
 func ListenAddressFromEnv() string {
+	if address := strings.TrimSpace(os.Getenv("DECISCOPE_BACKEND_ADDR")); address != "" {
+		return address
+	}
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "9090"
 	}
 	return ":" + port
+}
+
+func ValidateRuntimeConfig(config Config) error {
+	if strings.TrimSpace(config.TranscriptIngest.SQLite.Path) == "" {
+		return fmt.Errorf("DECISCOPE_GO_SQLITE_PATH is required")
+	}
+	return validateIngestAPIKey(config.TranscriptIngest.APIKey)
+}
+
+func validateIngestAPIKey(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("DECISCOPE_INGEST_API_KEY is required")
+	}
+	if value == ingestAPIKeyPlaceholder {
+		return fmt.Errorf("DECISCOPE_INGEST_API_KEY must be replaced")
+	}
+	if len(value) < minIngestAPIKeyLength {
+		return fmt.Errorf("DECISCOPE_INGEST_API_KEY must be at least %d characters", minIngestAPIKeyLength)
+	}
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {

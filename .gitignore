@@ -27,6 +27,10 @@ serviceAccountKey.json
 # Local runtime artifacts
 .cache/
 uploads/
+data/
+*.db
+*.db-shm
+*.db-wal
 .tmp-server.*
 *.exe
 

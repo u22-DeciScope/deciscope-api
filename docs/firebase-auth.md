@@ -42,8 +42,12 @@ VITE_FIREBASE_MESSAGING_SENDER_ID=...
 Create or update `deciscope-api\.env`.
 
 ```env
+DECISCOPE_BACKEND_ADDR=Talescale:8080
+DECISCOPE_TRANSCRIPT_ONLY=false
 PORT=9090
 DATABASE_URL=postgres://deciscope:deciscope@localhost:5432/deciscope?sslmode=disable
+DECISCOPE_GO_SQLITE_PATH=C:\U-22\deciscope-core-api\data\deciscope-go.db
+DECISCOPE_INGEST_API_KEY=REPLACE_WITH_A_LONG_RANDOM_SECRET
 FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 ALLOWED_ORIGINS=http://localhost:5193
