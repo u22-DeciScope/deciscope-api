@@ -3,8 +3,7 @@ name: Publish container
 on:
   push:
     branches:
-      - develop
-      - feature/postgres-docker-migration
+      - main
   workflow_dispatch:
 
 permissions:
@@ -18,6 +17,7 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: deciscope-api-prod
     steps:
       - uses: actions/checkout@v4
 
