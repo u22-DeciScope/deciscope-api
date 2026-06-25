@@ -1,0 +1,10 @@
+.git
+.github
+.idea
+.env*
+!.env.example
+.gocache
+.gotmp
+bin
+uploads
+*.exe

@@ -28,8 +28,10 @@ serviceAccountKey.json
 .cache/
 uploads/
 .tmp-server.*
+*.exe
 
 bin
 
 .gocache/
 .gotmp/
+.docker-config/
