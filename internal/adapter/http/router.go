@@ -20,6 +20,7 @@ type RouterDependencies struct {
 	Access        ResourceAccessUseCases
 	Realtime      http.HandlerFunc
 	Healthz       http.HandlerFunc
+	Readyz        http.HandlerFunc
 	CORS          CORSConfig
 }
 
@@ -35,6 +36,9 @@ func NewRouter(deps RouterDependencies) http.Handler {
 
 	if deps.Healthz != nil {
 		r.Get("/healthz", deps.Healthz)
+	}
+	if deps.Readyz != nil {
+		r.Get("/readyz", deps.Readyz)
 	}
 	if deps.TranscriptAPI != nil {
 		r.Post("/api/v1/transcript-segments", deps.TranscriptAPI.Store)

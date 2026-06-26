@@ -5,7 +5,7 @@
 別端末から接続する場合のベースURL例:
 
 ```text
-http://<PC_TAILSCALE_IP>:8080
+http://<PC_TAILSCALE_IP>:9090
 ```
 
 ## ヘルスチェックと認証
@@ -13,19 +13,21 @@ http://<PC_TAILSCALE_IP>:8080
 ```http
 GET  /v1/health
 GET  /healthz
+GET  /readyz
 POST /v1/auth/login
 GET  /v1/auth/me
-GET  /v1/auth/health
+POST /v1/auth/logout
+PUT  /v1/session/current-workspace
 ```
 
 - `GET /v1/health` はJSONで `status` と現在時刻を返します。
-- `GET /healthz` はJSONで `status` を返し、SQLite transcript DBを確認します。
+- `GET /healthz` はGoプロセスが応答可能な場合にJSONで `status` を返します。
+- `GET /readyz` は現在の永続化先へPingし、接続できない場合は `503` を返します。
 - `POST /v1/auth/login` は `idToken` を受け取り、Firebase認証結果を返します。
-- `/v1/auth/me` と `/v1/auth/health` は認証ミドルウェアの対象です。
+- `/v1/auth/me`、`/v1/auth/logout`、workspace配下、meeting配下、WebSocketは
+  認証ミドルウェアの対象です。
 - Firebaseが無効なローカル環境では、保護Routeで
   `Authorization: Bearer dev:<uid>` を使用できます。
-- 現在、認証必須なのは `/v1/auth/me` と `/v1/auth/health` です。会議、fixture、
-  upload、WebSocket Routeは認証必須ではありません。
 
 `/health`、`/debug`、`/login`、`/register` は現在のRouterには
 登録されていません。
@@ -55,13 +57,14 @@ X-DeciScope-Api-Key: <shared secret>
 - 新規保存は `201 Created`、同一内容の再送は `200 OK` と `duplicate: true` です。
 - 同じ `eventId` の内容違い、または同じ `callId` + `sequenceNo` の別 `eventId` は
   `409 Conflict` です。
+- 標準構成ではPostgreSQLの `transcript_segments` tableへ保存します。
 - body上限は64KiBです。
 
 ## 会議
 
 ```http
-GET  /v1/meetings
-POST /v1/meetings
+GET  /v1/workspaces/{workspace_code}/meetings
+POST /v1/workspaces/{workspace_code}/meetings
 GET  /v1/meetings/{meeting_id}
 POST /v1/meetings/{meeting_id}/join-token
 POST /v1/meetings/{meeting_id}/end

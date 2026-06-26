@@ -3,20 +3,21 @@
 ## 起動
 
 ```powershell
-docker compose up -d postgres
-go run .
+Copy-Item .env.example .env
+notepad .env
+docker compose up --build -d
 ```
 
-`.env.example` の設定では `http://127.0.0.1:8080` で起動します。
+`.env.example` の設定では `http://localhost:9090` で起動します。
 VMなど別端末から接続する場合は、`.env` の `DECISCOPE_BACKEND_ADDR` に
-`<PC_TAILSCALE_IP>:8080` のような待受addressを設定してください。
+`<PC_TAILSCALE_IP>:9090` のような待受addressを設定できます。
 `DECISCOPE_BACKEND_ADDR` が未設定の場合は `PORT` がfallbackとして使われます。
 `DECISCOPE_TRANSCRIPT_ONLY=true` の場合は、PostgreSQLなしで `/healthz` と
 `/api/v1/transcript-segments` だけを起動します。
 
 ```powershell
-$env:DECISCOPE_BACKEND_ADDR="127.0.0.1:18080"
-go run .
+go run . migrate
+go run . serve
 ```
 
 起動時は `.env` を読み込み、その後 `.env.local` で上書きします。
@@ -24,15 +25,16 @@ go run .
 ## データベース設定
 
 ```env
-DATABASE_URL=postgres://deciscope:deciscope@localhost:5432/deciscope?sslmode=disable
-DECISCOPE_GO_SQLITE_PATH=C:\U-22\deciscope-core-api\data\deciscope-go.db
+DATABASE_URL=postgres://deciscope:change-me@localhost:5432/deciscope?sslmode=disable
+DECISCOPE_TRANSCRIPT_STORE=postgres
 ```
 
 - `DATABASE_URL`: PostgreSQL接続URLです。必須です。
-- `DECISCOPE_GO_SQLITE_PATH`: EchoBot transcript ingest用SQLite file pathです。必須です。
+- `DECISCOPE_TRANSCRIPT_STORE`: 既定は `postgres` です。SQLite fallback時だけ `sqlite` にします。
+- `DECISCOPE_GO_SQLITE_PATH`: SQLite fallback用file pathです。
 
 接続生成は `internal/infrastructure/database` の `database.Open`、
-スキーマ更新は埋め込みMigrationを実行する `database.Migrate` が担当します。
+スキーマ更新は `go run . migrate` またはComposeの `migrate` serviceが担当します。
 PostgreSQL向けSQLは `internal/adapter/repository/postgres` に隔離されています。
 PostgreSQLへ接続できない場合、APIは起動に失敗します。
 
@@ -40,9 +42,9 @@ PostgreSQLへ接続できない場合、APIは起動に失敗します。
 
 ```env
 PORT=9090
-DECISCOPE_BACKEND_ADDR=127.0.0.1:8080
-DECISCOPE_TRANSCRIPT_ONLY=true
-DECISCOPE_INGEST_API_KEY=REPLACE_WITH_A_LONG_RANDOM_SECRET
+DECISCOPE_BACKEND_ADDR=127.0.0.1:9090
+DECISCOPE_TRANSCRIPT_ONLY=false
+DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
 FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 FRONTEND_URL=http://localhost:5193
@@ -62,8 +64,9 @@ ALLOWED_ORIGINS=http://localhost:5193
 まずヘルスチェックを確認します。
 
 ```http
-GET http://<PC_TAILSCALE_IP>:8080/v1/health
-GET http://<PC_TAILSCALE_IP>:8080/healthz
+GET http://<PC_TAILSCALE_IP>:9090/v1/health
+GET http://<PC_TAILSCALE_IP>:9090/healthz
+GET http://<PC_TAILSCALE_IP>:9090/readyz
 ```
 
 現在、ブラウザ用の `/debug` 画面は提供していません。以下のAPIとWebSocketを
@@ -75,7 +78,7 @@ GET http://<PC_TAILSCALE_IP>:8080/healthz
 会議を作成します。
 
 ```http
-POST http://localhost:9090/v1/meetings
+POST http://localhost:9090/v1/workspaces/{workspace_code}/meetings
 Content-Type: application/json
 
 {
@@ -141,7 +144,7 @@ $body = @{
 
 Invoke-RestMethod `
     -Method Post `
-    -Uri "http://<PC_TAILSCALE_IP>:8080/api/v1/transcript-segments" `
+    -Uri "http://<PC_TAILSCALE_IP>:9090/api/v1/transcript-segments" `
     -Headers $headers `
     -ContentType "application/json; charset=utf-8" `
     -Body $body

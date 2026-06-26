@@ -58,35 +58,46 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		return nil, err
 	}
 
-	transcriptDB, err := buildTranscriptDatabase(ctx, config.TranscriptIngest.SQLite)
-	if err != nil {
-		return nil, err
-	}
-	closers := []func() error{transcriptDB.Close}
-	transcriptRepository := sqliterepository.NewTranscriptSegmentRepository(transcriptDB)
-	transcriptService := application.NewTranscriptIngestService(transcriptRepository)
-	healthAPI := httpadapter.NewHealthAPI(func(ctx context.Context) error {
-		return transcriptDB.PingContext(ctx)
-	})
-
 	if config.TranscriptOnly {
+		transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, nil)
+		if err != nil {
+			return nil, err
+		}
+		healthAPI := httpadapter.NewHealthAPI(transcriptRuntime.ready)
 		handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
-			TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptService, config.TranscriptIngest.APIKey),
+			TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey),
 			Healthz:       healthAPI.Healthz,
+			Readyz:        healthAPI.Readyz,
 			CORS: httpadapter.CORSConfig{
 				FrontendURL: config.FrontendURL, AllowedOrigins: config.AllowedOrigins,
 			},
 		})
-		log.Printf("transcript-only mode enabled; postgres repositories are not initialized")
-		return &ServerRuntime{Handler: handler, closers: closers}, nil
+		log.Printf("transcript-only mode enabled; core postgres repositories are not initialized")
+		return &ServerRuntime{Handler: handler, closers: transcriptRuntime.closers}, nil
 	}
 
 	repositories, authRepository, postgresDB, err := buildRepositories(ctx, config.Database)
 	if err != nil {
+		return nil, err
+	}
+	closers := []func() error{postgresDB.Close}
+
+	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB)
+	if err != nil {
 		_ = closeAll(closers)
 		return nil, err
 	}
-	closers = append(closers, postgresDB.Close)
+	closers = append(closers, transcriptRuntime.closers...)
+	readyCheck := transcriptRuntime.ready
+	if config.TranscriptIngest.Store == TranscriptStoreSQLite {
+		readyCheck = func(ctx context.Context) error {
+			if err := postgresDB.PingContext(ctx); err != nil {
+				return err
+			}
+			return transcriptRuntime.ready(ctx)
+		}
+	}
+	healthAPI := httpadapter.NewHealthAPI(readyCheck)
 
 	authClient, err := firebase.NewAuthClient(ctx, config.Firebase)
 	if err != nil {
@@ -108,11 +119,12 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		CoreAPI:       httpadapter.NewCoreAPI(service, replay),
 		AuthAPI:       httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
 		WorkspaceAPI:  httpadapter.NewWorkspaceAPI(workspaceService, hub),
-		TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptService, config.TranscriptIngest.APIKey),
+		TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey),
 		AuthService:   authService,
 		Workspace:     workspaceService,
 		Access:        accessService,
 		Healthz:       healthAPI.Healthz,
+		Readyz:        healthAPI.Readyz,
 		Realtime: hub.ServeWS(service, func(r *http.Request) (realtime.ClientIdentity, bool) {
 			session, ok := authmiddleware.SessionFromContext(r.Context())
 			if !ok || session.User == nil || session.Session == nil {
@@ -125,6 +137,20 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		},
 	})
 	return &ServerRuntime{Handler: handler, closers: closers}, nil
+}
+
+func MigrateDatabase(ctx context.Context) error {
+	config := ConfigFromEnv()
+	conn, err := database.Open(ctx, config.Database)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer conn.Close()
+	if err := database.Migrate(ctx, conn); err != nil {
+		return fmt.Errorf("migrate database: %w", err)
+	}
+	log.Printf("postgres migrations applied")
+	return nil
 }
 
 type repositorySet struct {
@@ -146,13 +172,55 @@ func buildRepositories(ctx context.Context, config database.Config) (repositoryS
 	if err != nil {
 		return repositorySet{}, nil, nil, fmt.Errorf("open database: %w", err)
 	}
-	if err := database.Migrate(ctx, conn); err != nil {
-		_ = conn.Close()
-		return repositorySet{}, nil, nil, fmt.Errorf("migrate database: %w", err)
-	}
 	store := postgresrepository.NewStore(conn)
 	log.Printf("postgres database repository ready")
 	return repositoriesFromStore(store), postgresrepository.NewAuthWorkspaceRepository(conn), conn, nil
+}
+
+type transcriptIngestRuntime struct {
+	service *application.TranscriptIngestService
+	ready   httpadapter.HealthCheckFunc
+	closers []func() error
+}
+
+func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, databaseConfig database.Config, postgresDB *sql.DB) (transcriptIngestRuntime, error) {
+	switch config.Store {
+	case "", TranscriptStorePostgres:
+		conn := postgresDB
+		var closers []func() error
+		if conn == nil {
+			var err error
+			conn, err = database.Open(ctx, databaseConfig)
+			if err != nil {
+				return transcriptIngestRuntime{}, fmt.Errorf("open transcript postgres: %w", err)
+			}
+			closers = append(closers, conn.Close)
+		}
+		repository := postgresrepository.NewTranscriptSegmentRepository(conn)
+		log.Printf("postgres transcript repository ready")
+		return transcriptIngestRuntime{
+			service: application.NewTranscriptIngestService(repository),
+			ready: func(ctx context.Context) error {
+				return conn.PingContext(ctx)
+			},
+			closers: closers,
+		}, nil
+	case TranscriptStoreSQLite:
+		transcriptDB, err := buildTranscriptDatabase(ctx, config.SQLite)
+		if err != nil {
+			return transcriptIngestRuntime{}, err
+		}
+		repository := sqliterepository.NewTranscriptSegmentRepository(transcriptDB)
+		return transcriptIngestRuntime{
+			service: application.NewTranscriptIngestService(repository),
+			ready: func(ctx context.Context) error {
+				return transcriptDB.PingContext(ctx)
+			},
+			closers: []func() error{transcriptDB.Close},
+		}, nil
+	default:
+		return transcriptIngestRuntime{}, fmt.Errorf("unsupported transcript store %q", config.Store)
+	}
 }
 
 func buildTranscriptDatabase(ctx context.Context, config sqliteinfra.Config) (*sql.DB, error) {

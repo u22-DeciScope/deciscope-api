@@ -1,0 +1,134 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"testing"
+	"time"
+
+	"deciscope-core-api/internal/domain"
+	"deciscope-core-api/internal/infrastructure/database"
+)
+
+func TestTranscriptSegmentRepositoryStoresJapaneseSegmentAndHandlesDuplicates(t *testing.T) {
+	repository, db := newTestTranscriptSegmentRepository(t)
+	ctx := context.Background()
+	segment := validTranscriptSegment()
+
+	result, err := repository.SaveTranscriptSegment(ctx, segment)
+	if err != nil {
+		t.Fatalf("SaveTranscriptSegment() error = %v", err)
+	}
+	if result.Status != domain.TranscriptSegmentCreated {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := transcriptSegmentRowCount(t, db); got != 1 {
+		t.Fatalf("row count = %d, want 1", got)
+	}
+	assertStoredTranscriptSegment(t, db, segment)
+
+	duplicate, err := repository.SaveTranscriptSegment(ctx, segment)
+	if err != nil {
+		t.Fatalf("SaveTranscriptSegment(duplicate) error = %v", err)
+	}
+	if duplicate.Status != domain.TranscriptSegmentAlreadyExists {
+		t.Fatalf("duplicate result = %+v", duplicate)
+	}
+	if got := transcriptSegmentRowCount(t, db); got != 1 {
+		t.Fatalf("row count after duplicate = %d, want 1", got)
+	}
+}
+
+func TestTranscriptSegmentRepositoryRejectsEventIDConflict(t *testing.T) {
+	repository, db := newTestTranscriptSegmentRepository(t)
+	ctx := context.Background()
+	segment := validTranscriptSegment()
+	if _, err := repository.SaveTranscriptSegment(ctx, segment); err != nil {
+		t.Fatalf("SaveTranscriptSegment() error = %v", err)
+	}
+
+	changed := segment
+	changed.Text = "内容が変わりました。"
+	if _, err := repository.SaveTranscriptSegment(ctx, changed); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("SaveTranscriptSegment(conflict) error = %v, want conflict", err)
+	}
+	if got := transcriptSegmentRowCount(t, db); got != 1 {
+		t.Fatalf("row count after conflict = %d, want 1", got)
+	}
+}
+
+func TestTranscriptSegmentRepositoryRejectsCallSequenceConflict(t *testing.T) {
+	repository, db := newTestTranscriptSegmentRepository(t)
+	ctx := context.Background()
+	segment := validTranscriptSegment()
+	if _, err := repository.SaveTranscriptSegment(ctx, segment); err != nil {
+		t.Fatalf("SaveTranscriptSegment() error = %v", err)
+	}
+
+	changed := segment
+	changed.EventID = "06008080-91e3-4b88-a8ff-9af629265ced:other"
+	if _, err := repository.SaveTranscriptSegment(ctx, changed); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("SaveTranscriptSegment(call sequence conflict) error = %v, want conflict", err)
+	}
+	if got := transcriptSegmentRowCount(t, db); got != 1 {
+		t.Fatalf("row count after conflict = %d, want 1", got)
+	}
+}
+
+func newTestTranscriptSegmentRepository(t *testing.T) (*TranscriptSegmentRepository, *sql.DB) {
+	t.Helper()
+	db, err := database.Open(context.Background(), database.Config{URL: testDatabaseURL(t)})
+	if err != nil {
+		t.Fatalf("database.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := database.Migrate(context.Background(), db); err != nil {
+		t.Fatalf("database.Migrate() error = %v", err)
+	}
+	resetTestDatabase(t, db)
+	return NewTranscriptSegmentRepository(db), db
+}
+
+func validTranscriptSegment() domain.TranscriptSegment {
+	return domain.TranscriptSegment{
+		EventID:         "06008080-91e3-4b88-a8ff-9af629265ced:1",
+		CallID:          "06008080-91e3-4b88-a8ff-9af629265ced",
+		SequenceNo:      1,
+		RecognizedAtUTC: time.Date(2026, 6, 25, 13, 20, 1, 123456700, time.UTC),
+		OffsetTicks:     20300000,
+		DurationTicks:   18000000,
+		Text:            "本日の会議を開始します。",
+		ReceivedAtUTC:   time.Date(2026, 6, 25, 13, 20, 2, 0, time.UTC),
+	}
+}
+
+func transcriptSegmentRowCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM transcript_segments").Scan(&count); err != nil {
+		t.Fatalf("count transcript_segments: %v", err)
+	}
+	return count
+}
+
+func assertStoredTranscriptSegment(t *testing.T, db *sql.DB, want domain.TranscriptSegment) {
+	t.Helper()
+	var eventID, callID, recognizedAtUTC, text, receivedAtUTC string
+	var sequenceNo, offsetTicks, durationTicks int64
+	err := db.QueryRow(`
+		SELECT event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		FROM transcript_segments
+		WHERE event_id = $1
+	`, want.EventID).Scan(&eventID, &callID, &sequenceNo, &recognizedAtUTC, &offsetTicks, &durationTicks, &text, &receivedAtUTC)
+	if err != nil {
+		t.Fatalf("query stored transcript segment: %v", err)
+	}
+	if eventID != want.EventID || callID != want.CallID || sequenceNo != want.SequenceNo ||
+		recognizedAtUTC != "2026-06-25T13:20:01.1234567Z" ||
+		offsetTicks != want.OffsetTicks || durationTicks != want.DurationTicks ||
+		text != want.Text || receivedAtUTC == "" {
+		t.Fatalf("stored transcript segment = eventID=%q callID=%q sequenceNo=%d recognizedAtUTC=%q offsetTicks=%d durationTicks=%d text=%q receivedAtUTC=%q",
+			eventID, callID, sequenceNo, recognizedAtUTC, offsetTicks, durationTicks, text, receivedAtUTC)
+	}
+}

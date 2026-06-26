@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -19,6 +20,27 @@ import (
 func main() {
 	app.LoadEnvironmentFiles()
 
+	command := "serve"
+	if len(os.Args) > 1 {
+		command = os.Args[1]
+	}
+	switch command {
+	case "serve":
+		runServe()
+	case "migrate":
+		runMigrate()
+	default:
+		log.Fatalf("usage: %s [serve|migrate]", os.Args[0])
+	}
+}
+
+func runMigrate() {
+	if err := app.MigrateDatabase(context.Background()); err != nil {
+		log.Fatalf("migrate database: %v", err)
+	}
+}
+
+func runServe() {
 	runtime, err := app.NewServerRuntime()
 	if err != nil {
 		log.Fatalf("build server: %v", err)

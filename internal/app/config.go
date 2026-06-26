@@ -15,6 +15,11 @@ import (
 const ingestAPIKeyPlaceholder = "REPLACE_WITH_A_LONG_RANDOM_SECRET"
 const minIngestAPIKeyLength = 32
 
+const (
+	TranscriptStorePostgres = "postgres"
+	TranscriptStoreSQLite   = "sqlite"
+)
+
 type Config struct {
 	Database            database.Config
 	TranscriptIngest    TranscriptIngestConfig
@@ -28,18 +33,28 @@ type Config struct {
 }
 
 type TranscriptIngestConfig struct {
+	Store  string
 	SQLite sqliteinfra.Config
 	APIKey string
 }
 
 func ConfigFromEnv() Config {
+	transcriptOnly := strings.EqualFold(os.Getenv("DECISCOPE_TRANSCRIPT_ONLY"), "true")
+	transcriptStore := strings.ToLower(strings.TrimSpace(os.Getenv("DECISCOPE_TRANSCRIPT_STORE")))
+	if transcriptStore == "" {
+		transcriptStore = TranscriptStorePostgres
+		if transcriptOnly {
+			transcriptStore = TranscriptStoreSQLite
+		}
+	}
 	return Config{
 		Database: database.Config{URL: os.Getenv("DATABASE_URL")},
 		TranscriptIngest: TranscriptIngestConfig{
+			Store:  transcriptStore,
 			SQLite: sqliteinfra.Config{Path: os.Getenv("DECISCOPE_GO_SQLITE_PATH")},
 			APIKey: strings.TrimSpace(os.Getenv("DECISCOPE_INGEST_API_KEY")),
 		},
-		TranscriptOnly: strings.EqualFold(os.Getenv("DECISCOPE_TRANSCRIPT_ONLY"), "true"),
+		TranscriptOnly: transcriptOnly,
 		Firebase: firebase.Config{
 			CredentialsFile: firstNonEmpty(os.Getenv("FIREBASE_SERVICE_ACCOUNT_JSON"), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")),
 			CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"),
@@ -71,10 +86,25 @@ func ListenAddressFromEnv() string {
 }
 
 func ValidateRuntimeConfig(config Config) error {
-	if strings.TrimSpace(config.TranscriptIngest.SQLite.Path) == "" {
-		return fmt.Errorf("DECISCOPE_GO_SQLITE_PATH is required")
+	if err := validateIngestAPIKey(config.TranscriptIngest.APIKey); err != nil {
+		return err
 	}
-	return validateIngestAPIKey(config.TranscriptIngest.APIKey)
+	if !config.TranscriptOnly && strings.TrimSpace(config.Database.URL) == "" {
+		return fmt.Errorf("DATABASE_URL is required")
+	}
+	switch config.TranscriptIngest.Store {
+	case "", TranscriptStorePostgres:
+		if strings.TrimSpace(config.Database.URL) == "" {
+			return fmt.Errorf("DATABASE_URL is required")
+		}
+	case TranscriptStoreSQLite:
+		if strings.TrimSpace(config.TranscriptIngest.SQLite.Path) == "" {
+			return fmt.Errorf("DECISCOPE_GO_SQLITE_PATH is required")
+		}
+	default:
+		return fmt.Errorf("DECISCOPE_TRANSCRIPT_STORE must be postgres or sqlite")
+	}
+	return nil
 }
 
 func validateIngestAPIKey(value string) error {

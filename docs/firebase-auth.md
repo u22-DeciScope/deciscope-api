@@ -5,9 +5,8 @@ DeciScope currently uses Firebase in two places.
 - Web: Firebase Web SDK opens the Microsoft sign-in flow and obtains a Firebase ID token.
 - Backend: Firebase Admin SDK verifies that ID token and returns the authenticated user.
 
-The local MVP `/v1` meeting APIs still work without Firebase. Firebase is used
-by `POST /v1/auth/login` and the protected `/v1/auth/me` and
-`/v1/auth/health` routes.
+Firebase is used by `POST /v1/auth/login` and the protected `/v1/auth/me`,
+workspace, meeting, and WebSocket routes.
 
 ## Firebase Console Setup
 
@@ -42,12 +41,12 @@ VITE_FIREBASE_MESSAGING_SENDER_ID=...
 Create or update `deciscope-api\.env`.
 
 ```env
-DECISCOPE_BACKEND_ADDR=Talescale:8080
+DECISCOPE_BACKEND_ADDR=100.70.221.61:9090
 DECISCOPE_TRANSCRIPT_ONLY=false
 PORT=9090
-DATABASE_URL=postgres://deciscope:deciscope@localhost:5432/deciscope?sslmode=disable
-DECISCOPE_GO_SQLITE_PATH=C:\U-22\deciscope-core-api\data\deciscope-go.db
-DECISCOPE_INGEST_API_KEY=REPLACE_WITH_A_LONG_RANDOM_SECRET
+DATABASE_URL=postgres://deciscope:change-me-change-me-change-me-1234@localhost:5432/deciscope?sslmode=disable
+DECISCOPE_TRANSCRIPT_STORE=postgres
+DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
 FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 ALLOWED_ORIGINS=http://localhost:5193
@@ -65,7 +64,8 @@ Use a path that matches your local checkout. You can also use `FIREBASE_CREDENTI
 
 ```powershell
 cd <backend-repo>
-go run .
+go run . migrate
+go run . serve
 ```
 
 2. Start the web app.
@@ -86,7 +86,7 @@ npm run dev
 - The Firebase Web config is public client config. It is still better to keep it in `.env.local` per environment.
 - The service account JSON is secret. Never commit it.
 - If the backend logs that Firebase auth is disabled, the Admin SDK credential env is missing or invalid.
-- Only `/v1/auth/me` and `/v1/auth/health` require the authentication
-  middleware today. Meeting and replay routes are currently public.
+- `/v1/auth/me`, workspace routes, meeting routes, and WebSocket routes require
+  the authentication middleware.
 - PostgreSQL must be available when the backend starts. Authentication state is
   persisted in PostgreSQL.

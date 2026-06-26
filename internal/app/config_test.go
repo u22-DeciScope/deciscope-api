@@ -1,6 +1,10 @@
 package app
 
-import "testing"
+import (
+	"testing"
+
+	"deciscope-core-api/internal/infrastructure/database"
+)
 
 func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://deciscope:secret@localhost:5432/deciscope")
@@ -13,6 +17,9 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	}
 	if config.TranscriptIngest.SQLite.Path != `C:\tmp\deciscope-go.db` {
 		t.Fatalf("ConfigFromEnv() = %+v", config)
+	}
+	if config.TranscriptIngest.Store != TranscriptStoreSQLite {
+		t.Fatalf("ConfigFromEnv() = %+v, want sqlite transcript store", config)
 	}
 	if !config.TranscriptOnly {
 		t.Fatalf("ConfigFromEnv() = %+v, want transcript-only enabled", config)
@@ -45,7 +52,9 @@ func TestListenAddressFromEnv(t *testing.T) {
 
 func TestValidateRuntimeConfigRequiresTranscriptSettings(t *testing.T) {
 	config := Config{
+		Database: databaseConfigForTest(),
 		TranscriptIngest: TranscriptIngestConfig{
+			Store:  TranscriptStoreSQLite,
 			APIKey: "0123456789abcdef0123456789abcdef",
 		},
 	}
@@ -65,4 +74,25 @@ func TestValidateRuntimeConfigRequiresTranscriptSettings(t *testing.T) {
 	if err := ValidateRuntimeConfig(config); err != nil {
 		t.Fatalf("ValidateRuntimeConfig() error = %v", err)
 	}
+}
+
+func TestValidateRuntimeConfigRequiresDatabaseURLForPostgresTranscriptStore(t *testing.T) {
+	config := Config{
+		TranscriptOnly: true,
+		TranscriptIngest: TranscriptIngestConfig{
+			Store:  TranscriptStorePostgres,
+			APIKey: "0123456789abcdef0123456789abcdef",
+		},
+	}
+	if err := ValidateRuntimeConfig(config); err == nil {
+		t.Fatal("ValidateRuntimeConfig() error = nil, want missing database URL")
+	}
+	config.Database = databaseConfigForTest()
+	if err := ValidateRuntimeConfig(config); err != nil {
+		t.Fatalf("ValidateRuntimeConfig() error = %v", err)
+	}
+}
+
+func databaseConfigForTest() database.Config {
+	return database.Config{URL: "postgres://deciscope:secret@localhost:5432/deciscope"}
 }

@@ -119,18 +119,27 @@ func TestTranscriptAPIValidationErrors(t *testing.T) {
 	}
 }
 
-func TestHealthzChecksDependency(t *testing.T) {
+func TestHealthzIsProcessOnly(t *testing.T) {
+	failing := NewHealthAPI(func(context.Context) error { return errors.New("database unavailable") })
+	resp := httptest.NewRecorder()
+	failing.Healthz(resp, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"status":"ok"`) {
+		t.Fatalf("healthz response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestReadyzChecksDependency(t *testing.T) {
 	ok := NewHealthAPI(func(context.Context) error { return nil })
 	okResp := httptest.NewRecorder()
-	ok.Healthz(okResp, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	ok.Readyz(okResp, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if okResp.Code != http.StatusOK || !strings.Contains(okResp.Body.String(), `"status":"ok"`) {
 		t.Fatalf("ok response = %d %s", okResp.Code, okResp.Body.String())
 	}
 
 	failing := NewHealthAPI(func(context.Context) error { return errors.New("database unavailable") })
 	failResp := httptest.NewRecorder()
-	failing.Healthz(failResp, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if failResp.Code != http.StatusInternalServerError {
+	failing.Readyz(failResp, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if failResp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("failure response = %d %s", failResp.Code, failResp.Body.String())
 	}
 }
