@@ -11,6 +11,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,15 +22,21 @@ const transcriptSegmentBodyLimitBytes int64 = 64 * 1024
 
 type TranscriptIngestUseCases interface {
 	StoreTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
+	ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error)
 }
 
 type TranscriptAPI struct {
-	service TranscriptIngestUseCases
-	apiKey  string
+	service     TranscriptIngestUseCases
+	apiKey      string
+	clientToken string
 }
 
-func NewTranscriptAPI(service TranscriptIngestUseCases, apiKey string) *TranscriptAPI {
-	return &TranscriptAPI{service: service, apiKey: apiKey}
+func NewTranscriptAPI(service TranscriptIngestUseCases, apiKey string, clientToken ...string) *TranscriptAPI {
+	var token string
+	if len(clientToken) > 0 {
+		token = clientToken[0]
+	}
+	return &TranscriptAPI{service: service, apiKey: apiKey, clientToken: token}
 }
 
 func (api *TranscriptAPI) Store(w http.ResponseWriter, r *http.Request) {
@@ -94,12 +101,46 @@ func (api *TranscriptAPI) Store(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (api *TranscriptAPI) List(w http.ResponseWriter, r *http.Request) {
+	if !api.authorizedClient(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
+		return
+	}
+	limit, err := parseTranscriptLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	segments, err := api.service.ListTranscriptSegments(r.Context(), strings.TrimSpace(r.URL.Query().Get("callId")), limit)
+	if err != nil {
+		log.Printf("List transcript segments failed. callId=%s limit=%d error=%v", strings.TrimSpace(r.URL.Query().Get("callId")), limit, err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, transcriptSegmentListResponse{Items: transcriptSegmentItems(segments)})
+}
+
 func (api *TranscriptAPI) authorized(value string) bool {
-	if value == "" || api.apiKey == "" {
+	return authorizedSecret(value, api.apiKey)
+}
+
+func (api *TranscriptAPI) authorizedClient(r *http.Request) bool {
+	if strings.TrimSpace(api.clientToken) == "" {
+		return true
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		token = bearerToken(r.Header.Get("Authorization"))
+	}
+	return authorizedSecret(token, api.clientToken)
+}
+
+func authorizedSecret(value, secret string) bool {
+	if value == "" || secret == "" {
 		return false
 	}
 	got := sha256.Sum256([]byte(value))
-	want := sha256.Sum256([]byte(api.apiKey))
+	want := sha256.Sum256([]byte(secret))
 	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
 }
 
@@ -117,6 +158,21 @@ type transcriptSegmentResponse struct {
 	Status    string `json:"status"`
 	Duplicate bool   `json:"duplicate"`
 	EventID   string `json:"eventId"`
+}
+
+type transcriptSegmentListResponse struct {
+	Items []transcriptSegmentItem `json:"items"`
+}
+
+type transcriptSegmentItem struct {
+	EventID         string `json:"eventId"`
+	CallID          string `json:"callId"`
+	SequenceNo      int64  `json:"sequenceNo"`
+	RecognizedAtUTC string `json:"recognizedAtUtc"`
+	OffsetTicks     int64  `json:"offsetTicks"`
+	DurationTicks   int64  `json:"durationTicks"`
+	Text            string `json:"text"`
+	ReceivedAtUTC   string `json:"receivedAtUtc"`
 }
 
 func (request transcriptSegmentRequest) toDomain() (domain.TranscriptSegment, error) {
@@ -157,6 +213,46 @@ func (request transcriptSegmentRequest) toDomain() (domain.TranscriptSegment, er
 		DurationTicks:   request.DurationTicks,
 		Text:            text,
 	}, nil
+}
+
+func parseTranscriptLimit(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 100, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit < 1 {
+		return 0, fmt.Errorf("limit must be 1 or greater")
+	}
+	if limit > 500 {
+		return 500, nil
+	}
+	return limit, nil
+}
+
+func bearerToken(value string) string {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(value, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, prefix))
+}
+
+func transcriptSegmentItems(segments []domain.TranscriptSegment) []transcriptSegmentItem {
+	items := make([]transcriptSegmentItem, 0, len(segments))
+	for _, segment := range segments {
+		items = append(items, transcriptSegmentItem{
+			EventID:         segment.EventID,
+			CallID:          segment.CallID,
+			SequenceNo:      segment.SequenceNo,
+			RecognizedAtUTC: segment.RecognizedAtUTC.UTC().Format(time.RFC3339Nano),
+			OffsetTicks:     segment.OffsetTicks,
+			DurationTicks:   segment.DurationTicks,
+			Text:            segment.Text,
+			ReceivedAtUTC:   segment.ReceivedAtUTC.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return items
 }
 
 func isJSONContentType(contentType string) bool {

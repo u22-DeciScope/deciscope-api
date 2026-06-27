@@ -10,6 +10,8 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://deciscope:secret@localhost:5432/deciscope")
 	t.Setenv("DECISCOPE_GO_SQLITE_PATH", `C:\tmp\deciscope-go.db`)
 	t.Setenv("DECISCOPE_INGEST_API_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("DECISCOPE_WS_CLIENT_TOKEN", "dev-ws-token")
+	t.Setenv("DECISCOPE_WS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
 	t.Setenv("DECISCOPE_TRANSCRIPT_ONLY", "true")
 	config := ConfigFromEnv()
 	if config.Database.URL != "postgres://deciscope:secret@localhost:5432/deciscope" {
@@ -20,6 +22,10 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	}
 	if config.TranscriptIngest.Store != TranscriptStoreSQLite {
 		t.Fatalf("ConfigFromEnv() = %+v, want sqlite transcript store", config)
+	}
+	if config.TranscriptWebSocket.ClientToken != "dev-ws-token" ||
+		config.TranscriptWebSocket.AllowedOrigins != "http://localhost:3000,http://localhost:5173" {
+		t.Fatalf("ConfigFromEnv() = %+v, want websocket config", config)
 	}
 	if !config.TranscriptOnly {
 		t.Fatalf("ConfigFromEnv() = %+v, want transcript-only enabled", config)

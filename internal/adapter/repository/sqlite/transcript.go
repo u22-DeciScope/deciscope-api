@@ -94,6 +94,40 @@ func (r *TranscriptSegmentRepository) SaveTranscriptSegment(ctx context.Context,
 	return domain.TranscriptSegmentStoreResult{Status: domain.TranscriptSegmentCreated, EventID: record.EventID}, nil
 }
 
+func (r *TranscriptSegmentRepository) ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		FROM transcript_segments
+		WHERE (? = '' OR call_id = ?)
+		ORDER BY call_id ASC, sequence_no ASC, recognized_at_utc ASC
+		LIMIT ?
+	`, callID, callID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list transcript segments: %w", err)
+	}
+	defer rows.Close()
+
+	var segments []domain.TranscriptSegment
+	for rows.Next() {
+		record, err := scanTranscriptSegmentRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		segment, err := record.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		segments = append(segments, segment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate transcript segments: %w", err)
+	}
+	return segments, nil
+}
+
 type transcriptSegmentRecord struct {
 	EventID         string
 	CallID          string
@@ -116,6 +150,27 @@ func transcriptSegmentRecordFromDomain(segment domain.TranscriptSegment) transcr
 		Text:            segment.Text,
 		ReceivedAtUTC:   segment.ReceivedAtUTC.UTC().Format(time.RFC3339Nano),
 	}
+}
+
+func (record transcriptSegmentRecord) toDomain() (domain.TranscriptSegment, error) {
+	recognizedAt, err := time.Parse(time.RFC3339Nano, record.RecognizedAtUTC)
+	if err != nil {
+		return domain.TranscriptSegment{}, fmt.Errorf("parse transcript recognized_at_utc: %w", err)
+	}
+	receivedAt, err := time.Parse(time.RFC3339Nano, record.ReceivedAtUTC)
+	if err != nil {
+		return domain.TranscriptSegment{}, fmt.Errorf("parse transcript received_at_utc: %w", err)
+	}
+	return domain.TranscriptSegment{
+		EventID:         record.EventID,
+		CallID:          record.CallID,
+		SequenceNo:      record.SequenceNo,
+		RecognizedAtUTC: recognizedAt.UTC(),
+		OffsetTicks:     record.OffsetTicks,
+		DurationTicks:   record.DurationTicks,
+		Text:            record.Text,
+		ReceivedAtUTC:   receivedAt.UTC(),
+	}, nil
 }
 
 func (record transcriptSegmentRecord) sameContent(other transcriptSegmentRecord) bool {
@@ -149,18 +204,26 @@ type transcriptSegmentScanner interface {
 }
 
 func scanTranscriptSegment(row transcriptSegmentScanner) (transcriptSegmentRecord, bool, error) {
+	record, err := scanTranscriptSegmentRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return transcriptSegmentRecord{}, false, nil
+	}
+	if err != nil {
+		return transcriptSegmentRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func scanTranscriptSegmentRow(row transcriptSegmentScanner) (transcriptSegmentRecord, error) {
 	var record transcriptSegmentRecord
 	err := row.Scan(
 		&record.EventID, &record.CallID, &record.SequenceNo, &record.RecognizedAtUTC,
 		&record.OffsetTicks, &record.DurationTicks, &record.Text, &record.ReceivedAtUTC,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return transcriptSegmentRecord{}, false, nil
-	}
 	if err != nil {
-		return transcriptSegmentRecord{}, false, fmt.Errorf("query transcript segment: %w", err)
+		return transcriptSegmentRecord{}, fmt.Errorf("query transcript segment: %w", err)
 	}
-	return record, true, nil
+	return record, nil
 }
 
 func transcriptSegmentConflictError() error {

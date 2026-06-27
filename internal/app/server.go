@@ -59,15 +59,17 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	}
 
 	if config.TranscriptOnly {
-		transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, nil)
+		transcriptHub := realtime.NewTranscriptHub()
+		transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, nil, transcriptHub)
 		if err != nil {
 			return nil, err
 		}
 		healthAPI := httpadapter.NewHealthAPI(transcriptRuntime.ready)
 		handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
-			TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey),
-			Healthz:       healthAPI.Healthz,
-			Readyz:        healthAPI.Readyz,
+			TranscriptAPI:      httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
+			TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
+			Healthz:            healthAPI.Healthz,
+			Readyz:             healthAPI.Readyz,
 			CORS: httpadapter.CORSConfig{
 				FrontendURL: config.FrontendURL, AllowedOrigins: config.AllowedOrigins,
 			},
@@ -82,7 +84,8 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	}
 	closers := []func() error{postgresDB.Close}
 
-	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB)
+	transcriptHub := realtime.NewTranscriptHub()
+	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptHub)
 	if err != nil {
 		_ = closeAll(closers)
 		return nil, err
@@ -116,15 +119,16 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	accessService := appaccess.NewService(authRepository)
 
 	handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
-		CoreAPI:       httpadapter.NewCoreAPI(service, replay),
-		AuthAPI:       httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
-		WorkspaceAPI:  httpadapter.NewWorkspaceAPI(workspaceService, hub),
-		TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey),
-		AuthService:   authService,
-		Workspace:     workspaceService,
-		Access:        accessService,
-		Healthz:       healthAPI.Healthz,
-		Readyz:        healthAPI.Readyz,
+		CoreAPI:            httpadapter.NewCoreAPI(service, replay),
+		AuthAPI:            httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
+		WorkspaceAPI:       httpadapter.NewWorkspaceAPI(workspaceService, hub),
+		TranscriptAPI:      httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
+		TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
+		AuthService:        authService,
+		Workspace:          workspaceService,
+		Access:             accessService,
+		Healthz:            healthAPI.Healthz,
+		Readyz:             healthAPI.Readyz,
 		Realtime: hub.ServeWS(service, func(r *http.Request) (realtime.ClientIdentity, bool) {
 			session, ok := authmiddleware.SessionFromContext(r.Context())
 			if !ok || session.User == nil || session.Session == nil {
@@ -183,7 +187,7 @@ type transcriptIngestRuntime struct {
 	closers []func() error
 }
 
-func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, databaseConfig database.Config, postgresDB *sql.DB) (transcriptIngestRuntime, error) {
+func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, databaseConfig database.Config, postgresDB *sql.DB, publisher application.TranscriptSegmentPublisher) (transcriptIngestRuntime, error) {
 	switch config.Store {
 	case "", TranscriptStorePostgres:
 		conn := postgresDB
@@ -199,7 +203,7 @@ func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, d
 		repository := postgresrepository.NewTranscriptSegmentRepository(conn)
 		log.Printf("postgres transcript repository ready")
 		return transcriptIngestRuntime{
-			service: application.NewTranscriptIngestService(repository),
+			service: application.NewTranscriptIngestService(repository, publisher),
 			ready: func(ctx context.Context) error {
 				return conn.PingContext(ctx)
 			},
@@ -212,7 +216,7 @@ func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, d
 		}
 		repository := sqliterepository.NewTranscriptSegmentRepository(transcriptDB)
 		return transcriptIngestRuntime{
-			service: application.NewTranscriptIngestService(repository),
+			service: application.NewTranscriptIngestService(repository, publisher),
 			ready: func(ctx context.Context) error {
 				return transcriptDB.PingContext(ctx)
 			},
@@ -220,6 +224,13 @@ func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, d
 		}, nil
 	default:
 		return transcriptIngestRuntime{}, fmt.Errorf("unsupported transcript store %q", config.Store)
+	}
+}
+
+func transcriptRealtimeConfig(config TranscriptWebSocketConfig) realtime.TranscriptWebSocketConfig {
+	return realtime.TranscriptWebSocketConfig{
+		ClientToken:    config.ClientToken,
+		AllowedOrigins: config.AllowedOrigins,
 	}
 }
 

@@ -37,11 +37,53 @@ func TestTranscriptIngestServiceNormalizesTimesAndStoresThroughPort(t *testing.T
 	}
 }
 
+func TestTranscriptIngestServicePublishesOnlyCreatedSegments(t *testing.T) {
+	repository := &fakeTranscriptSegmentRepository{}
+	publisher := &fakeTranscriptSegmentPublisher{}
+	service := application.NewTranscriptIngestService(repository, publisher)
+
+	segment := domain.TranscriptSegment{
+		EventID: "event-1", CallID: "call-1", SequenceNo: 1,
+		RecognizedAtUTC: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
+		Text:            "hello",
+	}
+	if _, err := service.StoreTranscriptSegment(context.Background(), segment); err != nil {
+		t.Fatalf("StoreTranscriptSegment() error = %v", err)
+	}
+	if len(publisher.segments) != 1 || publisher.segments[0].EventID != "event-1" {
+		t.Fatalf("published segments = %+v", publisher.segments)
+	}
+
+	repository.status = domain.TranscriptSegmentAlreadyExists
+	if _, err := service.StoreTranscriptSegment(context.Background(), segment); err != nil {
+		t.Fatalf("StoreTranscriptSegment(duplicate) error = %v", err)
+	}
+	if len(publisher.segments) != 1 {
+		t.Fatalf("published duplicate segment, segments = %+v", publisher.segments)
+	}
+}
+
 type fakeTranscriptSegmentRepository struct {
+	status  domain.TranscriptSegmentStoreStatus
 	segment domain.TranscriptSegment
 }
 
 func (f *fakeTranscriptSegmentRepository) SaveTranscriptSegment(_ context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
 	f.segment = segment
-	return domain.TranscriptSegmentStoreResult{Status: domain.TranscriptSegmentCreated, EventID: segment.EventID}, nil
+	if f.status == "" {
+		f.status = domain.TranscriptSegmentCreated
+	}
+	return domain.TranscriptSegmentStoreResult{Status: f.status, EventID: segment.EventID}, nil
+}
+
+func (f *fakeTranscriptSegmentRepository) ListTranscriptSegments(context.Context, string, int) ([]domain.TranscriptSegment, error) {
+	return nil, nil
+}
+
+type fakeTranscriptSegmentPublisher struct {
+	segments []domain.TranscriptSegment
+}
+
+func (f *fakeTranscriptSegmentPublisher) PublishTranscriptSegment(segment domain.TranscriptSegment) {
+	f.segments = append(f.segments, segment)
 }

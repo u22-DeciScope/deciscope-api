@@ -38,6 +38,11 @@ type UploadRepository interface {
 
 type TranscriptSegmentRepository interface {
 	SaveTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
+	ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error)
+}
+
+type TranscriptSegmentPublisher interface {
+	PublishTranscriptSegment(segment domain.TranscriptSegment)
 }
 
 type Publisher interface {

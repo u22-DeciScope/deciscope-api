@@ -45,6 +45,8 @@ PORT=9090
 DECISCOPE_BACKEND_ADDR=127.0.0.1:9090
 DECISCOPE_TRANSCRIPT_ONLY=false
 DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
+DECISCOPE_WS_CLIENT_TOKEN=dev-ws-token
+DECISCOPE_WS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
 FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 FRONTEND_URL=http://localhost:5193
@@ -54,6 +56,9 @@ ALLOWED_ORIGINS=http://localhost:5193
 - `DECISCOPE_BACKEND_ADDR`: 待受address。設定時は `PORT` より優先します。
 - `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合はPostgreSQLを初期化しません。
 - `DECISCOPE_INGEST_API_KEY`: `POST /api/v1/transcript-segments` 用API key。32文字以上が必要です。
+- `DECISCOPE_WS_CLIENT_TOKEN`: `GET /api/v1/transcript-segments` と
+  `WS /api/v1/ws/transcript-segments` 用の開発client token。未設定なら認証なしです。
+- `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketを許可するOriginのカンマ区切り。
 - `FIXTURE_DIR`: fixture JSONLディレクトリ。
 - `UPLOAD_DIR`: mock uploadの保存先。
 - `FRONTEND_URL`: CORSの基準origin。未指定時は `http://localhost:5193`。
@@ -149,6 +154,24 @@ Invoke-RestMethod `
     -ContentType "application/json; charset=utf-8" `
     -Body $body
 ```
+
+保存済み文字起こしを履歴取得します。
+
+```http
+GET http://<PC_TAILSCALE_IP>:9090/api/v1/transcript-segments?callId=manual-test-call&limit=100&token=dev-ws-token
+```
+
+リアルタイム配信は次へWebSocket接続します。VM BotはWebSocketへ接続せず、
+既存のHTTP POSTだけを使います。
+
+```text
+ws://localhost:9090/api/v1/ws/transcript-segments?token=dev-ws-token
+ws://localhost:9090/api/v1/ws/transcript-segments?callId=manual-test-call&token=dev-ws-token
+```
+
+フロントエンドもDocker Composeで動かす場合、フロントエンドコンテナからGo APIへは
+`http://api:9090` で到達できます。ブラウザからは `api:9090` ではなく、
+`ws://localhost:9090/...` の公開ポートかフロントエンド側proxyを使います。
 
 ## テスト
 

@@ -64,6 +64,8 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_INGEST_API_KEY`: transcript ingest用共有API key。32文字以上、必須
 - `DECISCOPE_TRANSCRIPT_STORE`: `postgres` または `sqlite`
 - `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は文字起こし取り込みAPIだけを起動
+- `DECISCOPE_WS_CLIENT_TOKEN`: transcript WebSocket/履歴GET用client token。未設定時は開発用に認証なし
+- `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketの許可Origin。カンマ区切り
 - `DECISCOPE_GO_SQLITE_PATH`: SQLite fallback用file path
 - `FIXTURE_DIR`: fixture JSONL directory
 - `UPLOAD_DIR`: local upload directory
@@ -185,12 +187,94 @@ http://100.70.221.61:9090/api/v1/transcript-segments
 
 `API_PORT` を変えた場合は、上記の `9090` をそのホスト側公開portへ変更してください。
 
+## Transcript Realtime WebSocket
+
+VM BotはWebSocketへ接続しません。従来どおり
+`POST /api/v1/transcript-segments` へHTTP POSTし、Go APIがDB保存に成功した
+新規segmentだけを接続中のフロントエンドへbroadcastします。同一内容の再送
+`duplicate: true` は配信しません。
+
+```text
+WS  /api/v1/ws/transcript-segments
+WS  /api/v1/ws/transcript-segments?callId={call_id}
+GET /api/v1/transcript-segments?callId={call_id}&limit=100
+```
+
+WebSocket message:
+
+```json
+{
+  "type": "transcript_segment.created",
+  "sentAtUtc": "2026-06-27T00:00:00Z",
+  "data": {
+    "eventId": "09005080-cce6-4132-9404-1e823df47ff9:6",
+    "callId": "09005080-cce6-4132-9404-1e823df47ff9",
+    "sequenceNo": 6,
+    "recognizedAtUtc": "2026-06-27T00:00:00Z",
+    "offsetTicks": 287000000,
+    "durationTicks": 41200000,
+    "text": "うーんってことは、まあ一旦大丈夫そうかな。",
+    "duplicate": false
+  }
+}
+```
+
+`DECISCOPE_WS_CLIENT_TOKEN` を設定している場合、WebSocketと履歴GETには
+`?token=...` が必要です。この値はフロントエンド検証用の別tokenであり、
+`DECISCOPE_INGEST_API_KEY` をブラウザへ渡さないでください。
+
+```text
+ws://localhost:9090/api/v1/ws/transcript-segments?token=dev-ws-token
+ws://localhost:9090/api/v1/ws/transcript-segments?callId=09005080-cce6-4132-9404-1e823df47ff9&token=dev-ws-token
+http://localhost:9090/api/v1/transcript-segments?callId=09005080-cce6-4132-9404-1e823df47ff9&limit=100&token=dev-ws-token
+```
+
+フロントエンドもDocker Composeで起動する場合、フロントエンドコンテナから
+Go APIへは `http://api:9090` で到達できます。ただしブラウザで実行される
+JavaScriptから `api:9090` は解決できないため、ブラウザのWebSocket URLは
+ホスト公開ポートかフロントエンド側proxyを使います。
+
+```text
+ブラウザから直接: ws://localhost:9090/api/v1/ws/transcript-segments
+Tailscale経由:    ws://100.70.221.61:9090/api/v1/ws/transcript-segments
+Compose内部proxy: http://api:9090/api/v1/ws/transcript-segments
+```
+
+手動確認の流れ:
+
+```powershell
+# 1) WebSocket clientを接続
+# 例: ws://localhost:9090/api/v1/ws/transcript-segments?token=dev-ws-token
+
+# 2) 別shellから既存HTTP POSTでsegmentを送信
+$apiKey = Read-Host "DeciScope ingest API key"
+$headers = @{ "X-DeciScope-Api-Key" = $apiKey }
+$body = @{
+    eventId         = "manual-ws-test:1"
+    callId          = "manual-ws-test"
+    sequenceNo      = 1
+    recognizedAtUtc = [DateTimeOffset]::UtcNow.ToString("O")
+    offsetTicks     = 0
+    durationTicks   = 10000000
+    text            = "WebSocket配信テストです。"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:9090/api/v1/transcript-segments" `
+    -Headers $headers `
+    -ContentType "application/json; charset=utf-8" `
+    -Body $body
+```
+
 ## Main Local APIs
 
 - `GET /v1/health`
 - `GET /healthz`
 - `GET /readyz`
 - `POST /api/v1/transcript-segments`
+- `GET /api/v1/transcript-segments?callId={call_id}&limit=100`
+- `WS /api/v1/ws/transcript-segments?callId={call_id}`
 - `GET /v1/workspaces/{workspace_code}/meetings`
 - `POST /v1/workspaces/{workspace_code}/meetings`
 - `GET /v1/meetings/{meeting_id}`

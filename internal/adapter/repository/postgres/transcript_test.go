@@ -76,6 +76,42 @@ func TestTranscriptSegmentRepositoryRejectsCallSequenceConflict(t *testing.T) {
 	}
 }
 
+func TestTranscriptSegmentRepositoryListsByCallIDAndLimit(t *testing.T) {
+	repository, _ := newTestTranscriptSegmentRepository(t)
+	ctx := context.Background()
+	first := validTranscriptSegment()
+	second := first
+	second.EventID = first.CallID + ":2"
+	second.SequenceNo = 2
+	second.RecognizedAtUTC = second.RecognizedAtUTC.Add(time.Second)
+	second.Text = "次の発話です。"
+	otherCall := first
+	otherCall.EventID = "other-call:1"
+	otherCall.CallID = "other-call"
+
+	for _, segment := range []domain.TranscriptSegment{second, otherCall, first} {
+		if _, err := repository.SaveTranscriptSegment(ctx, segment); err != nil {
+			t.Fatalf("SaveTranscriptSegment(%s) error = %v", segment.EventID, err)
+		}
+	}
+
+	segments, err := repository.ListTranscriptSegments(ctx, first.CallID, 10)
+	if err != nil {
+		t.Fatalf("ListTranscriptSegments() error = %v", err)
+	}
+	if len(segments) != 2 || segments[0].EventID != first.EventID || segments[1].EventID != second.EventID {
+		t.Fatalf("segments = %+v", segments)
+	}
+
+	limited, err := repository.ListTranscriptSegments(ctx, "", 1)
+	if err != nil {
+		t.Fatalf("ListTranscriptSegments(limit) error = %v", err)
+	}
+	if len(limited) != 1 {
+		t.Fatalf("limited segments length = %d, want 1", len(limited))
+	}
+}
+
 func newTestTranscriptSegmentRepository(t *testing.T) (*TranscriptSegmentRepository, *sql.DB) {
 	t.Helper()
 	db, err := database.Open(context.Background(), database.Config{URL: testDatabaseURL(t)})

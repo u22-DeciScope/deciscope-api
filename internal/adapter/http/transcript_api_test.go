@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"deciscope-core-api/internal/domain"
 )
@@ -83,6 +84,68 @@ func TestTranscriptAPIRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestTranscriptAPIListsSegmentsWithOptionalClientToken(t *testing.T) {
+	service := &fakeTranscriptIngestUseCases{
+		segments: []domain.TranscriptSegment{{
+			EventID:         "call-1:1",
+			CallID:          "call-1",
+			SequenceNo:      1,
+			RecognizedAtUTC: mustTime(t, "2026-06-27T00:00:00Z"),
+			OffsetTicks:     10,
+			DurationTicks:   20,
+			Text:            "履歴です。",
+			ReceivedAtUTC:   mustTime(t, "2026-06-27T00:00:01Z"),
+		}},
+	}
+	api := NewTranscriptAPI(service, testTranscriptAPIKey, "client-token")
+
+	unauthorized := httptest.NewRecorder()
+	api.List(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments?callId=call-1", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized response = %d %s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	resp := httptest.NewRecorder()
+	api.List(resp, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments?callId=call-1&limit=5&token=client-token", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.listCallID != "call-1" || service.listLimit != 5 {
+		t.Fatalf("list args = callID:%q limit:%d", service.listCallID, service.listLimit)
+	}
+	var body transcriptSegmentListResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(body.Items) != 1 || body.Items[0].EventID != "call-1:1" || body.Items[0].Text != "履歴です。" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestTranscriptAPIListAllowsDevelopmentModeWithoutClientToken(t *testing.T) {
+	service := &fakeTranscriptIngestUseCases{}
+	api := NewTranscriptAPI(service, testTranscriptAPIKey)
+
+	resp := httptest.NewRecorder()
+	api.List(resp, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.listLimit != 100 {
+		t.Fatalf("default limit = %d, want 100", service.listLimit)
+	}
+}
+
+func TestTranscriptAPIListRejectsInvalidLimit(t *testing.T) {
+	api := NewTranscriptAPI(&fakeTranscriptIngestUseCases{}, testTranscriptAPIKey)
+
+	resp := httptest.NewRecorder()
+	api.List(resp, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments?limit=0", nil))
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestTranscriptAPIValidationErrors(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -145,10 +208,13 @@ func TestReadyzChecksDependency(t *testing.T) {
 }
 
 type fakeTranscriptIngestUseCases struct {
-	status  domain.TranscriptSegmentStoreStatus
-	err     error
-	called  bool
-	segment domain.TranscriptSegment
+	status     domain.TranscriptSegmentStoreStatus
+	err        error
+	called     bool
+	segment    domain.TranscriptSegment
+	segments   []domain.TranscriptSegment
+	listCallID string
+	listLimit  int
 }
 
 func (f *fakeTranscriptIngestUseCases) StoreTranscriptSegment(_ context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
@@ -158,6 +224,12 @@ func (f *fakeTranscriptIngestUseCases) StoreTranscriptSegment(_ context.Context,
 		return domain.TranscriptSegmentStoreResult{}, f.err
 	}
 	return domain.TranscriptSegmentStoreResult{Status: f.status, EventID: segment.EventID}, nil
+}
+
+func (f *fakeTranscriptIngestUseCases) ListTranscriptSegments(_ context.Context, callID string, limit int) ([]domain.TranscriptSegment, error) {
+	f.listCallID = callID
+	f.listLimit = limit
+	return f.segments, f.err
 }
 
 func serveTranscriptSegment(api *TranscriptAPI, apiKey, contentType, body string) *httptest.ResponseRecorder {
@@ -192,4 +264,13 @@ func validTranscriptSegmentJSON(t *testing.T, mutate func(map[string]any)) strin
 		t.Fatalf("marshal payload: %v", err)
 	}
 	return string(data)
+}
+
+func mustTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		t.Fatalf("parse time: %v", err)
+	}
+	return parsed
 }

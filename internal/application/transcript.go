@@ -9,11 +9,16 @@ import (
 
 type TranscriptIngestService struct {
 	repository TranscriptSegmentRepository
+	publisher  TranscriptSegmentPublisher
 	now        func() time.Time
 }
 
-func NewTranscriptIngestService(repository TranscriptSegmentRepository) *TranscriptIngestService {
-	return &TranscriptIngestService{repository: repository, now: time.Now}
+func NewTranscriptIngestService(repository TranscriptSegmentRepository, publisher ...TranscriptSegmentPublisher) *TranscriptIngestService {
+	var segmentPublisher TranscriptSegmentPublisher
+	if len(publisher) > 0 {
+		segmentPublisher = publisher[0]
+	}
+	return &TranscriptIngestService{repository: repository, publisher: segmentPublisher, now: time.Now}
 }
 
 func (s *TranscriptIngestService) StoreTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
@@ -23,5 +28,16 @@ func (s *TranscriptIngestService) StoreTranscriptSegment(ctx context.Context, se
 	} else {
 		segment.ReceivedAtUTC = segment.ReceivedAtUTC.UTC()
 	}
-	return s.repository.SaveTranscriptSegment(ctx, segment)
+	result, err := s.repository.SaveTranscriptSegment(ctx, segment)
+	if err != nil {
+		return result, err
+	}
+	if result.Status == domain.TranscriptSegmentCreated && s.publisher != nil {
+		s.publisher.PublishTranscriptSegment(segment)
+	}
+	return result, nil
+}
+
+func (s *TranscriptIngestService) ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error) {
+	return s.repository.ListTranscriptSegments(ctx, callID, limit)
 }

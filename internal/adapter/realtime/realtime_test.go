@@ -80,6 +80,81 @@ func TestParseSeqRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestTranscriptHubPublishFiltersByCallID(t *testing.T) {
+	hub := NewTranscriptHub()
+	allCalls := &transcriptClient{send: make(chan domain.TranscriptSegment, 1), done: make(chan struct{})}
+	matching := &transcriptClient{callID: "call-1", send: make(chan domain.TranscriptSegment, 1), done: make(chan struct{})}
+	other := &transcriptClient{callID: "call-2", send: make(chan domain.TranscriptSegment, 1), done: make(chan struct{})}
+	hub.subscribe(allCalls)
+	hub.subscribe(matching)
+	hub.subscribe(other)
+	t.Cleanup(func() {
+		hub.unsubscribe(allCalls)
+		hub.unsubscribe(matching)
+		hub.unsubscribe(other)
+	})
+
+	segment := domain.TranscriptSegment{EventID: "call-1:1", CallID: "call-1", SequenceNo: 1}
+	hub.PublishTranscriptSegment(segment)
+
+	for name, client := range map[string]*transcriptClient{"all": allCalls, "matching": matching} {
+		select {
+		case got := <-client.send:
+			if got.EventID != "call-1:1" {
+				t.Fatalf("%s got segment = %+v", name, got)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not receive segment", name)
+		}
+	}
+	select {
+	case got := <-other.send:
+		t.Fatalf("other call unexpectedly received %+v", got)
+	default:
+	}
+}
+
+func TestTranscriptWebSocketConfigChecksTokenAndOrigin(t *testing.T) {
+	config := TranscriptWebSocketConfig{
+		ClientToken:    "client-token",
+		AllowedOrigins: "http://localhost:3000,http://127.0.0.1:3000",
+	}
+	if !config.authorized("client-token") {
+		t.Fatal("authorized token rejected")
+	}
+	if config.authorized("wrong-token") {
+		t.Fatal("wrong token accepted")
+	}
+	if !config.originAllowed("http://localhost:3000") {
+		t.Fatal("allowed origin rejected")
+	}
+	if config.originAllowed("http://example.com") {
+		t.Fatal("unexpected origin accepted")
+	}
+	if !config.originAllowed("") {
+		t.Fatal("empty origin should be allowed for non-browser clients")
+	}
+}
+
+func TestTranscriptSegmentProtocolMessage(t *testing.T) {
+	segment := domain.TranscriptSegment{
+		EventID:         "call-1:1",
+		CallID:          "call-1",
+		SequenceNo:      1,
+		RecognizedAtUTC: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
+		OffsetTicks:     10,
+		DurationTicks:   20,
+		Text:            "hello",
+	}
+	message := transcriptSegmentProtocolMessage(segment, time.Date(2026, 6, 27, 0, 0, 1, 0, time.UTC))
+	if message.Type != transcriptSegmentCreatedType || message.SentAtUTC != "2026-06-27T00:00:01Z" {
+		t.Fatalf("message = %+v", message)
+	}
+	if message.Data.EventID != "call-1:1" || message.Data.Duplicate {
+		t.Fatalf("message data = %+v", message.Data)
+	}
+}
+
 type fakeEventStore struct {
 	events []domain.Event
 }

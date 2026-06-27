@@ -11,17 +11,18 @@ import (
 )
 
 type RouterDependencies struct {
-	CoreAPI       *CoreAPI
-	AuthAPI       *AuthAPI
-	WorkspaceAPI  *WorkspaceAPI
-	TranscriptAPI *TranscriptAPI
-	AuthService   authmiddleware.SessionAuthenticator
-	Workspace     WorkspaceAccessUseCases
-	Access        ResourceAccessUseCases
-	Realtime      http.HandlerFunc
-	Healthz       http.HandlerFunc
-	Readyz        http.HandlerFunc
-	CORS          CORSConfig
+	CoreAPI            *CoreAPI
+	AuthAPI            *AuthAPI
+	WorkspaceAPI       *WorkspaceAPI
+	TranscriptAPI      *TranscriptAPI
+	AuthService        authmiddleware.SessionAuthenticator
+	Workspace          WorkspaceAccessUseCases
+	Access             ResourceAccessUseCases
+	Realtime           http.HandlerFunc
+	TranscriptRealtime http.HandlerFunc
+	Healthz            http.HandlerFunc
+	Readyz             http.HandlerFunc
+	CORS               CORSConfig
 }
 
 type CORSConfig struct {
@@ -42,6 +43,10 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	}
 	if deps.TranscriptAPI != nil {
 		r.Post("/api/v1/transcript-segments", deps.TranscriptAPI.Store)
+		r.Get("/api/v1/transcript-segments", deps.TranscriptAPI.List)
+	}
+	if deps.TranscriptRealtime != nil {
+		r.Get("/api/v1/ws/transcript-segments", deps.TranscriptRealtime)
 	}
 	if deps.CoreAPI == nil || deps.AuthAPI == nil || deps.WorkspaceAPI == nil ||
 		deps.AuthService == nil || deps.Workspace == nil || deps.Access == nil || deps.Realtime == nil {

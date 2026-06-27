@@ -23,6 +23,7 @@ const (
 type Config struct {
 	Database            database.Config
 	TranscriptIngest    TranscriptIngestConfig
+	TranscriptWebSocket TranscriptWebSocketConfig
 	TranscriptOnly      bool
 	Firebase            firebase.Config
 	UploadDir           string
@@ -36,6 +37,11 @@ type TranscriptIngestConfig struct {
 	Store  string
 	SQLite sqliteinfra.Config
 	APIKey string
+}
+
+type TranscriptWebSocketConfig struct {
+	ClientToken    string
+	AllowedOrigins string
 }
 
 func ConfigFromEnv() Config {
@@ -53,6 +59,10 @@ func ConfigFromEnv() Config {
 			Store:  transcriptStore,
 			SQLite: sqliteinfra.Config{Path: os.Getenv("DECISCOPE_GO_SQLITE_PATH")},
 			APIKey: strings.TrimSpace(os.Getenv("DECISCOPE_INGEST_API_KEY")),
+		},
+		TranscriptWebSocket: TranscriptWebSocketConfig{
+			ClientToken:    strings.TrimSpace(os.Getenv("DECISCOPE_WS_CLIENT_TOKEN")),
+			AllowedOrigins: os.Getenv("DECISCOPE_WS_ALLOWED_ORIGINS"),
 		},
 		TranscriptOnly: transcriptOnly,
 		Firebase: firebase.Config{
