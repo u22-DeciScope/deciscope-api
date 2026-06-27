@@ -49,3 +49,21 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Update Kubernetes manifests in yd-network
+        env:
+          INFRA_REPO_PAT: ${{ secrets.INFRA_REPO_PAT }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA="sha-${GITHUB_SHA::7}"
+          
+          git clone https://x-access-token:${INFRA_REPO_PAT}@github.com/yukiidayo/yd-network.git infra
+          cd infra
+          
+          sed -i "s|image: ghcr.io/u22-deciscope/deciscope-api:.*|image: ghcr.io/u22-deciscope/deciscope-api:${SHORT_SHA}|g" k8s/manifests/deciscope/api.yaml
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/manifests/deciscope/api.yaml
+          git commit -m "chore(api): deploy ${SHORT_SHA}" || echo "No changes to commit"
+          git push origin main
