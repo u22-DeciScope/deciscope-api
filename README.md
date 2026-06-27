@@ -148,6 +148,8 @@ X-DeciScope-Api-Key: <DECISCOPE_INGEST_API_KEY>
   "eventId": "06008080-91e3-4b88-a8ff-9af629265ced:1",
   "callId": "06008080-91e3-4b88-a8ff-9af629265ced",
   "sequenceNo": 1,
+  "speakerId": "8:orgid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "speakerName": "山田 太郎",
   "recognizedAtUtc": "2026-06-25T13:20:01.1234567+00:00",
   "offsetTicks": 20300000,
   "durationTicks": 18000000,
@@ -158,6 +160,9 @@ X-DeciScope-Api-Key: <DECISCOPE_INGEST_API_KEY>
 `sessionId` は任意です。既存のVM Botや手動POSTが `sessionId` を送らなくても
 従来どおり保存できます。会議セッション作成APIから返った `sessionId` を付けると、
 履歴取得とWebSocketで `sessionId` による絞り込みができます。
+`speakerId` / `speakerName` も任意です。Botが話者情報を送った場合は
+PostgreSQLの `speaker_id` / `speaker_name` に保存し、履歴APIとWebSocket配信にも
+camelCaseで含めます。
 
 手動テスト:
 
@@ -168,14 +173,19 @@ $headers = @{
     "X-DeciScope-Api-Key" = $apiKey
 }
 
+$n = Get-Random -Minimum 1000 -Maximum 999999
+
 $body = @{
-    eventId         = "manual-test-call:1"
-    callId          = "manual-test-call"
-    sequenceNo      = 1
+    sessionId       = "manual-speaker-session"
+    eventId         = "manual-speaker-test-$n"
+    callId          = "manual-speaker-call"
+    sequenceNo      = $n
     recognizedAtUtc = [DateTimeOffset]::UtcNow.ToString("O")
     offsetTicks     = 0
     durationTicks   = 10000000
     text            = "Go APIへの保存テストです。"
+    speakerId       = "manual-speaker-001"
+    speakerName     = "手動テスト太郎"
 } | ConvertTo-Json
 
 Invoke-RestMethod `
@@ -184,6 +194,37 @@ Invoke-RestMethod `
     -Headers $headers `
     -ContentType "application/json; charset=utf-8" `
     -Body $body
+```
+
+DB確認:
+
+```sql
+SELECT session_id, call_id, sequence_no, speaker_id, speaker_name, text, recognized_at_utc
+FROM transcript_segments
+ORDER BY recognized_at_utc DESC
+LIMIT 10;
+```
+
+履歴取得レスポンスにも話者情報が含まれます。
+
+```json
+{
+  "items": [
+    {
+      "sessionId": "manual-speaker-session",
+      "eventId": "manual-speaker-test-1234",
+      "callId": "manual-speaker-call",
+      "sequenceNo": 1234,
+      "speakerId": "manual-speaker-001",
+      "speakerName": "手動テスト太郎",
+      "recognizedAtUtc": "2026-06-27T07:00:00Z",
+      "offsetTicks": 0,
+      "durationTicks": 10000000,
+      "text": "Go APIへの保存テストです。",
+      "receivedAtUtc": "2026-06-27T07:00:01Z"
+    }
+  ]
+}
 ```
 
 VMから接続する場合、PostgreSQLコンテナや `postgres:5432` へ直接接続しません。
@@ -221,6 +262,8 @@ WebSocket message:
     "eventId": "09005080-cce6-4132-9404-1e823df47ff9:6",
     "callId": "09005080-cce6-4132-9404-1e823df47ff9",
     "sequenceNo": 6,
+    "speakerId": "8:orgid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "speakerName": "山田 太郎",
     "recognizedAtUtc": "2026-06-27T00:00:00Z",
     "offsetTicks": 287000000,
     "durationTicks": 41200000,

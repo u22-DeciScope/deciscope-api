@@ -26,6 +26,8 @@ X-DeciScope-Api-Key: {{apiKey}}
   "eventId": "manual-test-call:1",
   "callId": "manual-test-call",
   "sequenceNo": 1,
+  "speakerId": "manual-speaker-001",
+  "speakerName": "手動テスト太郎",
   "recognizedAtUtc": "2026-06-25T13:20:01.1234567+00:00",
   "offsetTicks": 0,
   "durationTicks": 10000000,

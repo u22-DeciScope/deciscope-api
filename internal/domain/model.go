@@ -57,6 +57,8 @@ type TranscriptSegment struct {
 	EventID         string
 	CallID          string
 	SequenceNo      int64
+	SpeakerID       string
+	SpeakerName     string
 	RecognizedAtUTC time.Time
 	OffsetTicks     int64
 	DurationTicks   int64

@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS transcript_segments (
     event_id          TEXT    NOT NULL,
     call_id           TEXT    NOT NULL,
     sequence_no       INTEGER NOT NULL,
+    speaker_id        TEXT,
+    speaker_name      TEXT,
     recognized_at_utc TEXT    NOT NULL,
     offset_ticks      INTEGER NOT NULL,
     duration_ticks    INTEGER NOT NULL,
@@ -49,6 +51,12 @@ func InitializeTranscriptSegments(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("create transcript_segments table: %w", err)
 	}
 	if err := ensureTranscriptSessionIDColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := ensureTranscriptSpeakerIDColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := ensureTranscriptSpeakerNameColumn(ctx, db); err != nil {
 		return err
 	}
 	if _, err := db.ExecContext(ctx, createTranscriptSegmentsCallOrderIndexSQL); err != nil {
@@ -92,10 +100,10 @@ func (r *TranscriptSegmentRepository) SaveTranscriptSegment(ctx context.Context,
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO transcript_segments (
-			session_id, event_id, call_id, sequence_no, recognized_at_utc,
+			session_id, event_id, call_id, sequence_no, speaker_id, speaker_name, recognized_at_utc,
 			offset_ticks, duration_ticks, text, received_at_utc
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, nullableString(record.SessionID), record.EventID, record.CallID, record.SequenceNo, record.RecognizedAtUTC,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, nullableString(record.SessionID), record.EventID, record.CallID, record.SequenceNo, nullableString(record.SpeakerID), nullableString(record.SpeakerName), record.RecognizedAtUTC,
 		record.OffsetTicks, record.DurationTicks, record.Text, record.ReceivedAtUTC); err != nil {
 		return domain.TranscriptSegmentStoreResult{}, fmt.Errorf("insert transcript segment: %w", err)
 	}
@@ -110,7 +118,7 @@ func (r *TranscriptSegmentRepository) ListTranscriptSegments(ctx context.Context
 		limit = 100
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, COALESCE(speaker_id, ''), COALESCE(speaker_name, ''), recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE (? = '' OR call_id = ?)
 		  AND (? = '' OR session_id = ?)
@@ -145,6 +153,8 @@ type transcriptSegmentRecord struct {
 	EventID         string
 	CallID          string
 	SequenceNo      int64
+	SpeakerID       string
+	SpeakerName     string
 	RecognizedAtUTC string
 	OffsetTicks     int64
 	DurationTicks   int64
@@ -158,6 +168,8 @@ func transcriptSegmentRecordFromDomain(segment domain.TranscriptSegment) transcr
 		EventID:         segment.EventID,
 		CallID:          segment.CallID,
 		SequenceNo:      segment.SequenceNo,
+		SpeakerID:       segment.SpeakerID,
+		SpeakerName:     segment.SpeakerName,
 		RecognizedAtUTC: segment.RecognizedAtUTC.UTC().Format(time.RFC3339Nano),
 		OffsetTicks:     segment.OffsetTicks,
 		DurationTicks:   segment.DurationTicks,
@@ -180,6 +192,8 @@ func (record transcriptSegmentRecord) toDomain() (domain.TranscriptSegment, erro
 		EventID:         record.EventID,
 		CallID:          record.CallID,
 		SequenceNo:      record.SequenceNo,
+		SpeakerID:       record.SpeakerID,
+		SpeakerName:     record.SpeakerName,
 		RecognizedAtUTC: recognizedAt.UTC(),
 		OffsetTicks:     record.OffsetTicks,
 		DurationTicks:   record.DurationTicks,
@@ -193,6 +207,8 @@ func (record transcriptSegmentRecord) sameContent(other transcriptSegmentRecord)
 		record.SessionID == other.SessionID &&
 		record.CallID == other.CallID &&
 		record.SequenceNo == other.SequenceNo &&
+		record.SpeakerID == other.SpeakerID &&
+		record.SpeakerName == other.SpeakerName &&
 		record.RecognizedAtUTC == other.RecognizedAtUTC &&
 		record.OffsetTicks == other.OffsetTicks &&
 		record.DurationTicks == other.DurationTicks &&
@@ -201,7 +217,7 @@ func (record transcriptSegmentRecord) sameContent(other transcriptSegmentRecord)
 
 func findTranscriptSegmentByEventID(ctx context.Context, tx *sql.Tx, eventID string) (transcriptSegmentRecord, bool, error) {
 	return scanTranscriptSegment(tx.QueryRowContext(ctx, `
-		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, COALESCE(speaker_id, ''), COALESCE(speaker_name, ''), recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE event_id = ?
 	`, eventID))
@@ -209,7 +225,7 @@ func findTranscriptSegmentByEventID(ctx context.Context, tx *sql.Tx, eventID str
 
 func findTranscriptSegmentByCallSequence(ctx context.Context, tx *sql.Tx, callID string, sequenceNo int64) (transcriptSegmentRecord, bool, error) {
 	return scanTranscriptSegment(tx.QueryRowContext(ctx, `
-		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, COALESCE(speaker_id, ''), COALESCE(speaker_name, ''), recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE call_id = ? AND sequence_no = ?
 	`, callID, sequenceNo))
@@ -233,7 +249,7 @@ func scanTranscriptSegment(row transcriptSegmentScanner) (transcriptSegmentRecor
 func scanTranscriptSegmentRow(row transcriptSegmentScanner) (transcriptSegmentRecord, error) {
 	var record transcriptSegmentRecord
 	err := row.Scan(
-		&record.SessionID, &record.EventID, &record.CallID, &record.SequenceNo, &record.RecognizedAtUTC,
+		&record.SessionID, &record.EventID, &record.CallID, &record.SequenceNo, &record.SpeakerID, &record.SpeakerName, &record.RecognizedAtUTC,
 		&record.OffsetTicks, &record.DurationTicks, &record.Text, &record.ReceivedAtUTC,
 	)
 	if err != nil {
@@ -249,6 +265,18 @@ func transcriptSegmentConflictError() error {
 var _ application.TranscriptSegmentRepository = (*TranscriptSegmentRepository)(nil)
 
 func ensureTranscriptSessionIDColumn(ctx context.Context, db *sql.DB) error {
+	return ensureTranscriptColumn(ctx, db, "session_id", `ALTER TABLE transcript_segments ADD COLUMN session_id TEXT`)
+}
+
+func ensureTranscriptSpeakerIDColumn(ctx context.Context, db *sql.DB) error {
+	return ensureTranscriptColumn(ctx, db, "speaker_id", `ALTER TABLE transcript_segments ADD COLUMN speaker_id TEXT`)
+}
+
+func ensureTranscriptSpeakerNameColumn(ctx context.Context, db *sql.DB) error {
+	return ensureTranscriptColumn(ctx, db, "speaker_name", `ALTER TABLE transcript_segments ADD COLUMN speaker_name TEXT`)
+}
+
+func ensureTranscriptColumn(ctx context.Context, db *sql.DB, columnName, alterSQL string) error {
 	rows, err := db.QueryContext(ctx, `PRAGMA table_info(transcript_segments)`)
 	if err != nil {
 		return fmt.Errorf("inspect transcript_segments columns: %w", err)
@@ -264,15 +292,15 @@ func ensureTranscriptSessionIDColumn(ctx context.Context, db *sql.DB) error {
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			return fmt.Errorf("scan transcript_segments column: %w", err)
 		}
-		if name == "session_id" {
+		if name == columnName {
 			return nil
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate transcript_segments columns: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, `ALTER TABLE transcript_segments ADD COLUMN session_id TEXT`); err != nil {
-		return fmt.Errorf("add transcript_segments session_id column: %w", err)
+	if _, err := db.ExecContext(ctx, alterSQL); err != nil {
+		return fmt.Errorf("add transcript_segments %s column: %w", columnName, err)
 	}
 	return nil
 }

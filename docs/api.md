@@ -46,6 +46,8 @@ X-DeciScope-Api-Key: <shared secret>
   "eventId": "06008080-91e3-4b88-a8ff-9af629265ced:1",
   "callId": "06008080-91e3-4b88-a8ff-9af629265ced",
   "sequenceNo": 1,
+  "speakerId": "8:orgid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "speakerName": "佐藤さん",
   "recognizedAtUtc": "2026-06-25T13:20:01.1234567+00:00",
   "offsetTicks": 20300000,
   "durationTicks": 18000000,
@@ -56,6 +58,10 @@ X-DeciScope-Api-Key: <shared secret>
 - API keyは `DECISCOPE_INGEST_API_KEY` と定数時間比較します。
 - `sessionId` は任意です。会議セッション作成APIから返ったIDを付けると、
   保存・履歴取得・WebSocket配信で同じセッションに紐づけられます。
+- `speakerId` と `speakerName` は任意です。Botが話者別文字起こし情報を送った場合、
+  PostgreSQLの `speaker_id` / `speaker_name` に保存し、履歴取得・WebSocket配信にも含めます。
+- 互換性のため、表示名は `speakerLabel`, `speakerDisplayName`, `speaker_label`,
+  `participantName`, `userName` でも受け付け、`speakerName` として扱います。
 - `recognizedAtUtc` はUTC offsetのみ受け付け、保存時はUTC/RFC3339Nanoへ正規化します。
 - 新規保存は `201 Created`、同一内容の再送は `200 OK` と `duplicate: true` です。
 - 同じ `eventId` の内容違い、または同じ `callId` + `sequenceNo` の別 `eventId` は
@@ -105,6 +111,8 @@ WebSocket message:
     "eventId": "09005080-cce6-4132-9404-1e823df47ff9:6",
     "callId": "09005080-cce6-4132-9404-1e823df47ff9",
     "sequenceNo": 6,
+    "speakerId": "8:orgid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "speakerName": "佐藤さん",
     "recognizedAtUtc": "2026-06-27T00:00:00Z",
     "offsetTicks": 287000000,
     "durationTicks": 41200000,

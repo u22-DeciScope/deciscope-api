@@ -29,11 +29,11 @@ func (r *TranscriptSegmentRepository) SaveTranscriptSegment(ctx context.Context,
 	record := transcriptSegmentRecordFromDomain(segment)
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO transcript_segments (
-			session_id, event_id, call_id, sequence_no, recognized_at_utc,
+			session_id, event_id, call_id, sequence_no, speaker_id, speaker_name, recognized_at_utc,
 			offset_ticks, duration_ticks, text, received_at_utc
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT DO NOTHING
-	`, nullable(record.SessionID), record.EventID, record.CallID, record.SequenceNo, record.RecognizedAtUTC,
+	`, nullable(record.SessionID), record.EventID, record.CallID, record.SequenceNo, nullable(record.SpeakerID), nullable(record.SpeakerName), record.RecognizedAtUTC,
 		record.OffsetTicks, record.DurationTicks, record.Text, record.ReceivedAtUTC)
 	if err != nil {
 		return domain.TranscriptSegmentStoreResult{}, fmt.Errorf("insert transcript segment: %w", err)
@@ -79,7 +79,7 @@ func (r *TranscriptSegmentRepository) ListTranscriptSegments(ctx context.Context
 		limit = 100
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, COALESCE(speaker_id, ''), COALESCE(speaker_name, ''), recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE ($1 = '' OR call_id = $1)
 		  AND ($2 = '' OR session_id = $2)
@@ -114,6 +114,8 @@ type transcriptSegmentRecord struct {
 	EventID         string
 	CallID          string
 	SequenceNo      int64
+	SpeakerID       string
+	SpeakerName     string
 	RecognizedAtUTC string
 	OffsetTicks     int64
 	DurationTicks   int64
@@ -127,6 +129,8 @@ func transcriptSegmentRecordFromDomain(segment domain.TranscriptSegment) transcr
 		EventID:         segment.EventID,
 		CallID:          segment.CallID,
 		SequenceNo:      segment.SequenceNo,
+		SpeakerID:       segment.SpeakerID,
+		SpeakerName:     segment.SpeakerName,
 		RecognizedAtUTC: segment.RecognizedAtUTC.UTC().Format(time.RFC3339Nano),
 		OffsetTicks:     segment.OffsetTicks,
 		DurationTicks:   segment.DurationTicks,
@@ -149,6 +153,8 @@ func (record transcriptSegmentRecord) toDomain() (domain.TranscriptSegment, erro
 		EventID:         record.EventID,
 		CallID:          record.CallID,
 		SequenceNo:      record.SequenceNo,
+		SpeakerID:       record.SpeakerID,
+		SpeakerName:     record.SpeakerName,
 		RecognizedAtUTC: recognizedAt.UTC(),
 		OffsetTicks:     record.OffsetTicks,
 		DurationTicks:   record.DurationTicks,
@@ -162,6 +168,8 @@ func (record transcriptSegmentRecord) sameContent(other transcriptSegmentRecord)
 		record.SessionID == other.SessionID &&
 		record.CallID == other.CallID &&
 		record.SequenceNo == other.SequenceNo &&
+		record.SpeakerID == other.SpeakerID &&
+		record.SpeakerName == other.SpeakerName &&
 		record.RecognizedAtUTC == other.RecognizedAtUTC &&
 		record.OffsetTicks == other.OffsetTicks &&
 		record.DurationTicks == other.DurationTicks &&
@@ -170,7 +178,7 @@ func (record transcriptSegmentRecord) sameContent(other transcriptSegmentRecord)
 
 func findTranscriptSegmentByEventID(ctx context.Context, tx *sql.Tx, eventID string) (transcriptSegmentRecord, bool, error) {
 	return scanTranscriptSegment(tx.QueryRowContext(ctx, `
-		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, COALESCE(speaker_id, ''), COALESCE(speaker_name, ''), recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE event_id = $1
 	`, eventID))
@@ -178,7 +186,7 @@ func findTranscriptSegmentByEventID(ctx context.Context, tx *sql.Tx, eventID str
 
 func findTranscriptSegmentByCallSequence(ctx context.Context, tx *sql.Tx, callID string, sequenceNo int64) (transcriptSegmentRecord, bool, error) {
 	return scanTranscriptSegment(tx.QueryRowContext(ctx, `
-		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, COALESCE(speaker_id, ''), COALESCE(speaker_name, ''), recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE call_id = $1 AND sequence_no = $2
 	`, callID, sequenceNo))
@@ -202,7 +210,7 @@ func scanTranscriptSegment(row transcriptSegmentScanner) (transcriptSegmentRecor
 func scanTranscriptSegmentRow(row transcriptSegmentScanner) (transcriptSegmentRecord, error) {
 	var record transcriptSegmentRecord
 	err := row.Scan(
-		&record.SessionID, &record.EventID, &record.CallID, &record.SequenceNo, &record.RecognizedAtUTC,
+		&record.SessionID, &record.EventID, &record.CallID, &record.SequenceNo, &record.SpeakerID, &record.SpeakerName, &record.RecognizedAtUTC,
 		&record.OffsetTicks, &record.DurationTicks, &record.Text, &record.ReceivedAtUTC,
 	)
 	if err != nil {

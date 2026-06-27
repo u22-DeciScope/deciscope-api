@@ -142,6 +142,8 @@ func TestTranscriptSegmentProtocolMessage(t *testing.T) {
 		SessionID:       "session_1",
 		CallID:          "call-1",
 		SequenceNo:      1,
+		SpeakerID:       "speaker-1",
+		SpeakerName:     "佐藤さん",
 		RecognizedAtUTC: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
 		OffsetTicks:     10,
 		DurationTicks:   20,
@@ -151,7 +153,8 @@ func TestTranscriptSegmentProtocolMessage(t *testing.T) {
 	if message.Type != transcriptSegmentCreatedType || message.SentAtUTC != "2026-06-27T00:00:01Z" {
 		t.Fatalf("message = %+v", message)
 	}
-	if message.Data.SessionID != "session_1" || message.Data.EventID != "call-1:1" || message.Data.Duplicate {
+	if message.Data.SessionID != "session_1" || message.Data.EventID != "call-1:1" ||
+		message.Data.SpeakerID != "speaker-1" || message.Data.SpeakerName != "佐藤さん" || message.Data.Duplicate {
 		t.Fatalf("message data = %+v", message.Data)
 	}
 }

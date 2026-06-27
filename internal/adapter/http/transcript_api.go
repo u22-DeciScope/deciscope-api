@@ -147,14 +147,21 @@ func authorizedSecret(value, secret string) bool {
 }
 
 type transcriptSegmentRequest struct {
-	SessionID       string `json:"sessionId"`
-	EventID         string `json:"eventId"`
-	CallID          string `json:"callId"`
-	SequenceNo      int64  `json:"sequenceNo"`
-	RecognizedAtUTC string `json:"recognizedAtUtc"`
-	OffsetTicks     int64  `json:"offsetTicks"`
-	DurationTicks   int64  `json:"durationTicks"`
-	Text            string `json:"text"`
+	SessionID          string `json:"sessionId"`
+	EventID            string `json:"eventId"`
+	CallID             string `json:"callId"`
+	SequenceNo         int64  `json:"sequenceNo"`
+	SpeakerID          string `json:"speakerId"`
+	SpeakerLabel       string `json:"speakerLabel"`
+	SpeakerLabelSnake  string `json:"speaker_label"`
+	SpeakerName        string `json:"speakerName"`
+	SpeakerDisplayName string `json:"speakerDisplayName"`
+	ParticipantName    string `json:"participantName"`
+	UserName           string `json:"userName"`
+	RecognizedAtUTC    string `json:"recognizedAtUtc"`
+	OffsetTicks        int64  `json:"offsetTicks"`
+	DurationTicks      int64  `json:"durationTicks"`
+	Text               string `json:"text"`
 }
 
 type transcriptSegmentResponse struct {
@@ -172,6 +179,8 @@ type transcriptSegmentItem struct {
 	EventID         string `json:"eventId"`
 	CallID          string `json:"callId"`
 	SequenceNo      int64  `json:"sequenceNo"`
+	SpeakerID       string `json:"speakerId,omitempty"`
+	SpeakerName     string `json:"speakerName,omitempty"`
 	RecognizedAtUTC string `json:"recognizedAtUtc"`
 	OffsetTicks     int64  `json:"offsetTicks"`
 	DurationTicks   int64  `json:"durationTicks"`
@@ -213,6 +222,8 @@ func (request transcriptSegmentRequest) toDomain() (domain.TranscriptSegment, er
 		EventID:         eventID,
 		CallID:          callID,
 		SequenceNo:      request.SequenceNo,
+		SpeakerID:       strings.TrimSpace(request.SpeakerID),
+		SpeakerName:     request.speakerName(),
 		RecognizedAtUTC: recognizedAt.UTC(),
 		OffsetTicks:     request.OffsetTicks,
 		DurationTicks:   request.DurationTicks,
@@ -251,6 +262,8 @@ func transcriptSegmentItems(segments []domain.TranscriptSegment) []transcriptSeg
 			EventID:         segment.EventID,
 			CallID:          segment.CallID,
 			SequenceNo:      segment.SequenceNo,
+			SpeakerID:       segment.SpeakerID,
+			SpeakerName:     segment.SpeakerName,
 			RecognizedAtUTC: segment.RecognizedAtUTC.UTC().Format(time.RFC3339Nano),
 			OffsetTicks:     segment.OffsetTicks,
 			DurationTicks:   segment.DurationTicks,
@@ -259,6 +272,22 @@ func transcriptSegmentItems(segments []domain.TranscriptSegment) []transcriptSeg
 		})
 	}
 	return items
+}
+
+func (request transcriptSegmentRequest) speakerName() string {
+	for _, value := range []string{
+		request.SpeakerName,
+		request.SpeakerLabel,
+		request.SpeakerDisplayName,
+		request.SpeakerLabelSnake,
+		request.ParticipantName,
+		request.UserName,
+	} {
+		if label := strings.TrimSpace(value); label != "" {
+			return label
+		}
+	}
+	return ""
 }
 
 func isJSONContentType(contentType string) bool {

@@ -76,6 +76,55 @@ func TestTranscriptAPIAcceptsOptionalSessionID(t *testing.T) {
 	}
 }
 
+func TestTranscriptAPIAcceptsSpeakerIDAndName(t *testing.T) {
+	service := &fakeTranscriptIngestUseCases{status: domain.TranscriptSegmentCreated}
+	api := NewTranscriptAPI(service, testTranscriptAPIKey)
+
+	resp := serveTranscriptSegment(api, testTranscriptAPIKey, "application/json", validTranscriptSegmentJSON(t, func(payload map[string]any) {
+		payload["speakerId"] = "8:orgid:speaker-001"
+		payload["speakerName"] = "佐藤さん"
+	}))
+
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.segment.SpeakerID != "8:orgid:speaker-001" || service.segment.SpeakerName != "佐藤さん" {
+		t.Fatalf("speaker = id:%q name:%q", service.segment.SpeakerID, service.segment.SpeakerName)
+	}
+}
+
+func TestTranscriptAPIAcceptsSpeakerNameAliases(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		want  string
+	}{
+		{name: "speakerLabel", field: "speakerLabel", want: "佐藤さん"},
+		{name: "speakerDisplayName", field: "speakerDisplayName", want: "鈴木さん"},
+		{name: "speaker_label", field: "speaker_label", want: "高橋さん"},
+		{name: "participantName", field: "participantName", want: "伊藤さん"},
+		{name: "userName", field: "userName", want: "渡辺さん"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &fakeTranscriptIngestUseCases{status: domain.TranscriptSegmentCreated}
+			api := NewTranscriptAPI(service, testTranscriptAPIKey)
+
+			resp := serveTranscriptSegment(api, testTranscriptAPIKey, "application/json", validTranscriptSegmentJSON(t, func(payload map[string]any) {
+				payload[tt.field] = tt.want
+			}))
+
+			if resp.Code != http.StatusCreated {
+				t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+			}
+			if service.segment.SpeakerName != tt.want {
+				t.Fatalf("speakerName = %q, want %q", service.segment.SpeakerName, tt.want)
+			}
+		})
+	}
+}
+
 func TestTranscriptAPIConflictResponse(t *testing.T) {
 	service := &fakeTranscriptIngestUseCases{err: domain.ErrConflict}
 	api := NewTranscriptAPI(service, testTranscriptAPIKey)
@@ -107,6 +156,8 @@ func TestTranscriptAPIListsSegmentsWithOptionalClientToken(t *testing.T) {
 			SessionID:       "session_1",
 			CallID:          "call-1",
 			SequenceNo:      1,
+			SpeakerID:       "speaker-1",
+			SpeakerName:     "佐藤さん",
 			RecognizedAtUTC: mustTime(t, "2026-06-27T00:00:00Z"),
 			OffsetTicks:     10,
 			DurationTicks:   20,
@@ -134,7 +185,8 @@ func TestTranscriptAPIListsSegmentsWithOptionalClientToken(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if len(body.Items) != 1 || body.Items[0].SessionID != "session_1" || body.Items[0].EventID != "call-1:1" || body.Items[0].Text != "履歴です。" {
+	if len(body.Items) != 1 || body.Items[0].SessionID != "session_1" || body.Items[0].EventID != "call-1:1" ||
+		body.Items[0].SpeakerID != "speaker-1" || body.Items[0].SpeakerName != "佐藤さん" || body.Items[0].Text != "履歴です。" {
 		t.Fatalf("body = %+v", body)
 	}
 }

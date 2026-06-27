@@ -305,6 +305,8 @@ type transcriptSegmentData struct {
 	EventID         string `json:"eventId"`
 	CallID          string `json:"callId"`
 	SequenceNo      int64  `json:"sequenceNo"`
+	SpeakerID       string `json:"speakerId,omitempty"`
+	SpeakerName     string `json:"speakerName,omitempty"`
 	RecognizedAtUTC string `json:"recognizedAtUtc"`
 	OffsetTicks     int64  `json:"offsetTicks"`
 	DurationTicks   int64  `json:"durationTicks"`
@@ -321,6 +323,8 @@ func transcriptSegmentProtocolMessage(segment domain.TranscriptSegment, sentAt t
 			EventID:         segment.EventID,
 			CallID:          segment.CallID,
 			SequenceNo:      segment.SequenceNo,
+			SpeakerID:       segment.SpeakerID,
+			SpeakerName:     segment.SpeakerName,
 			RecognizedAtUTC: segment.RecognizedAtUTC.UTC().Format(time.RFC3339Nano),
 			OffsetTicks:     segment.OffsetTicks,
 			DurationTicks:   segment.DurationTicks,
