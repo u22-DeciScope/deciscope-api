@@ -1,8 +1,10 @@
 # Backend Architecture
 
 DeciScope API is a modular monolith using Clean Architecture boundaries. It
-runs with PostgreSQL. Database connection or migration failures stop API
-startup instead of silently falling back to in-memory persistence.
+runs with PostgreSQL. Database connection failures stop API startup instead of
+silently falling back to in-memory persistence. Migrations are run explicitly
+through the `migrate` command or the Docker Compose `migrate` service before API
+startup.
 
 ## Request flow
 
@@ -55,8 +57,9 @@ Application use cases depend only on repository interfaces declared in
 `internal/application/ports.go`. PostgreSQL-specific SQL and transaction
 behavior are isolated under `internal/adapter/repository/postgres`.
 Connection creation and embedded PostgreSQL migrations live under
-`internal/infrastructure/database`. The Memory implementation remains available
-only as a test double.
+`internal/infrastructure/database`. The API container does not run migrations
+unconditionally during startup, which keeps the path safe for future replicated
+deployments. The Memory implementation remains available only as a test double.
 
 ## Runtime boundaries
 

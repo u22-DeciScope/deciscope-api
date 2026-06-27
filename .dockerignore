@@ -7,4 +7,6 @@
 .gotmp
 bin
 uploads
+data
+serviceAccountKey.json
 *.exe

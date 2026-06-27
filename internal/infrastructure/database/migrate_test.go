@@ -29,8 +29,12 @@ func TestMigratePostgresIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("migration count = %d, want 1", count)
+	paths, err := applicableMigrationPaths()
+	if err != nil {
+		t.Fatalf("list migrations: %v", err)
+	}
+	if count != len(paths) {
+		t.Fatalf("migration count = %d, want %d", count, len(paths))
 	}
 
 }

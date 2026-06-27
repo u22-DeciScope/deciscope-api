@@ -2,37 +2,115 @@
 
 このドキュメントは、現在の `deciscope-core-api` が提供しているHTTP APIの一覧です。
 
-既定のベースURL:
+別端末から接続する場合のベースURL例:
 
 ```text
-http://localhost:9090
+http://<PC_TAILSCALE_IP>:9090
 ```
 
 ## ヘルスチェックと認証
 
 ```http
 GET  /v1/health
+GET  /healthz
+GET  /readyz
 POST /v1/auth/login
 GET  /v1/auth/me
-GET  /v1/auth/health
+POST /v1/auth/logout
+PUT  /v1/session/current-workspace
 ```
 
 - `GET /v1/health` はJSONで `status` と現在時刻を返します。
+- `GET /healthz` はGoプロセスが応答可能な場合にJSONで `status` を返します。
+- `GET /readyz` は現在の永続化先へPingし、接続できない場合は `503` を返します。
 - `POST /v1/auth/login` は `idToken` を受け取り、Firebase認証結果を返します。
-- `/v1/auth/me` と `/v1/auth/health` は認証ミドルウェアの対象です。
+- `/v1/auth/me`、`/v1/auth/logout`、workspace配下、meeting配下、WebSocketは
+  認証ミドルウェアの対象です。
 - Firebaseが無効なローカル環境では、保護Routeで
   `Authorization: Bearer dev:<uid>` を使用できます。
-- 現在、認証必須なのは `/v1/auth/me` と `/v1/auth/health` です。会議、fixture、
-  upload、WebSocket Routeは認証必須ではありません。
 
-`/health`、`/debug`、`/login`、`/api/*`、`/register` は現在のRouterには
+`/health`、`/debug`、`/login`、`/register` は現在のRouterには
 登録されていません。
+
+## EchoBot文字起こし取り込み
+
+```http
+POST /api/v1/transcript-segments
+Content-Type: application/json
+X-DeciScope-Api-Key: <shared secret>
+```
+
+```json
+{
+  "eventId": "06008080-91e3-4b88-a8ff-9af629265ced:1",
+  "callId": "06008080-91e3-4b88-a8ff-9af629265ced",
+  "sequenceNo": 1,
+  "recognizedAtUtc": "2026-06-25T13:20:01.1234567+00:00",
+  "offsetTicks": 20300000,
+  "durationTicks": 18000000,
+  "text": "本日の会議を開始します。"
+}
+```
+
+- API keyは `DECISCOPE_INGEST_API_KEY` と定数時間比較します。
+- `recognizedAtUtc` はUTC offsetのみ受け付け、保存時はUTC/RFC3339Nanoへ正規化します。
+- 新規保存は `201 Created`、同一内容の再送は `200 OK` と `duplicate: true` です。
+- 同じ `eventId` の内容違い、または同じ `callId` + `sequenceNo` の別 `eventId` は
+  `409 Conflict` です。
+- 標準構成ではPostgreSQLの `transcript_segments` tableへ保存します。
+- body上限は64KiBです。
+
+履歴取得:
+
+```http
+GET /api/v1/transcript-segments?callId=<call_id>&limit=100
+```
+
+- `callId` が指定された場合はそのcallだけを返します。未指定の場合は全callIdを返します。
+- `limit` の既定値は `100`、上限は `500` です。
+- `sequenceNo` 昇順で返します。
+- `DECISCOPE_WS_CLIENT_TOKEN` が設定されている場合は `?token=...` または
+  `Authorization: Bearer ...` が必要です。
+- `DECISCOPE_INGEST_API_KEY` は読み取りAPIやブラウザへ渡しません。
+
+文字起こしリアルタイム配信:
+
+```text
+WS /api/v1/ws/transcript-segments
+WS /api/v1/ws/transcript-segments?callId=<call_id>
+WS /api/v1/ws/transcript-segments?callId=<call_id>&token=<client_token>
+```
+
+- DB保存に成功した新規segmentだけを `transcript_segment.created` として配信します。
+- 同一内容の再送は `duplicate: true` のHTTP応答になりますが、WebSocketへは配信しません。
+- `callId` 指定時は、そのcallIdのsegmentだけを受信します。未指定なら全callIdを受信します。
+- `DECISCOPE_WS_CLIENT_TOKEN` が設定されている場合は `token` queryが必要です。
+- Originは `DECISCOPE_WS_ALLOWED_ORIGINS` で許可します。未設定時はlocal development originだけを許可します。
+
+WebSocket message:
+
+```json
+{
+  "type": "transcript_segment.created",
+  "sentAtUtc": "2026-06-27T00:00:00Z",
+  "data": {
+    "eventId": "09005080-cce6-4132-9404-1e823df47ff9:6",
+    "callId": "09005080-cce6-4132-9404-1e823df47ff9",
+    "sequenceNo": 6,
+    "recognizedAtUtc": "2026-06-27T00:00:00Z",
+    "offsetTicks": 287000000,
+    "durationTicks": 41200000,
+    "text": "うーんってことは、まあ一旦大丈夫そうかな。",
+    "duplicate": false
+  }
+}
+```
 
 ## 会議
 
 ```http
-GET  /v1/meetings
-POST /v1/meetings
+GET  /v1/workspaces/{workspace_code}/meetings
+POST /v1/workspaces/{workspace_code}/meetings
 GET  /v1/meetings/{meeting_id}
 POST /v1/meetings/{meeting_id}/join-token
 POST /v1/meetings/{meeting_id}/end

@@ -7,21 +7,20 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 )
 
 //go:embed migrations/postgres/*.sql
 var migrationFiles embed.FS
 
 func Migrate(ctx context.Context, db *sql.DB) error {
-	entries, err := fs.Glob(migrationFiles, "migrations/postgres/*.sql")
+	entries, err := applicableMigrationPaths()
 	if err != nil {
 		return fmt.Errorf("list postgres migrations: %w", err)
 	}
 	if len(entries) == 0 {
 		return fmt.Errorf("no postgres migrations found")
 	}
-	sort.Strings(entries)
-
 	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version TEXT PRIMARY KEY,
@@ -37,6 +36,22 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func applicableMigrationPaths() ([]string, error) {
+	entries, err := fs.Glob(migrationFiles, "migrations/postgres/*.sql")
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if strings.HasSuffix(entry, ".down.sql") {
+			continue
+		}
+		paths = append(paths, entry)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, path string) error {

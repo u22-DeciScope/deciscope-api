@@ -24,4 +24,4 @@ ENV FIXTURE_DIR=/app/fixtures/meetings
 ENV UPLOAD_DIR=/app/uploads
 EXPOSE 9090
 
-CMD ["/app/deciscope-api"]
+CMD ["/app/deciscope-api", "serve"]

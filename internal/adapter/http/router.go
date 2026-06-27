@@ -11,14 +11,18 @@ import (
 )
 
 type RouterDependencies struct {
-	CoreAPI      *CoreAPI
-	AuthAPI      *AuthAPI
-	WorkspaceAPI *WorkspaceAPI
-	AuthService  authmiddleware.SessionAuthenticator
-	Workspace    WorkspaceAccessUseCases
-	Access       ResourceAccessUseCases
-	Realtime     http.HandlerFunc
-	CORS         CORSConfig
+	CoreAPI            *CoreAPI
+	AuthAPI            *AuthAPI
+	WorkspaceAPI       *WorkspaceAPI
+	TranscriptAPI      *TranscriptAPI
+	AuthService        authmiddleware.SessionAuthenticator
+	Workspace          WorkspaceAccessUseCases
+	Access             ResourceAccessUseCases
+	Realtime           http.HandlerFunc
+	TranscriptRealtime http.HandlerFunc
+	Healthz            http.HandlerFunc
+	Readyz             http.HandlerFunc
+	CORS               CORSConfig
 }
 
 type CORSConfig struct {
@@ -31,6 +35,23 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	r.Use(corsMiddleware(deps.CORS))
 	r.Use(chimiddleware.AllowContentType("application/json", "multipart/form-data"))
 
+	if deps.Healthz != nil {
+		r.Get("/healthz", deps.Healthz)
+	}
+	if deps.Readyz != nil {
+		r.Get("/readyz", deps.Readyz)
+	}
+	if deps.TranscriptAPI != nil {
+		r.Post("/api/v1/transcript-segments", deps.TranscriptAPI.Store)
+		r.Get("/api/v1/transcript-segments", deps.TranscriptAPI.List)
+	}
+	if deps.TranscriptRealtime != nil {
+		r.Get("/api/v1/ws/transcript-segments", deps.TranscriptRealtime)
+	}
+	if deps.CoreAPI == nil || deps.AuthAPI == nil || deps.WorkspaceAPI == nil ||
+		deps.AuthService == nil || deps.Workspace == nil || deps.Access == nil || deps.Realtime == nil {
+		return r
+	}
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", deps.CoreAPI.Health)
 		r.Post("/auth/login", deps.AuthAPI.Login)
@@ -96,7 +117,7 @@ func corsMiddleware(config CORSConfig) func(http.Handler) http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Origin", responseOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Upgrade, Connection")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Upgrade, Connection, X-DeciScope-Api-Key")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusOK)

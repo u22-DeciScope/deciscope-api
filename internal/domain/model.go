@@ -50,6 +50,29 @@ type Segment struct {
 	CreatedAt    string
 }
 
+type TranscriptSegment struct {
+	EventID         string
+	CallID          string
+	SequenceNo      int64
+	RecognizedAtUTC time.Time
+	OffsetTicks     int64
+	DurationTicks   int64
+	Text            string
+	ReceivedAtUTC   time.Time
+}
+
+type TranscriptSegmentStoreStatus string
+
+const (
+	TranscriptSegmentCreated       TranscriptSegmentStoreStatus = "created"
+	TranscriptSegmentAlreadyExists TranscriptSegmentStoreStatus = "already_exists"
+)
+
+type TranscriptSegmentStoreResult struct {
+	Status  TranscriptSegmentStoreStatus
+	EventID string
+}
+
 type Job struct {
 	ID          string
 	WorkspaceID string

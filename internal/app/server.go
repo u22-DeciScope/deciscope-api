@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,22 +14,93 @@ import (
 	authmiddleware "deciscope-core-api/internal/adapter/http/middleware"
 	"deciscope-core-api/internal/adapter/realtime"
 	postgresrepository "deciscope-core-api/internal/adapter/repository/postgres"
+	sqliterepository "deciscope-core-api/internal/adapter/repository/sqlite"
 	"deciscope-core-api/internal/application"
 	appaccess "deciscope-core-api/internal/application/access"
 	appauth "deciscope-core-api/internal/application/auth"
 	appworkspace "deciscope-core-api/internal/application/workspace"
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/firebase"
+	sqliteinfra "deciscope-core-api/internal/infrastructure/sqlite"
 	"deciscope-core-api/internal/infrastructure/storage"
 )
 
 func NewServer() (http.Handler, error) {
-	ctx := context.Background()
-	config := ConfigFromEnv()
-	repositories, authRepository, err := buildRepositories(ctx, config.Database)
+	runtime, err := NewServerRuntime()
 	if err != nil {
 		return nil, err
 	}
+	return runtime.Handler, nil
+}
+
+type ServerRuntime struct {
+	Handler http.Handler
+	closers []func() error
+}
+
+func (runtime *ServerRuntime) Close() error {
+	if runtime == nil {
+		return nil
+	}
+	var errs []error
+	for _, closeFn := range runtime.closers {
+		if err := closeFn(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func NewServerRuntime() (*ServerRuntime, error) {
+	ctx := context.Background()
+	config := ConfigFromEnv()
+	if err := ValidateRuntimeConfig(config); err != nil {
+		return nil, err
+	}
+
+	if config.TranscriptOnly {
+		transcriptHub := realtime.NewTranscriptHub()
+		transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, nil, transcriptHub)
+		if err != nil {
+			return nil, err
+		}
+		healthAPI := httpadapter.NewHealthAPI(transcriptRuntime.ready)
+		handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
+			TranscriptAPI:      httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
+			TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
+			Healthz:            healthAPI.Healthz,
+			Readyz:             healthAPI.Readyz,
+			CORS: httpadapter.CORSConfig{
+				FrontendURL: config.FrontendURL, AllowedOrigins: config.AllowedOrigins,
+			},
+		})
+		log.Printf("transcript-only mode enabled; core postgres repositories are not initialized")
+		return &ServerRuntime{Handler: handler, closers: transcriptRuntime.closers}, nil
+	}
+
+	repositories, authRepository, postgresDB, err := buildRepositories(ctx, config.Database)
+	if err != nil {
+		return nil, err
+	}
+	closers := []func() error{postgresDB.Close}
+
+	transcriptHub := realtime.NewTranscriptHub()
+	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptHub)
+	if err != nil {
+		_ = closeAll(closers)
+		return nil, err
+	}
+	closers = append(closers, transcriptRuntime.closers...)
+	readyCheck := transcriptRuntime.ready
+	if config.TranscriptIngest.Store == TranscriptStoreSQLite {
+		readyCheck = func(ctx context.Context) error {
+			if err := postgresDB.PingContext(ctx); err != nil {
+				return err
+			}
+			return transcriptRuntime.ready(ctx)
+		}
+	}
+	healthAPI := httpadapter.NewHealthAPI(readyCheck)
 
 	authClient, err := firebase.NewAuthClient(ctx, config.Firebase)
 	if err != nil {
@@ -45,13 +118,17 @@ func NewServer() (http.Handler, error) {
 	workspaceService := appworkspace.NewService(authRepository)
 	accessService := appaccess.NewService(authRepository)
 
-	return httpadapter.NewRouter(httpadapter.RouterDependencies{
-		CoreAPI:      httpadapter.NewCoreAPI(service, replay),
-		AuthAPI:      httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
-		WorkspaceAPI: httpadapter.NewWorkspaceAPI(workspaceService, hub),
-		AuthService:  authService,
-		Workspace:    workspaceService,
-		Access:       accessService,
+	handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
+		CoreAPI:            httpadapter.NewCoreAPI(service, replay),
+		AuthAPI:            httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
+		WorkspaceAPI:       httpadapter.NewWorkspaceAPI(workspaceService, hub),
+		TranscriptAPI:      httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
+		TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
+		AuthService:        authService,
+		Workspace:          workspaceService,
+		Access:             accessService,
+		Healthz:            healthAPI.Healthz,
+		Readyz:             healthAPI.Readyz,
 		Realtime: hub.ServeWS(service, func(r *http.Request) (realtime.ClientIdentity, bool) {
 			session, ok := authmiddleware.SessionFromContext(r.Context())
 			if !ok || session.User == nil || session.Session == nil {
@@ -62,7 +139,22 @@ func NewServer() (http.Handler, error) {
 		CORS: httpadapter.CORSConfig{
 			FrontendURL: config.FrontendURL, AllowedOrigins: config.AllowedOrigins,
 		},
-	}), nil
+	})
+	return &ServerRuntime{Handler: handler, closers: closers}, nil
+}
+
+func MigrateDatabase(ctx context.Context) error {
+	config := ConfigFromEnv()
+	conn, err := database.Open(ctx, config.Database)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer conn.Close()
+	if err := database.Migrate(ctx, conn); err != nil {
+		return fmt.Errorf("migrate database: %w", err)
+	}
+	log.Printf("postgres migrations applied")
+	return nil
 }
 
 type repositorySet struct {
@@ -79,18 +171,90 @@ type authWorkspaceRepository interface {
 	appaccess.Repository
 }
 
-func buildRepositories(ctx context.Context, config database.Config) (repositorySet, authWorkspaceRepository, error) {
+func buildRepositories(ctx context.Context, config database.Config) (repositorySet, authWorkspaceRepository, *sql.DB, error) {
 	conn, err := database.Open(ctx, config)
 	if err != nil {
-		return repositorySet{}, nil, fmt.Errorf("open database: %w", err)
-	}
-	if err := database.Migrate(ctx, conn); err != nil {
-		_ = conn.Close()
-		return repositorySet{}, nil, fmt.Errorf("migrate database: %w", err)
+		return repositorySet{}, nil, nil, fmt.Errorf("open database: %w", err)
 	}
 	store := postgresrepository.NewStore(conn)
 	log.Printf("postgres database repository ready")
-	return repositoriesFromStore(store), postgresrepository.NewAuthWorkspaceRepository(conn), nil
+	return repositoriesFromStore(store), postgresrepository.NewAuthWorkspaceRepository(conn), conn, nil
+}
+
+type transcriptIngestRuntime struct {
+	service *application.TranscriptIngestService
+	ready   httpadapter.HealthCheckFunc
+	closers []func() error
+}
+
+func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, databaseConfig database.Config, postgresDB *sql.DB, publisher application.TranscriptSegmentPublisher) (transcriptIngestRuntime, error) {
+	switch config.Store {
+	case "", TranscriptStorePostgres:
+		conn := postgresDB
+		var closers []func() error
+		if conn == nil {
+			var err error
+			conn, err = database.Open(ctx, databaseConfig)
+			if err != nil {
+				return transcriptIngestRuntime{}, fmt.Errorf("open transcript postgres: %w", err)
+			}
+			closers = append(closers, conn.Close)
+		}
+		repository := postgresrepository.NewTranscriptSegmentRepository(conn)
+		log.Printf("postgres transcript repository ready")
+		return transcriptIngestRuntime{
+			service: application.NewTranscriptIngestService(repository, publisher),
+			ready: func(ctx context.Context) error {
+				return conn.PingContext(ctx)
+			},
+			closers: closers,
+		}, nil
+	case TranscriptStoreSQLite:
+		transcriptDB, err := buildTranscriptDatabase(ctx, config.SQLite)
+		if err != nil {
+			return transcriptIngestRuntime{}, err
+		}
+		repository := sqliterepository.NewTranscriptSegmentRepository(transcriptDB)
+		return transcriptIngestRuntime{
+			service: application.NewTranscriptIngestService(repository, publisher),
+			ready: func(ctx context.Context) error {
+				return transcriptDB.PingContext(ctx)
+			},
+			closers: []func() error{transcriptDB.Close},
+		}, nil
+	default:
+		return transcriptIngestRuntime{}, fmt.Errorf("unsupported transcript store %q", config.Store)
+	}
+}
+
+func transcriptRealtimeConfig(config TranscriptWebSocketConfig) realtime.TranscriptWebSocketConfig {
+	return realtime.TranscriptWebSocketConfig{
+		ClientToken:    config.ClientToken,
+		AllowedOrigins: config.AllowedOrigins,
+	}
+}
+
+func buildTranscriptDatabase(ctx context.Context, config sqliteinfra.Config) (*sql.DB, error) {
+	conn, err := sqliteinfra.Open(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("open transcript sqlite: %w", err)
+	}
+	if err := sqliterepository.InitializeTranscriptSegments(ctx, conn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("initialize transcript sqlite: %w", err)
+	}
+	log.Printf("sqlite transcript repository ready")
+	return conn, nil
+}
+
+func closeAll(closers []func() error) error {
+	var errs []error
+	for _, closeFn := range closers {
+		if err := closeFn(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 type repositoryStore interface {

@@ -36,6 +36,15 @@ type UploadRepository interface {
 	SaveUpload(ctx context.Context, workspaceID, filename, mediaType, path, jobID string) (*domain.Upload, error)
 }
 
+type TranscriptSegmentRepository interface {
+	SaveTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
+	ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error)
+}
+
+type TranscriptSegmentPublisher interface {
+	PublishTranscriptSegment(segment domain.TranscriptSegment)
+}
+
 type Publisher interface {
 	Publish(event domain.Event)
 }
