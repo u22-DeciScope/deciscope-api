@@ -12,7 +12,7 @@ type TokenVerifier struct {
 	client *firebaseauth.Client
 }
 
-func NewTokenVerifier(client *firebaseauth.Client) *TokenVerifier {
+func NewTokenVerifier(client *firebaseauth.Client) appauth.TokenVerifier {
 	if client == nil {
 		return nil
 	}
@@ -20,6 +20,9 @@ func NewTokenVerifier(client *firebaseauth.Client) *TokenVerifier {
 }
 
 func (v *TokenVerifier) VerifyIDToken(ctx context.Context, idToken string) (*appauth.Identity, error) {
+	if v == nil || v.client == nil {
+		return nil, appauth.ErrUnavailable
+	}
 	token, err := v.client.VerifyIDToken(ctx, idToken)
 	if err != nil {
 		return nil, err

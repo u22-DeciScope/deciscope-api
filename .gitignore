@@ -23,6 +23,7 @@
 serviceAccountKey.json
 .env*
 !.env.example
+compose.override.yaml
 
 # Local runtime artifacts
 .cache/
