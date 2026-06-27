@@ -26,14 +26,6 @@ import (
 	"deciscope-core-api/internal/infrastructure/storage"
 )
 
-func NewServer() (http.Handler, error) {
-	runtime, err := NewServerRuntime()
-	if err != nil {
-		return nil, err
-	}
-	return runtime.Handler, nil
-}
-
 type ServerRuntime struct {
 	Handler http.Handler
 	closers []func() error
