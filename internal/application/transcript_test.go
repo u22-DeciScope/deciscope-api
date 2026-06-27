@@ -76,7 +76,7 @@ func (f *fakeTranscriptSegmentRepository) SaveTranscriptSegment(_ context.Contex
 	return domain.TranscriptSegmentStoreResult{Status: f.status, EventID: segment.EventID}, nil
 }
 
-func (f *fakeTranscriptSegmentRepository) ListTranscriptSegments(context.Context, string, int) ([]domain.TranscriptSegment, error) {
+func (f *fakeTranscriptSegmentRepository) ListTranscriptSegments(context.Context, string, string, int) ([]domain.TranscriptSegment, error) {
 	return nil, nil
 }
 

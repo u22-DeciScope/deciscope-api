@@ -47,6 +47,9 @@ DECISCOPE_TRANSCRIPT_ONLY=false
 DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
 DECISCOPE_WS_CLIENT_TOKEN=dev-ws-token
 DECISCOPE_WS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
+DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
+DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
+DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
 FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 FRONTEND_URL=http://localhost:5193
@@ -59,6 +62,9 @@ ALLOWED_ORIGINS=http://localhost:5193
 - `DECISCOPE_WS_CLIENT_TOKEN`: `GET /api/v1/transcript-segments` と
   `WS /api/v1/ws/transcript-segments` 用の開発client token。未設定なら認証なしです。
 - `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketを許可するOriginのカンマ区切り。
+- `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います。
+- `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません。
+- `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御APIのHTTP timeout秒数。既定値は `10` です。
 - `FIXTURE_DIR`: fixture JSONLディレクトリ。
 - `UPLOAD_DIR`: mock uploadの保存先。
 - `FRONTEND_URL`: CORSの基準origin。未指定時は `http://localhost:5193`。
@@ -153,6 +159,21 @@ Invoke-RestMethod `
     -Headers $headers `
     -ContentType "application/json; charset=utf-8" `
     -Body $body
+```
+
+Teams会議URLを登録し、VM Botへ参加命令を送ります。
+
+```powershell
+$body = @{
+    joinUrl = "https://teams.microsoft.com/l/meetup-join/..."
+} | ConvertTo-Json
+
+Invoke-WebRequest `
+    -Uri "http://localhost:9090/api/v1/meeting-sessions" `
+    -Method POST `
+    -ContentType "application/json" `
+    -Body $body `
+    -UseBasicParsing
 ```
 
 保存済み文字起こしを履歴取得します。

@@ -42,6 +42,7 @@ X-DeciScope-Api-Key: <shared secret>
 
 ```json
 {
+  "sessionId": "session_...",
   "eventId": "06008080-91e3-4b88-a8ff-9af629265ced:1",
   "callId": "06008080-91e3-4b88-a8ff-9af629265ced",
   "sequenceNo": 1,
@@ -53,6 +54,8 @@ X-DeciScope-Api-Key: <shared secret>
 ```
 
 - API keyは `DECISCOPE_INGEST_API_KEY` と定数時間比較します。
+- `sessionId` は任意です。会議セッション作成APIから返ったIDを付けると、
+  保存・履歴取得・WebSocket配信で同じセッションに紐づけられます。
 - `recognizedAtUtc` はUTC offsetのみ受け付け、保存時はUTC/RFC3339Nanoへ正規化します。
 - 新規保存は `201 Created`、同一内容の再送は `200 OK` と `duplicate: true` です。
 - 同じ `eventId` の内容違い、または同じ `callId` + `sequenceNo` の別 `eventId` は
@@ -63,10 +66,11 @@ X-DeciScope-Api-Key: <shared secret>
 履歴取得:
 
 ```http
-GET /api/v1/transcript-segments?callId=<call_id>&limit=100
+GET /api/v1/transcript-segments?callId=<call_id>&sessionId=<session_id>&limit=100
 ```
 
 - `callId` が指定された場合はそのcallだけを返します。未指定の場合は全callIdを返します。
+- `sessionId` が指定された場合はその会議セッションだけを返します。
 - `limit` の既定値は `100`、上限は `500` です。
 - `sequenceNo` 昇順で返します。
 - `DECISCOPE_WS_CLIENT_TOKEN` が設定されている場合は `?token=...` または
@@ -78,12 +82,15 @@ GET /api/v1/transcript-segments?callId=<call_id>&limit=100
 ```text
 WS /api/v1/ws/transcript-segments
 WS /api/v1/ws/transcript-segments?callId=<call_id>
-WS /api/v1/ws/transcript-segments?callId=<call_id>&token=<client_token>
+WS /api/v1/ws/transcript-segments?sessionId=<session_id>
+WS /api/v1/ws/transcript-segments?callId=<call_id>&sessionId=<session_id>&token=<client_token>
 ```
 
 - DB保存に成功した新規segmentだけを `transcript_segment.created` として配信します。
 - 同一内容の再送は `duplicate: true` のHTTP応答になりますが、WebSocketへは配信しません。
 - `callId` 指定時は、そのcallIdのsegmentだけを受信します。未指定なら全callIdを受信します。
+- `sessionId` 指定時は、その会議セッションのsegmentとstatusだけを受信します。
+- 会議セッションの状態変化は `meeting_session.status_changed` として配信します。
 - `DECISCOPE_WS_CLIENT_TOKEN` が設定されている場合は `token` queryが必要です。
 - Originは `DECISCOPE_WS_ALLOWED_ORIGINS` で許可します。未設定時はlocal development originだけを許可します。
 
@@ -94,6 +101,7 @@ WebSocket message:
   "type": "transcript_segment.created",
   "sentAtUtc": "2026-06-27T00:00:00Z",
   "data": {
+    "sessionId": "session_...",
     "eventId": "09005080-cce6-4132-9404-1e823df47ff9:6",
     "callId": "09005080-cce6-4132-9404-1e823df47ff9",
     "sequenceNo": 6,
@@ -105,6 +113,79 @@ WebSocket message:
   }
 }
 ```
+
+会議セッション状態変更:
+
+```json
+{
+  "type": "meeting_session.status_changed",
+  "sentAtUtc": "2026-06-27T00:00:00Z",
+  "data": {
+    "sessionId": "session_...",
+    "status": "joined",
+    "botCallId": "09005080-cce6-4132-9404-1e823df47ff9"
+  }
+}
+```
+
+## Teams Bot会議セッション
+
+フロントエンドはVM Botを直接呼びません。Teams会議URLをGo APIへ登録し、
+Go APIがTailscale内のVM Bot制御APIへ参加命令を送ります。
+
+```http
+POST /api/v1/meeting-sessions
+Content-Type: application/json
+```
+
+```json
+{
+  "joinUrl": "https://teams.microsoft.com/l/meetup-join/..."
+}
+```
+
+成功時:
+
+```json
+{
+  "sessionId": "session_...",
+  "status": "command_sent"
+}
+```
+
+- `joinUrl` は必須です。`https://teams.microsoft.com/...meetup-join...`
+  などTeams会議URLらしいものだけ受け付けます。
+- `joinUrl` 全文とBot制御tokenはログに出しません。ログには `sessionId` と
+  `joinUrlHash` を使います。
+- `DECISCOPE_BOT_CONTROL_URL` または `DECISCOPE_BOT_CONTROL_TOKEN` が未設定の場合は
+  `503 bot_control_not_configured` を返します。
+- Bot制御APIの4xx/5xx/timeout時は `meeting_sessions.status=failed` と
+  `last_error` を保存し、HTTPでは `502 bot_control_command_failed` を返します。
+
+取得:
+
+```http
+GET /api/v1/meeting-sessions/{sessionId}
+```
+
+Botからの状態更新:
+
+```http
+PATCH /api/v1/bot/meeting-sessions/{sessionId}/status
+Content-Type: application/json
+X-DeciScope-Api-Key: <shared secret>
+```
+
+```json
+{
+  "status": "joined",
+  "botCallId": "09005080-cce6-4132-9404-1e823df47ff9",
+  "message": "joined successfully"
+}
+```
+
+`status` は `pending_join`, `command_sent`, `joining`, `joined`, `recording`,
+`ended`, `failed` のいずれかです。失敗時は `message` が `lastError` として保存されます。
 
 ## 会議
 

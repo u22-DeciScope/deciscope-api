@@ -12,7 +12,10 @@ import (
 	"deciscope-core-api/internal/domain"
 )
 
-const transcriptSegmentCreatedType = "transcript_segment.created"
+const (
+	transcriptSegmentCreatedType    = "transcript_segment.created"
+	meetingSessionStatusChangedType = "meeting_session.status_changed"
+)
 
 var defaultTranscriptAllowedOrigins = []string{
 	"http://localhost:3000",
@@ -45,15 +48,31 @@ func (h *TranscriptHub) PublishTranscriptSegment(segment domain.TranscriptSegmen
 	h.mu.RLock()
 	clients := make([]*transcriptClient, 0, len(h.clients))
 	for c := range h.clients {
-		if c.callID == "" || c.callID == segment.CallID {
+		if c.matchesSegment(segment) {
 			clients = append(clients, c)
 		}
 	}
 	h.mu.RUnlock()
 
-	log.Printf("Transcript segment broadcast. eventId=%s callId=%s sequenceNo=%d clients=%d", segment.EventID, segment.CallID, segment.SequenceNo, len(clients))
+	log.Printf("Transcript segment broadcast. sessionId=%s eventId=%s callId=%s sequenceNo=%d clients=%d", segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, len(clients))
 	for _, c := range clients {
-		c.enqueue(segment)
+		c.enqueueSegment(segment)
+	}
+}
+
+func (h *TranscriptHub) PublishMeetingSessionStatusChanged(session domain.MeetingSession) {
+	h.mu.RLock()
+	clients := make([]*transcriptClient, 0, len(h.clients))
+	for c := range h.clients {
+		if c.matchesSession(session) {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	log.Printf("Meeting session status broadcast. sessionId=%s status=%s botCallId=%s clients=%d", session.ID, session.Status, session.BotCallID, len(clients))
+	for _, c := range clients {
+		c.enqueueSession(session)
 	}
 }
 
@@ -69,6 +88,7 @@ func (h *TranscriptHub) ServeTranscriptSegments(config TranscriptWebSocketConfig
 		}
 
 		callID := strings.TrimSpace(r.URL.Query().Get("callId"))
+		sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 		conn, reader, err := accept(w, r)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "websocket_upgrade_failed", err.Error())
@@ -76,7 +96,7 @@ func (h *TranscriptHub) ServeTranscriptSegments(config TranscriptWebSocketConfig
 		}
 		defer conn.Close()
 
-		c := newTranscriptClient(callID, conn, reader)
+		c := newTranscriptClient(callID, sessionID, conn, reader)
 		h.subscribe(c)
 		defer h.unsubscribe(c)
 
@@ -90,7 +110,7 @@ func (h *TranscriptHub) subscribe(c *transcriptClient) {
 	h.clients[c] = struct{}{}
 	count := len(h.clients)
 	h.mu.Unlock()
-	log.Printf("Transcript websocket connected. callId=%s clients=%d", c.callID, count)
+	log.Printf("Transcript websocket connected. callId=%s sessionId=%s clients=%d", c.callID, c.sessionID, count)
 }
 
 func (h *TranscriptHub) unsubscribe(c *transcriptClient) {
@@ -100,7 +120,7 @@ func (h *TranscriptHub) unsubscribe(c *transcriptClient) {
 		count := len(h.clients)
 		h.mu.Unlock()
 		close(c.done)
-		log.Printf("Transcript websocket disconnected. callId=%s clients=%d", c.callID, count)
+		log.Printf("Transcript websocket disconnected. callId=%s sessionId=%s clients=%d", c.callID, c.sessionID, count)
 	})
 }
 
@@ -146,33 +166,43 @@ func transcriptAllowedOrigins(value string) []string {
 
 type transcriptClient struct {
 	callID    string
+	sessionID string
 	conn      netConn
 	reader    frameReader
-	send      chan domain.TranscriptSegment
+	send      chan transcriptOutboundEvent
 	done      chan struct{}
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 }
 
-func newTranscriptClient(callID string, conn netConn, reader frameReader) *transcriptClient {
+func newTranscriptClient(callID, sessionID string, conn netConn, reader frameReader) *transcriptClient {
 	return &transcriptClient{
-		callID: callID,
-		conn:   conn,
-		reader: reader,
-		send:   make(chan domain.TranscriptSegment, 128),
-		done:   make(chan struct{}),
+		callID:    callID,
+		sessionID: sessionID,
+		conn:      conn,
+		reader:    reader,
+		send:      make(chan transcriptOutboundEvent, 128),
+		done:      make(chan struct{}),
 	}
 }
 
-func (c *transcriptClient) enqueue(segment domain.TranscriptSegment) {
+func (c *transcriptClient) enqueueSegment(segment domain.TranscriptSegment) {
+	c.enqueue(transcriptOutboundEvent{segment: &segment})
+}
+
+func (c *transcriptClient) enqueueSession(session domain.MeetingSession) {
+	c.enqueue(transcriptOutboundEvent{session: &session})
+}
+
+func (c *transcriptClient) enqueue(event transcriptOutboundEvent) {
 	select {
-	case c.send <- segment:
+	case c.send <- event:
 	default:
 		select {
 		case <-c.send:
 		default:
 		}
-		c.send <- segment
+		c.send <- event
 	}
 }
 
@@ -181,9 +211,9 @@ func (c *transcriptClient) writeLoop(h *TranscriptHub) {
 	defer ticker.Stop()
 	for {
 		select {
-		case segment := <-c.send:
-			if err := c.writeSegment(h, segment); err != nil {
-				log.Printf("Transcript websocket write failed. eventId=%s callId=%s sequenceNo=%d error=%v", segment.EventID, segment.CallID, segment.SequenceNo, err)
+		case event := <-c.send:
+			if err := c.writeEvent(h, event); err != nil {
+				log.Printf("Transcript websocket write failed. callId=%s sessionId=%s error=%v", c.callID, c.sessionID, err)
 				h.unsubscribe(c)
 				_ = c.conn.Close()
 				return
@@ -226,10 +256,42 @@ func (c *transcriptClient) readLoop(h *TranscriptHub) {
 	}
 }
 
-func (c *transcriptClient) writeSegment(h *TranscriptHub, segment domain.TranscriptSegment) error {
+func (c *transcriptClient) matchesSegment(segment domain.TranscriptSegment) bool {
+	if c.callID != "" && c.callID != segment.CallID {
+		return false
+	}
+	if c.sessionID != "" && c.sessionID != segment.SessionID {
+		return false
+	}
+	return true
+}
+
+func (c *transcriptClient) matchesSession(session domain.MeetingSession) bool {
+	if c.sessionID != "" {
+		return c.sessionID == session.ID
+	}
+	if c.callID != "" {
+		return c.callID == session.BotCallID
+	}
+	return true
+}
+
+func (c *transcriptClient) writeEvent(h *TranscriptHub, event transcriptOutboundEvent) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return writeJSON(c.conn, transcriptSegmentProtocolMessage(segment, h.now()))
+	switch {
+	case event.segment != nil:
+		return writeJSON(c.conn, transcriptSegmentProtocolMessage(*event.segment, h.now()))
+	case event.session != nil:
+		return writeJSON(c.conn, meetingSessionStatusProtocolMessage(*event.session, h.now()))
+	default:
+		return nil
+	}
+}
+
+type transcriptOutboundEvent struct {
+	segment *domain.TranscriptSegment
+	session *domain.MeetingSession
 }
 
 type transcriptSegmentMessage struct {
@@ -239,6 +301,7 @@ type transcriptSegmentMessage struct {
 }
 
 type transcriptSegmentData struct {
+	SessionID       string `json:"sessionId,omitempty"`
 	EventID         string `json:"eventId"`
 	CallID          string `json:"callId"`
 	SequenceNo      int64  `json:"sequenceNo"`
@@ -254,6 +317,7 @@ func transcriptSegmentProtocolMessage(segment domain.TranscriptSegment, sentAt t
 		Type:      transcriptSegmentCreatedType,
 		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
 		Data: transcriptSegmentData{
+			SessionID:       segment.SessionID,
 			EventID:         segment.EventID,
 			CallID:          segment.CallID,
 			SequenceNo:      segment.SequenceNo,
@@ -262,6 +326,32 @@ func transcriptSegmentProtocolMessage(segment domain.TranscriptSegment, sentAt t
 			DurationTicks:   segment.DurationTicks,
 			Text:            segment.Text,
 			Duplicate:       false,
+		},
+	}
+}
+
+type meetingSessionStatusMessage struct {
+	Type      string                   `json:"type"`
+	SentAtUTC string                   `json:"sentAtUtc"`
+	Data      meetingSessionStatusData `json:"data"`
+}
+
+type meetingSessionStatusData struct {
+	SessionID string `json:"sessionId"`
+	Status    string `json:"status"`
+	BotCallID string `json:"botCallId,omitempty"`
+	LastError string `json:"lastError,omitempty"`
+}
+
+func meetingSessionStatusProtocolMessage(session domain.MeetingSession, sentAt time.Time) meetingSessionStatusMessage {
+	return meetingSessionStatusMessage{
+		Type:      meetingSessionStatusChangedType,
+		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
+		Data: meetingSessionStatusData{
+			SessionID: session.ID,
+			Status:    string(session.Status),
+			BotCallID: session.BotCallID,
+			LastError: session.LastError,
 		},
 	}
 }

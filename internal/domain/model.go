@@ -2,9 +2,11 @@ package domain
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -51,6 +53,7 @@ type Segment struct {
 }
 
 type TranscriptSegment struct {
+	SessionID       string
 	EventID         string
 	CallID          string
 	SequenceNo      int64
@@ -71,6 +74,44 @@ const (
 type TranscriptSegmentStoreResult struct {
 	Status  TranscriptSegmentStoreStatus
 	EventID string
+}
+
+type MeetingSessionStatus string
+
+const (
+	MeetingSessionPendingJoin MeetingSessionStatus = "pending_join"
+	MeetingSessionCommandSent MeetingSessionStatus = "command_sent"
+	MeetingSessionJoining     MeetingSessionStatus = "joining"
+	MeetingSessionJoined      MeetingSessionStatus = "joined"
+	MeetingSessionRecording   MeetingSessionStatus = "recording"
+	MeetingSessionEnded       MeetingSessionStatus = "ended"
+	MeetingSessionFailed      MeetingSessionStatus = "failed"
+)
+
+type MeetingSession struct {
+	ID            string
+	JoinURL       string
+	JoinURLHash   string
+	Status        MeetingSessionStatus
+	BotCallID     string
+	RequestedAt   time.Time
+	CommandSentAt time.Time
+	JoinedAt      time.Time
+	EndedAt       time.Time
+	LastError     string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type MeetingSessionStatusUpdate struct {
+	SessionID     string
+	Status        MeetingSessionStatus
+	BotCallID     string
+	CommandSentAt *time.Time
+	JoinedAt      *time.Time
+	EndedAt       *time.Time
+	LastError     string
+	UpdatedAt     time.Time
 }
 
 type Job struct {
@@ -184,6 +225,57 @@ func NewUUID() string {
 	b[8] = (b[8] & 0x3f) | 0x80
 	encoded := hex.EncodeToString(b[:])
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]
+}
+
+func ValidMeetingSessionStatus(status MeetingSessionStatus) bool {
+	switch status {
+	case MeetingSessionPendingJoin, MeetingSessionCommandSent, MeetingSessionJoining,
+		MeetingSessionJoined, MeetingSessionRecording, MeetingSessionEnded, MeetingSessionFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func NormalizeTeamsJoinURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%w: joinUrl is required", ErrInvalidArgument)
+	}
+	if strings.ContainsAny(value, " \t\r\n") {
+		return "", fmt.Errorf("%w: joinUrl must be a valid absolute URL", ErrInvalidArgument)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("%w: joinUrl must be a valid absolute URL", ErrInvalidArgument)
+	}
+	if strings.ToLower(parsed.Scheme) != "https" {
+		return "", fmt.Errorf("%w: joinUrl must use https", ErrInvalidArgument)
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if !isTeamsJoinHost(host) || !isTeamsJoinPath(parsed.EscapedPath()) {
+		return "", fmt.Errorf("%w: joinUrl must be a Teams meeting URL", ErrInvalidArgument)
+	}
+	return value, nil
+}
+
+func JoinURLHash(joinURL string) string {
+	sum := sha256.Sum256([]byte(joinURL))
+	return hex.EncodeToString(sum[:])
+}
+
+func isTeamsJoinHost(host string) bool {
+	return host == "teams.microsoft.com" ||
+		strings.HasSuffix(host, ".teams.microsoft.com") ||
+		host == "teams.live.com" ||
+		strings.HasSuffix(host, ".teams.live.com")
+}
+
+func isTeamsJoinPath(path string) bool {
+	path = strings.ToLower(path)
+	return strings.Contains(path, "meetup-join") ||
+		path == "/meet" ||
+		strings.HasPrefix(path, "/meet/")
 }
 
 func NormalizeFixtureName(name string) string {

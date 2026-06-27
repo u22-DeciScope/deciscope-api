@@ -38,6 +38,6 @@ func (s *TranscriptIngestService) StoreTranscriptSegment(ctx context.Context, se
 	return result, nil
 }
 
-func (s *TranscriptIngestService) ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error) {
-	return s.repository.ListTranscriptSegments(ctx, callID, limit)
+func (s *TranscriptIngestService) ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error) {
+	return s.repository.ListTranscriptSegments(ctx, callID, sessionID, limit)
 }

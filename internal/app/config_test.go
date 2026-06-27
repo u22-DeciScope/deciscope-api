@@ -2,6 +2,7 @@ package app
 
 import (
 	"testing"
+	"time"
 
 	"deciscope-core-api/internal/infrastructure/database"
 )
@@ -13,6 +14,9 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	t.Setenv("DECISCOPE_WS_CLIENT_TOKEN", "dev-ws-token")
 	t.Setenv("DECISCOPE_WS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
 	t.Setenv("DECISCOPE_TRANSCRIPT_ONLY", "true")
+	t.Setenv("DECISCOPE_BOT_CONTROL_URL", "http://100.64.0.1:7071/internal/bot/join")
+	t.Setenv("DECISCOPE_BOT_CONTROL_TOKEN", "bot-control-token")
+	t.Setenv("DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS", "12")
 	config := ConfigFromEnv()
 	if config.Database.URL != "postgres://deciscope:secret@localhost:5432/deciscope" {
 		t.Fatalf("ConfigFromEnv() = %+v", config)
@@ -29,6 +33,11 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	}
 	if !config.TranscriptOnly {
 		t.Fatalf("ConfigFromEnv() = %+v, want transcript-only enabled", config)
+	}
+	if config.BotControl.URL != "http://100.64.0.1:7071/internal/bot/join" ||
+		config.BotControl.Token != "bot-control-token" ||
+		config.BotControl.Timeout != 12*time.Second {
+		t.Fatalf("ConfigFromEnv() = %+v, want bot control config", config)
 	}
 }
 

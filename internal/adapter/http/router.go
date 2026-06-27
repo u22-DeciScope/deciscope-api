@@ -15,6 +15,7 @@ type RouterDependencies struct {
 	AuthAPI            *AuthAPI
 	WorkspaceAPI       *WorkspaceAPI
 	TranscriptAPI      *TranscriptAPI
+	MeetingSessionAPI  *MeetingSessionAPI
 	AuthService        authmiddleware.SessionAuthenticator
 	Workspace          WorkspaceAccessUseCases
 	Access             ResourceAccessUseCases
@@ -44,6 +45,11 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	if deps.TranscriptAPI != nil {
 		r.Post("/api/v1/transcript-segments", deps.TranscriptAPI.Store)
 		r.Get("/api/v1/transcript-segments", deps.TranscriptAPI.List)
+	}
+	if deps.MeetingSessionAPI != nil {
+		r.Post("/api/v1/meeting-sessions", deps.MeetingSessionAPI.Create)
+		r.Get("/api/v1/meeting-sessions/{session_id}", deps.MeetingSessionAPI.Get)
+		r.Patch("/api/v1/bot/meeting-sessions/{session_id}/status", deps.MeetingSessionAPI.UpdateBotStatus)
 	}
 	if deps.TranscriptRealtime != nil {
 		r.Get("/api/v1/ws/transcript-segments", deps.TranscriptRealtime)

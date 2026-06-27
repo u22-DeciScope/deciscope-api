@@ -47,6 +47,9 @@ PORT=9090
 DATABASE_URL=postgres://deciscope:change-me-change-me-change-me-1234@localhost:5432/deciscope?sslmode=disable
 DECISCOPE_TRANSCRIPT_STORE=postgres
 DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
+DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
+DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
+DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
 FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 ALLOWED_ORIGINS=http://localhost:5193

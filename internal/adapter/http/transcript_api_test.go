@@ -60,6 +60,22 @@ func TestTranscriptAPIDuplicateResponse(t *testing.T) {
 	}
 }
 
+func TestTranscriptAPIAcceptsOptionalSessionID(t *testing.T) {
+	service := &fakeTranscriptIngestUseCases{status: domain.TranscriptSegmentCreated}
+	api := NewTranscriptAPI(service, testTranscriptAPIKey)
+
+	resp := serveTranscriptSegment(api, testTranscriptAPIKey, "application/json", validTranscriptSegmentJSON(t, func(payload map[string]any) {
+		payload["sessionId"] = "session_1"
+	}))
+
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.segment.SessionID != "session_1" {
+		t.Fatalf("sessionID = %q, want session_1", service.segment.SessionID)
+	}
+}
+
 func TestTranscriptAPIConflictResponse(t *testing.T) {
 	service := &fakeTranscriptIngestUseCases{err: domain.ErrConflict}
 	api := NewTranscriptAPI(service, testTranscriptAPIKey)
@@ -88,6 +104,7 @@ func TestTranscriptAPIListsSegmentsWithOptionalClientToken(t *testing.T) {
 	service := &fakeTranscriptIngestUseCases{
 		segments: []domain.TranscriptSegment{{
 			EventID:         "call-1:1",
+			SessionID:       "session_1",
 			CallID:          "call-1",
 			SequenceNo:      1,
 			RecognizedAtUTC: mustTime(t, "2026-06-27T00:00:00Z"),
@@ -106,18 +123,18 @@ func TestTranscriptAPIListsSegmentsWithOptionalClientToken(t *testing.T) {
 	}
 
 	resp := httptest.NewRecorder()
-	api.List(resp, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments?callId=call-1&limit=5&token=client-token", nil))
+	api.List(resp, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments?callId=call-1&sessionId=session_1&limit=5&token=client-token", nil))
 	if resp.Code != http.StatusOK {
 		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
 	}
-	if service.listCallID != "call-1" || service.listLimit != 5 {
-		t.Fatalf("list args = callID:%q limit:%d", service.listCallID, service.listLimit)
+	if service.listCallID != "call-1" || service.listSessionID != "session_1" || service.listLimit != 5 {
+		t.Fatalf("list args = callID:%q sessionID:%q limit:%d", service.listCallID, service.listSessionID, service.listLimit)
 	}
 	var body transcriptSegmentListResponse
 	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if len(body.Items) != 1 || body.Items[0].EventID != "call-1:1" || body.Items[0].Text != "履歴です。" {
+	if len(body.Items) != 1 || body.Items[0].SessionID != "session_1" || body.Items[0].EventID != "call-1:1" || body.Items[0].Text != "履歴です。" {
 		t.Fatalf("body = %+v", body)
 	}
 }
@@ -208,13 +225,14 @@ func TestReadyzChecksDependency(t *testing.T) {
 }
 
 type fakeTranscriptIngestUseCases struct {
-	status     domain.TranscriptSegmentStoreStatus
-	err        error
-	called     bool
-	segment    domain.TranscriptSegment
-	segments   []domain.TranscriptSegment
-	listCallID string
-	listLimit  int
+	status        domain.TranscriptSegmentStoreStatus
+	err           error
+	called        bool
+	segment       domain.TranscriptSegment
+	segments      []domain.TranscriptSegment
+	listCallID    string
+	listSessionID string
+	listLimit     int
 }
 
 func (f *fakeTranscriptIngestUseCases) StoreTranscriptSegment(_ context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
@@ -226,8 +244,9 @@ func (f *fakeTranscriptIngestUseCases) StoreTranscriptSegment(_ context.Context,
 	return domain.TranscriptSegmentStoreResult{Status: f.status, EventID: segment.EventID}, nil
 }
 
-func (f *fakeTranscriptIngestUseCases) ListTranscriptSegments(_ context.Context, callID string, limit int) ([]domain.TranscriptSegment, error) {
+func (f *fakeTranscriptIngestUseCases) ListTranscriptSegments(_ context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error) {
 	f.listCallID = callID
+	f.listSessionID = sessionID
 	f.listLimit = limit
 	return f.segments, f.err
 }

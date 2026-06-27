@@ -14,6 +14,7 @@ import (
 const createTranscriptSegmentsTableSQL = `
 CREATE TABLE IF NOT EXISTS transcript_segments (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id        TEXT,
     event_id          TEXT    NOT NULL,
     call_id           TEXT    NOT NULL,
     sequence_no       INTEGER NOT NULL,
@@ -31,6 +32,10 @@ const createTranscriptSegmentsCallOrderIndexSQL = `
 CREATE INDEX IF NOT EXISTS idx_transcript_segments_call_order
     ON transcript_segments (call_id, sequence_no);`
 
+const createTranscriptSegmentsSessionOrderIndexSQL = `
+CREATE INDEX IF NOT EXISTS idx_transcript_segments_session_order
+    ON transcript_segments (session_id, sequence_no);`
+
 type TranscriptSegmentRepository struct {
 	db *sql.DB
 }
@@ -43,8 +48,14 @@ func InitializeTranscriptSegments(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, createTranscriptSegmentsTableSQL); err != nil {
 		return fmt.Errorf("create transcript_segments table: %w", err)
 	}
+	if err := ensureTranscriptSessionIDColumn(ctx, db); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, createTranscriptSegmentsCallOrderIndexSQL); err != nil {
 		return fmt.Errorf("create transcript_segments call order index: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, createTranscriptSegmentsSessionOrderIndexSQL); err != nil {
+		return fmt.Errorf("create transcript_segments session order index: %w", err)
 	}
 	return nil
 }
@@ -81,10 +92,10 @@ func (r *TranscriptSegmentRepository) SaveTranscriptSegment(ctx context.Context,
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO transcript_segments (
-			event_id, call_id, sequence_no, recognized_at_utc,
+			session_id, event_id, call_id, sequence_no, recognized_at_utc,
 			offset_ticks, duration_ticks, text, received_at_utc
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, record.EventID, record.CallID, record.SequenceNo, record.RecognizedAtUTC,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, nullableString(record.SessionID), record.EventID, record.CallID, record.SequenceNo, record.RecognizedAtUTC,
 		record.OffsetTicks, record.DurationTicks, record.Text, record.ReceivedAtUTC); err != nil {
 		return domain.TranscriptSegmentStoreResult{}, fmt.Errorf("insert transcript segment: %w", err)
 	}
@@ -94,17 +105,18 @@ func (r *TranscriptSegmentRepository) SaveTranscriptSegment(ctx context.Context,
 	return domain.TranscriptSegmentStoreResult{Status: domain.TranscriptSegmentCreated, EventID: record.EventID}, nil
 }
 
-func (r *TranscriptSegmentRepository) ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error) {
+func (r *TranscriptSegmentRepository) ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE (? = '' OR call_id = ?)
+		  AND (? = '' OR session_id = ?)
 		ORDER BY call_id ASC, sequence_no ASC, recognized_at_utc ASC
 		LIMIT ?
-	`, callID, callID, limit)
+	`, callID, callID, sessionID, sessionID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list transcript segments: %w", err)
 	}
@@ -129,6 +141,7 @@ func (r *TranscriptSegmentRepository) ListTranscriptSegments(ctx context.Context
 }
 
 type transcriptSegmentRecord struct {
+	SessionID       string
 	EventID         string
 	CallID          string
 	SequenceNo      int64
@@ -141,6 +154,7 @@ type transcriptSegmentRecord struct {
 
 func transcriptSegmentRecordFromDomain(segment domain.TranscriptSegment) transcriptSegmentRecord {
 	return transcriptSegmentRecord{
+		SessionID:       segment.SessionID,
 		EventID:         segment.EventID,
 		CallID:          segment.CallID,
 		SequenceNo:      segment.SequenceNo,
@@ -162,6 +176,7 @@ func (record transcriptSegmentRecord) toDomain() (domain.TranscriptSegment, erro
 		return domain.TranscriptSegment{}, fmt.Errorf("parse transcript received_at_utc: %w", err)
 	}
 	return domain.TranscriptSegment{
+		SessionID:       record.SessionID,
 		EventID:         record.EventID,
 		CallID:          record.CallID,
 		SequenceNo:      record.SequenceNo,
@@ -175,6 +190,7 @@ func (record transcriptSegmentRecord) toDomain() (domain.TranscriptSegment, erro
 
 func (record transcriptSegmentRecord) sameContent(other transcriptSegmentRecord) bool {
 	return record.EventID == other.EventID &&
+		record.SessionID == other.SessionID &&
 		record.CallID == other.CallID &&
 		record.SequenceNo == other.SequenceNo &&
 		record.RecognizedAtUTC == other.RecognizedAtUTC &&
@@ -185,7 +201,7 @@ func (record transcriptSegmentRecord) sameContent(other transcriptSegmentRecord)
 
 func findTranscriptSegmentByEventID(ctx context.Context, tx *sql.Tx, eventID string) (transcriptSegmentRecord, bool, error) {
 	return scanTranscriptSegment(tx.QueryRowContext(ctx, `
-		SELECT event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE event_id = ?
 	`, eventID))
@@ -193,7 +209,7 @@ func findTranscriptSegmentByEventID(ctx context.Context, tx *sql.Tx, eventID str
 
 func findTranscriptSegmentByCallSequence(ctx context.Context, tx *sql.Tx, callID string, sequenceNo int64) (transcriptSegmentRecord, bool, error) {
 	return scanTranscriptSegment(tx.QueryRowContext(ctx, `
-		SELECT event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE call_id = ? AND sequence_no = ?
 	`, callID, sequenceNo))
@@ -217,7 +233,7 @@ func scanTranscriptSegment(row transcriptSegmentScanner) (transcriptSegmentRecor
 func scanTranscriptSegmentRow(row transcriptSegmentScanner) (transcriptSegmentRecord, error) {
 	var record transcriptSegmentRecord
 	err := row.Scan(
-		&record.EventID, &record.CallID, &record.SequenceNo, &record.RecognizedAtUTC,
+		&record.SessionID, &record.EventID, &record.CallID, &record.SequenceNo, &record.RecognizedAtUTC,
 		&record.OffsetTicks, &record.DurationTicks, &record.Text, &record.ReceivedAtUTC,
 	)
 	if err != nil {
@@ -231,3 +247,39 @@ func transcriptSegmentConflictError() error {
 }
 
 var _ application.TranscriptSegmentRepository = (*TranscriptSegmentRepository)(nil)
+
+func ensureTranscriptSessionIDColumn(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(transcript_segments)`)
+	if err != nil {
+		return fmt.Errorf("inspect transcript_segments columns: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan transcript_segments column: %w", err)
+		}
+		if name == "session_id" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate transcript_segments columns: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE transcript_segments ADD COLUMN session_id TEXT`); err != nil {
+		return fmt.Errorf("add transcript_segments session_id column: %w", err)
+	}
+	return nil
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}

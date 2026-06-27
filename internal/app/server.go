@@ -19,6 +19,7 @@ import (
 	appaccess "deciscope-core-api/internal/application/access"
 	appauth "deciscope-core-api/internal/application/auth"
 	appworkspace "deciscope-core-api/internal/application/workspace"
+	"deciscope-core-api/internal/infrastructure/botcontrol"
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/firebase"
 	sqliteinfra "deciscope-core-api/internal/infrastructure/sqlite"
@@ -108,6 +109,11 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	}
 
 	hub := realtime.NewHub()
+	meetingSessionService := application.NewMeetingSessionService(
+		postgresrepository.NewMeetingSessionRepository(postgresDB),
+		botcontrol.NewClient(config.BotControl),
+		transcriptHub,
+	)
 	tokenVerifier := firebase.NewTokenVerifier(authClient)
 	service := application.NewService(
 		repositories.Meetings, repositories.Events, repositories.Reports,
@@ -123,6 +129,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		AuthAPI:            httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
 		WorkspaceAPI:       httpadapter.NewWorkspaceAPI(workspaceService, hub),
 		TranscriptAPI:      httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
+		MeetingSessionAPI:  httpadapter.NewMeetingSessionAPI(meetingSessionService, config.TranscriptIngest.APIKey),
 		TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
 		AuthService:        authService,
 		Workspace:          workspaceService,

@@ -38,11 +38,30 @@ type UploadRepository interface {
 
 type TranscriptSegmentRepository interface {
 	SaveTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
-	ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error)
+	ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error)
 }
 
 type TranscriptSegmentPublisher interface {
 	PublishTranscriptSegment(segment domain.TranscriptSegment)
+}
+
+type MeetingSessionRepository interface {
+	CreateMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, error)
+	GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error)
+	UpdateMeetingSessionStatus(ctx context.Context, update domain.MeetingSessionStatusUpdate) (*domain.MeetingSession, error)
+}
+
+type BotJoinCommand struct {
+	SessionID string
+	JoinURL   string
+}
+
+type BotJoinCommander interface {
+	SendJoinCommand(ctx context.Context, command BotJoinCommand) error
+}
+
+type MeetingSessionPublisher interface {
+	PublishMeetingSessionStatusChanged(session domain.MeetingSession)
 }
 
 type Publisher interface {

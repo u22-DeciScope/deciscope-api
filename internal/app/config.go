@@ -3,8 +3,11 @@ package app
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
+	"deciscope-core-api/internal/infrastructure/botcontrol"
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/firebase"
 	sqliteinfra "deciscope-core-api/internal/infrastructure/sqlite"
@@ -25,6 +28,7 @@ type Config struct {
 	TranscriptIngest    TranscriptIngestConfig
 	TranscriptWebSocket TranscriptWebSocketConfig
 	TranscriptOnly      bool
+	BotControl          botcontrol.Config
 	Firebase            firebase.Config
 	UploadDir           string
 	FixtureDir          string
@@ -65,6 +69,11 @@ func ConfigFromEnv() Config {
 			AllowedOrigins: os.Getenv("DECISCOPE_WS_ALLOWED_ORIGINS"),
 		},
 		TranscriptOnly: transcriptOnly,
+		BotControl: botcontrol.Config{
+			URL:     strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_URL")),
+			Token:   strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_TOKEN")),
+			Timeout: botControlTimeoutFromEnv(os.Getenv("DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS")),
+		},
 		Firebase: firebase.Config{
 			CredentialsFile: firstNonEmpty(os.Getenv("FIREBASE_SERVICE_ACCOUNT_JSON"), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")),
 			CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"),
@@ -77,6 +86,14 @@ func ConfigFromEnv() Config {
 		AllowedOrigins:      os.Getenv("ALLOWED_ORIGINS"),
 		SessionCookieSecure: strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
 	}
+}
+
+func botControlTimeoutFromEnv(value string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || seconds <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func LoadEnvironmentFiles() {

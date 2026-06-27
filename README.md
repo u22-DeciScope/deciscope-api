@@ -66,6 +66,9 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は文字起こし取り込みAPIだけを起動
 - `DECISCOPE_WS_CLIENT_TOKEN`: transcript WebSocket/履歴GET用client token。未設定時は開発用に認証なし
 - `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketの許可Origin。カンマ区切り
+- `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います
+- `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
+- `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御API呼び出しtimeout。既定値は `10`
 - `DECISCOPE_GO_SQLITE_PATH`: SQLite fallback用file path
 - `FIXTURE_DIR`: fixture JSONL directory
 - `UPLOAD_DIR`: local upload directory
@@ -141,6 +144,7 @@ X-DeciScope-Api-Key: <DECISCOPE_INGEST_API_KEY>
 
 ```json
 {
+  "sessionId": "session_...",
   "eventId": "06008080-91e3-4b88-a8ff-9af629265ced:1",
   "callId": "06008080-91e3-4b88-a8ff-9af629265ced",
   "sequenceNo": 1,
@@ -150,6 +154,10 @@ X-DeciScope-Api-Key: <DECISCOPE_INGEST_API_KEY>
   "text": "本日の会議を開始します。"
 }
 ```
+
+`sessionId` は任意です。既存のVM Botや手動POSTが `sessionId` を送らなくても
+従来どおり保存できます。会議セッション作成APIから返った `sessionId` を付けると、
+履歴取得とWebSocketで `sessionId` による絞り込みができます。
 
 手動テスト:
 
@@ -197,7 +205,9 @@ VM BotはWebSocketへ接続しません。従来どおり
 ```text
 WS  /api/v1/ws/transcript-segments
 WS  /api/v1/ws/transcript-segments?callId={call_id}
+WS  /api/v1/ws/transcript-segments?sessionId={session_id}
 GET /api/v1/transcript-segments?callId={call_id}&limit=100
+GET /api/v1/transcript-segments?sessionId={session_id}&limit=100
 ```
 
 WebSocket message:
@@ -207,6 +217,7 @@ WebSocket message:
   "type": "transcript_segment.created",
   "sentAtUtc": "2026-06-27T00:00:00Z",
   "data": {
+    "sessionId": "session_...",
     "eventId": "09005080-cce6-4132-9404-1e823df47ff9:6",
     "callId": "09005080-cce6-4132-9404-1e823df47ff9",
     "sequenceNo": 6,
@@ -217,6 +228,92 @@ WebSocket message:
     "duplicate": false
   }
 }
+```
+
+会議セッションの状態変化も同じWebSocketへ配信されます。
+
+```json
+{
+  "type": "meeting_session.status_changed",
+  "sentAtUtc": "2026-06-27T00:00:00Z",
+  "data": {
+    "sessionId": "session_...",
+    "status": "joined",
+    "botCallId": "09005080-cce6-4132-9404-1e823df47ff9"
+  }
+}
+```
+
+## Teams Bot Meeting Sessions
+
+フロントエンドはVM Botを直接叩きません。Teams会議URLはGo APIの
+`POST /api/v1/meeting-sessions` へ送信し、Go APIがTailscale内のVM Bot制御APIへ
+参加命令を送ります。
+
+VM Bot制御APIの設定:
+
+```env
+DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
+DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
+DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
+```
+
+Go APIからVM Botへ送るリクエスト:
+
+```http
+POST <DECISCOPE_BOT_CONTROL_URL>
+Content-Type: application/json
+X-DeciScope-Bot-Control-Token: <DECISCOPE_BOT_CONTROL_TOKEN>
+```
+
+```json
+{
+  "sessionId": "session_...",
+  "joinUrl": "https://teams.microsoft.com/l/meetup-join/..."
+}
+```
+
+VM Botが2xxを返すと `meeting_sessions.status` は `command_sent` になります。
+4xx/5xx/timeoutの場合は `failed` と `last_error` を保存します。
+`joinUrl` 全文とtokenはログへ出さず、ログには `sessionId` と `joinUrlHash` を使います。
+
+手動テスト:
+
+```powershell
+$body = @{
+  joinUrl = "https://teams.microsoft.com/l/meetup-join/..."
+} | ConvertTo-Json
+
+Invoke-WebRequest `
+  -Uri "http://localhost:9090/api/v1/meeting-sessions" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body `
+  -UseBasicParsing
+```
+
+状態取得:
+
+```powershell
+Invoke-RestMethod "http://localhost:9090/api/v1/meeting-sessions/<sessionId>"
+```
+
+VM Botからの状態更新:
+
+```powershell
+$apiKey = Read-Host "DeciScope ingest API key"
+$body = @{
+  status = "joined"
+  botCallId = "09005080-cce6-4132-9404-1e823df47ff9"
+  message = "joined successfully"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Patch `
+  -Uri "http://localhost:9090/api/v1/bot/meeting-sessions/<sessionId>/status" `
+  -Headers @{ "X-DeciScope-Api-Key" = $apiKey } `
+  -ContentType "application/json" `
+  -Body $body
 ```
 
 `DECISCOPE_WS_CLIENT_TOKEN` を設定している場合、WebSocketと履歴GETには
@@ -275,6 +372,9 @@ Invoke-RestMethod `
 - `POST /api/v1/transcript-segments`
 - `GET /api/v1/transcript-segments?callId={call_id}&limit=100`
 - `WS /api/v1/ws/transcript-segments?callId={call_id}`
+- `POST /api/v1/meeting-sessions`
+- `GET /api/v1/meeting-sessions/{session_id}`
+- `PATCH /api/v1/bot/meeting-sessions/{session_id}/status`
 - `GET /v1/workspaces/{workspace_code}/meetings`
 - `POST /v1/workspaces/{workspace_code}/meetings`
 - `GET /v1/meetings/{meeting_id}`

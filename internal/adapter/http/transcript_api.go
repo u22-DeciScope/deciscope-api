@@ -22,7 +22,7 @@ const transcriptSegmentBodyLimitBytes int64 = 64 * 1024
 
 type TranscriptIngestUseCases interface {
 	StoreTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
-	ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error)
+	ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error)
 }
 
 type TranscriptAPI struct {
@@ -111,9 +111,11 @@ func (api *TranscriptAPI) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	segments, err := api.service.ListTranscriptSegments(r.Context(), strings.TrimSpace(r.URL.Query().Get("callId")), limit)
+	callID := strings.TrimSpace(r.URL.Query().Get("callId"))
+	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+	segments, err := api.service.ListTranscriptSegments(r.Context(), callID, sessionID, limit)
 	if err != nil {
-		log.Printf("List transcript segments failed. callId=%s limit=%d error=%v", strings.TrimSpace(r.URL.Query().Get("callId")), limit, err)
+		log.Printf("List transcript segments failed. callId=%s sessionId=%s limit=%d error=%v", callID, sessionID, limit, err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -145,6 +147,7 @@ func authorizedSecret(value, secret string) bool {
 }
 
 type transcriptSegmentRequest struct {
+	SessionID       string `json:"sessionId"`
 	EventID         string `json:"eventId"`
 	CallID          string `json:"callId"`
 	SequenceNo      int64  `json:"sequenceNo"`
@@ -165,6 +168,7 @@ type transcriptSegmentListResponse struct {
 }
 
 type transcriptSegmentItem struct {
+	SessionID       string `json:"sessionId,omitempty"`
 	EventID         string `json:"eventId"`
 	CallID          string `json:"callId"`
 	SequenceNo      int64  `json:"sequenceNo"`
@@ -205,6 +209,7 @@ func (request transcriptSegmentRequest) toDomain() (domain.TranscriptSegment, er
 		return domain.TranscriptSegment{}, fmt.Errorf("text is required")
 	}
 	return domain.TranscriptSegment{
+		SessionID:       strings.TrimSpace(request.SessionID),
 		EventID:         eventID,
 		CallID:          callID,
 		SequenceNo:      request.SequenceNo,
@@ -242,6 +247,7 @@ func transcriptSegmentItems(segments []domain.TranscriptSegment) []transcriptSeg
 	items := make([]transcriptSegmentItem, 0, len(segments))
 	for _, segment := range segments {
 		items = append(items, transcriptSegmentItem{
+			SessionID:       segment.SessionID,
 			EventID:         segment.EventID,
 			CallID:          segment.CallID,
 			SequenceNo:      segment.SequenceNo,
