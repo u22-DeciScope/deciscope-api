@@ -34,6 +34,48 @@ func (r *MeetingSessionRepository) CreateMeetingSession(ctx context.Context, ses
 	return scanMeetingSession(row)
 }
 
+func (r *MeetingSessionRepository) CreateOrReuseMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin meeting session create: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `LOCK TABLE meeting_sessions IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return nil, false, fmt.Errorf("lock meeting sessions: %w", err)
+	}
+	existing, err := findReusableMeetingSessionByJoinURLHash(ctx, tx, session.JoinURLHash)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("commit meeting session reuse: %w", err)
+		}
+		return existing, false, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return nil, false, err
+	}
+
+	record := meetingSessionRecordFromDomain(session)
+	row := tx.QueryRowContext(ctx, `
+		INSERT INTO meeting_sessions (
+			id, join_url, join_url_hash, status, bot_call_id, requested_at,
+			command_sent_at, joined_at, ended_at, last_error, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
+			command_sent_at, joined_at, ended_at, COALESCE(last_error, ''), created_at, updated_at
+	`, record.ID, record.JoinURL, record.JoinURLHash, record.Status, nullable(record.BotCallID), record.RequestedAt,
+		nullable(record.CommandSentAt), nullable(record.JoinedAt), nullable(record.EndedAt), nullable(record.LastError),
+		record.CreatedAt, record.UpdatedAt)
+	created, err := scanMeetingSession(row)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit meeting session create: %w", err)
+	}
+	return created, true, nil
+}
+
 func (r *MeetingSessionRepository) GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
@@ -42,6 +84,77 @@ func (r *MeetingSessionRepository) GetMeetingSession(ctx context.Context, sessio
 		WHERE id = $1
 	`, sessionID)
 	return scanMeetingSession(row)
+}
+
+func (r *MeetingSessionRepository) MarkStaleMeetingSessions(ctx context.Context, staleBefore time.Time, updatedAt time.Time) ([]domain.MeetingSession, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		UPDATE meeting_sessions
+		SET status = 'stale',
+			ended_at = COALESCE(ended_at, $2),
+			last_error = CASE
+				WHEN COALESCE(last_error, '') = '' THEN 'session marked stale because no update was received before cutoff'
+				ELSE last_error
+			END,
+			updated_at = $2
+		WHERE status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording')
+			AND updated_at < $1
+		RETURNING id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
+			command_sent_at, joined_at, ended_at, COALESCE(last_error, ''), created_at, updated_at
+	`, staleBefore.UTC().Format(time.RFC3339Nano), updatedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("mark stale meeting sessions: %w", err)
+	}
+	return scanMeetingSessionRows(rows)
+}
+
+func (r *MeetingSessionRepository) ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT ms.id, ms.join_url, ms.join_url_hash, ms.status, COALESCE(ms.bot_call_id, ''), ms.requested_at,
+			ms.command_sent_at, ms.joined_at, ms.ended_at, COALESCE(ms.last_error, ''), ms.created_at, ms.updated_at,
+			MAX(ts.received_at_utc)
+		FROM meeting_sessions ms
+		LEFT JOIN transcript_segments ts ON ts.session_id = ms.id
+		GROUP BY ms.id, ms.join_url, ms.join_url_hash, ms.status, ms.bot_call_id, ms.requested_at,
+			ms.command_sent_at, ms.joined_at, ms.ended_at, ms.last_error, ms.created_at, ms.updated_at
+		ORDER BY ms.updated_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list meeting session debug: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]domain.MeetingSessionDebug, 0)
+	for rows.Next() {
+		var record meetingSessionRecord
+		var commandSentAt, joinedAt, endedAt, lastTranscriptAt sql.NullString
+		if err := rows.Scan(
+			&record.ID, &record.JoinURL, &record.JoinURLHash, &record.Status, &record.BotCallID, &record.RequestedAt,
+			&commandSentAt, &joinedAt, &endedAt, &record.LastError, &record.CreatedAt, &record.UpdatedAt,
+			&lastTranscriptAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan meeting session debug: %w", err)
+		}
+		record.CommandSentAt = commandSentAt.String
+		record.JoinedAt = joinedAt.String
+		record.EndedAt = endedAt.String
+		session, err := record.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		parsedLastTranscriptAt, err := parseOptionalTime("last_transcript_at", lastTranscriptAt.String)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, domain.MeetingSessionDebug{
+			MeetingSession:   *session,
+			LastTranscriptAt: parsedLastTranscriptAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate meeting session debug: %w", err)
+	}
+	return items, nil
 }
 
 func (r *MeetingSessionRepository) UpdateMeetingSessionStatus(ctx context.Context, update domain.MeetingSessionStatusUpdate) (*domain.MeetingSession, error) {
@@ -60,6 +173,23 @@ func (r *MeetingSessionRepository) UpdateMeetingSessionStatus(ctx context.Contex
 	`, update.SessionID, string(update.Status), update.BotCallID, nullableTimePtr(update.CommandSentAt),
 		nullableTimePtr(update.JoinedAt), nullableTimePtr(update.EndedAt), nullable(update.LastError),
 		update.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	return scanMeetingSession(row)
+}
+
+type meetingSessionQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func findReusableMeetingSessionByJoinURLHash(ctx context.Context, queryer meetingSessionQueryer, joinURLHash string) (*domain.MeetingSession, error) {
+	row := queryer.QueryRowContext(ctx, `
+		SELECT id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
+			command_sent_at, joined_at, ended_at, COALESCE(last_error, ''), created_at, updated_at
+		FROM meeting_sessions
+		WHERE join_url_hash = $1
+			AND status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording')
+		ORDER BY updated_at DESC, created_at DESC
+		LIMIT 1
+	`, joinURLHash)
 	return scanMeetingSession(row)
 }
 
@@ -112,6 +242,22 @@ func scanMeetingSession(row interface{ Scan(dest ...any) error }) (*domain.Meeti
 	record.JoinedAt = joinedAt.String
 	record.EndedAt = endedAt.String
 	return record.toDomain()
+}
+
+func scanMeetingSessionRows(rows *sql.Rows) ([]domain.MeetingSession, error) {
+	defer rows.Close()
+	sessions := make([]domain.MeetingSession, 0)
+	for rows.Next() {
+		session, err := scanMeetingSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, *session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate meeting sessions: %w", err)
+	}
+	return sessions, nil
 }
 
 func (record meetingSessionRecord) toDomain() (*domain.MeetingSession, error) {

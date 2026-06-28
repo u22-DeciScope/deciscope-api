@@ -20,17 +20,43 @@ func TestMeetingSessionServiceCreatesAndSendsBotCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMeetingSession() error = %v", err)
 	}
-	if session.Status != domain.MeetingSessionCommandSent {
-		t.Fatalf("session = %+v", session)
+	if session.Session.Status != domain.MeetingSessionJoining {
+		t.Fatalf("session = %+v", session.Session)
 	}
 	if commander.command.SessionID == "" || commander.command.JoinURL != "https://teams.microsoft.com/l/meetup-join/abc" {
 		t.Fatalf("command = %+v", commander.command)
 	}
-	if repository.created.JoinURLHash == "" || repository.updated.Status != domain.MeetingSessionCommandSent {
+	if repository.created.JoinURLHash == "" || repository.created.Status != domain.MeetingSessionRequested || repository.updated.Status != domain.MeetingSessionJoining {
 		t.Fatalf("repository created=%+v updated=%+v", repository.created, repository.updated)
 	}
-	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionCommandSent {
+	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionJoining {
 		t.Fatalf("published sessions = %+v", publisher.sessions)
+	}
+}
+
+func TestMeetingSessionServiceReusesOpenSessionAndSkipsBotCommand(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.reuseSession = domain.MeetingSession{
+		ID:          "session_existing",
+		JoinURL:     "https://teams.microsoft.com/l/meetup-join/abc",
+		JoinURLHash: domain.JoinURLHash("https://teams.microsoft.com/l/meetup-join/abc"),
+		Status:      domain.MeetingSessionJoining,
+		RequestedAt: repository.session.RequestedAt,
+		CreatedAt:   repository.session.CreatedAt,
+		UpdatedAt:   repository.session.UpdatedAt,
+	}
+	commander := &fakeBotJoinCommander{}
+	service := application.NewMeetingSessionService(repository, commander)
+
+	result, err := service.CreateMeetingSession(context.Background(), "https://teams.microsoft.com/l/meetup-join/abc")
+	if err != nil {
+		t.Fatalf("CreateMeetingSession() error = %v", err)
+	}
+	if !result.Reused || result.Session.ID != "session_existing" {
+		t.Fatalf("result = %+v", result)
+	}
+	if commander.command.SessionID != "" {
+		t.Fatalf("command should not be sent on reuse: %+v", commander.command)
 	}
 }
 
@@ -53,7 +79,7 @@ func TestMeetingSessionServiceMarksFailedWhenBotCommandFails(t *testing.T) {
 	if !errors.Is(err, application.ErrBotControlCommandFailed) {
 		t.Fatalf("CreateMeetingSession() error = %v, want bot command failure", err)
 	}
-	if session == nil || session.Status != domain.MeetingSessionFailed || session.LastError == "" {
+	if session == nil || session.Session.Status != domain.MeetingSessionFailed || session.Session.LastError == "" {
 		t.Fatalf("session = %+v", session)
 	}
 	if repository.updated.Status != domain.MeetingSessionFailed {
@@ -84,9 +110,10 @@ func TestMeetingSessionServiceUpdatesBotStatus(t *testing.T) {
 }
 
 type fakeMeetingSessionRepository struct {
-	created domain.MeetingSession
-	updated domain.MeetingSessionStatusUpdate
-	session domain.MeetingSession
+	created      domain.MeetingSession
+	updated      domain.MeetingSessionStatusUpdate
+	session      domain.MeetingSession
+	reuseSession domain.MeetingSession
 }
 
 func newFakeMeetingSessionRepository() *fakeMeetingSessionRepository {
@@ -111,11 +138,27 @@ func (f *fakeMeetingSessionRepository) CreateMeetingSession(_ context.Context, s
 	return &session, nil
 }
 
+func (f *fakeMeetingSessionRepository) CreateOrReuseMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, bool, error) {
+	if f.reuseSession.ID != "" && domain.IsReusableMeetingSessionStatus(f.reuseSession.Status) {
+		return &f.reuseSession, false, nil
+	}
+	created, err := f.CreateMeetingSession(ctx, session)
+	return created, true, err
+}
+
 func (f *fakeMeetingSessionRepository) GetMeetingSession(_ context.Context, sessionID string) (*domain.MeetingSession, error) {
 	if sessionID != f.session.ID {
 		return nil, domain.ErrNotFound
 	}
 	return &f.session, nil
+}
+
+func (f *fakeMeetingSessionRepository) MarkStaleMeetingSessions(_ context.Context, _ time.Time, _ time.Time) ([]domain.MeetingSession, error) {
+	return nil, nil
+}
+
+func (f *fakeMeetingSessionRepository) ListMeetingSessionDebug(_ context.Context, _ int) ([]domain.MeetingSessionDebug, error) {
+	return nil, nil
 }
 
 func (f *fakeMeetingSessionRepository) UpdateMeetingSessionStatus(_ context.Context, update domain.MeetingSessionStatusUpdate) (*domain.MeetingSession, error) {

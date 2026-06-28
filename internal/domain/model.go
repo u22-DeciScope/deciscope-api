@@ -81,13 +81,16 @@ type TranscriptSegmentStoreResult struct {
 type MeetingSessionStatus string
 
 const (
+	MeetingSessionRequested   MeetingSessionStatus = "requested"
 	MeetingSessionPendingJoin MeetingSessionStatus = "pending_join"
 	MeetingSessionCommandSent MeetingSessionStatus = "command_sent"
 	MeetingSessionJoining     MeetingSessionStatus = "joining"
 	MeetingSessionJoined      MeetingSessionStatus = "joined"
+	MeetingSessionActive      MeetingSessionStatus = "active"
 	MeetingSessionRecording   MeetingSessionStatus = "recording"
 	MeetingSessionEnded       MeetingSessionStatus = "ended"
 	MeetingSessionFailed      MeetingSessionStatus = "failed"
+	MeetingSessionStale       MeetingSessionStatus = "stale"
 )
 
 type MeetingSession struct {
@@ -103,6 +106,11 @@ type MeetingSession struct {
 	LastError     string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+}
+
+type MeetingSessionDebug struct {
+	MeetingSession
+	LastTranscriptAt time.Time
 }
 
 type MeetingSessionStatusUpdate struct {
@@ -231,12 +239,34 @@ func NewUUID() string {
 
 func ValidMeetingSessionStatus(status MeetingSessionStatus) bool {
 	switch status {
-	case MeetingSessionPendingJoin, MeetingSessionCommandSent, MeetingSessionJoining,
-		MeetingSessionJoined, MeetingSessionRecording, MeetingSessionEnded, MeetingSessionFailed:
+	case MeetingSessionRequested, MeetingSessionPendingJoin, MeetingSessionCommandSent,
+		MeetingSessionJoining, MeetingSessionJoined, MeetingSessionActive,
+		MeetingSessionRecording, MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
 		return true
 	default:
 		return false
 	}
+}
+
+func ReusableMeetingSessionStatuses() []MeetingSessionStatus {
+	return []MeetingSessionStatus{
+		MeetingSessionRequested,
+		MeetingSessionPendingJoin,
+		MeetingSessionCommandSent,
+		MeetingSessionJoining,
+		MeetingSessionJoined,
+		MeetingSessionActive,
+		MeetingSessionRecording,
+	}
+}
+
+func IsReusableMeetingSessionStatus(status MeetingSessionStatus) bool {
+	for _, candidate := range ReusableMeetingSessionStatuses() {
+		if status == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func NormalizeTeamsJoinURL(value string) (string, error) {
@@ -258,7 +288,7 @@ func NormalizeTeamsJoinURL(value string) (string, error) {
 	if !isTeamsJoinHost(host) || !isTeamsJoinPath(parsed.EscapedPath()) {
 		return "", fmt.Errorf("%w: joinUrl must be a Teams meeting URL", ErrInvalidArgument)
 	}
-	return value, nil
+	return normalizedJoinURLString(*parsed), nil
 }
 
 func JoinURLHash(joinURL string) string {
@@ -278,6 +308,22 @@ func isTeamsJoinPath(path string) bool {
 	return strings.Contains(path, "meetup-join") ||
 		path == "/meet" ||
 		strings.HasPrefix(path, "/meet/")
+}
+
+func normalizedJoinURLString(parsed url.URL) string {
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if port := parsed.Port(); port != "" && port != "443" {
+		host = host + ":" + port
+	}
+	parsed.Host = host
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	if parsed.Path != "" && parsed.Path != "/" {
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
+		parsed.RawPath = strings.TrimRight(parsed.RawPath, "/")
+	}
+	return parsed.String()
 }
 
 func NormalizeFixtureName(name string) string {

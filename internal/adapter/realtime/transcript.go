@@ -54,7 +54,8 @@ func (h *TranscriptHub) PublishTranscriptSegment(segment domain.TranscriptSegmen
 	}
 	h.mu.RUnlock()
 
-	log.Printf("Transcript segment broadcast. sessionId=%s eventId=%s callId=%s sequenceNo=%d clients=%d", segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, len(clients))
+	log.Printf("Transcript broadcasted. sessionId=%s eventId=%s callId=%s sequenceNo=%d speakerId=%s speakerName=%s textLength=%d subscriberCount=%d",
+		segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, segment.SpeakerID, segment.SpeakerName, len([]rune(strings.TrimSpace(segment.Text))), len(clients))
 	for _, c := range clients {
 		c.enqueueSegment(segment)
 	}

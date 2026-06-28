@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -13,11 +14,18 @@ import (
 var ErrBotControlNotConfigured = errors.New("bot control is not configured")
 var ErrBotControlCommandFailed = errors.New("bot control command failed")
 
+const DefaultMeetingSessionStaleAfter = 12 * time.Hour
+
 type MeetingSessionService struct {
 	repository MeetingSessionRepository
 	commander  BotJoinCommander
 	publisher  MeetingSessionPublisher
 	now        func() time.Time
+}
+
+type MeetingSessionCreateResult struct {
+	Session *domain.MeetingSession
+	Reused  bool
 }
 
 type MeetingSessionStatusUpdateInput struct {
@@ -40,57 +48,68 @@ func NewMeetingSessionService(repository MeetingSessionRepository, commander Bot
 	}
 }
 
-func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, joinURL string) (*domain.MeetingSession, error) {
+func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, joinURL string) (*MeetingSessionCreateResult, error) {
 	normalizedJoinURL, err := domain.NormalizeTeamsJoinURL(joinURL)
 	if err != nil {
 		return nil, err
 	}
 	now := s.now().UTC()
+	if stale, cleanupErr := s.CleanupStaleMeetingSessions(ctx); cleanupErr != nil {
+		log.Printf("Meeting session stale cleanup failed before create. error=%v", cleanupErr)
+	} else if len(stale) > 0 {
+		log.Printf("Meeting session stale cleanup completed before create. count=%d", len(stale))
+	}
 	session := domain.MeetingSession{
 		ID:          domain.NewID("session"),
 		JoinURL:     normalizedJoinURL,
 		JoinURLHash: domain.JoinURLHash(normalizedJoinURL),
-		Status:      domain.MeetingSessionPendingJoin,
+		Status:      domain.MeetingSessionRequested,
 		RequestedAt: now,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	created, err := s.repository.CreateMeetingSession(ctx, session)
+	created, isNew, err := s.repository.CreateOrReuseMeetingSession(ctx, session)
 	if err != nil {
 		return nil, err
 	}
+	if !isNew {
+		log.Printf("Meeting session reuse. sessionId=%s joinUrlHash=%s status=%s createdAt=%s updatedAt=%s", created.ID, created.JoinURLHash, created.Status, created.CreatedAt.UTC().Format(time.RFC3339Nano), created.UpdatedAt.UTC().Format(time.RFC3339Nano))
+		return &MeetingSessionCreateResult{Session: created, Reused: true}, nil
+	}
+	log.Printf("Meeting session create. sessionId=%s joinUrlHash=%s status=%s createdAt=%s", created.ID, created.JoinURLHash, created.Status, created.CreatedAt.UTC().Format(time.RFC3339Nano))
 
 	if s.commander == nil {
 		failed, updateErr := s.markCommandFailed(ctx, created.ID, ErrBotControlNotConfigured)
 		if updateErr != nil {
-			return created, updateErr
+			return &MeetingSessionCreateResult{Session: created}, updateErr
 		}
-		return failed, ErrBotControlNotConfigured
+		return &MeetingSessionCreateResult{Session: failed}, ErrBotControlNotConfigured
 	}
 	if err := s.commander.SendJoinCommand(ctx, BotJoinCommand{SessionID: created.ID, JoinURL: normalizedJoinURL}); err != nil {
 		failed, updateErr := s.markCommandFailed(ctx, created.ID, err)
 		if updateErr != nil {
-			return created, updateErr
+			return &MeetingSessionCreateResult{Session: created}, updateErr
 		}
 		if errors.Is(err, ErrBotControlNotConfigured) {
-			return failed, err
+			return &MeetingSessionCreateResult{Session: failed}, err
 		}
-		return failed, fmt.Errorf("%w: %v", ErrBotControlCommandFailed, err)
+		return &MeetingSessionCreateResult{Session: failed}, fmt.Errorf("%w: %v", ErrBotControlCommandFailed, err)
 	}
 
 	commandSentAt := s.now().UTC()
 	updated, err := s.repository.UpdateMeetingSessionStatus(ctx, domain.MeetingSessionStatusUpdate{
 		SessionID:     created.ID,
-		Status:        domain.MeetingSessionCommandSent,
+		Status:        domain.MeetingSessionJoining,
 		CommandSentAt: &commandSentAt,
 		LastError:     "",
 		UpdatedAt:     commandSentAt,
 	})
 	if err != nil {
-		return created, err
+		return &MeetingSessionCreateResult{Session: created}, err
 	}
+	log.Printf("Meeting session join command sent. sessionId=%s joinUrlHash=%s status=%s", updated.ID, updated.JoinURLHash, updated.Status)
 	s.publishStatusChanged(*updated)
-	return updated, nil
+	return &MeetingSessionCreateResult{Session: updated}, nil
 }
 
 func (s *MeetingSessionService) GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error) {
@@ -98,7 +117,12 @@ func (s *MeetingSessionService) GetMeetingSession(ctx context.Context, sessionID
 	if sessionID == "" {
 		return nil, fmt.Errorf("%w: sessionId is required", domain.ErrInvalidArgument)
 	}
-	return s.repository.GetMeetingSession(ctx, sessionID)
+	session, err := s.repository.GetMeetingSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Meeting session fetched. sessionId=%s joinUrlHash=%s status=%s botCallId=%s updatedAt=%s", session.ID, session.JoinURLHash, session.Status, session.BotCallID, session.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	return session, nil
 }
 
 func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, input MeetingSessionStatusUpdateInput) (*domain.MeetingSession, error) {
@@ -111,6 +135,11 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 		return nil, fmt.Errorf("%w: status is invalid", domain.ErrInvalidArgument)
 	}
 
+	previous, previousErr := s.repository.GetMeetingSession(ctx, sessionID)
+	if previousErr != nil {
+		log.Printf("Meeting session status update could not read previous state. sessionId=%s newStatus=%s botCallId=%s error=%v", sessionID, status, strings.TrimSpace(input.BotCallID), previousErr)
+	}
+
 	now := s.now().UTC()
 	update := domain.MeetingSessionStatusUpdate{
 		SessionID: sessionID,
@@ -119,11 +148,11 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 		UpdatedAt: now,
 	}
 	switch status {
-	case domain.MeetingSessionCommandSent:
+	case domain.MeetingSessionCommandSent, domain.MeetingSessionJoining:
 		update.CommandSentAt = &now
-	case domain.MeetingSessionJoined, domain.MeetingSessionRecording:
+	case domain.MeetingSessionJoined, domain.MeetingSessionActive, domain.MeetingSessionRecording:
 		update.JoinedAt = &now
-	case domain.MeetingSessionEnded:
+	case domain.MeetingSessionEnded, domain.MeetingSessionStale:
 		update.EndedAt = &now
 	case domain.MeetingSessionFailed:
 		update.LastError = strings.TrimSpace(input.Message)
@@ -132,8 +161,37 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
+	oldStatus := domain.MeetingSessionStatus("unknown")
+	if previousErr == nil && previous != nil {
+		oldStatus = previous.Status
+	}
+	log.Printf("Meeting session status changed. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s updatedAt=%s", updated.ID, updated.JoinURLHash, oldStatus, updated.Status, updated.BotCallID, updated.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	s.publishStatusChanged(*updated)
 	return updated, nil
+}
+
+func (s *MeetingSessionService) CleanupStaleMeetingSessions(ctx context.Context) ([]domain.MeetingSession, error) {
+	now := s.now().UTC()
+	staleBefore := now.Add(-DefaultMeetingSessionStaleAfter)
+	staleSessions, err := s.repository.MarkStaleMeetingSessions(ctx, staleBefore, now)
+	if err != nil {
+		return nil, err
+	}
+	for _, session := range staleSessions {
+		log.Printf("Meeting session marked stale. sessionId=%s joinUrlHash=%s status=%s updatedAt=%s staleBefore=%s", session.ID, session.JoinURLHash, session.Status, session.UpdatedAt.UTC().Format(time.RFC3339Nano), staleBefore.Format(time.RFC3339Nano))
+		s.publishStatusChanged(session)
+	}
+	return staleSessions, nil
+}
+
+func (s *MeetingSessionService) ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	return s.repository.ListMeetingSessionDebug(ctx, limit)
 }
 
 func (s *MeetingSessionService) markCommandFailed(ctx context.Context, sessionID string, cause error) (*domain.MeetingSession, error) {

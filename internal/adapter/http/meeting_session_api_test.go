@@ -108,17 +108,18 @@ type fakeMeetingSessionUseCases struct {
 	err     error
 	joinURL string
 	update  application.MeetingSessionStatusUpdateInput
+	reused  bool
 }
 
-func (f *fakeMeetingSessionUseCases) CreateMeetingSession(_ context.Context, joinURL string) (*domain.MeetingSession, error) {
+func (f *fakeMeetingSessionUseCases) CreateMeetingSession(_ context.Context, joinURL string) (*application.MeetingSessionCreateResult, error) {
 	f.joinURL = joinURL
 	if f.err != nil {
 		if f.session.ID == "" {
 			return nil, f.err
 		}
-		return &f.session, f.err
+		return &application.MeetingSessionCreateResult{Session: &f.session, Reused: f.reused}, f.err
 	}
-	return &f.session, nil
+	return &application.MeetingSessionCreateResult{Session: &f.session, Reused: f.reused}, nil
 }
 
 func (f *fakeMeetingSessionUseCases) GetMeetingSession(_ context.Context, sessionID string) (*domain.MeetingSession, error) {
@@ -137,6 +138,20 @@ func (f *fakeMeetingSessionUseCases) UpdateMeetingSessionStatus(_ context.Contex
 		return nil, f.err
 	}
 	return &f.session, nil
+}
+
+func (f *fakeMeetingSessionUseCases) CleanupStaleMeetingSessions(_ context.Context) ([]domain.MeetingSession, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []domain.MeetingSession{f.session}, nil
+}
+
+func (f *fakeMeetingSessionUseCases) ListMeetingSessionDebug(_ context.Context, _ int) ([]domain.MeetingSessionDebug, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []domain.MeetingSessionDebug{{MeetingSession: f.session}}, nil
 }
 
 func requestWithSessionParam(method, target, body string) *http.Request {

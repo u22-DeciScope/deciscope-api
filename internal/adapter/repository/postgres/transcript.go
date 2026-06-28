@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"deciscope-core-api/internal/application"
@@ -27,6 +28,16 @@ func (r *TranscriptSegmentRepository) SaveTranscriptSegment(ctx context.Context,
 	defer func() { _ = tx.Rollback() }()
 
 	record := transcriptSegmentRecordFromDomain(segment)
+	if record.SessionID != "" {
+		exists, err := meetingSessionExists(ctx, tx, record.SessionID)
+		if err != nil {
+			log.Printf("Transcript session existence check failed. sessionId=%s eventId=%s callId=%s sequenceNo=%d error=%v",
+				record.SessionID, record.EventID, record.CallID, record.SequenceNo, err)
+		} else if !exists {
+			log.Printf("session_id mismatch. transcript sessionId=%s eventId=%s callId=%s sequenceNo=%d reason=meeting_session_not_found",
+				record.SessionID, record.EventID, record.CallID, record.SequenceNo)
+		}
+	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO transcript_segments (
 			session_id, event_id, call_id, sequence_no, speaker_id, speaker_name, recognized_at_utc,
@@ -170,7 +181,6 @@ func (record transcriptSegmentRecord) sameContent(other transcriptSegmentRecord)
 		record.SequenceNo == other.SequenceNo &&
 		record.SpeakerID == other.SpeakerID &&
 		record.SpeakerName == other.SpeakerName &&
-		record.RecognizedAtUTC == other.RecognizedAtUTC &&
 		record.OffsetTicks == other.OffsetTicks &&
 		record.DurationTicks == other.DurationTicks &&
 		record.Text == other.Text
@@ -190,6 +200,20 @@ func findTranscriptSegmentByCallSequence(ctx context.Context, tx *sql.Tx, callID
 		FROM transcript_segments
 		WHERE call_id = $1 AND sequence_no = $2
 	`, callID, sequenceNo))
+}
+
+func meetingSessionExists(ctx context.Context, tx *sql.Tx, sessionID string) (bool, error) {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM meeting_sessions
+			WHERE id = $1
+		)
+	`, sessionID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check meeting session exists: %w", err)
+	}
+	return exists, nil
 }
 
 type transcriptSegmentScanner interface {

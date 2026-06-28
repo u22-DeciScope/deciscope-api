@@ -209,7 +209,6 @@ func (record transcriptSegmentRecord) sameContent(other transcriptSegmentRecord)
 		record.SequenceNo == other.SequenceNo &&
 		record.SpeakerID == other.SpeakerID &&
 		record.SpeakerName == other.SpeakerName &&
-		record.RecognizedAtUTC == other.RecognizedAtUTC &&
 		record.OffsetTicks == other.OffsetTicks &&
 		record.DurationTicks == other.DurationTicks &&
 		record.Text == other.Text

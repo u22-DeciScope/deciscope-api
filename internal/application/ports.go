@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"io"
+	"time"
 
 	"deciscope-core-api/internal/domain"
 )
@@ -47,8 +48,11 @@ type TranscriptSegmentPublisher interface {
 
 type MeetingSessionRepository interface {
 	CreateMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, error)
+	CreateOrReuseMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, bool, error)
 	GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error)
 	UpdateMeetingSessionStatus(ctx context.Context, update domain.MeetingSessionStatusUpdate) (*domain.MeetingSession, error)
+	MarkStaleMeetingSessions(ctx context.Context, staleBefore time.Time, updatedAt time.Time) ([]domain.MeetingSession, error)
+	ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error)
 }
 
 type BotJoinCommand struct {

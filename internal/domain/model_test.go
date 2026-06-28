@@ -31,6 +31,13 @@ func TestNormalizeTeamsJoinURL(t *testing.T) {
 	if got != "https://teams.microsoft.com/l/meetup-join/abc" {
 		t.Fatalf("NormalizeTeamsJoinURL() = %q", got)
 	}
+	got, err = NormalizeTeamsJoinURL("https://TEAMS.MICROSOFT.COM/l/meetup-join/abc///#ignored")
+	if err != nil {
+		t.Fatalf("NormalizeTeamsJoinURL() error = %v", err)
+	}
+	if got != "https://teams.microsoft.com/l/meetup-join/abc" {
+		t.Fatalf("NormalizeTeamsJoinURL() = %q", got)
+	}
 
 	for _, value := range []string{
 		"",

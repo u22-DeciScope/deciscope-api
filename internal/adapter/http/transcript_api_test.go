@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"deciscope-core-api/internal/domain"
+
+	"github.com/go-chi/chi/v5"
 )
 
 const testTranscriptAPIKey = "0123456789abcdef0123456789abcdef"
@@ -76,6 +78,48 @@ func TestTranscriptAPIAcceptsOptionalSessionID(t *testing.T) {
 	}
 }
 
+func TestTranscriptAPIAcceptsSnakeCaseBotPayload(t *testing.T) {
+	service := &fakeTranscriptIngestUseCases{status: domain.TranscriptSegmentCreated}
+	api := NewTranscriptAPI(service, testTranscriptAPIKey)
+	payload := map[string]any{
+		"session_id":   "session_d4c2233e0e04af67",
+		"call_id":      "0b008480-2432-420d-b73a-847013556637",
+		"sequence_no":  7,
+		"speaker_id":   "8:orgid:speaker-001",
+		"speaker_name": "佐藤さん",
+		"text":         "発話を認識しました。",
+		"extra_field":  "future compatible",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	resp := serveTranscriptSegment(api, testTranscriptAPIKey, "application/json", string(data))
+
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.segment.SessionID != "session_d4c2233e0e04af67" {
+		t.Fatalf("sessionID = %q", service.segment.SessionID)
+	}
+	if service.segment.EventID != "transcript:session_d4c2233e0e04af67:0b008480-2432-420d-b73a-847013556637:7" {
+		t.Fatalf("eventID = %q", service.segment.EventID)
+	}
+	if service.segment.CallID != "0b008480-2432-420d-b73a-847013556637" || service.segment.SequenceNo != 7 {
+		t.Fatalf("call/sequence = %q/%d", service.segment.CallID, service.segment.SequenceNo)
+	}
+	if service.segment.SpeakerID != "8:orgid:speaker-001" || service.segment.SpeakerName != "佐藤さん" {
+		t.Fatalf("speaker = id:%q name:%q", service.segment.SpeakerID, service.segment.SpeakerName)
+	}
+	if service.segment.Text != "発話を認識しました。" {
+		t.Fatalf("text = %q", service.segment.Text)
+	}
+	if service.segment.RecognizedAtUTC.IsZero() || service.segment.RecognizedAtUTC.Location() != time.UTC {
+		t.Fatalf("recognizedAtUTC = %v, want non-zero UTC", service.segment.RecognizedAtUTC)
+	}
+}
+
 func TestTranscriptAPIAcceptsSpeakerIDAndName(t *testing.T) {
 	service := &fakeTranscriptIngestUseCases{status: domain.TranscriptSegmentCreated}
 	api := NewTranscriptAPI(service, testTranscriptAPIKey)
@@ -122,6 +166,29 @@ func TestTranscriptAPIAcceptsSpeakerNameAliases(t *testing.T) {
 				t.Fatalf("speakerName = %q, want %q", service.segment.SpeakerName, tt.want)
 			}
 		})
+	}
+}
+
+func TestTranscriptAPISkipsBlankTextWithoutStoring(t *testing.T) {
+	service := &fakeTranscriptIngestUseCases{status: domain.TranscriptSegmentCreated}
+	api := NewTranscriptAPI(service, testTranscriptAPIKey)
+
+	resp := serveTranscriptSegment(api, testTranscriptAPIKey, "application/json", validTranscriptSegmentJSON(t, func(payload map[string]any) {
+		payload["text"] = " \n\t "
+	}))
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.called {
+		t.Fatal("StoreTranscriptSegment was called for blank text")
+	}
+	var body transcriptSegmentResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Status != "skipped" || body.Duplicate {
+		t.Fatalf("response body = %+v", body)
 	}
 }
 
@@ -191,6 +258,42 @@ func TestTranscriptAPIListsSegmentsWithOptionalClientToken(t *testing.T) {
 	}
 }
 
+func TestTranscriptAPIListsSegmentsByMeetingSessionPath(t *testing.T) {
+	service := &fakeTranscriptIngestUseCases{
+		segments: []domain.TranscriptSegment{{
+			EventID:         "call-1:1",
+			SessionID:       "session_1",
+			CallID:          "call-1",
+			SequenceNo:      1,
+			RecognizedAtUTC: mustTime(t, "2026-06-27T00:00:00Z"),
+			Text:            "会議セッション単位の履歴です。",
+			ReceivedAtUTC:   mustTime(t, "2026-06-27T00:00:01Z"),
+		}},
+	}
+	api := NewTranscriptAPI(service, testTranscriptAPIKey, "client-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/meeting-sessions/session_1/transcript-segments?limit=5&token=client-token", nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("session_id", "session_1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+	resp := httptest.NewRecorder()
+
+	api.ListByMeetingSession(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.listCallID != "" || service.listSessionID != "session_1" || service.listLimit != 5 {
+		t.Fatalf("list args = callID:%q sessionID:%q limit:%d", service.listCallID, service.listSessionID, service.listLimit)
+	}
+	var body transcriptSegmentListResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Items) != 1 || body.Items[0].SessionID != "session_1" || body.Items[0].Text != "会議セッション単位の履歴です。" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestTranscriptAPIListAllowsDevelopmentModeWithoutClientToken(t *testing.T) {
 	service := &fakeTranscriptIngestUseCases{}
 	api := NewTranscriptAPI(service, testTranscriptAPIKey)
@@ -223,7 +326,6 @@ func TestTranscriptAPIValidationErrors(t *testing.T) {
 		want        int
 	}{
 		{name: "invalid json", contentType: "application/json", body: `{"eventId":`, want: http.StatusBadRequest},
-		{name: "blank text", contentType: "application/json", body: validTranscriptSegmentJSON(t, func(payload map[string]any) { payload["text"] = " \n\t " }), want: http.StatusBadRequest},
 		{name: "sequence zero", contentType: "application/json", body: validTranscriptSegmentJSON(t, func(payload map[string]any) { payload["sequenceNo"] = 0 }), want: http.StatusBadRequest},
 		{name: "negative offset", contentType: "application/json", body: validTranscriptSegmentJSON(t, func(payload map[string]any) { payload["offsetTicks"] = -1 }), want: http.StatusBadRequest},
 		{name: "invalid datetime", contentType: "application/json", body: validTranscriptSegmentJSON(t, func(payload map[string]any) { payload["recognizedAtUtc"] = "not-a-time" }), want: http.StatusBadRequest},
