@@ -103,6 +103,46 @@ func TestMeetingSessionAPIUpdateBotStatus(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionAPIUpdateBotStatusAcceptsFailureReasonFields(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionJoined,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+			JoinedAt:    mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPatch, "/api/v1/bot/meeting-sessions/session_1/status", `{
+		"status":"failed",
+		"bot_call_id":"call-1",
+		"failed_reason":"speech_pipeline_not_ready",
+		"error_code":"SpeechPipelineNotReady",
+		"source":"speech_pipeline",
+		"message":"SpeechPipelineReady=False",
+		"diagnostic":"ignored extra field"
+	}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.UpdateBotStatus(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.update.Status != domain.MeetingSessionFailed ||
+		service.update.BotCallID != "call-1" ||
+		service.update.Reason != "speech_pipeline_not_ready" ||
+		service.update.ErrorCode != "SpeechPipelineNotReady" ||
+		service.update.Source != "speech_pipeline" {
+		t.Fatalf("update = %+v", service.update)
+	}
+}
+
 type fakeMeetingSessionUseCases struct {
 	session domain.MeetingSession
 	err     error

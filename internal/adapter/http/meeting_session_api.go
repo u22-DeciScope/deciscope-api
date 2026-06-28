@@ -157,7 +157,7 @@ func (api *MeetingSessionAPI) UpdateBotStatus(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var request meetingSessionStatusUpdateRequest
-	if !decodeLimitedJSON(w, r, meetingSessionBodyLimitBytes, &request) {
+	if !decodeLimitedJSONAllowUnknown(w, r, meetingSessionBodyLimitBytes, &request) {
 		return
 	}
 	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
@@ -166,18 +166,23 @@ func (api *MeetingSessionAPI) UpdateBotStatus(w http.ResponseWriter, r *http.Req
 	if previousErr == nil && previous != nil {
 		oldStatus = string(previous.Status)
 	}
-	log.Printf("Meeting session status PATCH received from bot. sessionId=%s oldStatus=%s requestedStatus=%s requestedBotCallId=%s previousReadError=%v", sessionID, oldStatus, strings.TrimSpace(request.Status), strings.TrimSpace(request.BotCallID), previousErr)
+	log.Printf("Meeting session status PATCH received from bot. sessionId=%s oldStatus=%s requestedStatus=%s requestedBotCallId=%s reason=%s errorCode=%s source=%s previousReadError=%v",
+		sessionID, oldStatus, strings.TrimSpace(request.Status), request.botCallID(), request.reason(), request.errorCode(), request.source(), previousErr)
 	session, err := api.service.UpdateMeetingSessionStatus(r.Context(), application.MeetingSessionStatusUpdateInput{
 		SessionID: sessionID,
 		Status:    domain.MeetingSessionStatus(request.Status),
-		BotCallID: request.BotCallID,
+		BotCallID: request.botCallID(),
 		Message:   request.Message,
+		Reason:    request.reason(),
+		ErrorCode: request.errorCode(),
+		Source:    request.source(),
 	})
 	if err != nil {
 		writeMeetingSessionError(w, err)
 		return
 	}
-	log.Printf("Meeting session status PATCH persisted. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s updatedAt=%s", session.ID, session.JoinURLHash, oldStatus, session.Status, session.BotCallID, session.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	log.Printf("Meeting session status PATCH persisted. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s reason=%s errorCode=%s source=%s updatedAt=%s",
+		session.ID, session.JoinURLHash, oldStatus, session.Status, session.BotCallID, request.reason(), request.errorCode(), request.source(), session.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
 }
 
@@ -196,9 +201,15 @@ type meetingSessionCreateResponse struct {
 }
 
 type meetingSessionStatusUpdateRequest struct {
-	Status    string `json:"status"`
-	BotCallID string `json:"botCallId"`
-	Message   string `json:"message"`
+	Status            string `json:"status"`
+	BotCallID         string `json:"botCallId"`
+	BotCallIDSnake    string `json:"bot_call_id"`
+	Message           string `json:"message"`
+	FailedReason      string `json:"failedReason"`
+	FailedReasonSnake string `json:"failed_reason"`
+	ErrorCode         string `json:"errorCode"`
+	ErrorCodeSnake    string `json:"error_code"`
+	Source            string `json:"source"`
 }
 
 type meetingSessionResponse struct {
@@ -306,6 +317,37 @@ func optionalString(value string) *string {
 	return &value
 }
 
+func (request meetingSessionStatusUpdateRequest) reason() string {
+	for _, value := range []string{request.FailedReason, request.FailedReasonSnake} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func (request meetingSessionStatusUpdateRequest) errorCode() string {
+	for _, value := range []string{request.ErrorCode, request.ErrorCodeSnake} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func (request meetingSessionStatusUpdateRequest) source() string {
+	return strings.TrimSpace(request.Source)
+}
+
+func (request meetingSessionStatusUpdateRequest) botCallID() string {
+	for _, value := range []string{request.BotCallID, request.BotCallIDSnake} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func writeMeetingSessionError(w http.ResponseWriter, err error) {
 	if errors.Is(err, domain.ErrInvalidArgument) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -322,6 +364,28 @@ func decodeLimitedJSON(w http.ResponseWriter, r *http.Request, limit int64, dest
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		if isBodyTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body is too large")
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON request body")
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if isBodyTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body is too large")
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON request body")
+		return false
+	}
+	return true
+}
+
+func decodeLimitedJSONAllowUnknown(w http.ResponseWriter, r *http.Request, limit int64, destination any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(destination); err != nil {
 		if isBodyTooLarge(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body is too large")

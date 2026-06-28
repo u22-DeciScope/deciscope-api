@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +106,66 @@ func TestMeetingSessionServiceUpdatesBotStatus(t *testing.T) {
 		t.Fatalf("session = %+v", session)
 	}
 	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionJoined {
+		t.Fatalf("published sessions = %+v", publisher.sessions)
+	}
+}
+
+func TestMeetingSessionServiceSuppressesNonFatalFailedAfterJoined(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionJoined
+	repository.session.BotCallID = "call-1"
+	repository.session.JoinedAt = repository.session.CreatedAt.Add(time.Second)
+	publisher := &fakeMeetingSessionPublisher{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{}, publisher)
+
+	session, err := service.UpdateMeetingSessionStatus(context.Background(), application.MeetingSessionStatusUpdateInput{
+		SessionID: "session_1",
+		Status:    domain.MeetingSessionFailed,
+		BotCallID: "call-1",
+		Reason:    "speech_pipeline_not_ready",
+		Source:    "speech_pipeline",
+		Message:   "SpeechPipelineReady=False AcceptingFrames=False",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
+	}
+	if session.Status != domain.MeetingSessionJoined {
+		t.Fatalf("session status = %s, want joined", session.Status)
+	}
+	if repository.updated.Status != "" {
+		t.Fatalf("repository update should be suppressed, got %+v", repository.updated)
+	}
+	if len(publisher.sessions) != 0 {
+		t.Fatalf("suppressed update should not be published: %+v", publisher.sessions)
+	}
+}
+
+func TestMeetingSessionServiceAllowsFatalFailedAfterJoined(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionJoined
+	repository.session.BotCallID = "call-1"
+	repository.session.JoinedAt = repository.session.CreatedAt.Add(time.Second)
+	publisher := &fakeMeetingSessionPublisher{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{}, publisher)
+
+	session, err := service.UpdateMeetingSessionStatus(context.Background(), application.MeetingSessionStatusUpdateInput{
+		SessionID: "session_1",
+		Status:    domain.MeetingSessionFailed,
+		BotCallID: "call-1",
+		Reason:    "call_disconnected",
+		Source:    "graph",
+		Message:   "Graph call disconnected",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
+	}
+	if session.Status != domain.MeetingSessionFailed {
+		t.Fatalf("session status = %s, want failed", session.Status)
+	}
+	if !strings.Contains(session.LastError, "reason=call_disconnected") || !strings.Contains(session.LastError, "source=graph") {
+		t.Fatalf("lastError = %q", session.LastError)
+	}
+	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionFailed {
 		t.Fatalf("published sessions = %+v", publisher.sessions)
 	}
 }

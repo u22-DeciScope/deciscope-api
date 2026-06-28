@@ -33,6 +33,9 @@ type MeetingSessionStatusUpdateInput struct {
 	Status    domain.MeetingSessionStatus
 	BotCallID string
 	Message   string
+	Reason    string
+	ErrorCode string
+	Source    string
 }
 
 func NewMeetingSessionService(repository MeetingSessionRepository, commander BotJoinCommander, publisher ...MeetingSessionPublisher) *MeetingSessionService {
@@ -139,6 +142,11 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 	if previousErr != nil {
 		log.Printf("Meeting session status update could not read previous state. sessionId=%s newStatus=%s botCallId=%s error=%v", sessionID, status, strings.TrimSpace(input.BotCallID), previousErr)
 	}
+	if previousErr == nil && previous != nil && shouldSuppressMeetingSessionFailure(*previous, input) {
+		log.Printf("Meeting session failed status suppressed. sessionId=%s joinUrlHash=%s oldStatus=%s requestedStatus=%s botCallId=%s reason=%s errorCode=%s source=%s message=%s",
+			previous.ID, previous.JoinURLHash, previous.Status, status, strings.TrimSpace(input.BotCallID), strings.TrimSpace(input.Reason), strings.TrimSpace(input.ErrorCode), strings.TrimSpace(input.Source), strings.TrimSpace(input.Message))
+		return previous, nil
+	}
 
 	now := s.now().UTC()
 	update := domain.MeetingSessionStatusUpdate{
@@ -155,7 +163,7 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 	case domain.MeetingSessionEnded, domain.MeetingSessionStale:
 		update.EndedAt = &now
 	case domain.MeetingSessionFailed:
-		update.LastError = strings.TrimSpace(input.Message)
+		update.LastError = summarizeMeetingSessionFailure(input)
 	}
 	updated, err := s.repository.UpdateMeetingSessionStatus(ctx, update)
 	if err != nil {
@@ -168,6 +176,100 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 	log.Printf("Meeting session status changed. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s updatedAt=%s", updated.ID, updated.JoinURLHash, oldStatus, updated.Status, updated.BotCallID, updated.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	s.publishStatusChanged(*updated)
 	return updated, nil
+}
+
+func shouldSuppressMeetingSessionFailure(previous domain.MeetingSession, input MeetingSessionStatusUpdateInput) bool {
+	if input.Status != domain.MeetingSessionFailed {
+		return false
+	}
+	if !isJoinedOrBeyondMeetingStatus(previous.Status) {
+		return false
+	}
+	return !isFatalMeetingFailure(input)
+}
+
+func isJoinedOrBeyondMeetingStatus(status domain.MeetingSessionStatus) bool {
+	switch status {
+	case domain.MeetingSessionJoined, domain.MeetingSessionActive, domain.MeetingSessionRecording:
+		return true
+	default:
+		return false
+	}
+}
+
+func isFatalMeetingFailure(input MeetingSessionStatusUpdateInput) bool {
+	text := strings.ToLower(strings.Join([]string{
+		input.Reason,
+		input.ErrorCode,
+		input.Source,
+		input.Message,
+	}, " "))
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"speech",
+		"transcription",
+		"recognizer",
+		"pipeline",
+		"acceptingframes",
+		"accepting_frames",
+		"silent frame",
+		"audio",
+		"not_ready",
+		"not ready",
+	} {
+		if strings.Contains(text, marker) {
+			return false
+		}
+	}
+	for _, marker := range []string{
+		"call_disconnected",
+		"call disconnected",
+		"graph_call_disconnected",
+		"graph call disconnected",
+		"call_terminated",
+		"call terminated",
+		"call ended",
+		"graph_call_ended",
+		"permission_denied",
+		"permission denied",
+		"meeting_not_found",
+		"meeting not found",
+		"graph_join_failed",
+		"join_failed",
+		"fatal",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func summarizeMeetingSessionFailure(input MeetingSessionStatusUpdateInput) string {
+	parts := make([]string, 0, 4)
+	if reason := strings.TrimSpace(input.Reason); reason != "" {
+		parts = append(parts, "reason="+reason)
+	}
+	if errorCode := strings.TrimSpace(input.ErrorCode); errorCode != "" {
+		parts = append(parts, "errorCode="+errorCode)
+	}
+	if source := strings.TrimSpace(input.Source); source != "" {
+		parts = append(parts, "source="+source)
+	}
+	if message := strings.TrimSpace(input.Message); message != "" {
+		parts = append(parts, "message="+message)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	summary := strings.Join(parts, " ")
+	if len(summary) > 300 {
+		return summary[:300]
+	}
+	return summary
 }
 
 func (s *MeetingSessionService) CleanupStaleMeetingSessions(ctx context.Context) ([]domain.MeetingSession, error) {
