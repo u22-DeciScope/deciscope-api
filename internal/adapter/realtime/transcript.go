@@ -342,10 +342,27 @@ type meetingSessionStatusMessage struct {
 }
 
 type meetingSessionStatusData struct {
-	SessionID string `json:"sessionId"`
-	Status    string `json:"status"`
-	BotCallID string `json:"botCallId,omitempty"`
-	LastError string `json:"lastError,omitempty"`
+	SessionID                   string `json:"sessionId"`
+	Title                       string `json:"title,omitempty"`
+	DisplayTitle                string `json:"displayTitle,omitempty"`
+	TitleSource                 string `json:"titleSource,omitempty"`
+	UserProvidedTitle           string `json:"userProvidedTitle,omitempty"`
+	GraphTitle                  string `json:"graphTitle,omitempty"`
+	Provider                    string `json:"provider,omitempty"`
+	ExternalMeetingID           string `json:"externalMeetingId,omitempty"`
+	JoinMeetingID               string `json:"joinMeetingId,omitempty"`
+	JoinWebURL                  string `json:"joinWebUrl,omitempty"`
+	CanonicalJoinWebURL         string `json:"canonicalJoinWebUrl,omitempty"`
+	ThreadID                    string `json:"threadId,omitempty"`
+	OrganizerID                 string `json:"organizerId,omitempty"`
+	OrganizerName               string `json:"organizerName,omitempty"`
+	OrganizerEmail              string `json:"organizerEmail,omitempty"`
+	TitleResolutionErrorCode    string `json:"titleResolutionErrorCode,omitempty"`
+	TitleResolutionErrorMessage string `json:"titleResolutionErrorMessage,omitempty"`
+	Status                      string `json:"status"`
+	BotCallID                   string `json:"botCallId,omitempty"`
+	EndReason                   string `json:"endReason,omitempty"`
+	LastError                   string `json:"lastError,omitempty"`
 }
 
 func meetingSessionStatusProtocolMessage(session domain.MeetingSession, sentAt time.Time) meetingSessionStatusMessage {
@@ -353,10 +370,27 @@ func meetingSessionStatusProtocolMessage(session domain.MeetingSession, sentAt t
 		Type:      meetingSessionStatusChangedType,
 		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
 		Data: meetingSessionStatusData{
-			SessionID: session.ID,
-			Status:    string(session.Status),
-			BotCallID: session.BotCallID,
-			LastError: session.LastError,
+			SessionID:                   session.ID,
+			Title:                       session.Title,
+			DisplayTitle:                session.Title,
+			TitleSource:                 session.TitleSource,
+			UserProvidedTitle:           session.UserProvidedTitle,
+			GraphTitle:                  session.GraphTitle,
+			Provider:                    session.Provider,
+			ExternalMeetingID:           session.ExternalMeetingID,
+			JoinMeetingID:               session.JoinMeetingID,
+			JoinWebURL:                  session.JoinWebURL,
+			CanonicalJoinWebURL:         session.CanonicalJoinWebURL,
+			ThreadID:                    session.ThreadID,
+			OrganizerID:                 session.OrganizerID,
+			OrganizerName:               session.OrganizerName,
+			OrganizerEmail:              session.OrganizerEmail,
+			TitleResolutionErrorCode:    session.TitleResolutionErrorCode,
+			TitleResolutionErrorMessage: session.TitleResolutionErrorMessage,
+			Status:                      string(session.Status),
+			BotCallID:                   session.BotCallID,
+			EndReason:                   session.EndReason,
+			LastError:                   session.LastError,
 		},
 	}
 }

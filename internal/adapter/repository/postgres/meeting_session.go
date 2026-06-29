@@ -23,14 +23,31 @@ func (r *MeetingSessionRepository) CreateMeetingSession(ctx context.Context, ses
 	record := meetingSessionRecordFromDomain(session)
 	row := r.db.QueryRowContext(ctx, `
 		INSERT INTO meeting_sessions (
-			id, join_url, join_url_hash, status, bot_call_id, requested_at,
-			command_sent_at, joined_at, ended_at, last_error, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		RETURNING id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
-			command_sent_at, joined_at, ended_at, COALESCE(last_error, ''), created_at, updated_at
-	`, record.ID, record.JoinURL, record.JoinURLHash, record.Status, nullable(record.BotCallID), record.RequestedAt,
-		nullable(record.CommandSentAt), nullable(record.JoinedAt), nullable(record.EndedAt), nullable(record.LastError),
-		record.CreatedAt, record.UpdatedAt)
+			id, join_url, join_url_hash, title, title_source, title_updated_at, user_provided_title, graph_title, provider,
+			external_meeting_id, join_meeting_id, join_web_url, canonical_join_web_url, thread_id,
+			organizer_id, organizer_name, organizer_email, scheduled_start_at, scheduled_end_at,
+			title_resolution_error_code, title_resolution_error_message, title_resolved_at,
+			status, bot_call_id, requested_at, command_sent_at, joined_at, ended_at, end_reason,
+			last_bot_status_at, last_error, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
+		RETURNING id, join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
+			title_updated_at, COALESCE(user_provided_title, ''), COALESCE(graph_title, ''),
+			COALESCE(provider, ''), COALESCE(external_meeting_id, ''), COALESCE(join_meeting_id, ''),
+			COALESCE(join_web_url, ''), COALESCE(canonical_join_web_url, ''),
+			COALESCE(thread_id, ''), COALESCE(organizer_id, ''), COALESCE(organizer_name, ''), COALESCE(organizer_email, ''),
+			scheduled_start_at, scheduled_end_at, COALESCE(title_resolution_error_code, ''),
+			COALESCE(title_resolution_error_message, ''), title_resolved_at, status,
+			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
+			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
+	`, record.ID, record.JoinURL, record.JoinURLHash, record.Title, record.TitleSource, nullable(record.TitleUpdatedAt),
+		nullable(record.UserProvidedTitle), nullable(record.GraphTitle), nullable(record.Provider), nullable(record.ExternalMeetingID),
+		nullable(record.JoinMeetingID), nullable(record.JoinWebURL), nullable(record.CanonicalJoinWebURL), nullable(record.ThreadID),
+		nullable(record.OrganizerID), nullable(record.OrganizerName), nullable(record.OrganizerEmail), nullable(record.ScheduledStartAt),
+		nullable(record.ScheduledEndAt), nullable(record.TitleResolutionErrorCode), nullable(record.TitleResolutionErrorMessage),
+		nullable(record.TitleResolvedAt),
+		record.Status, nullable(record.BotCallID), record.RequestedAt,
+		nullable(record.CommandSentAt), nullable(record.JoinedAt), nullable(record.EndedAt), nullable(record.EndReason),
+		nullable(record.LastBotStatusAt), nullable(record.LastError), record.CreatedAt, record.UpdatedAt)
 	return scanMeetingSession(row)
 }
 
@@ -58,14 +75,31 @@ func (r *MeetingSessionRepository) CreateOrReuseMeetingSession(ctx context.Conte
 	record := meetingSessionRecordFromDomain(session)
 	row := tx.QueryRowContext(ctx, `
 		INSERT INTO meeting_sessions (
-			id, join_url, join_url_hash, status, bot_call_id, requested_at,
-			command_sent_at, joined_at, ended_at, last_error, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		RETURNING id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
-			command_sent_at, joined_at, ended_at, COALESCE(last_error, ''), created_at, updated_at
-	`, record.ID, record.JoinURL, record.JoinURLHash, record.Status, nullable(record.BotCallID), record.RequestedAt,
-		nullable(record.CommandSentAt), nullable(record.JoinedAt), nullable(record.EndedAt), nullable(record.LastError),
-		record.CreatedAt, record.UpdatedAt)
+			id, join_url, join_url_hash, title, title_source, title_updated_at, user_provided_title, graph_title, provider,
+			external_meeting_id, join_meeting_id, join_web_url, canonical_join_web_url, thread_id,
+			organizer_id, organizer_name, organizer_email, scheduled_start_at, scheduled_end_at,
+			title_resolution_error_code, title_resolution_error_message, title_resolved_at,
+			status, bot_call_id, requested_at, command_sent_at, joined_at, ended_at, end_reason,
+			last_bot_status_at, last_error, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
+		RETURNING id, join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
+			title_updated_at, COALESCE(user_provided_title, ''), COALESCE(graph_title, ''),
+			COALESCE(provider, ''), COALESCE(external_meeting_id, ''), COALESCE(join_meeting_id, ''),
+			COALESCE(join_web_url, ''), COALESCE(canonical_join_web_url, ''),
+			COALESCE(thread_id, ''), COALESCE(organizer_id, ''), COALESCE(organizer_name, ''), COALESCE(organizer_email, ''),
+			scheduled_start_at, scheduled_end_at, COALESCE(title_resolution_error_code, ''),
+			COALESCE(title_resolution_error_message, ''), title_resolved_at, status,
+			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
+			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
+	`, record.ID, record.JoinURL, record.JoinURLHash, record.Title, record.TitleSource, nullable(record.TitleUpdatedAt),
+		nullable(record.UserProvidedTitle), nullable(record.GraphTitle), nullable(record.Provider), nullable(record.ExternalMeetingID),
+		nullable(record.JoinMeetingID), nullable(record.JoinWebURL), nullable(record.CanonicalJoinWebURL), nullable(record.ThreadID),
+		nullable(record.OrganizerID), nullable(record.OrganizerName), nullable(record.OrganizerEmail), nullable(record.ScheduledStartAt),
+		nullable(record.ScheduledEndAt), nullable(record.TitleResolutionErrorCode), nullable(record.TitleResolutionErrorMessage),
+		nullable(record.TitleResolvedAt),
+		record.Status, nullable(record.BotCallID), record.RequestedAt,
+		nullable(record.CommandSentAt), nullable(record.JoinedAt), nullable(record.EndedAt), nullable(record.EndReason),
+		nullable(record.LastBotStatusAt), nullable(record.LastError), record.CreatedAt, record.UpdatedAt)
 	created, err := scanMeetingSession(row)
 	if err != nil {
 		return nil, false, err
@@ -78,8 +112,15 @@ func (r *MeetingSessionRepository) CreateOrReuseMeetingSession(ctx context.Conte
 
 func (r *MeetingSessionRepository) GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
-			command_sent_at, joined_at, ended_at, COALESCE(last_error, ''), created_at, updated_at
+		SELECT id, join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
+			title_updated_at, COALESCE(user_provided_title, ''), COALESCE(graph_title, ''),
+			COALESCE(provider, ''), COALESCE(external_meeting_id, ''), COALESCE(join_meeting_id, ''),
+			COALESCE(join_web_url, ''), COALESCE(canonical_join_web_url, ''),
+			COALESCE(thread_id, ''), COALESCE(organizer_id, ''), COALESCE(organizer_name, ''), COALESCE(organizer_email, ''),
+			scheduled_start_at, scheduled_end_at, COALESCE(title_resolution_error_code, ''),
+			COALESCE(title_resolution_error_message, ''), title_resolved_at, status,
+			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
+			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
 		FROM meeting_sessions
 		WHERE id = $1
 	`, sessionID)
@@ -91,6 +132,10 @@ func (r *MeetingSessionRepository) MarkStaleMeetingSessions(ctx context.Context,
 		UPDATE meeting_sessions
 		SET status = 'stale',
 			ended_at = COALESCE(ended_at, $2),
+			end_reason = CASE
+				WHEN COALESCE(end_reason, '') = '' THEN 'session marked stale because no update was received before cutoff'
+				ELSE end_reason
+			END,
 			last_error = CASE
 				WHEN COALESCE(last_error, '') = '' THEN 'session marked stale because no update was received before cutoff'
 				ELSE last_error
@@ -98,8 +143,15 @@ func (r *MeetingSessionRepository) MarkStaleMeetingSessions(ctx context.Context,
 			updated_at = $2
 		WHERE status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording')
 			AND updated_at < $1
-		RETURNING id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
-			command_sent_at, joined_at, ended_at, COALESCE(last_error, ''), created_at, updated_at
+		RETURNING id, join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
+			title_updated_at, COALESCE(user_provided_title, ''), COALESCE(graph_title, ''),
+			COALESCE(provider, ''), COALESCE(external_meeting_id, ''), COALESCE(join_meeting_id, ''),
+			COALESCE(join_web_url, ''), COALESCE(canonical_join_web_url, ''),
+			COALESCE(thread_id, ''), COALESCE(organizer_id, ''), COALESCE(organizer_name, ''), COALESCE(organizer_email, ''),
+			scheduled_start_at, scheduled_end_at, COALESCE(title_resolution_error_code, ''),
+			COALESCE(title_resolution_error_message, ''), title_resolved_at, status,
+			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
+			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
 	`, staleBefore.UTC().Format(time.RFC3339Nano), updatedAt.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, fmt.Errorf("mark stale meeting sessions: %w", err)
@@ -109,13 +161,28 @@ func (r *MeetingSessionRepository) MarkStaleMeetingSessions(ctx context.Context,
 
 func (r *MeetingSessionRepository) ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT ms.id, ms.join_url, ms.join_url_hash, ms.status, COALESCE(ms.bot_call_id, ''), ms.requested_at,
-			ms.command_sent_at, ms.joined_at, ms.ended_at, COALESCE(ms.last_error, ''), ms.created_at, ms.updated_at,
+		SELECT ms.id, ms.join_url, ms.join_url_hash, COALESCE(ms.title, ''), COALESCE(ms.title_source, ''),
+			ms.title_updated_at, COALESCE(ms.user_provided_title, ''), COALESCE(ms.graph_title, ''),
+			COALESCE(ms.provider, ''), COALESCE(ms.external_meeting_id, ''), COALESCE(ms.join_meeting_id, ''),
+			COALESCE(ms.join_web_url, ''), COALESCE(ms.canonical_join_web_url, ''),
+			COALESCE(ms.thread_id, ''), COALESCE(ms.organizer_id, ''), COALESCE(ms.organizer_name, ''),
+			COALESCE(ms.organizer_email, ''), ms.scheduled_start_at, ms.scheduled_end_at,
+			COALESCE(ms.title_resolution_error_code, ''), COALESCE(ms.title_resolution_error_message, ''),
+			ms.title_resolved_at,
+			ms.status, COALESCE(ms.bot_call_id, ''), ms.requested_at,
+			ms.command_sent_at, ms.joined_at, ms.ended_at, COALESCE(ms.end_reason, ''), ms.last_bot_status_at,
+			COALESCE(ms.last_error, ''), ms.created_at, ms.updated_at,
 			MAX(ts.received_at_utc)
 		FROM meeting_sessions ms
 		LEFT JOIN transcript_segments ts ON ts.session_id = ms.id
-		GROUP BY ms.id, ms.join_url, ms.join_url_hash, ms.status, ms.bot_call_id, ms.requested_at,
-			ms.command_sent_at, ms.joined_at, ms.ended_at, ms.last_error, ms.created_at, ms.updated_at
+		GROUP BY ms.id, ms.join_url, ms.join_url_hash, ms.title, ms.title_source, ms.title_updated_at,
+			ms.user_provided_title, ms.graph_title, ms.provider, ms.external_meeting_id, ms.join_meeting_id,
+			ms.join_web_url, ms.canonical_join_web_url, ms.thread_id, ms.organizer_id,
+			ms.organizer_name, ms.organizer_email, ms.scheduled_start_at, ms.scheduled_end_at,
+			ms.title_resolution_error_code, ms.title_resolution_error_message, ms.title_resolved_at,
+			ms.status, ms.bot_call_id,
+			ms.requested_at, ms.command_sent_at, ms.joined_at, ms.ended_at, ms.end_reason,
+			ms.last_bot_status_at, ms.last_error, ms.created_at, ms.updated_at
 		ORDER BY ms.updated_at DESC
 		LIMIT $1
 	`, limit)
@@ -127,17 +194,30 @@ func (r *MeetingSessionRepository) ListMeetingSessionDebug(ctx context.Context, 
 	items := make([]domain.MeetingSessionDebug, 0)
 	for rows.Next() {
 		var record meetingSessionRecord
-		var commandSentAt, joinedAt, endedAt, lastTranscriptAt sql.NullString
+		var titleUpdatedAt, scheduledStartAt, scheduledEndAt, titleResolvedAt sql.NullString
+		var commandSentAt, joinedAt, endedAt, lastBotStatusAt, lastTranscriptAt sql.NullString
 		if err := rows.Scan(
-			&record.ID, &record.JoinURL, &record.JoinURLHash, &record.Status, &record.BotCallID, &record.RequestedAt,
-			&commandSentAt, &joinedAt, &endedAt, &record.LastError, &record.CreatedAt, &record.UpdatedAt,
+			&record.ID, &record.JoinURL, &record.JoinURLHash, &record.Title, &record.TitleSource,
+			&titleUpdatedAt, &record.UserProvidedTitle, &record.GraphTitle, &record.Provider,
+			&record.ExternalMeetingID, &record.JoinMeetingID, &record.JoinWebURL, &record.CanonicalJoinWebURL,
+			&record.ThreadID, &record.OrganizerID, &record.OrganizerName, &record.OrganizerEmail,
+			&scheduledStartAt, &scheduledEndAt, &record.TitleResolutionErrorCode,
+			&record.TitleResolutionErrorMessage, &titleResolvedAt,
+			&record.Status, &record.BotCallID, &record.RequestedAt,
+			&commandSentAt, &joinedAt, &endedAt, &record.EndReason, &lastBotStatusAt,
+			&record.LastError, &record.CreatedAt, &record.UpdatedAt,
 			&lastTranscriptAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan meeting session debug: %w", err)
 		}
+		record.TitleUpdatedAt = titleUpdatedAt.String
+		record.ScheduledStartAt = scheduledStartAt.String
+		record.ScheduledEndAt = scheduledEndAt.String
+		record.TitleResolvedAt = titleResolvedAt.String
 		record.CommandSentAt = commandSentAt.String
 		record.JoinedAt = joinedAt.String
 		record.EndedAt = endedAt.String
+		record.LastBotStatusAt = lastBotStatusAt.String
 		session, err := record.toDomain()
 		if err != nil {
 			return nil, err
@@ -166,12 +246,67 @@ func (r *MeetingSessionRepository) UpdateMeetingSessionStatus(ctx context.Contex
 			joined_at = COALESCE($5, joined_at),
 			ended_at = COALESCE($6, ended_at),
 			last_error = $7,
-			updated_at = $8
+			updated_at = $8,
+			title = CASE WHEN $9 = '' THEN title ELSE $9 END,
+			title_updated_at = CASE WHEN $9 = '' THEN title_updated_at ELSE $8 END,
+			title_source = CASE WHEN $10 = '' THEN title_source ELSE $10 END,
+			end_reason = CASE WHEN $11 = '' THEN end_reason ELSE $11 END,
+			last_bot_status_at = COALESCE($12, last_bot_status_at)
 		WHERE id = $1
-		RETURNING id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
-			command_sent_at, joined_at, ended_at, COALESCE(last_error, ''), created_at, updated_at
+		RETURNING id, join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
+			title_updated_at, COALESCE(user_provided_title, ''), COALESCE(graph_title, ''),
+			COALESCE(provider, ''), COALESCE(external_meeting_id, ''), COALESCE(join_meeting_id, ''),
+			COALESCE(join_web_url, ''), COALESCE(canonical_join_web_url, ''),
+			COALESCE(thread_id, ''), COALESCE(organizer_id, ''), COALESCE(organizer_name, ''), COALESCE(organizer_email, ''),
+			scheduled_start_at, scheduled_end_at, COALESCE(title_resolution_error_code, ''),
+			COALESCE(title_resolution_error_message, ''), title_resolved_at, status,
+			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
+			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
 	`, update.SessionID, string(update.Status), update.BotCallID, nullableTimePtr(update.CommandSentAt),
 		nullableTimePtr(update.JoinedAt), nullableTimePtr(update.EndedAt), nullable(update.LastError),
+		update.UpdatedAt.UTC().Format(time.RFC3339Nano), update.Title, update.TitleSource, update.EndReason,
+		nullableTimePtr(update.LastBotStatusAt))
+	return scanMeetingSession(row)
+}
+
+func (r *MeetingSessionRepository) UpdateMeetingSessionMetadata(ctx context.Context, update domain.MeetingSessionMetadataUpdate) (*domain.MeetingSession, error) {
+	row := r.db.QueryRowContext(ctx, `
+		UPDATE meeting_sessions
+		SET title = CASE WHEN $2 = '' THEN title ELSE $2 END,
+			title_source = CASE WHEN $3 = '' THEN title_source ELSE $3 END,
+			title_updated_at = CASE WHEN $2 = '' THEN title_updated_at ELSE $21 END,
+			user_provided_title = CASE WHEN $4 = '' THEN user_provided_title ELSE $4 END,
+			graph_title = CASE WHEN $5 = '' THEN graph_title ELSE $5 END,
+			provider = CASE WHEN $6 = '' THEN provider ELSE $6 END,
+			external_meeting_id = CASE WHEN $7 = '' THEN external_meeting_id ELSE $7 END,
+			join_meeting_id = CASE WHEN $8 = '' THEN join_meeting_id ELSE $8 END,
+			join_web_url = CASE WHEN $9 = '' THEN join_web_url ELSE $9 END,
+			canonical_join_web_url = CASE WHEN $10 = '' THEN canonical_join_web_url ELSE $10 END,
+			thread_id = CASE WHEN $11 = '' THEN thread_id ELSE $11 END,
+			organizer_id = CASE WHEN $12 = '' THEN organizer_id ELSE $12 END,
+			organizer_name = CASE WHEN $13 = '' THEN organizer_name ELSE $13 END,
+			organizer_email = CASE WHEN $14 = '' THEN organizer_email ELSE $14 END,
+			scheduled_start_at = COALESCE($15, scheduled_start_at),
+			scheduled_end_at = COALESCE($16, scheduled_end_at),
+			title_resolution_error_code = CASE WHEN $17 = '' THEN title_resolution_error_code ELSE $17 END,
+			title_resolution_error_message = CASE WHEN $18 = '' THEN title_resolution_error_message ELSE $18 END,
+			title_resolved_at = COALESCE($19, title_resolved_at),
+			updated_at = $20
+		WHERE id = $1
+		RETURNING id, join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
+			title_updated_at, COALESCE(user_provided_title, ''), COALESCE(graph_title, ''),
+			COALESCE(provider, ''), COALESCE(external_meeting_id, ''), COALESCE(join_meeting_id, ''),
+			COALESCE(join_web_url, ''), COALESCE(canonical_join_web_url, ''),
+			COALESCE(thread_id, ''), COALESCE(organizer_id, ''), COALESCE(organizer_name, ''), COALESCE(organizer_email, ''),
+			scheduled_start_at, scheduled_end_at, COALESCE(title_resolution_error_code, ''),
+			COALESCE(title_resolution_error_message, ''), title_resolved_at, status,
+			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
+			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
+	`, update.SessionID, update.Title, update.TitleSource, update.UserProvidedTitle, update.GraphTitle, update.Provider,
+		update.ExternalMeetingID, update.JoinMeetingID, update.JoinWebURL, update.CanonicalJoinWebURL, update.ThreadID,
+		update.OrganizerID, update.OrganizerName, update.OrganizerEmail, nullableTimePtr(update.ScheduledStartAt),
+		nullableTimePtr(update.ScheduledEndAt), update.TitleResolutionErrorCode, update.TitleResolutionErrorMessage,
+		nullableTimePtr(update.TitleResolvedAt), update.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		update.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	return scanMeetingSession(row)
 }
@@ -182,8 +317,15 @@ type meetingSessionQueryer interface {
 
 func findReusableMeetingSessionByJoinURLHash(ctx context.Context, queryer meetingSessionQueryer, joinURLHash string) (*domain.MeetingSession, error) {
 	row := queryer.QueryRowContext(ctx, `
-		SELECT id, join_url, join_url_hash, status, COALESCE(bot_call_id, ''), requested_at,
-			command_sent_at, joined_at, ended_at, COALESCE(last_error, ''), created_at, updated_at
+		SELECT id, join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
+			title_updated_at, COALESCE(user_provided_title, ''), COALESCE(graph_title, ''),
+			COALESCE(provider, ''), COALESCE(external_meeting_id, ''), COALESCE(join_meeting_id, ''),
+			COALESCE(join_web_url, ''), COALESCE(canonical_join_web_url, ''),
+			COALESCE(thread_id, ''), COALESCE(organizer_id, ''), COALESCE(organizer_name, ''), COALESCE(organizer_email, ''),
+			scheduled_start_at, scheduled_end_at, COALESCE(title_resolution_error_code, ''),
+			COALESCE(title_resolution_error_message, ''), title_resolved_at, status,
+			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
+			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
 		FROM meeting_sessions
 		WHERE join_url_hash = $1
 			AND status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording')
@@ -194,43 +336,93 @@ func findReusableMeetingSessionByJoinURLHash(ctx context.Context, queryer meetin
 }
 
 type meetingSessionRecord struct {
-	ID            string
-	JoinURL       string
-	JoinURLHash   string
-	Status        string
-	BotCallID     string
-	RequestedAt   string
-	CommandSentAt string
-	JoinedAt      string
-	EndedAt       string
-	LastError     string
-	CreatedAt     string
-	UpdatedAt     string
+	ID                          string
+	JoinURL                     string
+	JoinURLHash                 string
+	Title                       string
+	TitleSource                 string
+	TitleUpdatedAt              string
+	UserProvidedTitle           string
+	GraphTitle                  string
+	Provider                    string
+	ExternalMeetingID           string
+	JoinMeetingID               string
+	JoinWebURL                  string
+	CanonicalJoinWebURL         string
+	ThreadID                    string
+	OrganizerID                 string
+	OrganizerName               string
+	OrganizerEmail              string
+	ScheduledStartAt            string
+	ScheduledEndAt              string
+	TitleResolutionErrorCode    string
+	TitleResolutionErrorMessage string
+	TitleResolvedAt             string
+	Status                      string
+	BotCallID                   string
+	RequestedAt                 string
+	CommandSentAt               string
+	JoinedAt                    string
+	EndedAt                     string
+	EndReason                   string
+	LastBotStatusAt             string
+	LastError                   string
+	CreatedAt                   string
+	UpdatedAt                   string
 }
 
 func meetingSessionRecordFromDomain(session domain.MeetingSession) meetingSessionRecord {
 	return meetingSessionRecord{
-		ID:            session.ID,
-		JoinURL:       session.JoinURL,
-		JoinURLHash:   session.JoinURLHash,
-		Status:        string(session.Status),
-		BotCallID:     session.BotCallID,
-		RequestedAt:   formatTime(session.RequestedAt),
-		CommandSentAt: formatTime(session.CommandSentAt),
-		JoinedAt:      formatTime(session.JoinedAt),
-		EndedAt:       formatTime(session.EndedAt),
-		LastError:     session.LastError,
-		CreatedAt:     formatTime(session.CreatedAt),
-		UpdatedAt:     formatTime(session.UpdatedAt),
+		ID:                          session.ID,
+		JoinURL:                     session.JoinURL,
+		JoinURLHash:                 session.JoinURLHash,
+		Title:                       session.Title,
+		TitleSource:                 session.TitleSource,
+		TitleUpdatedAt:              formatTime(session.TitleUpdatedAt),
+		UserProvidedTitle:           session.UserProvidedTitle,
+		GraphTitle:                  session.GraphTitle,
+		Provider:                    session.Provider,
+		ExternalMeetingID:           session.ExternalMeetingID,
+		JoinMeetingID:               session.JoinMeetingID,
+		JoinWebURL:                  session.JoinWebURL,
+		CanonicalJoinWebURL:         session.CanonicalJoinWebURL,
+		ThreadID:                    session.ThreadID,
+		OrganizerID:                 session.OrganizerID,
+		OrganizerName:               session.OrganizerName,
+		OrganizerEmail:              session.OrganizerEmail,
+		ScheduledStartAt:            formatTime(session.ScheduledStartAt),
+		ScheduledEndAt:              formatTime(session.ScheduledEndAt),
+		TitleResolutionErrorCode:    session.TitleResolutionErrorCode,
+		TitleResolutionErrorMessage: session.TitleResolutionErrorMessage,
+		TitleResolvedAt:             formatTime(session.TitleResolvedAt),
+		Status:                      string(session.Status),
+		BotCallID:                   session.BotCallID,
+		RequestedAt:                 formatTime(session.RequestedAt),
+		CommandSentAt:               formatTime(session.CommandSentAt),
+		JoinedAt:                    formatTime(session.JoinedAt),
+		EndedAt:                     formatTime(session.EndedAt),
+		EndReason:                   session.EndReason,
+		LastBotStatusAt:             formatTime(session.LastBotStatusAt),
+		LastError:                   session.LastError,
+		CreatedAt:                   formatTime(session.CreatedAt),
+		UpdatedAt:                   formatTime(session.UpdatedAt),
 	}
 }
 
 func scanMeetingSession(row interface{ Scan(dest ...any) error }) (*domain.MeetingSession, error) {
 	var record meetingSessionRecord
-	var commandSentAt, joinedAt, endedAt sql.NullString
+	var titleUpdatedAt, scheduledStartAt, scheduledEndAt, titleResolvedAt sql.NullString
+	var commandSentAt, joinedAt, endedAt, lastBotStatusAt sql.NullString
 	err := row.Scan(
-		&record.ID, &record.JoinURL, &record.JoinURLHash, &record.Status, &record.BotCallID, &record.RequestedAt,
-		&commandSentAt, &joinedAt, &endedAt, &record.LastError, &record.CreatedAt, &record.UpdatedAt,
+		&record.ID, &record.JoinURL, &record.JoinURLHash, &record.Title, &record.TitleSource,
+		&titleUpdatedAt, &record.UserProvidedTitle, &record.GraphTitle, &record.Provider,
+		&record.ExternalMeetingID, &record.JoinMeetingID, &record.JoinWebURL, &record.CanonicalJoinWebURL,
+		&record.ThreadID, &record.OrganizerID, &record.OrganizerName, &record.OrganizerEmail,
+		&scheduledStartAt, &scheduledEndAt, &record.TitleResolutionErrorCode,
+		&record.TitleResolutionErrorMessage, &titleResolvedAt,
+		&record.Status, &record.BotCallID, &record.RequestedAt,
+		&commandSentAt, &joinedAt, &endedAt, &record.EndReason, &lastBotStatusAt,
+		&record.LastError, &record.CreatedAt, &record.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: meeting session not found", domain.ErrNotFound)
@@ -238,9 +430,14 @@ func scanMeetingSession(row interface{ Scan(dest ...any) error }) (*domain.Meeti
 	if err != nil {
 		return nil, fmt.Errorf("query meeting session: %w", err)
 	}
+	record.TitleUpdatedAt = titleUpdatedAt.String
+	record.ScheduledStartAt = scheduledStartAt.String
+	record.ScheduledEndAt = scheduledEndAt.String
+	record.TitleResolvedAt = titleResolvedAt.String
 	record.CommandSentAt = commandSentAt.String
 	record.JoinedAt = joinedAt.String
 	record.EndedAt = endedAt.String
+	record.LastBotStatusAt = lastBotStatusAt.String
 	return record.toDomain()
 }
 
@@ -285,19 +482,60 @@ func (record meetingSessionRecord) toDomain() (*domain.MeetingSession, error) {
 	if err != nil {
 		return nil, err
 	}
+	titleUpdatedAt, err := parseOptionalTime("title_updated_at", record.TitleUpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	scheduledStartAt, err := parseOptionalTime("scheduled_start_at", record.ScheduledStartAt)
+	if err != nil {
+		return nil, err
+	}
+	scheduledEndAt, err := parseOptionalTime("scheduled_end_at", record.ScheduledEndAt)
+	if err != nil {
+		return nil, err
+	}
+	titleResolvedAt, err := parseOptionalTime("title_resolved_at", record.TitleResolvedAt)
+	if err != nil {
+		return nil, err
+	}
+	lastBotStatusAt, err := parseOptionalTime("last_bot_status_at", record.LastBotStatusAt)
+	if err != nil {
+		return nil, err
+	}
 	return &domain.MeetingSession{
-		ID:            record.ID,
-		JoinURL:       record.JoinURL,
-		JoinURLHash:   record.JoinURLHash,
-		Status:        domain.MeetingSessionStatus(record.Status),
-		BotCallID:     record.BotCallID,
-		RequestedAt:   requestedAt,
-		CommandSentAt: commandSentAt,
-		JoinedAt:      joinedAt,
-		EndedAt:       endedAt,
-		LastError:     record.LastError,
-		CreatedAt:     createdAt,
-		UpdatedAt:     updatedAt,
+		ID:                          record.ID,
+		JoinURL:                     record.JoinURL,
+		JoinURLHash:                 record.JoinURLHash,
+		Title:                       record.Title,
+		TitleSource:                 record.TitleSource,
+		TitleUpdatedAt:              titleUpdatedAt,
+		UserProvidedTitle:           record.UserProvidedTitle,
+		GraphTitle:                  record.GraphTitle,
+		Provider:                    record.Provider,
+		ExternalMeetingID:           record.ExternalMeetingID,
+		JoinMeetingID:               record.JoinMeetingID,
+		JoinWebURL:                  record.JoinWebURL,
+		CanonicalJoinWebURL:         record.CanonicalJoinWebURL,
+		ThreadID:                    record.ThreadID,
+		OrganizerID:                 record.OrganizerID,
+		OrganizerName:               record.OrganizerName,
+		OrganizerEmail:              record.OrganizerEmail,
+		ScheduledStartAt:            scheduledStartAt,
+		ScheduledEndAt:              scheduledEndAt,
+		TitleResolutionErrorCode:    record.TitleResolutionErrorCode,
+		TitleResolutionErrorMessage: record.TitleResolutionErrorMessage,
+		TitleResolvedAt:             titleResolvedAt,
+		Status:                      domain.MeetingSessionStatus(record.Status),
+		BotCallID:                   record.BotCallID,
+		RequestedAt:                 requestedAt,
+		CommandSentAt:               commandSentAt,
+		JoinedAt:                    joinedAt,
+		EndedAt:                     endedAt,
+		EndReason:                   record.EndReason,
+		LastBotStatusAt:             lastBotStatusAt,
+		LastError:                   record.LastError,
+		CreatedAt:                   createdAt,
+		UpdatedAt:                   updatedAt,
 	}, nil
 }
 

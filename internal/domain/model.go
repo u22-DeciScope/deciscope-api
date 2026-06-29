@@ -94,18 +94,39 @@ const (
 )
 
 type MeetingSession struct {
-	ID            string
-	JoinURL       string
-	JoinURLHash   string
-	Status        MeetingSessionStatus
-	BotCallID     string
-	RequestedAt   time.Time
-	CommandSentAt time.Time
-	JoinedAt      time.Time
-	EndedAt       time.Time
-	LastError     string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                          string
+	JoinURL                     string
+	JoinURLHash                 string
+	Title                       string
+	TitleSource                 string
+	TitleUpdatedAt              time.Time
+	UserProvidedTitle           string
+	GraphTitle                  string
+	Provider                    string
+	ExternalMeetingID           string
+	JoinMeetingID               string
+	JoinWebURL                  string
+	CanonicalJoinWebURL         string
+	ThreadID                    string
+	OrganizerID                 string
+	OrganizerName               string
+	OrganizerEmail              string
+	ScheduledStartAt            time.Time
+	ScheduledEndAt              time.Time
+	TitleResolutionErrorCode    string
+	TitleResolutionErrorMessage string
+	TitleResolvedAt             time.Time
+	Status                      MeetingSessionStatus
+	BotCallID                   string
+	RequestedAt                 time.Time
+	CommandSentAt               time.Time
+	JoinedAt                    time.Time
+	EndedAt                     time.Time
+	EndReason                   string
+	LastBotStatusAt             time.Time
+	LastError                   string
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
 }
 
 type MeetingSessionDebug struct {
@@ -114,14 +135,41 @@ type MeetingSessionDebug struct {
 }
 
 type MeetingSessionStatusUpdate struct {
-	SessionID     string
-	Status        MeetingSessionStatus
-	BotCallID     string
-	CommandSentAt *time.Time
-	JoinedAt      *time.Time
-	EndedAt       *time.Time
-	LastError     string
-	UpdatedAt     time.Time
+	SessionID       string
+	Status          MeetingSessionStatus
+	BotCallID       string
+	Title           string
+	TitleSource     string
+	CommandSentAt   *time.Time
+	JoinedAt        *time.Time
+	EndedAt         *time.Time
+	EndReason       string
+	LastBotStatusAt *time.Time
+	LastError       string
+	UpdatedAt       time.Time
+}
+
+type MeetingSessionMetadataUpdate struct {
+	SessionID                   string
+	Title                       string
+	TitleSource                 string
+	UserProvidedTitle           string
+	GraphTitle                  string
+	Provider                    string
+	ExternalMeetingID           string
+	JoinMeetingID               string
+	JoinWebURL                  string
+	CanonicalJoinWebURL         string
+	ThreadID                    string
+	OrganizerID                 string
+	OrganizerName               string
+	OrganizerEmail              string
+	ScheduledStartAt            *time.Time
+	ScheduledEndAt              *time.Time
+	TitleResolutionErrorCode    string
+	TitleResolutionErrorMessage string
+	TitleResolvedAt             *time.Time
+	UpdatedAt                   time.Time
 }
 
 type Job struct {

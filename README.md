@@ -69,12 +69,20 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御API呼び出しtimeout。既定値は `10`
+- `MEETING_TITLE_LOOKUP_USER_IDS`: Teams会議名解決用。Microsoft Graph user object id を推奨。UPN/email も指定できますが、Bot 側で `/users/{upn}` により object id 解決してから使います
 - `DECISCOPE_GO_SQLITE_PATH`: SQLite fallback用file path
 - `FIXTURE_DIR`: fixture JSONL directory
 - `UPLOAD_DIR`: local upload directory
 - `FRONTEND_URL`, `ALLOWED_ORIGINS`: CORS設定
 
 完全な例は [.env.example](.env.example) を参照してください。`.env` はGit管理対象外です。
+
+Teams会議名を Microsoft Graph の `/users/{id}/onlineMeetings` から取得する場合、
+`MEETING_TITLE_LOOKUP_USER_IDS` には会議作成者、または会議を参照できる対象ユーザーの
+Azure AD / Microsoft Graph user object id を指定してください。UPN/email を指定した場合は
+`candidateUserPrincipalNames` として Bot join command に渡し、Bot 側で
+`/users/{upn}?$select=id,userPrincipalName,mail` により object id へ解決してから
+`/users/{id}/onlineMeetings` を試します。ログには値そのものではなく件数とハッシュのみを出します。
 
 ## Docker Compose
 

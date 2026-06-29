@@ -51,13 +51,20 @@ type MeetingSessionRepository interface {
 	CreateOrReuseMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, bool, error)
 	GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error)
 	UpdateMeetingSessionStatus(ctx context.Context, update domain.MeetingSessionStatusUpdate) (*domain.MeetingSession, error)
+	UpdateMeetingSessionMetadata(ctx context.Context, update domain.MeetingSessionMetadataUpdate) (*domain.MeetingSession, error)
 	MarkStaleMeetingSessions(ctx context.Context, staleBefore time.Time, updatedAt time.Time) ([]domain.MeetingSession, error)
 	ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error)
 }
 
 type BotJoinCommand struct {
-	SessionID string
-	JoinURL   string
+	SessionID                   string
+	JoinURL                     string
+	CanonicalJoinWebURL         string
+	JoinMeetingID               string
+	CandidateUserIDs            []string
+	CandidateUserPrincipalNames []string
+	CreatedByMicrosoftUserID    string
+	CreatedByEmail              string
 }
 
 type BotJoinCommander interface {

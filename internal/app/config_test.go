@@ -17,6 +17,7 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	t.Setenv("DECISCOPE_BOT_CONTROL_URL", "http://100.64.0.1:7071/internal/bot/join")
 	t.Setenv("DECISCOPE_BOT_CONTROL_TOKEN", "bot-control-token")
 	t.Setenv("DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS", "12")
+	t.Setenv("MEETING_TITLE_LOOKUP_USER_IDS", "user-a,user-b user-a")
 	config := ConfigFromEnv()
 	if config.Database.URL != "postgres://deciscope:secret@localhost:5432/deciscope" {
 		t.Fatalf("ConfigFromEnv() = %+v", config)
@@ -38,6 +39,11 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 		config.BotControl.Token != "bot-control-token" ||
 		config.BotControl.Timeout != 12*time.Second {
 		t.Fatalf("ConfigFromEnv() = %+v, want bot control config", config)
+	}
+	if len(config.BotControl.CandidateUserIDs) != 2 ||
+		config.BotControl.CandidateUserIDs[0] != "user-a" ||
+		config.BotControl.CandidateUserIDs[1] != "user-b" {
+		t.Fatalf("CandidateUserIDs = %#v", config.BotControl.CandidateUserIDs)
 	}
 }
 

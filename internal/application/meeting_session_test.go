@@ -17,12 +17,18 @@ func TestMeetingSessionServiceCreatesAndSendsBotCommand(t *testing.T) {
 	publisher := &fakeMeetingSessionPublisher{}
 	service := application.NewMeetingSessionService(repository, commander, publisher)
 
-	session, err := service.CreateMeetingSession(context.Background(), "https://teams.microsoft.com/l/meetup-join/abc")
+	session, err := service.CreateMeetingSession(context.Background(), application.MeetingSessionCreateInput{
+		JoinURL: "https://teams.microsoft.com/l/meetup-join/abc",
+		Title:   "週次定例",
+	})
 	if err != nil {
 		t.Fatalf("CreateMeetingSession() error = %v", err)
 	}
 	if session.Session.Status != domain.MeetingSessionJoining {
 		t.Fatalf("session = %+v", session.Session)
+	}
+	if session.Session.Title != "週次定例" || session.Session.TitleSource != "user_input" {
+		t.Fatalf("title metadata = %+v", session.Session)
 	}
 	if commander.command.SessionID == "" || commander.command.JoinURL != "https://teams.microsoft.com/l/meetup-join/abc" {
 		t.Fatalf("command = %+v", commander.command)
@@ -32,6 +38,26 @@ func TestMeetingSessionServiceCreatesAndSendsBotCommand(t *testing.T) {
 	}
 	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionJoining {
 		t.Fatalf("published sessions = %+v", publisher.sessions)
+	}
+}
+
+func TestMeetingSessionServiceUsesCreatedByEmailAsTitleLookupPrincipalName(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	commander := &fakeBotJoinCommander{}
+	service := application.NewMeetingSessionService(repository, commander)
+
+	_, err := service.CreateMeetingSession(context.Background(), application.MeetingSessionCreateInput{
+		JoinURL:        "https://teams.microsoft.com/l/meetup-join/abc",
+		CreatedByEmail: "user@example.com",
+	})
+	if err != nil {
+		t.Fatalf("CreateMeetingSession() error = %v", err)
+	}
+	if len(commander.command.CandidateUserIDs) != 0 {
+		t.Fatalf("candidate user ids = %#v", commander.command.CandidateUserIDs)
+	}
+	if len(commander.command.CandidateUserPrincipalNames) != 1 || commander.command.CandidateUserPrincipalNames[0] != "user@example.com" {
+		t.Fatalf("candidate user principal names = %#v", commander.command.CandidateUserPrincipalNames)
 	}
 }
 
@@ -49,7 +75,9 @@ func TestMeetingSessionServiceReusesOpenSessionAndSkipsBotCommand(t *testing.T) 
 	commander := &fakeBotJoinCommander{}
 	service := application.NewMeetingSessionService(repository, commander)
 
-	result, err := service.CreateMeetingSession(context.Background(), "https://teams.microsoft.com/l/meetup-join/abc")
+	result, err := service.CreateMeetingSession(context.Background(), application.MeetingSessionCreateInput{
+		JoinURL: "https://teams.microsoft.com/l/meetup-join/abc",
+	})
 	if err != nil {
 		t.Fatalf("CreateMeetingSession() error = %v", err)
 	}
@@ -64,7 +92,9 @@ func TestMeetingSessionServiceReusesOpenSessionAndSkipsBotCommand(t *testing.T) 
 func TestMeetingSessionServiceRejectsInvalidJoinURL(t *testing.T) {
 	service := application.NewMeetingSessionService(newFakeMeetingSessionRepository(), &fakeBotJoinCommander{})
 
-	if _, err := service.CreateMeetingSession(context.Background(), "https://example.com/not-teams"); !errors.Is(err, domain.ErrInvalidArgument) {
+	if _, err := service.CreateMeetingSession(context.Background(), application.MeetingSessionCreateInput{
+		JoinURL: "https://example.com/not-teams",
+	}); !errors.Is(err, domain.ErrInvalidArgument) {
 		t.Fatalf("CreateMeetingSession() error = %v, want invalid argument", err)
 	}
 }
@@ -75,7 +105,9 @@ func TestMeetingSessionServiceMarksFailedWhenBotCommandFails(t *testing.T) {
 	publisher := &fakeMeetingSessionPublisher{}
 	service := application.NewMeetingSessionService(repository, commander, publisher)
 
-	session, err := service.CreateMeetingSession(context.Background(), "https://teams.microsoft.com/l/meetup-join/abc")
+	session, err := service.CreateMeetingSession(context.Background(), application.MeetingSessionCreateInput{
+		JoinURL: "https://teams.microsoft.com/l/meetup-join/abc",
+	})
 
 	if !errors.Is(err, application.ErrBotControlCommandFailed) {
 		t.Fatalf("CreateMeetingSession() error = %v, want bot command failure", err)
@@ -170,6 +202,54 @@ func TestMeetingSessionServiceAllowsFatalFailedAfterJoined(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionServiceSuppressesNonTerminalUpdateAfterEnded(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionEnded
+	repository.session.EndedAt = repository.session.CreatedAt.Add(time.Minute)
+	publisher := &fakeMeetingSessionPublisher{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{}, publisher)
+
+	session, err := service.UpdateMeetingSessionStatus(context.Background(), application.MeetingSessionStatusUpdateInput{
+		SessionID: "session_1",
+		Status:    domain.MeetingSessionRecording,
+		BotCallID: "call-1",
+		Message:   "late recording update",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
+	}
+	if session.Status != domain.MeetingSessionEnded {
+		t.Fatalf("session status = %s, want ended", session.Status)
+	}
+	if repository.updated.Status != "" {
+		t.Fatalf("repository update should be suppressed, got %+v", repository.updated)
+	}
+	if len(publisher.sessions) != 0 {
+		t.Fatalf("suppressed update should not be published: %+v", publisher.sessions)
+	}
+}
+
+func TestMeetingSessionServiceStoresEndedReason(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionRecording
+	publisher := &fakeMeetingSessionPublisher{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{}, publisher)
+
+	session, err := service.UpdateMeetingSessionStatus(context.Background(), application.MeetingSessionStatusUpdateInput{
+		SessionID: "session_1",
+		Status:    domain.MeetingSessionEnded,
+		BotCallID: "call-1",
+		Reason:    "teams_call_terminated",
+		Source:    "bot_call_state",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
+	}
+	if session.Status != domain.MeetingSessionEnded || session.EndedAt.IsZero() || session.EndReason != "teams_call_terminated" {
+		t.Fatalf("session = %+v", session)
+	}
+}
+
 type fakeMeetingSessionRepository struct {
 	created      domain.MeetingSession
 	updated      domain.MeetingSessionStatusUpdate
@@ -235,7 +315,26 @@ func (f *fakeMeetingSessionRepository) UpdateMeetingSessionStatus(_ context.Cont
 	if update.EndedAt != nil {
 		f.session.EndedAt = *update.EndedAt
 	}
+	if update.EndReason != "" {
+		f.session.EndReason = update.EndReason
+	}
+	if update.LastBotStatusAt != nil {
+		f.session.LastBotStatusAt = *update.LastBotStatusAt
+	}
+	if update.Title != "" {
+		f.session.Title = update.Title
+	}
+	if update.TitleSource != "" {
+		f.session.TitleSource = update.TitleSource
+	}
 	f.session.LastError = update.LastError
+	f.session.UpdatedAt = update.UpdatedAt
+	return &f.session, nil
+}
+
+func (f *fakeMeetingSessionRepository) UpdateMeetingSessionMetadata(_ context.Context, update domain.MeetingSessionMetadataUpdate) (*domain.MeetingSession, error) {
+	f.session.Title = update.Title
+	f.session.TitleSource = update.TitleSource
 	f.session.UpdatedAt = update.UpdatedAt
 	return &f.session, nil
 }

@@ -26,8 +26,14 @@ func TestClientSendsJoinCommand(t *testing.T) {
 
 	client := NewClient(Config{URL: server.URL, Token: "control-token", Timeout: time.Second})
 	err := client.SendJoinCommand(context.Background(), application.BotJoinCommand{
-		SessionID: "session_1",
-		JoinURL:   "https://teams.microsoft.com/l/meetup-join/abc",
+		SessionID:                   "session_1",
+		JoinURL:                     "https://teams.microsoft.com/l/meetup-join/abc",
+		CanonicalJoinWebURL:         "https://teams.microsoft.com/l/meetup-join/abc",
+		JoinMeetingID:               "123456789",
+		CandidateUserIDs:            []string{"11111111-1111-1111-1111-111111111111"},
+		CandidateUserPrincipalNames: []string{"user@example.com"},
+		CreatedByMicrosoftUserID:    "11111111-1111-1111-1111-111111111111",
+		CreatedByEmail:              "user@example.com",
 	})
 
 	if err != nil {
@@ -35,6 +41,53 @@ func TestClientSendsJoinCommand(t *testing.T) {
 	}
 	if gotToken != "control-token" || gotBody.SessionID != "session_1" || gotBody.JoinURL == "" {
 		t.Fatalf("request token=%q body=%+v", gotToken, gotBody)
+	}
+	if gotBody.JoinMeetingID != "123456789" ||
+		gotBody.CanonicalJoinWebURL == "" ||
+		len(gotBody.CandidateUserIDs) != 1 ||
+		gotBody.CandidateUserIDs[0] != "11111111-1111-1111-1111-111111111111" ||
+		len(gotBody.CandidateUserPrincipalNames) != 1 ||
+		gotBody.CandidateUserPrincipalNames[0] != "user@example.com" {
+		t.Fatalf("request body missing title lookup metadata: %+v", gotBody)
+	}
+}
+
+func TestClientSplitsConfiguredCandidateUserIdentifiers(t *testing.T) {
+	var gotBody joinRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(Config{
+		URL:              server.URL,
+		Token:            "control-token",
+		Timeout:          time.Second,
+		CandidateUserIDs: []string{"22222222-2222-2222-2222-222222222222", "configured@example.com"},
+	})
+	err := client.SendJoinCommand(context.Background(), application.BotJoinCommand{
+		SessionID:                   "session_1",
+		JoinURL:                     "https://teams.microsoft.com/l/meetup-join/abc",
+		CandidateUserIDs:            []string{"11111111-1111-1111-1111-111111111111", "legacy@example.com"},
+		CandidateUserPrincipalNames: []string{"request@example.com"},
+	})
+
+	if err != nil {
+		t.Fatalf("SendJoinCommand() error = %v", err)
+	}
+	if len(gotBody.CandidateUserIDs) != 2 ||
+		gotBody.CandidateUserIDs[0] != "11111111-1111-1111-1111-111111111111" ||
+		gotBody.CandidateUserIDs[1] != "22222222-2222-2222-2222-222222222222" {
+		t.Fatalf("candidateUserIds = %#v", gotBody.CandidateUserIDs)
+	}
+	if len(gotBody.CandidateUserPrincipalNames) != 3 ||
+		gotBody.CandidateUserPrincipalNames[0] != "request@example.com" ||
+		gotBody.CandidateUserPrincipalNames[1] != "legacy@example.com" ||
+		gotBody.CandidateUserPrincipalNames[2] != "configured@example.com" {
+		t.Fatalf("candidateUserPrincipalNames = %#v", gotBody.CandidateUserPrincipalNames)
 	}
 }
 

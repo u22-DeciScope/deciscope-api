@@ -70,9 +70,10 @@ func ConfigFromEnv() Config {
 		},
 		TranscriptOnly: transcriptOnly,
 		BotControl: botcontrol.Config{
-			URL:     strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_URL")),
-			Token:   strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_TOKEN")),
-			Timeout: botControlTimeoutFromEnv(os.Getenv("DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS")),
+			URL:              strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_URL")),
+			Token:            strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_TOKEN")),
+			Timeout:          botControlTimeoutFromEnv(os.Getenv("DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS")),
+			CandidateUserIDs: meetingTitleLookupUserIDsFromEnv(),
 		},
 		Firebase: firebase.Config{
 			CredentialsFile: firstNonEmpty(os.Getenv("FIREBASE_SERVICE_ACCOUNT_JSON"), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")),
@@ -94,6 +95,39 @@ func botControlTimeoutFromEnv(value string) time.Duration {
 		return 10 * time.Second
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func meetingTitleLookupUserIDsFromEnv() []string {
+	return splitEnvList(firstNonEmpty(
+		os.Getenv("MEETING_TITLE_LOOKUP_USER_IDS"),
+		os.Getenv("DECISCOPE_MEETING_TITLE_LOOKUP_USER_IDS"),
+	))
+}
+
+func splitEnvList(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case ',', ';', '\n', '\r', '\t', ' ':
+			return true
+		default:
+			return false
+		}
+	})
+	values := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		values = append(values, trimmed)
+	}
+	return values
 }
 
 func LoadEnvironmentFiles() {

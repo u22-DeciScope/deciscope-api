@@ -28,7 +28,7 @@ func TestMeetingSessionAPICreatesSession(t *testing.T) {
 	}
 	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc","title":"週次定例","candidateUserPrincipalNames":["user@example.com"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
 	api.Create(resp, req)
@@ -36,8 +36,11 @@ func TestMeetingSessionAPICreatesSession(t *testing.T) {
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
 	}
-	if service.joinURL != "https://teams.microsoft.com/l/meetup-join/abc" {
-		t.Fatalf("joinURL = %q", service.joinURL)
+	if service.createInput.JoinURL != "https://teams.microsoft.com/l/meetup-join/abc" || service.createInput.Title != "週次定例" {
+		t.Fatalf("createInput = %+v", service.createInput)
+	}
+	if len(service.createInput.CandidateUserPrincipalNames) != 1 || service.createInput.CandidateUserPrincipalNames[0] != "user@example.com" {
+		t.Fatalf("candidate principal names = %#v", service.createInput.CandidateUserPrincipalNames)
 	}
 	var body meetingSessionCreateResponse
 	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
@@ -144,15 +147,15 @@ func TestMeetingSessionAPIUpdateBotStatusAcceptsFailureReasonFields(t *testing.T
 }
 
 type fakeMeetingSessionUseCases struct {
-	session domain.MeetingSession
-	err     error
-	joinURL string
-	update  application.MeetingSessionStatusUpdateInput
-	reused  bool
+	session     domain.MeetingSession
+	err         error
+	createInput application.MeetingSessionCreateInput
+	update      application.MeetingSessionStatusUpdateInput
+	reused      bool
 }
 
-func (f *fakeMeetingSessionUseCases) CreateMeetingSession(_ context.Context, joinURL string) (*application.MeetingSessionCreateResult, error) {
-	f.joinURL = joinURL
+func (f *fakeMeetingSessionUseCases) CreateMeetingSession(_ context.Context, input application.MeetingSessionCreateInput) (*application.MeetingSessionCreateResult, error) {
+	f.createInput = input
 	if f.err != nil {
 		if f.session.ID == "" {
 			return nil, f.err
@@ -177,6 +180,24 @@ func (f *fakeMeetingSessionUseCases) UpdateMeetingSessionStatus(_ context.Contex
 	if f.err != nil {
 		return nil, f.err
 	}
+	return &f.session, nil
+}
+
+func (f *fakeMeetingSessionUseCases) UpdateMeetingSessionMetadata(_ context.Context, input application.MeetingSessionMetadataUpdateInput) (*domain.MeetingSession, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if input.Title != "" {
+		f.session.Title = input.Title
+	}
+	if input.TitleSource != "" {
+		f.session.TitleSource = input.TitleSource
+	}
+	f.session.Provider = input.Provider
+	f.session.ExternalMeetingID = input.ExternalMeetingID
+	f.session.ThreadID = input.ThreadID
+	f.session.OrganizerName = input.OrganizerName
+	f.session.OrganizerEmail = input.OrganizerEmail
 	return &f.session, nil
 }
 
