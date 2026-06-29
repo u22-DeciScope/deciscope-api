@@ -146,10 +146,47 @@ func TestMeetingSessionAPIUpdateBotStatusAcceptsFailureReasonFields(t *testing.T
 	}
 }
 
+func TestMeetingSessionAPIEndsSession(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			JoinURLHash: "hash",
+			Status:      domain.MeetingSessionEnded,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:02Z"),
+			EndedAt:     mustTime(t, "2026-06-27T00:00:02Z"),
+			EndReason:   "manual_end_requested",
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/meeting-sessions/session_1/end", `{"reason":"manual_end_requested"}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.End(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.endInput.SessionID != "session_1" || service.endInput.Reason != "manual_end_requested" {
+		t.Fatalf("endInput = %+v", service.endInput)
+	}
+	var body meetingSessionResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.SessionID != "session_1" || body.Status != "ended" || body.EndedAt == nil {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 type fakeMeetingSessionUseCases struct {
 	session     domain.MeetingSession
 	err         error
 	createInput application.MeetingSessionCreateInput
+	endInput    application.MeetingSessionEndInput
 	update      application.MeetingSessionStatusUpdateInput
 	reused      bool
 }
@@ -171,6 +208,14 @@ func (f *fakeMeetingSessionUseCases) GetMeetingSession(_ context.Context, sessio
 	}
 	if f.session.ID == "" {
 		return nil, fmt.Errorf("%w: meeting session not found", domain.ErrNotFound)
+	}
+	return &f.session, nil
+}
+
+func (f *fakeMeetingSessionUseCases) EndMeetingSession(_ context.Context, input application.MeetingSessionEndInput) (*domain.MeetingSession, error) {
+	f.endInput = input
+	if f.err != nil {
+		return nil, f.err
 	}
 	return &f.session, nil
 }

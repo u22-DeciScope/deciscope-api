@@ -67,8 +67,15 @@ type BotJoinCommand struct {
 	CreatedByEmail              string
 }
 
+type BotEndCommand struct {
+	SessionID string
+	BotCallID string
+	Reason    string
+}
+
 type BotJoinCommander interface {
 	SendJoinCommand(ctx context.Context, command BotJoinCommand) error
+	EndMeetingSession(ctx context.Context, command BotEndCommand) error
 }
 
 type MeetingSessionPublisher interface {

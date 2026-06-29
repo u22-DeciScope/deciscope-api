@@ -54,6 +54,11 @@ type MeetingSessionStatusUpdateInput struct {
 	TitleSource string
 }
 
+type MeetingSessionEndInput struct {
+	SessionID string
+	Reason    string
+}
+
 type MeetingSessionMetadataUpdateInput struct {
 	SessionID                   string
 	Title                       string
@@ -219,6 +224,54 @@ func (s *MeetingSessionService) GetMeetingSession(ctx context.Context, sessionID
 	}
 	log.Printf("Meeting session fetched. sessionId=%s joinUrlHash=%s status=%s botCallId=%s updatedAt=%s", session.ID, session.JoinURLHash, session.Status, session.BotCallID, session.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	return session, nil
+}
+
+func (s *MeetingSessionService) EndMeetingSession(ctx context.Context, input MeetingSessionEndInput) (*domain.MeetingSession, error) {
+	sessionID := strings.TrimSpace(input.SessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("%w: sessionId is required", domain.ErrInvalidArgument)
+	}
+	reason := strings.TrimSpace(input.Reason)
+	if reason == "" {
+		reason = "manual_end_requested"
+	}
+
+	previous, err := s.repository.GetMeetingSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if isTerminalMeetingSessionStatus(previous.Status) {
+		log.Printf("Meeting session end ignored because status is already terminal. sessionId=%s joinUrlHash=%s status=%s botCallId=%s reason=%s", previous.ID, previous.JoinURLHash, previous.Status, previous.BotCallID, reason)
+		return previous, nil
+	}
+	if s.commander == nil {
+		return nil, ErrBotControlNotConfigured
+	}
+
+	if err := s.commander.EndMeetingSession(ctx, BotEndCommand{
+		SessionID: previous.ID,
+		BotCallID: previous.BotCallID,
+		Reason:    reason,
+	}); err != nil {
+		if errors.Is(err, ErrBotControlNotConfigured) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %v", ErrBotControlCommandFailed, err)
+	}
+
+	updated, err := s.UpdateMeetingSessionStatus(ctx, MeetingSessionStatusUpdateInput{
+		SessionID: previous.ID,
+		Status:    domain.MeetingSessionEnded,
+		BotCallID: previous.BotCallID,
+		Message:   reason,
+		Reason:    reason,
+		Source:    "frontend_manual_end",
+	})
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Meeting session manual end completed. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s reason=%s", updated.ID, updated.JoinURLHash, previous.Status, updated.Status, updated.BotCallID, reason)
+	return updated, nil
 }
 
 func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, input MeetingSessionStatusUpdateInput) (*domain.MeetingSession, error) {

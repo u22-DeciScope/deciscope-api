@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -102,6 +103,52 @@ func (c *Client) SendJoinCommand(ctx context.Context, command application.BotJoi
 	return nil
 }
 
+func (c *Client) EndMeetingSession(ctx context.Context, command application.BotEndCommand) error {
+	if strings.TrimSpace(c.config.URL) == "" || strings.TrimSpace(c.config.Token) == "" {
+		return application.ErrBotControlNotConfigured
+	}
+	body, err := json.Marshal(endRequest{
+		SessionID: command.SessionID,
+		BotCallID: command.BotCallID,
+		Reason:    command.Reason,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: encode request", application.ErrBotControlCommandFailed)
+	}
+	endURL, err := c.endMeetingSessionURL(command.SessionID)
+	if err != nil {
+		return err
+	}
+	log.Printf(
+		"Bot end command payload prepared. sessionId=%s botCallId=%s reason=%s",
+		command.SessionID,
+		command.BotCallID,
+		strings.TrimSpace(command.Reason),
+	)
+
+	ctx, cancel := context.WithTimeout(ctx, c.config.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("%w: build request", application.ErrBotControlCommandFailed)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Bot-Control-Token", c.config.Token)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: timeout", application.ErrBotControlCommandFailed)
+		}
+		return fmt.Errorf("%w: request failed", application.ErrBotControlCommandFailed)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%w: status %d", application.ErrBotControlCommandFailed, resp.StatusCode)
+	}
+	return nil
+}
+
 type joinRequest struct {
 	SessionID                   string   `json:"sessionId"`
 	JoinURL                     string   `json:"joinUrl"`
@@ -111,6 +158,27 @@ type joinRequest struct {
 	CandidateUserPrincipalNames []string `json:"candidateUserPrincipalNames,omitempty"`
 	CreatedByMicrosoftUserID    string   `json:"createdByMicrosoftUserId,omitempty"`
 	CreatedByEmail              string   `json:"createdByEmail,omitempty"`
+}
+
+type endRequest struct {
+	SessionID string `json:"sessionId"`
+	BotCallID string `json:"botCallId,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+func (c *Client) endMeetingSessionURL(sessionID string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(c.config.URL))
+	if err != nil {
+		return "", fmt.Errorf("%w: parse end url", application.ErrBotControlCommandFailed)
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(strings.ToLower(path), "/join") {
+		path = path[:len(path)-len("/join")]
+	}
+	parsed.Path = strings.TrimRight(path, "/") + "/meeting-sessions/" + url.PathEscape(strings.TrimSpace(sessionID)) + "/end"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 func mergeCandidateUserIDs(values ...[]string) []string {

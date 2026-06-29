@@ -91,6 +91,38 @@ func TestClientSplitsConfiguredCandidateUserIdentifiers(t *testing.T) {
 	}
 }
 
+func TestClientSendsEndCommand(t *testing.T) {
+	var gotPath string
+	var gotToken string
+	var gotBody endRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get("X-DeciScope-Bot-Control-Token")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(Config{URL: server.URL + "/internal/bot/join", Token: "control-token", Timeout: time.Second})
+	err := client.EndMeetingSession(context.Background(), application.BotEndCommand{
+		SessionID: "session_1",
+		BotCallID: "call-1",
+		Reason:    "manual_end_requested",
+	})
+
+	if err != nil {
+		t.Fatalf("EndMeetingSession() error = %v", err)
+	}
+	if gotPath != "/internal/bot/meeting-sessions/session_1/end" || gotToken != "control-token" {
+		t.Fatalf("request path=%q token=%q", gotPath, gotToken)
+	}
+	if gotBody.SessionID != "session_1" || gotBody.BotCallID != "call-1" || gotBody.Reason != "manual_end_requested" {
+		t.Fatalf("request body = %+v", gotBody)
+	}
+}
+
 func TestClientRejectsMissingConfig(t *testing.T) {
 	client := NewClient(Config{})
 	err := client.SendJoinCommand(context.Background(), application.BotJoinCommand{})

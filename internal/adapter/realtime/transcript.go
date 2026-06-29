@@ -361,6 +361,7 @@ type meetingSessionStatusData struct {
 	TitleResolutionErrorMessage string `json:"titleResolutionErrorMessage,omitempty"`
 	Status                      string `json:"status"`
 	BotCallID                   string `json:"botCallId,omitempty"`
+	EndedAt                     string `json:"endedAt,omitempty"`
 	EndReason                   string `json:"endReason,omitempty"`
 	LastError                   string `json:"lastError,omitempty"`
 }
@@ -389,8 +390,16 @@ func meetingSessionStatusProtocolMessage(session domain.MeetingSession, sentAt t
 			TitleResolutionErrorMessage: session.TitleResolutionErrorMessage,
 			Status:                      string(session.Status),
 			BotCallID:                   session.BotCallID,
+			EndedAt:                     optionalProtocolTime(session.EndedAt),
 			EndReason:                   session.EndReason,
 			LastError:                   session.LastError,
 		},
 	}
+}
+
+func optionalProtocolTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }

@@ -250,6 +250,32 @@ func TestMeetingSessionServiceStoresEndedReason(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionServiceEndsSessionAndSendsBotCommand(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionRecording
+	repository.session.BotCallID = "call-1"
+	commander := &fakeBotJoinCommander{}
+	publisher := &fakeMeetingSessionPublisher{}
+	service := application.NewMeetingSessionService(repository, commander, publisher)
+
+	session, err := service.EndMeetingSession(context.Background(), application.MeetingSessionEndInput{
+		SessionID: "session_1",
+		Reason:    "manual_end_requested",
+	})
+	if err != nil {
+		t.Fatalf("EndMeetingSession() error = %v", err)
+	}
+	if session.Status != domain.MeetingSessionEnded || session.EndedAt.IsZero() || session.EndReason != "manual_end_requested" {
+		t.Fatalf("session = %+v", session)
+	}
+	if commander.endCommand.SessionID != "session_1" || commander.endCommand.BotCallID != "call-1" {
+		t.Fatalf("end command = %+v", commander.endCommand)
+	}
+	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionEnded {
+		t.Fatalf("published sessions = %+v", publisher.sessions)
+	}
+}
+
 type fakeMeetingSessionRepository struct {
 	created      domain.MeetingSession
 	updated      domain.MeetingSessionStatusUpdate
@@ -340,12 +366,18 @@ func (f *fakeMeetingSessionRepository) UpdateMeetingSessionMetadata(_ context.Co
 }
 
 type fakeBotJoinCommander struct {
-	command application.BotJoinCommand
-	err     error
+	command    application.BotJoinCommand
+	endCommand application.BotEndCommand
+	err        error
 }
 
 func (f *fakeBotJoinCommander) SendJoinCommand(_ context.Context, command application.BotJoinCommand) error {
 	f.command = command
+	return f.err
+}
+
+func (f *fakeBotJoinCommander) EndMeetingSession(_ context.Context, command application.BotEndCommand) error {
+	f.endCommand = command
 	return f.err
 }
 

@@ -22,6 +22,7 @@ const meetingSessionBodyLimitBytes int64 = 64 * 1024
 type MeetingSessionUseCases interface {
 	CreateMeetingSession(ctx context.Context, input application.MeetingSessionCreateInput) (*application.MeetingSessionCreateResult, error)
 	GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error)
+	EndMeetingSession(ctx context.Context, input application.MeetingSessionEndInput) (*domain.MeetingSession, error)
 	UpdateMeetingSessionStatus(ctx context.Context, input application.MeetingSessionStatusUpdateInput) (*domain.MeetingSession, error)
 	UpdateMeetingSessionMetadata(ctx context.Context, input application.MeetingSessionMetadataUpdateInput) (*domain.MeetingSession, error)
 	CleanupStaleMeetingSessions(ctx context.Context) ([]domain.MeetingSession, error)
@@ -133,6 +134,30 @@ func (api *MeetingSessionAPI) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
 	log.Printf("Meeting session get response sent. sessionId=%s joinUrlHash=%s status=%s title=%q titleSource=%s botCallId=%s updatedAt=%s", session.ID, session.JoinURLHash, session.Status, session.Title, session.TitleSource, session.BotCallID, session.UpdatedAt.UTC().Format(time.RFC3339Nano))
+}
+
+func (api *MeetingSessionAPI) End(w http.ResponseWriter, r *http.Request) {
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+	var request meetingSessionEndRequest
+	if !decodeLimitedJSONAllowUnknown(w, r, meetingSessionBodyLimitBytes, &request) {
+		return
+	}
+
+	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
+	log.Printf("Meeting session end requested. sessionId=%s reason=%s", sessionID, request.reason())
+	session, err := api.service.EndMeetingSession(r.Context(), application.MeetingSessionEndInput{
+		SessionID: sessionID,
+		Reason:    request.reason(),
+	})
+	if err != nil {
+		writeMeetingSessionEndError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
+	log.Printf("Meeting session end response sent. sessionId=%s joinUrlHash=%s status=%s botCallId=%s updatedAt=%s", session.ID, session.JoinURLHash, session.Status, session.BotCallID, session.UpdatedAt.UTC().Format(time.RFC3339Nano))
 }
 
 func (api *MeetingSessionAPI) CleanupStale(w http.ResponseWriter, r *http.Request) {
@@ -329,6 +354,14 @@ type meetingSessionStatusUpdateRequest struct {
 	TitleSnake        string `json:"meeting_title"`
 	TitleSource       string `json:"titleSource"`
 	TitleSourceSnake  string `json:"title_source"`
+}
+
+type meetingSessionEndRequest struct {
+	Reason          string `json:"reason"`
+	EndReason       string `json:"endReason"`
+	EndReasonSnake  string `json:"end_reason"`
+	FailedReason    string `json:"failedReason"`
+	FailedReasonRaw string `json:"failed_reason"`
 }
 
 type meetingSessionMetadataUpdateRequest struct {
@@ -589,6 +622,15 @@ func (request meetingSessionStatusUpdateRequest) botCallID() string {
 	return ""
 }
 
+func (request meetingSessionEndRequest) reason() string {
+	for _, value := range []string{request.Reason, request.EndReason, request.EndReasonSnake, request.FailedReason, request.FailedReasonRaw} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func (request meetingSessionCreateRequest) title() string {
 	for _, value := range []string{request.Title, request.TitleSnake} {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -831,6 +873,18 @@ func writeMeetingSessionError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+}
+
+func writeMeetingSessionEndError(w http.ResponseWriter, err error) {
+	if errors.Is(err, application.ErrBotControlNotConfigured) {
+		writeError(w, http.StatusServiceUnavailable, "bot_control_not_configured", "bot control URL or token is not configured")
+		return
+	}
+	if errors.Is(err, application.ErrBotControlCommandFailed) {
+		writeError(w, http.StatusBadGateway, "bot_control_command_failed", "failed to send end command to bot control API")
+		return
+	}
+	writeMeetingSessionError(w, err)
 }
 
 func decodeLimitedJSON(w http.ResponseWriter, r *http.Request, limit int64, destination any) bool {
