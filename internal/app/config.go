@@ -10,7 +10,6 @@ import (
 	"deciscope-core-api/internal/infrastructure/botcontrol"
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/firebase"
-	sqliteinfra "deciscope-core-api/internal/infrastructure/sqlite"
 
 	"github.com/joho/godotenv"
 )
@@ -20,7 +19,6 @@ const minIngestAPIKeyLength = 32
 
 const (
 	TranscriptStorePostgres = "postgres"
-	TranscriptStoreSQLite   = "sqlite"
 )
 
 type Config struct {
@@ -39,7 +37,6 @@ type Config struct {
 
 type TranscriptIngestConfig struct {
 	Store  string
-	SQLite sqliteinfra.Config
 	APIKey string
 }
 
@@ -53,15 +50,11 @@ func ConfigFromEnv() Config {
 	transcriptStore := strings.ToLower(strings.TrimSpace(os.Getenv("DECISCOPE_TRANSCRIPT_STORE")))
 	if transcriptStore == "" {
 		transcriptStore = TranscriptStorePostgres
-		if transcriptOnly {
-			transcriptStore = TranscriptStoreSQLite
-		}
 	}
 	return Config{
 		Database: database.Config{URL: os.Getenv("DATABASE_URL")},
 		TranscriptIngest: TranscriptIngestConfig{
 			Store:  transcriptStore,
-			SQLite: sqliteinfra.Config{Path: os.Getenv("DECISCOPE_GO_SQLITE_PATH")},
 			APIKey: strings.TrimSpace(os.Getenv("DECISCOPE_INGEST_API_KEY")),
 		},
 		TranscriptWebSocket: TranscriptWebSocketConfig{
@@ -158,12 +151,8 @@ func ValidateRuntimeConfig(config Config) error {
 		if strings.TrimSpace(config.Database.URL) == "" {
 			return fmt.Errorf("DATABASE_URL is required")
 		}
-	case TranscriptStoreSQLite:
-		if strings.TrimSpace(config.TranscriptIngest.SQLite.Path) == "" {
-			return fmt.Errorf("DECISCOPE_GO_SQLITE_PATH is required")
-		}
 	default:
-		return fmt.Errorf("DECISCOPE_TRANSCRIPT_STORE must be postgres or sqlite")
+		return fmt.Errorf("DECISCOPE_TRANSCRIPT_STORE must be postgres")
 	}
 	return nil
 }

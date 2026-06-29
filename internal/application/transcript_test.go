@@ -63,12 +63,41 @@ func TestTranscriptIngestServicePublishesOnlyCreatedSegments(t *testing.T) {
 	}
 }
 
+func TestTranscriptIngestServicePublishesPartialWithoutStoring(t *testing.T) {
+	repository := &fakeTranscriptSegmentRepository{}
+	publisher := &fakeTranscriptSegmentPublisher{}
+	service := application.NewTranscriptIngestService(repository, publisher)
+
+	segment := domain.TranscriptSegment{
+		EventID: "partial:session_1:call-1:speaker-1", SessionID: "session_1", CallID: "call-1",
+		SequenceNo: 0, SpeakerID: "speaker-1",
+		RecognizedAtUTC: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
+		Text:            "partial text",
+		IsFinal:         false,
+	}
+	result, err := service.PublishTranscriptPartial(context.Background(), segment)
+	if err != nil {
+		t.Fatalf("PublishTranscriptPartial() error = %v", err)
+	}
+	if result.Status != domain.TranscriptSegmentPartialSent {
+		t.Fatalf("result = %+v", result)
+	}
+	if repository.saveCount != 0 {
+		t.Fatalf("SaveTranscriptSegment called %d times", repository.saveCount)
+	}
+	if len(publisher.segments) != 1 || publisher.segments[0].IsFinal {
+		t.Fatalf("published segments = %+v", publisher.segments)
+	}
+}
+
 type fakeTranscriptSegmentRepository struct {
-	status  domain.TranscriptSegmentStoreStatus
-	segment domain.TranscriptSegment
+	status    domain.TranscriptSegmentStoreStatus
+	segment   domain.TranscriptSegment
+	saveCount int
 }
 
 func (f *fakeTranscriptSegmentRepository) SaveTranscriptSegment(_ context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
+	f.saveCount++
 	f.segment = segment
 	if f.status == "" {
 		f.status = domain.TranscriptSegmentCreated

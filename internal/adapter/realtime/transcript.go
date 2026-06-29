@@ -54,8 +54,8 @@ func (h *TranscriptHub) PublishTranscriptSegment(segment domain.TranscriptSegmen
 	}
 	h.mu.RUnlock()
 
-	log.Printf("Transcript broadcasted. sessionId=%s eventId=%s callId=%s sequenceNo=%d speakerId=%s speakerName=%s textLength=%d subscriberCount=%d",
-		segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, segment.SpeakerID, segment.SpeakerName, len([]rune(strings.TrimSpace(segment.Text))), len(clients))
+	log.Printf("Transcript broadcasted. sessionId=%s eventId=%s callId=%s sequenceNo=%d isFinal=%t speakerId=%s speakerName=%s textLength=%d subscriberCount=%d",
+		segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, transcriptSegmentIsFinal(segment), segment.SpeakerID, segment.SpeakerName, len([]rune(strings.TrimSpace(segment.Text))), len(clients))
 	for _, c := range clients {
 		c.enqueueSegment(segment)
 	}
@@ -313,6 +313,7 @@ type transcriptSegmentData struct {
 	DurationTicks   int64  `json:"durationTicks"`
 	Text            string `json:"text"`
 	Duplicate       bool   `json:"duplicate"`
+	IsFinal         bool   `json:"isFinal"`
 }
 
 func transcriptSegmentProtocolMessage(segment domain.TranscriptSegment, sentAt time.Time) transcriptSegmentMessage {
@@ -331,8 +332,13 @@ func transcriptSegmentProtocolMessage(segment domain.TranscriptSegment, sentAt t
 			DurationTicks:   segment.DurationTicks,
 			Text:            segment.Text,
 			Duplicate:       false,
+			IsFinal:         transcriptSegmentIsFinal(segment),
 		},
 	}
+}
+
+func transcriptSegmentIsFinal(segment domain.TranscriptSegment) bool {
+	return segment.IsFinal || segment.SequenceNo > 0
 }
 
 type meetingSessionStatusMessage struct {

@@ -120,6 +120,41 @@ func TestTranscriptAPIAcceptsSnakeCaseBotPayload(t *testing.T) {
 	}
 }
 
+func TestTranscriptAPIForwardsPartialWithoutStoring(t *testing.T) {
+	service := &fakeTranscriptIngestUseCases{}
+	api := NewTranscriptAPI(service, testTranscriptAPIKey)
+
+	resp := serveTranscriptSegment(api, testTranscriptAPIKey, "application/json", validTranscriptSegmentJSON(t, func(payload map[string]any) {
+		payload["eventId"] = "partial:session_1:call-1:speaker-1"
+		payload["sessionId"] = "session_1"
+		payload["callId"] = "call-1"
+		payload["sequenceNo"] = 0
+		payload["speakerId"] = "speaker-1"
+		payload["isFinal"] = false
+		payload["text"] = "途中まで認識しています"
+	}))
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.called {
+		t.Fatal("StoreTranscriptSegment was called for partial")
+	}
+	if !service.partialCalled {
+		t.Fatal("PublishTranscriptPartial was not called")
+	}
+	if service.partialSegment.IsFinal || service.partialSegment.SequenceNo != 0 || service.partialSegment.EventID != "partial:session_1:call-1:speaker-1" {
+		t.Fatalf("partial segment = %+v", service.partialSegment)
+	}
+	var body transcriptSegmentResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Status != "partial_sent" || body.Duplicate || body.IsFinal {
+		t.Fatalf("response body = %+v", body)
+	}
+}
+
 func TestTranscriptAPIAcceptsSpeakerIDAndName(t *testing.T) {
 	service := &fakeTranscriptIngestUseCases{status: domain.TranscriptSegmentCreated}
 	api := NewTranscriptAPI(service, testTranscriptAPIKey)
@@ -379,14 +414,16 @@ func TestReadyzChecksDependency(t *testing.T) {
 }
 
 type fakeTranscriptIngestUseCases struct {
-	status        domain.TranscriptSegmentStoreStatus
-	err           error
-	called        bool
-	segment       domain.TranscriptSegment
-	segments      []domain.TranscriptSegment
-	listCallID    string
-	listSessionID string
-	listLimit     int
+	status         domain.TranscriptSegmentStoreStatus
+	err            error
+	called         bool
+	partialCalled  bool
+	segment        domain.TranscriptSegment
+	partialSegment domain.TranscriptSegment
+	segments       []domain.TranscriptSegment
+	listCallID     string
+	listSessionID  string
+	listLimit      int
 }
 
 func (f *fakeTranscriptIngestUseCases) StoreTranscriptSegment(_ context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
@@ -396,6 +433,15 @@ func (f *fakeTranscriptIngestUseCases) StoreTranscriptSegment(_ context.Context,
 		return domain.TranscriptSegmentStoreResult{}, f.err
 	}
 	return domain.TranscriptSegmentStoreResult{Status: f.status, EventID: segment.EventID}, nil
+}
+
+func (f *fakeTranscriptIngestUseCases) PublishTranscriptPartial(_ context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
+	f.partialCalled = true
+	f.partialSegment = segment
+	if f.err != nil {
+		return domain.TranscriptSegmentStoreResult{}, f.err
+	}
+	return domain.TranscriptSegmentStoreResult{Status: domain.TranscriptSegmentPartialSent, EventID: segment.EventID}, nil
 }
 
 func (f *fakeTranscriptIngestUseCases) ListTranscriptSegments(_ context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error) {

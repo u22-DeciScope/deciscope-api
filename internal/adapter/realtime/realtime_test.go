@@ -154,7 +154,24 @@ func TestTranscriptSegmentProtocolMessage(t *testing.T) {
 		t.Fatalf("message = %+v", message)
 	}
 	if message.Data.SessionID != "session_1" || message.Data.EventID != "call-1:1" ||
-		message.Data.SpeakerID != "speaker-1" || message.Data.SpeakerName != "佐藤さん" || message.Data.Duplicate {
+		message.Data.SpeakerID != "speaker-1" || message.Data.SpeakerName != "佐藤さん" || message.Data.Duplicate || !message.Data.IsFinal {
+		t.Fatalf("message data = %+v", message.Data)
+	}
+}
+
+func TestTranscriptSegmentProtocolMessageMarksPartial(t *testing.T) {
+	segment := domain.TranscriptSegment{
+		EventID:         "partial:session_1:call-1:speaker-1",
+		SessionID:       "session_1",
+		CallID:          "call-1",
+		SequenceNo:      0,
+		SpeakerID:       "speaker-1",
+		RecognizedAtUTC: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
+		Text:            "hel",
+		IsFinal:         false,
+	}
+	message := transcriptSegmentProtocolMessage(segment, time.Date(2026, 6, 27, 0, 0, 1, 0, time.UTC))
+	if message.Data.IsFinal {
 		t.Fatalf("message data = %+v", message.Data)
 	}
 }

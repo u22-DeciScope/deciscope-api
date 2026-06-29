@@ -26,6 +26,7 @@ var errEmptyTranscriptText = errors.New("transcript text is empty")
 
 type TranscriptIngestUseCases interface {
 	StoreTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
+	PublishTranscriptPartial(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
 	ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error)
 }
 
@@ -79,20 +80,35 @@ func (api *TranscriptAPI) Store(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Transcript received. sessionId=%s callId=%s sequenceNo=%d speakerId=%s speakerName=%s textLength=%d",
-		request.sessionID(), request.callID(), request.sequenceNo(), request.speakerID(), request.speakerName(), transcriptTextLength(request.text()))
+	isFinal := request.isFinal()
+	log.Printf("Transcript received. sessionId=%s callId=%s sequenceNo=%d isFinal=%t speakerId=%s speakerName=%s textLength=%d",
+		request.sessionID(), request.callID(), request.sequenceNo(), isFinal, request.speakerID(), request.speakerName(), transcriptTextLength(request.text()))
 
-	segment, err := request.toDomain()
+	segment, err := request.toDomain(isFinal)
 	if err != nil {
 		if errors.Is(err, errEmptyTranscriptText) {
-			log.Printf("Transcript skipped. sessionId=%s callId=%s sequenceNo=%d speakerId=%s speakerName=%s textLength=%d reason=empty_text",
-				request.sessionID(), request.callID(), request.sequenceNo(), request.speakerID(), request.speakerName(), transcriptTextLength(request.text()))
-			writeJSON(w, http.StatusOK, transcriptSegmentResponse{Status: "skipped", Duplicate: false, EventID: request.eventID()})
+			log.Printf("Transcript skipped. sessionId=%s callId=%s sequenceNo=%d isFinal=%t speakerId=%s speakerName=%s textLength=%d reason=empty_text",
+				request.sessionID(), request.callID(), request.sequenceNo(), isFinal, request.speakerID(), request.speakerName(), transcriptTextLength(request.text()))
+			writeJSON(w, http.StatusOK, transcriptSegmentResponse{Status: "skipped", Duplicate: false, EventID: request.eventID(), IsFinal: isFinal})
 			return
 		}
-		log.Printf("Transcript skipped. sessionId=%s callId=%s sequenceNo=%d speakerId=%s speakerName=%s textLength=%d reason=%v",
-			request.sessionID(), request.callID(), request.sequenceNo(), request.speakerID(), request.speakerName(), transcriptTextLength(request.text()), err)
+		log.Printf("Transcript skipped. sessionId=%s callId=%s sequenceNo=%d isFinal=%t speakerId=%s speakerName=%s textLength=%d reason=%v",
+			request.sessionID(), request.callID(), request.sequenceNo(), isFinal, request.speakerID(), request.speakerName(), transcriptTextLength(request.text()), err)
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	if !isFinal {
+		result, err := api.service.PublishTranscriptPartial(r.Context(), segment)
+		if err != nil {
+			log.Printf("Transcript partial forward error. sessionId=%s eventId=%s callId=%s sequenceNo=%d isFinal=%t error=%v",
+				segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, segment.IsFinal, err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		log.Printf("Transcript partial forwarded. sessionId=%s eventId=%s callId=%s sequenceNo=%d isFinal=%t speakerId=%s speakerName=%s textLength=%d",
+			segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, segment.IsFinal, segment.SpeakerID, segment.SpeakerName, transcriptTextLength(segment.Text))
+		writeJSON(w, http.StatusOK, transcriptSegmentResponse{Status: string(result.Status), Duplicate: false, EventID: segment.EventID, IsFinal: false})
 		return
 	}
 
@@ -110,13 +126,13 @@ func (api *TranscriptAPI) Store(w http.ResponseWriter, r *http.Request) {
 
 	switch result.Status {
 	case domain.TranscriptSegmentCreated:
-		log.Printf("Transcript saved. sessionId=%s eventId=%s callId=%s sequenceNo=%d speakerId=%s speakerName=%s textLength=%d",
-			segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, segment.SpeakerID, segment.SpeakerName, transcriptTextLength(segment.Text))
-		writeJSON(w, http.StatusCreated, transcriptSegmentResponse{Status: string(result.Status), Duplicate: false, EventID: segment.EventID})
+		log.Printf("Transcript saved. sessionId=%s eventId=%s callId=%s sequenceNo=%d isFinal=%t speakerId=%s speakerName=%s textLength=%d",
+			segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, segment.IsFinal, segment.SpeakerID, segment.SpeakerName, transcriptTextLength(segment.Text))
+		writeJSON(w, http.StatusCreated, transcriptSegmentResponse{Status: string(result.Status), Duplicate: false, EventID: segment.EventID, IsFinal: true})
 	case domain.TranscriptSegmentAlreadyExists:
-		log.Printf("Transcript skipped. sessionId=%s eventId=%s callId=%s sequenceNo=%d speakerId=%s speakerName=%s textLength=%d reason=duplicate",
-			segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, segment.SpeakerID, segment.SpeakerName, transcriptTextLength(segment.Text))
-		writeJSON(w, http.StatusOK, transcriptSegmentResponse{Status: string(result.Status), Duplicate: true, EventID: segment.EventID})
+		log.Printf("Transcript skipped. sessionId=%s eventId=%s callId=%s sequenceNo=%d isFinal=%t speakerId=%s speakerName=%s textLength=%d reason=duplicate",
+			segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, segment.IsFinal, segment.SpeakerID, segment.SpeakerName, transcriptTextLength(segment.Text))
+		writeJSON(w, http.StatusOK, transcriptSegmentResponse{Status: string(result.Status), Duplicate: true, EventID: segment.EventID, IsFinal: true})
 	default:
 		log.Printf("Store transcript segment returned unknown status. sessionId=%s eventId=%s callId=%s sequenceNo=%d", segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo)
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
@@ -203,6 +219,8 @@ type transcriptSegmentRequest struct {
 	CallIDSnake             string `json:"call_id"`
 	SequenceNo              int64  `json:"sequenceNo"`
 	SequenceNoSnake         int64  `json:"sequence_no"`
+	IsFinal                 *bool  `json:"isFinal"`
+	IsFinalSnake            *bool  `json:"is_final"`
 	SpeakerID               string `json:"speakerId"`
 	SpeakerIDSnake          string `json:"speaker_id"`
 	SpeakerLabel            string `json:"speakerLabel"`
@@ -229,6 +247,7 @@ type transcriptSegmentResponse struct {
 	Status    string `json:"status"`
 	Duplicate bool   `json:"duplicate"`
 	EventID   string `json:"eventId"`
+	IsFinal   bool   `json:"isFinal"`
 }
 
 type transcriptSegmentListResponse struct {
@@ -247,21 +266,31 @@ type transcriptSegmentItem struct {
 	DurationTicks   int64  `json:"durationTicks"`
 	Text            string `json:"text"`
 	ReceivedAtUTC   string `json:"receivedAtUtc"`
+	IsFinal         bool   `json:"isFinal"`
 }
 
-func (request transcriptSegmentRequest) toDomain() (domain.TranscriptSegment, error) {
+func (request transcriptSegmentRequest) toDomain(isFinal bool) (domain.TranscriptSegment, error) {
 	sessionID := request.sessionID()
 	callID := request.callID()
 	if callID == "" {
 		return domain.TranscriptSegment{}, fmt.Errorf("callId is required")
 	}
 	sequenceNo := request.sequenceNo()
-	if sequenceNo < 1 {
+	if isFinal && sequenceNo < 1 {
 		return domain.TranscriptSegment{}, fmt.Errorf("sequenceNo must be 1 or greater")
 	}
+	if !isFinal && sequenceNo < 0 {
+		return domain.TranscriptSegment{}, fmt.Errorf("sequenceNo must be 0 or greater")
+	}
+	speakerID := request.speakerID()
+	speakerName := request.speakerName()
 	eventID := request.eventID()
 	if eventID == "" {
-		eventID = generatedTranscriptEventID(sessionID, callID, sequenceNo)
+		if isFinal {
+			eventID = generatedTranscriptEventID(sessionID, callID, sequenceNo)
+		} else {
+			eventID = generatedTranscriptPartialEventID(sessionID, callID, transcriptPartialSpeakerKey(speakerID, speakerName))
+		}
 	}
 	recognizedAtText := request.recognizedAtUTC()
 	recognizedAt := time.Now().UTC()
@@ -292,12 +321,13 @@ func (request transcriptSegmentRequest) toDomain() (domain.TranscriptSegment, er
 		EventID:         eventID,
 		CallID:          callID,
 		SequenceNo:      sequenceNo,
-		SpeakerID:       request.speakerID(),
-		SpeakerName:     request.speakerName(),
+		SpeakerID:       speakerID,
+		SpeakerName:     speakerName,
 		RecognizedAtUTC: recognizedAt.UTC(),
 		OffsetTicks:     offsetTicks,
 		DurationTicks:   durationTicks,
 		Text:            text,
+		IsFinal:         isFinal,
 	}, nil
 }
 
@@ -339,6 +369,7 @@ func transcriptSegmentItems(segments []domain.TranscriptSegment) []transcriptSeg
 			DurationTicks:   segment.DurationTicks,
 			Text:            segment.Text,
 			ReceivedAtUTC:   segment.ReceivedAtUTC.UTC().Format(time.RFC3339Nano),
+			IsFinal:         transcriptSegmentIsFinal(segment),
 		})
 	}
 	return items
@@ -378,6 +409,16 @@ func (request transcriptSegmentRequest) callID() string {
 
 func (request transcriptSegmentRequest) sequenceNo() int64 {
 	return firstPositiveInt64(request.SequenceNo, request.SequenceNoSnake)
+}
+
+func (request transcriptSegmentRequest) isFinal() bool {
+	if request.IsFinal != nil {
+		return *request.IsFinal
+	}
+	if request.IsFinalSnake != nil {
+		return *request.IsFinalSnake
+	}
+	return true
 }
 
 func (request transcriptSegmentRequest) speakerID() string {
@@ -437,6 +478,27 @@ func generatedTranscriptEventID(sessionID, callID string, sequenceNo int64) stri
 		return fmt.Sprintf("transcript:%s:%s:%d", sessionID, callID, sequenceNo)
 	}
 	return fmt.Sprintf("transcript:%s:%d", callID, sequenceNo)
+}
+
+func generatedTranscriptPartialEventID(sessionID, callID, speakerKey string) string {
+	if sessionID != "" {
+		return fmt.Sprintf("partial:%s:%s:%s", sessionID, callID, speakerKey)
+	}
+	return fmt.Sprintf("partial:%s:%s", callID, speakerKey)
+}
+
+func transcriptPartialSpeakerKey(speakerID, speakerName string) string {
+	if speakerID != "" {
+		return speakerID
+	}
+	if speakerName != "" {
+		return speakerName
+	}
+	return "unknown"
+}
+
+func transcriptSegmentIsFinal(segment domain.TranscriptSegment) bool {
+	return segment.IsFinal || segment.SequenceNo > 0
 }
 
 func transcriptTextLength(value string) int {

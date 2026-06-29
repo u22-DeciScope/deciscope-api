@@ -64,6 +64,7 @@ type TranscriptSegment struct {
 	DurationTicks   int64
 	Text            string
 	ReceivedAtUTC   time.Time
+	IsFinal         bool
 }
 
 type TranscriptSegmentStoreStatus string
@@ -71,6 +72,7 @@ type TranscriptSegmentStoreStatus string
 const (
 	TranscriptSegmentCreated       TranscriptSegmentStoreStatus = "created"
 	TranscriptSegmentAlreadyExists TranscriptSegmentStoreStatus = "already_exists"
+	TranscriptSegmentPartialSent   TranscriptSegmentStoreStatus = "partial_sent"
 )
 
 type TranscriptSegmentStoreResult struct {
