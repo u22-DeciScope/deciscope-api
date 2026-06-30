@@ -33,6 +33,7 @@ type Config struct {
 	FrontendURL         string
 	AllowedOrigins      string
 	SessionCookieSecure bool
+	SeedDemoData        bool
 }
 
 type TranscriptIngestConfig struct {
@@ -79,6 +80,7 @@ func ConfigFromEnv() Config {
 		FrontendURL:         os.Getenv("FRONTEND_URL"),
 		AllowedOrigins:      os.Getenv("ALLOWED_ORIGINS"),
 		SessionCookieSecure: strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
+		SeedDemoData:        strings.EqualFold(strings.TrimSpace(os.Getenv("DECISCOPE_SEED_DEMO_DATA")), "true"),
 	}
 }
 

@@ -69,11 +69,19 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		return &ServerRuntime{Handler: handler, closers: transcriptRuntime.closers}, nil
 	}
 
-	repositories, authRepository, postgresDB, err := buildRepositories(ctx, config.Database)
+	repositories, authRepository, postgresDB, err := buildRepositories(ctx, config.Database, config.SeedDemoData)
 	if err != nil {
 		return nil, err
 	}
 	closers := []func() error{postgresDB.Close}
+
+	if config.SeedDemoData {
+		if err := database.SeedDemoData(ctx, postgresDB); err != nil {
+			_ = closeAll(closers)
+			return nil, fmt.Errorf("seed demo data: %w", err)
+		}
+		log.Printf("demo seed data ensured (DECISCOPE_SEED_DEMO_DATA enabled)")
+	}
 
 	transcriptHub := realtime.NewTranscriptHub()
 	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptHub)
@@ -165,14 +173,15 @@ type authWorkspaceRepository interface {
 	appaccess.Repository
 }
 
-func buildRepositories(ctx context.Context, config database.Config) (repositorySet, authWorkspaceRepository, *sql.DB, error) {
+func buildRepositories(ctx context.Context, config database.Config, seedDemoData bool) (repositorySet, authWorkspaceRepository, *sql.DB, error) {
 	conn, err := database.Open(ctx, config)
 	if err != nil {
 		return repositorySet{}, nil, nil, fmt.Errorf("open database: %w", err)
 	}
 	store := postgresrepository.NewStore(conn)
 	log.Printf("postgres database repository ready")
-	return repositoriesFromStore(store), postgresrepository.NewAuthWorkspaceRepository(conn), conn, nil
+	authRepository := postgresrepository.NewAuthWorkspaceRepository(conn).WithDemoWorkspace(seedDemoData)
+	return repositoriesFromStore(store), authRepository, conn, nil
 }
 
 type transcriptIngestRuntime struct {

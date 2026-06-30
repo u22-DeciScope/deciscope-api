@@ -15,11 +15,19 @@ import (
 )
 
 type AuthWorkspaceRepository struct {
-	db *sql.DB
+	db       *sql.DB
+	seedDemo bool
 }
 
 func NewAuthWorkspaceRepository(db *sql.DB) *AuthWorkspaceRepository {
 	return &AuthWorkspaceRepository{db: db}
+}
+
+// WithDemoWorkspace は、ログイン時にユーザーをデモ用ワークスペース（domain.DemoWorkspaceID）へ
+// 自動参加させるかどうかを設定する。DECISCOPE_SEED_DEMO_DATA が有効な開発環境でのみ true にする。
+func (r *AuthWorkspaceRepository) WithDemoWorkspace(enabled bool) *AuthWorkspaceRepository {
+	r.seedDemo = enabled
+	return r
 }
 
 func (r *AuthWorkspaceRepository) FindOrCreateUser(ctx context.Context, identity appauth.Identity) (*domain.User, error) {
@@ -115,6 +123,9 @@ func (r *AuthWorkspaceRepository) EnsureInitialWorkspace(ctx context.Context, us
 		return nil, err
 	}
 	if len(workspaces) > 0 {
+		if err := r.ensureDemoMembership(ctx, userID); err != nil {
+			return nil, err
+		}
 		return &workspaces[0], nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -137,7 +148,32 @@ func (r *AuthWorkspaceRepository) EnsureInitialWorkspace(ctx context.Context, us
 		workspace.ID, userID, now); err != nil {
 		return nil, err
 	}
-	return &workspace, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	if err := r.ensureDemoMembership(ctx, userID); err != nil {
+		return nil, err
+	}
+	return &workspace, nil
+}
+
+// ensureDemoMembership は、デモ用ワークスペースが存在する場合にユーザーを admin として参加させる。
+// 開発環境（WithDemoWorkspace 有効）専用。デモワークスペースが未シードのときは何もしない。
+func (r *AuthWorkspaceRepository) ensureDemoMembership(ctx context.Context, userID string) error {
+	if !r.seedDemo {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO workspace_members (workspace_id, user_id, role, joined_at)
+		SELECT $1, $2, 'admin', $3
+		WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = $1)
+		ON CONFLICT (workspace_id, user_id) DO NOTHING
+	`, domain.DemoWorkspaceID, userID, now)
+	if err != nil {
+		return fmt.Errorf("ensure demo workspace membership: %w", err)
+	}
+	return nil
 }
 
 func (r *AuthWorkspaceRepository) CreateSession(ctx context.Context, session domain.Session) error {

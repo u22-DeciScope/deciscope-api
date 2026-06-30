@@ -145,6 +145,8 @@ transcript.partial
 
 議論構造ツリーを画面に反映するためのイベントです。
 
+ノードの `kind` は `topic` / `issue` / `question` / `risk` / `decision` を使います。フロントエンドの議論ツリー（`DiscussionTree`）はこの語彙で色分けし、未知の `kind` は `topic` 表示にフォールバックします。`analysis.delta` の `kind`（`issue` / `question` / `risk`）と語彙を揃えています。
+
 ### speaker.summary.delta
 
 ```json
