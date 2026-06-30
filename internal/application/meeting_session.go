@@ -32,6 +32,9 @@ type MeetingSessionCreateResult struct {
 }
 
 type MeetingSessionCreateInput struct {
+	WorkspaceID                 string
+	CreatedByUserID             string
+	MeetingID                   string
 	JoinURL                     string
 	Title                       string
 	UserProvidedTitle           string
@@ -40,6 +43,13 @@ type MeetingSessionCreateInput struct {
 	CreatedByMicrosoftUserID    string
 	CreatedByEmail              string
 	OrganizerUserID             string
+	Purpose                     string
+	Context                     string
+	Agenda                      string
+	DecisionPoints              string
+	Concerns                    string
+	ExpectedOutput              string
+	CustomInstruction           string
 }
 
 type MeetingSessionStatusUpdateInput struct {
@@ -79,6 +89,13 @@ type MeetingSessionMetadataUpdateInput struct {
 	TitleResolutionErrorCode    string
 	TitleResolutionErrorMessage string
 	TitleResolvedAt             string
+	Purpose                     string
+	Context                     string
+	Agenda                      string
+	DecisionPoints              string
+	Concerns                    string
+	ExpectedOutput              string
+	CustomInstruction           string
 }
 
 func NewMeetingSessionService(repository MeetingSessionRepository, commander BotJoinCommander, publisher ...MeetingSessionPublisher) *MeetingSessionService {
@@ -108,6 +125,9 @@ func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input 
 	}
 	session := domain.MeetingSession{
 		ID:                  domain.NewID("session"),
+		WorkspaceID:         strings.TrimSpace(input.WorkspaceID),
+		CreatedByUserID:     strings.TrimSpace(input.CreatedByUserID),
+		MeetingID:           strings.TrimSpace(input.MeetingID),
 		JoinURL:             normalizedJoinURL,
 		JoinURLHash:         domain.JoinURLHash(normalizedJoinURL),
 		Title:               meetingSessionCreateTitle(userProvidedTitle),
@@ -117,6 +137,13 @@ func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input 
 		JoinWebURL:          normalizedJoinURL,
 		CanonicalJoinWebURL: normalizedJoinURL,
 		Provider:            "teams",
+		Purpose:             strings.TrimSpace(input.Purpose),
+		Context:             strings.TrimSpace(input.Context),
+		Agenda:              strings.TrimSpace(input.Agenda),
+		DecisionPoints:      strings.TrimSpace(input.DecisionPoints),
+		Concerns:            strings.TrimSpace(input.Concerns),
+		ExpectedOutput:      strings.TrimSpace(input.ExpectedOutput),
+		CustomInstruction:   strings.TrimSpace(input.CustomInstruction),
 		Status:              domain.MeetingSessionRequested,
 		RequestedAt:         now,
 		CreatedAt:           now,
@@ -126,25 +153,19 @@ func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input 
 	if err != nil {
 		return nil, err
 	}
-	if !isNew {
-		if shouldApplyCreateTitleToReusedSession(*created, userProvidedTitle) {
-			updated, updateErr := s.repository.UpdateMeetingSessionMetadata(ctx, domain.MeetingSessionMetadataUpdate{
-				SessionID:           created.ID,
-				Title:               userProvidedTitle,
-				TitleSource:         "user_input",
-				UserProvidedTitle:   userProvidedTitle,
-				JoinWebURL:          normalizedJoinURL,
-				CanonicalJoinWebURL: normalizedJoinURL,
-				UpdatedAt:           now,
-			})
-			if updateErr != nil {
-				log.Printf("Meeting session reuse title update failed. sessionId=%s joinUrlHash=%s title=%q error=%v", created.ID, created.JoinURLHash, strings.TrimSpace(input.Title), updateErr)
-			} else {
-				created = updated
-				log.Printf("Meeting session reuse title updated. sessionId=%s joinUrlHash=%s title=%q titleSource=%s", created.ID, created.JoinURLHash, created.Title, created.TitleSource)
-				s.publishStatusChanged(*created)
-			}
+	updated, updateErr := s.applyCreateMetadata(ctx, created, input, userProvidedTitle, normalizedJoinURL, now, !isNew)
+	if updateErr != nil {
+		log.Printf("Meeting session create metadata update failed. sessionId=%s joinUrlHash=%s reused=%t error=%v", created.ID, created.JoinURLHash, !isNew, updateErr)
+		if hasMeetingSessionCreateContext(input) {
+			return &MeetingSessionCreateResult{Session: created, Reused: !isNew}, updateErr
 		}
+	} else if updated != nil {
+		created = updated
+		if !isNew {
+			s.publishStatusChanged(*created)
+		}
+	}
+	if !isNew {
 		log.Printf("Meeting session reuse. sessionId=%s joinUrlHash=%s status=%s createdAt=%s updatedAt=%s", created.ID, created.JoinURLHash, created.Status, created.CreatedAt.UTC().Format(time.RFC3339Nano), created.UpdatedAt.UTC().Format(time.RFC3339Nano))
 		return &MeetingSessionCreateResult{Session: created, Reused: true}, nil
 	}
@@ -193,7 +214,7 @@ func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input 
 	}
 
 	commandSentAt := s.now().UTC()
-	updated, err := s.repository.UpdateMeetingSessionStatus(ctx, domain.MeetingSessionStatusUpdate{
+	updated, err = s.repository.UpdateMeetingSessionStatus(ctx, domain.MeetingSessionStatusUpdate{
 		SessionID:     created.ID,
 		Status:        domain.MeetingSessionJoining,
 		CommandSentAt: &commandSentAt,
@@ -224,6 +245,25 @@ func (s *MeetingSessionService) GetMeetingSession(ctx context.Context, sessionID
 	}
 	log.Printf("Meeting session fetched. sessionId=%s joinUrlHash=%s status=%s botCallId=%s updatedAt=%s", session.ID, session.JoinURLHash, session.Status, session.BotCallID, session.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	return session, nil
+}
+
+func (s *MeetingSessionService) ListMeetingSessions(ctx context.Context, workspaceID string, limit int) ([]domain.MeetingSession, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return nil, fmt.Errorf("%w: workspaceId is required", domain.ErrInvalidArgument)
+	}
+	if stale, cleanupErr := s.CleanupStaleMeetingSessions(ctx); cleanupErr != nil {
+		log.Printf("Meeting session stale cleanup failed before list. workspaceId=%s error=%v", workspaceID, cleanupErr)
+	} else if len(stale) > 0 {
+		log.Printf("Meeting session stale cleanup completed before list. workspaceId=%s count=%d", workspaceID, len(stale))
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	return s.repository.ListMeetingSessions(ctx, workspaceID, limit)
 }
 
 func (s *MeetingSessionService) EndMeetingSession(ctx context.Context, input MeetingSessionEndInput) (*domain.MeetingSession, error) {
@@ -368,7 +408,14 @@ func (s *MeetingSessionService) UpdateMeetingSessionMetadata(ctx context.Context
 		strings.TrimSpace(input.ScheduledEndAt) == "" &&
 		strings.TrimSpace(input.TitleResolutionErrorCode) == "" &&
 		strings.TrimSpace(input.TitleResolutionErrorMessage) == "" &&
-		strings.TrimSpace(input.TitleResolvedAt) == "" {
+		strings.TrimSpace(input.TitleResolvedAt) == "" &&
+		strings.TrimSpace(input.Purpose) == "" &&
+		strings.TrimSpace(input.Context) == "" &&
+		strings.TrimSpace(input.Agenda) == "" &&
+		strings.TrimSpace(input.DecisionPoints) == "" &&
+		strings.TrimSpace(input.Concerns) == "" &&
+		strings.TrimSpace(input.ExpectedOutput) == "" &&
+		strings.TrimSpace(input.CustomInstruction) == "" {
 		return nil, fmt.Errorf("%w: metadata is required", domain.ErrInvalidArgument)
 	}
 	previous, previousErr := s.repository.GetMeetingSession(ctx, sessionID)
@@ -429,6 +476,13 @@ func (s *MeetingSessionService) UpdateMeetingSessionMetadata(ctx context.Context
 		TitleResolutionErrorCode:    strings.TrimSpace(input.TitleResolutionErrorCode),
 		TitleResolutionErrorMessage: strings.TrimSpace(input.TitleResolutionErrorMessage),
 		TitleResolvedAt:             titleResolvedAtPtr,
+		Purpose:                     strings.TrimSpace(input.Purpose),
+		Context:                     strings.TrimSpace(input.Context),
+		Agenda:                      strings.TrimSpace(input.Agenda),
+		DecisionPoints:              strings.TrimSpace(input.DecisionPoints),
+		Concerns:                    strings.TrimSpace(input.Concerns),
+		ExpectedOutput:              strings.TrimSpace(input.ExpectedOutput),
+		CustomInstruction:           strings.TrimSpace(input.CustomInstruction),
 		UpdatedAt:                   now,
 	})
 	if err != nil {
@@ -576,6 +630,71 @@ func meetingSessionUserProvidedTitle(input MeetingSessionCreateInput) string {
 		}
 	}
 	return ""
+}
+
+func (s *MeetingSessionService) applyCreateMetadata(ctx context.Context, session *domain.MeetingSession, input MeetingSessionCreateInput, userProvidedTitle string, normalizedJoinURL string, updatedAt time.Time, reused bool) (*domain.MeetingSession, error) {
+	if session == nil {
+		return nil, nil
+	}
+	update := domain.MeetingSessionMetadataUpdate{
+		SessionID:         session.ID,
+		Purpose:           strings.TrimSpace(input.Purpose),
+		Context:           strings.TrimSpace(input.Context),
+		Agenda:            strings.TrimSpace(input.Agenda),
+		DecisionPoints:    strings.TrimSpace(input.DecisionPoints),
+		Concerns:          strings.TrimSpace(input.Concerns),
+		ExpectedOutput:    strings.TrimSpace(input.ExpectedOutput),
+		CustomInstruction: strings.TrimSpace(input.CustomInstruction),
+		UpdatedAt:         updatedAt,
+	}
+	if reused && shouldApplyCreateTitleToReusedSession(*session, userProvidedTitle) {
+		update.Title = userProvidedTitle
+		update.TitleSource = "user_input"
+		update.UserProvidedTitle = userProvidedTitle
+		update.JoinWebURL = normalizedJoinURL
+		update.CanonicalJoinWebURL = normalizedJoinURL
+	}
+	if !hasMeetingSessionMetadataUpdate(update) {
+		return nil, nil
+	}
+	return s.repository.UpdateMeetingSessionMetadata(ctx, update)
+}
+
+func hasMeetingSessionCreateContext(input MeetingSessionCreateInput) bool {
+	return strings.TrimSpace(input.Purpose) != "" ||
+		strings.TrimSpace(input.Context) != "" ||
+		strings.TrimSpace(input.Agenda) != "" ||
+		strings.TrimSpace(input.DecisionPoints) != "" ||
+		strings.TrimSpace(input.Concerns) != "" ||
+		strings.TrimSpace(input.ExpectedOutput) != "" ||
+		strings.TrimSpace(input.CustomInstruction) != ""
+}
+
+func hasMeetingSessionMetadataUpdate(update domain.MeetingSessionMetadataUpdate) bool {
+	return strings.TrimSpace(update.Title) != "" ||
+		strings.TrimSpace(update.UserProvidedTitle) != "" ||
+		strings.TrimSpace(update.GraphTitle) != "" ||
+		strings.TrimSpace(update.Provider) != "" ||
+		strings.TrimSpace(update.ExternalMeetingID) != "" ||
+		strings.TrimSpace(update.JoinMeetingID) != "" ||
+		strings.TrimSpace(update.JoinWebURL) != "" ||
+		strings.TrimSpace(update.CanonicalJoinWebURL) != "" ||
+		strings.TrimSpace(update.ThreadID) != "" ||
+		strings.TrimSpace(update.OrganizerID) != "" ||
+		strings.TrimSpace(update.OrganizerName) != "" ||
+		strings.TrimSpace(update.OrganizerEmail) != "" ||
+		update.ScheduledStartAt != nil ||
+		update.ScheduledEndAt != nil ||
+		strings.TrimSpace(update.TitleResolutionErrorCode) != "" ||
+		strings.TrimSpace(update.TitleResolutionErrorMessage) != "" ||
+		update.TitleResolvedAt != nil ||
+		strings.TrimSpace(update.Purpose) != "" ||
+		strings.TrimSpace(update.Context) != "" ||
+		strings.TrimSpace(update.Agenda) != "" ||
+		strings.TrimSpace(update.DecisionPoints) != "" ||
+		strings.TrimSpace(update.Concerns) != "" ||
+		strings.TrimSpace(update.ExpectedOutput) != "" ||
+		strings.TrimSpace(update.CustomInstruction) != ""
 }
 
 func meetingTitleLookupCandidateUserIDs(input MeetingSessionCreateInput) []string {

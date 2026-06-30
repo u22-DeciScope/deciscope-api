@@ -41,6 +41,28 @@ func TestMeetingSessionServiceCreatesAndSendsBotCommand(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionServiceStoresPreMeetingContext(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	commander := &fakeBotJoinCommander{}
+	service := application.NewMeetingSessionService(repository, commander)
+
+	result, err := service.CreateMeetingSession(context.Background(), application.MeetingSessionCreateInput{
+		JoinURL:           "https://teams.microsoft.com/l/meetup-join/abc",
+		Purpose:           "意思決定",
+		Context:           "前回の宿題を確認済み",
+		Agenda:            "論点A\n論点B",
+		DecisionPoints:    "リリース可否",
+		Concerns:          "期限が近い",
+		ExpectedOutput:    "次アクション",
+		CustomInstruction: "リスクを強調",
+	})
+	if err != nil {
+		t.Fatalf("CreateMeetingSession() error = %v", err)
+	}
+	if result.Session.Purpose != "意思決定" || result.Session.Context != "前回の宿題を確認済み" || result.Session.DecisionPoints != "リリース可否" {
+		t.Fatalf("pre meeting context = %+v", result.Session)
+	}
+}
 func TestMeetingSessionServiceUsesCreatedByEmailAsTitleLookupPrincipalName(t *testing.T) {
 	repository := newFakeMeetingSessionRepository()
 	commander := &fakeBotJoinCommander{}
@@ -320,6 +342,13 @@ func (f *fakeMeetingSessionRepository) GetMeetingSession(_ context.Context, sess
 	return &f.session, nil
 }
 
+func (f *fakeMeetingSessionRepository) ListMeetingSessions(_ context.Context, workspaceID string, _ int) ([]domain.MeetingSession, error) {
+	if workspaceID == "" {
+		return nil, domain.ErrInvalidArgument
+	}
+	return []domain.MeetingSession{f.session}, nil
+}
+
 func (f *fakeMeetingSessionRepository) MarkStaleMeetingSessions(_ context.Context, _ time.Time, _ time.Time) ([]domain.MeetingSession, error) {
 	return nil, nil
 }
@@ -359,8 +388,33 @@ func (f *fakeMeetingSessionRepository) UpdateMeetingSessionStatus(_ context.Cont
 }
 
 func (f *fakeMeetingSessionRepository) UpdateMeetingSessionMetadata(_ context.Context, update domain.MeetingSessionMetadataUpdate) (*domain.MeetingSession, error) {
-	f.session.Title = update.Title
-	f.session.TitleSource = update.TitleSource
+	if update.Title != "" {
+		f.session.Title = update.Title
+	}
+	if update.TitleSource != "" {
+		f.session.TitleSource = update.TitleSource
+	}
+	if update.Purpose != "" {
+		f.session.Purpose = update.Purpose
+	}
+	if update.Context != "" {
+		f.session.Context = update.Context
+	}
+	if update.Agenda != "" {
+		f.session.Agenda = update.Agenda
+	}
+	if update.DecisionPoints != "" {
+		f.session.DecisionPoints = update.DecisionPoints
+	}
+	if update.Concerns != "" {
+		f.session.Concerns = update.Concerns
+	}
+	if update.ExpectedOutput != "" {
+		f.session.ExpectedOutput = update.ExpectedOutput
+	}
+	if update.CustomInstruction != "" {
+		f.session.CustomInstruction = update.CustomInstruction
+	}
 	f.session.UpdatedAt = update.UpdatedAt
 	return &f.session, nil
 }

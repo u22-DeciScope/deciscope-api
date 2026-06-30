@@ -27,6 +27,27 @@ func requireWorkspaceAccess(service WorkspaceAccessUseCases) func(http.Handler) 
 	})
 }
 
+func requireWorkspaceOwner(service WorkspaceAccessUseCases) func(http.Handler) http.Handler {
+	return requireWorkspaceRole(service, domain.IsWorkspaceOwner)
+}
+
+func requireWorkspaceAdminOrOwner(service WorkspaceAccessUseCases) func(http.Handler) http.Handler {
+	return requireWorkspaceRole(service, domain.CanManageMeetingSessions)
+}
+
+func requireWorkspaceRole(service WorkspaceAccessUseCases, allowed func(string) bool) func(http.Handler) http.Handler {
+	return requireAccess(func(r *http.Request, session *appauth.SessionResult) error {
+		workspace, err := service.GetWorkspace(r.Context(), session.User.ID, chi.URLParam(r, "workspace_code"))
+		if err != nil {
+			return err
+		}
+		if !allowed(workspace.Role) {
+			return domain.ErrForbidden
+		}
+		return nil
+	})
+}
+
 func requireMeetingAccess(service ResourceAccessUseCases) func(http.Handler) http.Handler {
 	return requireAccess(func(r *http.Request, session *appauth.SessionResult) error {
 		return service.CanAccessMeeting(r.Context(), session.User.ID, chi.URLParam(r, "meeting_id"))

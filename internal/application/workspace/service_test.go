@@ -24,7 +24,7 @@ func TestServiceRejectsDuplicatePendingInvitation(t *testing.T) {
 		}},
 	})
 
-	_, err := service.CreateInvitation(context.Background(), "u_owner", "w_test", " User@example.com ")
+	_, err := service.CreateInvitation(context.Background(), "u_owner", "w_test", " User@example.com ", "viewer")
 	if !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("CreateInvitation() error = %v, want ErrConflict", err)
 	}
@@ -64,7 +64,7 @@ func (r fakeRepository) ListMembers(context.Context, string, string) ([]domain.W
 	return r.members, nil
 }
 
-func (fakeRepository) CreateInvitation(context.Context, string, string, string) (*domain.WorkspaceInvitation, error) {
+func (fakeRepository) CreateInvitation(context.Context, string, string, string, string) (*domain.WorkspaceInvitation, error) {
 	return &domain.WorkspaceInvitation{}, nil
 }
 
@@ -78,4 +78,8 @@ func (fakeRepository) RevokeInvitation(context.Context, string, string, string) 
 
 func (fakeRepository) RemoveMember(context.Context, string, string, string) error {
 	return nil
+}
+
+func (fakeRepository) UpdateMemberRole(context.Context, string, string, string, string) (*domain.WorkspaceMember, error) {
+	return &domain.WorkspaceMember{}, nil
 }

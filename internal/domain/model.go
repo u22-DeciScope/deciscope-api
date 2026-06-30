@@ -97,6 +97,9 @@ const (
 
 type MeetingSession struct {
 	ID                          string
+	WorkspaceID                 string
+	CreatedByUserID             string
+	MeetingID                   string
 	JoinURL                     string
 	JoinURLHash                 string
 	Title                       string
@@ -118,6 +121,13 @@ type MeetingSession struct {
 	TitleResolutionErrorCode    string
 	TitleResolutionErrorMessage string
 	TitleResolvedAt             time.Time
+	Purpose                     string
+	Context                     string
+	Agenda                      string
+	DecisionPoints              string
+	Concerns                    string
+	ExpectedOutput              string
+	CustomInstruction           string
 	Status                      MeetingSessionStatus
 	BotCallID                   string
 	RequestedAt                 time.Time
@@ -171,6 +181,13 @@ type MeetingSessionMetadataUpdate struct {
 	TitleResolutionErrorCode    string
 	TitleResolutionErrorMessage string
 	TitleResolvedAt             *time.Time
+	Purpose                     string
+	Context                     string
+	Agenda                      string
+	DecisionPoints              string
+	Concerns                    string
+	ExpectedOutput              string
+	CustomInstruction           string
 	UpdatedAt                   time.Time
 }
 

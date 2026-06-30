@@ -114,6 +114,40 @@ func TestTranscriptHubPublishFiltersByCallID(t *testing.T) {
 	}
 }
 
+func TestTranscriptHubPublishFiltersBySessionID(t *testing.T) {
+	hub := NewTranscriptHub()
+	allSessions := &transcriptClient{send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	matching := &transcriptClient{sessionID: "session_1", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	other := &transcriptClient{sessionID: "session_2", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	hub.subscribe(allSessions)
+	hub.subscribe(matching)
+	hub.subscribe(other)
+	t.Cleanup(func() {
+		hub.unsubscribe(allSessions)
+		hub.unsubscribe(matching)
+		hub.unsubscribe(other)
+	})
+
+	segment := domain.TranscriptSegment{EventID: "session_1:1", SessionID: "session_1", CallID: "call-1", SequenceNo: 1}
+	hub.PublishTranscriptSegment(segment)
+
+	for name, client := range map[string]*transcriptClient{"all": allSessions, "matching": matching} {
+		select {
+		case got := <-client.send:
+			if got.segment == nil || got.segment.EventID != "session_1:1" {
+				t.Fatalf("%s got segment = %+v", name, got)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not receive segment", name)
+		}
+	}
+	select {
+	case got := <-other.send:
+		t.Fatalf("other session unexpectedly received %+v", got)
+	default:
+	}
+}
+
 func TestTranscriptWebSocketConfigChecksTokenAndOrigin(t *testing.T) {
 	config := TranscriptWebSocketConfig{
 		ClientToken:    "client-token",

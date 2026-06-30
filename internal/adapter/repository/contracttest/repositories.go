@@ -250,14 +250,14 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("EnsureInitialWorkspace() error = %v", err)
 		}
 
-		invitation, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, member.Email)
+		invitation, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, member.Email, domain.WorkspaceRoleAdmin)
 		if err != nil {
 			t.Fatalf("CreateInvitation() error = %v", err)
 		}
 		if invitation.NormalizedEmail != "member@example.com" {
 			t.Fatalf("invitation normalized email = %q", invitation.NormalizedEmail)
 		}
-		if _, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, " MEMBER@example.com "); !errors.Is(err, domain.ErrConflict) {
+		if _, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, " MEMBER@example.com ", domain.WorkspaceRoleAdmin); !errors.Is(err, domain.ErrConflict) {
 			t.Fatalf("CreateInvitation(duplicate) error = %v, want ErrConflict", err)
 		}
 		if err := repos.Auth.AcceptInvitations(ctx, member.ID, "member@example.com"); err != nil {
@@ -267,7 +267,7 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatalf("ListMembers() error = %v", err)
 		}
-		if !hasMember(members, member.ID, "member") {
+		if !hasMember(members, member.ID, domain.WorkspaceRoleAdmin) {
 			t.Fatalf("members = %+v, want accepted member", members)
 		}
 

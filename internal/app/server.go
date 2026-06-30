@@ -107,11 +107,16 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	accessService := appaccess.NewService(authRepository)
 
 	handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
-		CoreAPI:            httpadapter.NewCoreAPI(service, replay),
-		AuthAPI:            httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
-		WorkspaceAPI:       httpadapter.NewWorkspaceAPI(workspaceService, hub),
-		TranscriptAPI:      httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
-		MeetingSessionAPI:  httpadapter.NewMeetingSessionAPI(meetingSessionService, config.TranscriptIngest.APIKey),
+		CoreAPI:       httpadapter.NewCoreAPI(service, replay),
+		AuthAPI:       httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
+		WorkspaceAPI:  httpadapter.NewWorkspaceAPI(workspaceService, hub),
+		TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
+		MeetingSessionAPI: httpadapter.NewMeetingSessionAPI(
+			meetingSessionService,
+			config.TranscriptIngest.APIKey,
+			httpadapter.WithMeetingSessionTranscriptService(transcriptRuntime.service),
+			httpadapter.WithMeetingSessionTranscriptRealtime(transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket))),
+		),
 		TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
 		AuthService:        authService,
 		Workspace:          workspaceService,

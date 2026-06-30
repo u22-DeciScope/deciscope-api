@@ -28,7 +28,7 @@ func TestMeetingSessionAPICreatesSession(t *testing.T) {
 	}
 	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc","title":"週次定例","candidateUserPrincipalNames":["user@example.com"]}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc","title":"週次定例","candidateUserPrincipalNames":["user@example.com"],"purpose":"意思決定","decision_points":"リリース可否"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
 	api.Create(resp, req)
@@ -36,7 +36,7 @@ func TestMeetingSessionAPICreatesSession(t *testing.T) {
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
 	}
-	if service.createInput.JoinURL != "https://teams.microsoft.com/l/meetup-join/abc" || service.createInput.Title != "週次定例" {
+	if service.createInput.JoinURL != "https://teams.microsoft.com/l/meetup-join/abc" || service.createInput.Title != "週次定例" || service.createInput.Purpose != "意思決定" || service.createInput.DecisionPoints != "リリース可否" {
 		t.Fatalf("createInput = %+v", service.createInput)
 	}
 	if len(service.createInput.CandidateUserPrincipalNames) != 1 || service.createInput.CandidateUserPrincipalNames[0] != "user@example.com" {
@@ -182,6 +182,43 @@ func TestMeetingSessionAPIEndsSession(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionJoined,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	var gotPath string
+	var gotSessionID string
+	var gotCallID string
+	api := NewMeetingSessionAPI(
+		service,
+		testTranscriptAPIKey,
+		WithMeetingSessionTranscriptRealtime(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			gotSessionID = r.URL.Query().Get("sessionId")
+			gotCallID = r.URL.Query().Get("callId")
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	)
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream?callId=call-ignored", "")
+	resp := httptest.NewRecorder()
+
+	api.StreamWorkspaceTranscriptSegments(resp, req)
+
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if gotPath != "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream" || gotSessionID != "session_1" || gotCallID != "" {
+		t.Fatalf("forwarded path=%q sessionId=%q callId=%q", gotPath, gotSessionID, gotCallID)
+	}
+}
+
 type fakeMeetingSessionUseCases struct {
 	session     domain.MeetingSession
 	err         error
@@ -210,6 +247,13 @@ func (f *fakeMeetingSessionUseCases) GetMeetingSession(_ context.Context, sessio
 		return nil, fmt.Errorf("%w: meeting session not found", domain.ErrNotFound)
 	}
 	return &f.session, nil
+}
+
+func (f *fakeMeetingSessionUseCases) ListMeetingSessions(_ context.Context, _ string, _ int) ([]domain.MeetingSession, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []domain.MeetingSession{f.session}, nil
 }
 
 func (f *fakeMeetingSessionUseCases) EndMeetingSession(_ context.Context, input application.MeetingSessionEndInput) (*domain.MeetingSession, error) {
@@ -263,6 +307,13 @@ func (f *fakeMeetingSessionUseCases) ListMeetingSessionDebug(_ context.Context, 
 func requestWithSessionParam(method, target, body string) *http.Request {
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("session_id", "session_1")
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+}
+func requestWithWorkspaceSessionParams(method, target, body string) *http.Request {
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("workspace_code", "workspace_1")
 	routeCtx.URLParams.Add("session_id", "session_1")
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
 }
