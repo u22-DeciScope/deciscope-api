@@ -22,12 +22,8 @@ func NewTranscriptIngestService(repository TranscriptSegmentRepository, publishe
 }
 
 func (s *TranscriptIngestService) StoreTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
-	segment.RecognizedAtUTC = segment.RecognizedAtUTC.UTC()
-	if segment.ReceivedAtUTC.IsZero() {
-		segment.ReceivedAtUTC = s.now().UTC()
-	} else {
-		segment.ReceivedAtUTC = segment.ReceivedAtUTC.UTC()
-	}
+	segment = s.normalizeTranscriptSegment(segment)
+	segment.IsFinal = true
 	result, err := s.repository.SaveTranscriptSegment(ctx, segment)
 	if err != nil {
 		return result, err
@@ -38,6 +34,26 @@ func (s *TranscriptIngestService) StoreTranscriptSegment(ctx context.Context, se
 	return result, nil
 }
 
-func (s *TranscriptIngestService) ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error) {
-	return s.repository.ListTranscriptSegments(ctx, callID, limit)
+func (s *TranscriptIngestService) PublishTranscriptPartial(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
+	_ = ctx
+	segment = s.normalizeTranscriptSegment(segment)
+	segment.IsFinal = false
+	if s.publisher != nil {
+		s.publisher.PublishTranscriptSegment(segment)
+	}
+	return domain.TranscriptSegmentStoreResult{Status: domain.TranscriptSegmentPartialSent, EventID: segment.EventID}, nil
+}
+
+func (s *TranscriptIngestService) ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error) {
+	return s.repository.ListTranscriptSegments(ctx, callID, sessionID, limit)
+}
+
+func (s *TranscriptIngestService) normalizeTranscriptSegment(segment domain.TranscriptSegment) domain.TranscriptSegment {
+	segment.RecognizedAtUTC = segment.RecognizedAtUTC.UTC()
+	if segment.ReceivedAtUTC.IsZero() {
+		segment.ReceivedAtUTC = s.now().UTC()
+	} else {
+		segment.ReceivedAtUTC = segment.ReceivedAtUTC.UTC()
+	}
+	return segment
 }

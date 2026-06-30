@@ -216,7 +216,7 @@ func testDatabaseURL(t *testing.T) string {
 func resetTestDatabase(t *testing.T, db *sql.DB) {
 	t.Helper()
 	_, err := db.Exec(`
-		TRUNCATE TABLE transcript_segments, uploads, jobs, meeting_reports, meeting_segments, meeting_events,
+		TRUNCATE TABLE transcript_segments, meeting_sessions, uploads, jobs, meeting_reports, meeting_segments, meeting_events,
 			meetings, user_sessions, workspace_invitations, workspace_members, workspaces,
 			user_emails, user_identities, users RESTART IDENTITY CASCADE
 	`)

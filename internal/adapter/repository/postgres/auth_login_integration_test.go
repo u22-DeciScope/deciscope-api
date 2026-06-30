@@ -34,7 +34,7 @@ func TestLoginPersistsAccountToPostgreSQL(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	if _, err := db.Exec(`
-		TRUNCATE TABLE uploads, jobs, meeting_reports, meeting_segments, meeting_events,
+		TRUNCATE TABLE transcript_segments, meeting_sessions, uploads, jobs, meeting_reports, meeting_segments, meeting_events,
 			meetings, user_sessions, workspace_invitations, workspace_members, workspaces,
 			user_emails, user_identities, users RESTART IDENTITY CASCADE
 	`); err != nil {

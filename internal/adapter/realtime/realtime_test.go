@@ -82,9 +82,9 @@ func TestParseSeqRejectsInvalidValues(t *testing.T) {
 
 func TestTranscriptHubPublishFiltersByCallID(t *testing.T) {
 	hub := NewTranscriptHub()
-	allCalls := &transcriptClient{send: make(chan domain.TranscriptSegment, 1), done: make(chan struct{})}
-	matching := &transcriptClient{callID: "call-1", send: make(chan domain.TranscriptSegment, 1), done: make(chan struct{})}
-	other := &transcriptClient{callID: "call-2", send: make(chan domain.TranscriptSegment, 1), done: make(chan struct{})}
+	allCalls := &transcriptClient{send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	matching := &transcriptClient{callID: "call-1", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	other := &transcriptClient{callID: "call-2", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
 	hub.subscribe(allCalls)
 	hub.subscribe(matching)
 	hub.subscribe(other)
@@ -100,7 +100,7 @@ func TestTranscriptHubPublishFiltersByCallID(t *testing.T) {
 	for name, client := range map[string]*transcriptClient{"all": allCalls, "matching": matching} {
 		select {
 		case got := <-client.send:
-			if got.EventID != "call-1:1" {
+			if got.segment == nil || got.segment.EventID != "call-1:1" {
 				t.Fatalf("%s got segment = %+v", name, got)
 			}
 		case <-time.After(time.Second):
@@ -139,8 +139,11 @@ func TestTranscriptWebSocketConfigChecksTokenAndOrigin(t *testing.T) {
 func TestTranscriptSegmentProtocolMessage(t *testing.T) {
 	segment := domain.TranscriptSegment{
 		EventID:         "call-1:1",
+		SessionID:       "session_1",
 		CallID:          "call-1",
 		SequenceNo:      1,
+		SpeakerID:       "speaker-1",
+		SpeakerName:     "佐藤さん",
 		RecognizedAtUTC: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
 		OffsetTicks:     10,
 		DurationTicks:   20,
@@ -150,7 +153,40 @@ func TestTranscriptSegmentProtocolMessage(t *testing.T) {
 	if message.Type != transcriptSegmentCreatedType || message.SentAtUTC != "2026-06-27T00:00:01Z" {
 		t.Fatalf("message = %+v", message)
 	}
-	if message.Data.EventID != "call-1:1" || message.Data.Duplicate {
+	if message.Data.SessionID != "session_1" || message.Data.EventID != "call-1:1" ||
+		message.Data.SpeakerID != "speaker-1" || message.Data.SpeakerName != "佐藤さん" || message.Data.Duplicate || !message.Data.IsFinal {
+		t.Fatalf("message data = %+v", message.Data)
+	}
+}
+
+func TestTranscriptSegmentProtocolMessageMarksPartial(t *testing.T) {
+	segment := domain.TranscriptSegment{
+		EventID:         "partial:session_1:call-1:speaker-1",
+		SessionID:       "session_1",
+		CallID:          "call-1",
+		SequenceNo:      0,
+		SpeakerID:       "speaker-1",
+		RecognizedAtUTC: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
+		Text:            "hel",
+		IsFinal:         false,
+	}
+	message := transcriptSegmentProtocolMessage(segment, time.Date(2026, 6, 27, 0, 0, 1, 0, time.UTC))
+	if message.Data.IsFinal {
+		t.Fatalf("message data = %+v", message.Data)
+	}
+}
+
+func TestMeetingSessionStatusProtocolMessage(t *testing.T) {
+	session := domain.MeetingSession{
+		ID:        "session_1",
+		Status:    domain.MeetingSessionJoined,
+		BotCallID: "call-1",
+	}
+	message := meetingSessionStatusProtocolMessage(session, time.Date(2026, 6, 27, 0, 0, 2, 0, time.UTC))
+	if message.Type != meetingSessionStatusChangedType || message.SentAtUTC != "2026-06-27T00:00:02Z" {
+		t.Fatalf("message = %+v", message)
+	}
+	if message.Data.SessionID != "session_1" || message.Data.Status != "joined" || message.Data.BotCallID != "call-1" {
 		t.Fatalf("message data = %+v", message.Data)
 	}
 }

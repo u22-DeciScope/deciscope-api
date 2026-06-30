@@ -88,6 +88,7 @@ func TestTranscriptSegmentRepositoryListsByCallIDAndLimit(t *testing.T) {
 	otherCall := first
 	otherCall.EventID = "other-call:1"
 	otherCall.CallID = "other-call"
+	otherCall.SessionID = "session_other"
 
 	for _, segment := range []domain.TranscriptSegment{second, otherCall, first} {
 		if _, err := repository.SaveTranscriptSegment(ctx, segment); err != nil {
@@ -95,7 +96,7 @@ func TestTranscriptSegmentRepositoryListsByCallIDAndLimit(t *testing.T) {
 		}
 	}
 
-	segments, err := repository.ListTranscriptSegments(ctx, first.CallID, 10)
+	segments, err := repository.ListTranscriptSegments(ctx, first.CallID, "", 10)
 	if err != nil {
 		t.Fatalf("ListTranscriptSegments() error = %v", err)
 	}
@@ -103,7 +104,15 @@ func TestTranscriptSegmentRepositoryListsByCallIDAndLimit(t *testing.T) {
 		t.Fatalf("segments = %+v", segments)
 	}
 
-	limited, err := repository.ListTranscriptSegments(ctx, "", 1)
+	sessionFiltered, err := repository.ListTranscriptSegments(ctx, "", first.SessionID, 10)
+	if err != nil {
+		t.Fatalf("ListTranscriptSegments(sessionID) error = %v", err)
+	}
+	if len(sessionFiltered) != 2 {
+		t.Fatalf("session filtered segments length = %d, want 2", len(sessionFiltered))
+	}
+
+	limited, err := repository.ListTranscriptSegments(ctx, "", "", 1)
 	if err != nil {
 		t.Fatalf("ListTranscriptSegments(limit) error = %v", err)
 	}
@@ -128,9 +137,12 @@ func newTestTranscriptSegmentRepository(t *testing.T) (*TranscriptSegmentReposit
 
 func validTranscriptSegment() domain.TranscriptSegment {
 	return domain.TranscriptSegment{
+		SessionID:       "session_test",
 		EventID:         "06008080-91e3-4b88-a8ff-9af629265ced:1",
 		CallID:          "06008080-91e3-4b88-a8ff-9af629265ced",
 		SequenceNo:      1,
+		SpeakerID:       "speaker-1",
+		SpeakerName:     "佐藤さん",
 		RecognizedAtUTC: time.Date(2026, 6, 25, 13, 20, 1, 123456700, time.UTC),
 		OffsetTicks:     20300000,
 		DurationTicks:   18000000,
@@ -150,21 +162,22 @@ func transcriptSegmentRowCount(t *testing.T, db *sql.DB) int {
 
 func assertStoredTranscriptSegment(t *testing.T, db *sql.DB, want domain.TranscriptSegment) {
 	t.Helper()
-	var eventID, callID, recognizedAtUTC, text, receivedAtUTC string
+	var sessionID, eventID, callID, speakerID, speakerName, recognizedAtUTC, text, receivedAtUTC string
 	var sequenceNo, offsetTicks, durationTicks int64
 	err := db.QueryRow(`
-		SELECT event_id, call_id, sequence_no, recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
+		SELECT COALESCE(session_id, ''), event_id, call_id, sequence_no, COALESCE(speaker_id, ''), COALESCE(speaker_name, ''), recognized_at_utc, offset_ticks, duration_ticks, text, received_at_utc
 		FROM transcript_segments
 		WHERE event_id = $1
-	`, want.EventID).Scan(&eventID, &callID, &sequenceNo, &recognizedAtUTC, &offsetTicks, &durationTicks, &text, &receivedAtUTC)
+	`, want.EventID).Scan(&sessionID, &eventID, &callID, &sequenceNo, &speakerID, &speakerName, &recognizedAtUTC, &offsetTicks, &durationTicks, &text, &receivedAtUTC)
 	if err != nil {
 		t.Fatalf("query stored transcript segment: %v", err)
 	}
-	if eventID != want.EventID || callID != want.CallID || sequenceNo != want.SequenceNo ||
+	if sessionID != want.SessionID || eventID != want.EventID || callID != want.CallID || sequenceNo != want.SequenceNo ||
+		speakerID != want.SpeakerID || speakerName != want.SpeakerName ||
 		recognizedAtUTC != "2026-06-25T13:20:01.1234567Z" ||
 		offsetTicks != want.OffsetTicks || durationTicks != want.DurationTicks ||
 		text != want.Text || receivedAtUTC == "" {
-		t.Fatalf("stored transcript segment = eventID=%q callID=%q sequenceNo=%d recognizedAtUTC=%q offsetTicks=%d durationTicks=%d text=%q receivedAtUTC=%q",
-			eventID, callID, sequenceNo, recognizedAtUTC, offsetTicks, durationTicks, text, receivedAtUTC)
+		t.Fatalf("stored transcript segment = sessionID=%q eventID=%q callID=%q sequenceNo=%d speakerID=%q speakerName=%q recognizedAtUTC=%q offsetTicks=%d durationTicks=%d text=%q receivedAtUTC=%q",
+			sessionID, eventID, callID, sequenceNo, speakerID, speakerName, recognizedAtUTC, offsetTicks, durationTicks, text, receivedAtUTC)
 	}
 }

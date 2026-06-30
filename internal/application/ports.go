@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"io"
+	"time"
 
 	"deciscope-core-api/internal/domain"
 )
@@ -38,11 +39,47 @@ type UploadRepository interface {
 
 type TranscriptSegmentRepository interface {
 	SaveTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
-	ListTranscriptSegments(ctx context.Context, callID string, limit int) ([]domain.TranscriptSegment, error)
+	ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error)
 }
 
 type TranscriptSegmentPublisher interface {
 	PublishTranscriptSegment(segment domain.TranscriptSegment)
+}
+
+type MeetingSessionRepository interface {
+	CreateMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, error)
+	CreateOrReuseMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, bool, error)
+	GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error)
+	UpdateMeetingSessionStatus(ctx context.Context, update domain.MeetingSessionStatusUpdate) (*domain.MeetingSession, error)
+	UpdateMeetingSessionMetadata(ctx context.Context, update domain.MeetingSessionMetadataUpdate) (*domain.MeetingSession, error)
+	MarkStaleMeetingSessions(ctx context.Context, staleBefore time.Time, updatedAt time.Time) ([]domain.MeetingSession, error)
+	ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error)
+}
+
+type BotJoinCommand struct {
+	SessionID                   string
+	JoinURL                     string
+	CanonicalJoinWebURL         string
+	JoinMeetingID               string
+	CandidateUserIDs            []string
+	CandidateUserPrincipalNames []string
+	CreatedByMicrosoftUserID    string
+	CreatedByEmail              string
+}
+
+type BotEndCommand struct {
+	SessionID string
+	BotCallID string
+	Reason    string
+}
+
+type BotJoinCommander interface {
+	SendJoinCommand(ctx context.Context, command BotJoinCommand) error
+	EndMeetingSession(ctx context.Context, command BotEndCommand) error
+}
+
+type MeetingSessionPublisher interface {
+	PublishMeetingSessionStatusChanged(session domain.MeetingSession)
 }
 
 type Publisher interface {

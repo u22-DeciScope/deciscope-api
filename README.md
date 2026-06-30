@@ -66,12 +66,23 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は文字起こし取り込みAPIだけを起動
 - `DECISCOPE_WS_CLIENT_TOKEN`: transcript WebSocket/履歴GET用client token。未設定時は開発用に認証なし
 - `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketの許可Origin。カンマ区切り
+- `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います
+- `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
+- `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御API呼び出しtimeout。既定値は `10`
+- `MEETING_TITLE_LOOKUP_USER_IDS`: Teams会議名解決用。Microsoft Graph user object id を推奨。UPN/email も指定できますが、Bot 側で `/users/{upn}` により object id 解決してから使います
 - `DECISCOPE_GO_SQLITE_PATH`: SQLite fallback用file path
 - `FIXTURE_DIR`: fixture JSONL directory
 - `UPLOAD_DIR`: local upload directory
 - `FRONTEND_URL`, `ALLOWED_ORIGINS`: CORS設定
 
 完全な例は [.env.example](.env.example) を参照してください。`.env` はGit管理対象外です。
+
+Teams会議名を Microsoft Graph の `/users/{id}/onlineMeetings` から取得する場合、
+`MEETING_TITLE_LOOKUP_USER_IDS` には会議作成者、または会議を参照できる対象ユーザーの
+Azure AD / Microsoft Graph user object id を指定してください。UPN/email を指定した場合は
+`candidateUserPrincipalNames` として Bot join command に渡し、Bot 側で
+`/users/{upn}?$select=id,userPrincipalName,mail` により object id へ解決してから
+`/users/{id}/onlineMeetings` を試します。ログには値そのものではなく件数とハッシュのみを出します。
 
 ## Docker Compose
 
@@ -141,15 +152,25 @@ X-DeciScope-Api-Key: <DECISCOPE_INGEST_API_KEY>
 
 ```json
 {
+  "sessionId": "session_...",
   "eventId": "06008080-91e3-4b88-a8ff-9af629265ced:1",
   "callId": "06008080-91e3-4b88-a8ff-9af629265ced",
   "sequenceNo": 1,
+  "speakerId": "8:orgid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "speakerName": "山田 太郎",
   "recognizedAtUtc": "2026-06-25T13:20:01.1234567+00:00",
   "offsetTicks": 20300000,
   "durationTicks": 18000000,
   "text": "本日の会議を開始します。"
 }
 ```
+
+`sessionId` は任意です。既存のVM Botや手動POSTが `sessionId` を送らなくても
+従来どおり保存できます。会議セッション作成APIから返った `sessionId` を付けると、
+履歴取得とWebSocketで `sessionId` による絞り込みができます。
+`speakerId` / `speakerName` も任意です。Botが話者情報を送った場合は
+PostgreSQLの `speaker_id` / `speaker_name` に保存し、履歴APIとWebSocket配信にも
+camelCaseで含めます。
 
 手動テスト:
 
@@ -160,14 +181,19 @@ $headers = @{
     "X-DeciScope-Api-Key" = $apiKey
 }
 
+$n = Get-Random -Minimum 1000 -Maximum 999999
+
 $body = @{
-    eventId         = "manual-test-call:1"
-    callId          = "manual-test-call"
-    sequenceNo      = 1
+    sessionId       = "manual-speaker-session"
+    eventId         = "manual-speaker-test-$n"
+    callId          = "manual-speaker-call"
+    sequenceNo      = $n
     recognizedAtUtc = [DateTimeOffset]::UtcNow.ToString("O")
     offsetTicks     = 0
     durationTicks   = 10000000
     text            = "Go APIへの保存テストです。"
+    speakerId       = "manual-speaker-001"
+    speakerName     = "手動テスト太郎"
 } | ConvertTo-Json
 
 Invoke-RestMethod `
@@ -176,6 +202,37 @@ Invoke-RestMethod `
     -Headers $headers `
     -ContentType "application/json; charset=utf-8" `
     -Body $body
+```
+
+DB確認:
+
+```sql
+SELECT session_id, call_id, sequence_no, speaker_id, speaker_name, text, recognized_at_utc
+FROM transcript_segments
+ORDER BY recognized_at_utc DESC
+LIMIT 10;
+```
+
+履歴取得レスポンスにも話者情報が含まれます。
+
+```json
+{
+  "items": [
+    {
+      "sessionId": "manual-speaker-session",
+      "eventId": "manual-speaker-test-1234",
+      "callId": "manual-speaker-call",
+      "sequenceNo": 1234,
+      "speakerId": "manual-speaker-001",
+      "speakerName": "手動テスト太郎",
+      "recognizedAtUtc": "2026-06-27T07:00:00Z",
+      "offsetTicks": 0,
+      "durationTicks": 10000000,
+      "text": "Go APIへの保存テストです。",
+      "receivedAtUtc": "2026-06-27T07:00:01Z"
+    }
+  ]
+}
 ```
 
 VMから接続する場合、PostgreSQLコンテナや `postgres:5432` へ直接接続しません。
@@ -197,7 +254,9 @@ VM BotはWebSocketへ接続しません。従来どおり
 ```text
 WS  /api/v1/ws/transcript-segments
 WS  /api/v1/ws/transcript-segments?callId={call_id}
+WS  /api/v1/ws/transcript-segments?sessionId={session_id}
 GET /api/v1/transcript-segments?callId={call_id}&limit=100
+GET /api/v1/transcript-segments?sessionId={session_id}&limit=100
 ```
 
 WebSocket message:
@@ -207,9 +266,12 @@ WebSocket message:
   "type": "transcript_segment.created",
   "sentAtUtc": "2026-06-27T00:00:00Z",
   "data": {
+    "sessionId": "session_...",
     "eventId": "09005080-cce6-4132-9404-1e823df47ff9:6",
     "callId": "09005080-cce6-4132-9404-1e823df47ff9",
     "sequenceNo": 6,
+    "speakerId": "8:orgid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "speakerName": "山田 太郎",
     "recognizedAtUtc": "2026-06-27T00:00:00Z",
     "offsetTicks": 287000000,
     "durationTicks": 41200000,
@@ -217,6 +279,92 @@ WebSocket message:
     "duplicate": false
   }
 }
+```
+
+会議セッションの状態変化も同じWebSocketへ配信されます。
+
+```json
+{
+  "type": "meeting_session.status_changed",
+  "sentAtUtc": "2026-06-27T00:00:00Z",
+  "data": {
+    "sessionId": "session_...",
+    "status": "joined",
+    "botCallId": "09005080-cce6-4132-9404-1e823df47ff9"
+  }
+}
+```
+
+## Teams Bot Meeting Sessions
+
+フロントエンドはVM Botを直接叩きません。Teams会議URLはGo APIの
+`POST /api/v1/meeting-sessions` へ送信し、Go APIがTailscale内のVM Bot制御APIへ
+参加命令を送ります。
+
+VM Bot制御APIの設定:
+
+```env
+DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
+DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
+DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
+```
+
+Go APIからVM Botへ送るリクエスト:
+
+```http
+POST <DECISCOPE_BOT_CONTROL_URL>
+Content-Type: application/json
+X-DeciScope-Bot-Control-Token: <DECISCOPE_BOT_CONTROL_TOKEN>
+```
+
+```json
+{
+  "sessionId": "session_...",
+  "joinUrl": "https://teams.microsoft.com/l/meetup-join/..."
+}
+```
+
+VM Botが2xxを返すと `meeting_sessions.status` は `command_sent` になります。
+4xx/5xx/timeoutの場合は `failed` と `last_error` を保存します。
+`joinUrl` 全文とtokenはログへ出さず、ログには `sessionId` と `joinUrlHash` を使います。
+
+手動テスト:
+
+```powershell
+$body = @{
+  joinUrl = "https://teams.microsoft.com/l/meetup-join/..."
+} | ConvertTo-Json
+
+Invoke-WebRequest `
+  -Uri "http://localhost:9090/api/v1/meeting-sessions" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body `
+  -UseBasicParsing
+```
+
+状態取得:
+
+```powershell
+Invoke-RestMethod "http://localhost:9090/api/v1/meeting-sessions/<sessionId>"
+```
+
+VM Botからの状態更新:
+
+```powershell
+$apiKey = Read-Host "DeciScope ingest API key"
+$body = @{
+  status = "joined"
+  botCallId = "09005080-cce6-4132-9404-1e823df47ff9"
+  message = "joined successfully"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Patch `
+  -Uri "http://localhost:9090/api/v1/bot/meeting-sessions/<sessionId>/status" `
+  -Headers @{ "X-DeciScope-Api-Key" = $apiKey } `
+  -ContentType "application/json" `
+  -Body $body
 ```
 
 `DECISCOPE_WS_CLIENT_TOKEN` を設定している場合、WebSocketと履歴GETには
@@ -275,6 +423,9 @@ Invoke-RestMethod `
 - `POST /api/v1/transcript-segments`
 - `GET /api/v1/transcript-segments?callId={call_id}&limit=100`
 - `WS /api/v1/ws/transcript-segments?callId={call_id}`
+- `POST /api/v1/meeting-sessions`
+- `GET /api/v1/meeting-sessions/{session_id}`
+- `PATCH /api/v1/bot/meeting-sessions/{session_id}/status`
 - `GET /v1/workspaces/{workspace_code}/meetings`
 - `POST /v1/workspaces/{workspace_code}/meetings`
 - `GET /v1/meetings/{meeting_id}`

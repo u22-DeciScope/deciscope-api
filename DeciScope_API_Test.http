@@ -2,6 +2,7 @@
 @apiKey = change-me-change-me-change-me-1234
 @workspace_code = replace-with-workspace-id
 @meeting_id = replace-with-meeting-id
+@session_id = replace-with-session-id
 
 ### process health
 GET {{baseUrl}}/healthz
@@ -21,13 +22,41 @@ Content-Type: application/json
 X-DeciScope-Api-Key: {{apiKey}}
 
 {
+  "sessionId": "{{session_id}}",
   "eventId": "manual-test-call:1",
   "callId": "manual-test-call",
   "sequenceNo": 1,
+  "speakerId": "manual-speaker-001",
+  "speakerName": "手動テスト太郎",
   "recognizedAtUtc": "2026-06-25T13:20:01.1234567+00:00",
   "offsetTicks": 0,
   "durationTicks": 10000000,
   "text": "Go APIへの保存テストです。"
+}
+
+
+### Teams meeting session create
+POST {{baseUrl}}/api/v1/meeting-sessions
+Content-Type: application/json
+
+{
+  "joinUrl": "https://teams.microsoft.com/l/meetup-join/replace-with-real-meeting-url"
+}
+
+
+### Teams meeting session get
+GET {{baseUrl}}/api/v1/meeting-sessions/{{session_id}}
+
+
+### Bot meeting session status update
+PATCH {{baseUrl}}/api/v1/bot/meeting-sessions/{{session_id}}/status
+Content-Type: application/json
+X-DeciScope-Api-Key: {{apiKey}}
+
+{
+  "status": "joined",
+  "botCallId": "manual-test-call",
+  "message": "joined successfully"
 }
 
 
