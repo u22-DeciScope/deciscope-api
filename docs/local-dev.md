@@ -12,15 +12,21 @@ docker compose up --build -d
 VMなど別端末から接続する場合は、`.env` の `DECISCOPE_BACKEND_ADDR` に
 `<PC_TAILSCALE_IP>:9090` のような待受addressを設定できます。
 `DECISCOPE_BACKEND_ADDR` が未設定の場合は `PORT` がfallbackとして使われます。
-`DECISCOPE_TRANSCRIPT_ONLY=true` の場合は、PostgreSQLなしで `/healthz` と
-`/api/v1/transcript-segments` だけを起動します。
+`DECISCOPE_TRANSCRIPT_ONLY=true` の場合も、PostgreSQLへの接続自体は必要です
+（会議・認証まわりのcore repositoryだけ初期化しません）。
+
+`docker compose up` を使わず `go run .` で直接起動することもできますが、
+`compose.yaml` の `postgres` serviceはPCホストへportを公開していないため、
+その場合は別途host側で到達可能なPostgreSQL（ローカルインストール、または
+`compose.yaml` に一時的に `ports: ["5432:5432"]` を追加したもの）が必要です。
 
 ```powershell
 go run . migrate
 go run . serve
 ```
 
-起動時は `.env` を読み込み、その後 `.env.local` で上書きします。
+起動時は `.env` を読み込み、その後 `.env.local` が存在すれば上書きします
+（`.env.local` はDocker Composeからは読み込まれません。`go run .` 専用です）。
 
 ## データベース設定
 
@@ -30,8 +36,7 @@ DECISCOPE_TRANSCRIPT_STORE=postgres
 ```
 
 - `DATABASE_URL`: PostgreSQL接続URLです。必須です。
-- `DECISCOPE_TRANSCRIPT_STORE`: 既定は `postgres` です。SQLite fallback時だけ `sqlite` にします。
-- `DECISCOPE_GO_SQLITE_PATH`: SQLite fallback用file pathです。
+- `DECISCOPE_TRANSCRIPT_STORE`: 既定は `postgres` です（省略可）。
 
 接続生成は `internal/infrastructure/database` の `database.Open`、
 スキーマ更新は `go run . migrate` またはComposeの `migrate` serviceが担当します。

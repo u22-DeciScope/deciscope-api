@@ -22,10 +22,6 @@ func NormalizeWorkspaceRole(role string) string {
 	}
 }
 
-func ValidWorkspaceRole(role string) bool {
-	return NormalizeWorkspaceRole(role) != ""
-}
-
 func ValidWorkspaceInvitationRole(role string) bool {
 	switch NormalizeWorkspaceRole(role) {
 	case WorkspaceRoleAdmin, WorkspaceRoleViewer:

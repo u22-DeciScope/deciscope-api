@@ -32,10 +32,9 @@ internal/app
 
 ## Database
 
-標準構成では、会議・認証データとEchoBot文字起こし取り込みデータを
-PostgreSQLに保存します。文字起こし取り込みだけをローカルSQLiteへ保存したい場合は、
-`DECISCOPE_TRANSCRIPT_ONLY=true` または `DECISCOPE_TRANSCRIPT_STORE=sqlite` と
-`DECISCOPE_GO_SQLITE_PATH` を設定してください。
+会議・認証データとEchoBot文字起こし取り込みデータは、いずれもPostgreSQLに保存します。
+`DECISCOPE_TRANSCRIPT_ONLY=true` にすると、会議・認証まわりのcore repositoryは初期化せず、
+文字起こし取り込みAPIだけを起動できます（この場合もPostgreSQLへの接続は必要です）。
 
 PostgreSQLの文字起こしテーブルは `transcript_segments` です。主な列は
 `event_id`, `call_id`, `sequence_no`, `recognized_at_utc`, `offset_ticks`,
@@ -62,7 +61,7 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DATABASE_URL`: PostgreSQL connection URL。ローカル実行時は必須
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: Compose PostgreSQL設定
 - `DECISCOPE_INGEST_API_KEY`: transcript ingest用共有API key。32文字以上、必須
-- `DECISCOPE_TRANSCRIPT_STORE`: `postgres` または `sqlite`
+- `DECISCOPE_TRANSCRIPT_STORE`: `postgres`（既定値。省略可）
 - `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は文字起こし取り込みAPIだけを起動
 - `DECISCOPE_WS_CLIENT_TOKEN`: transcript WebSocket/履歴GET用client token。未設定時は開発用に認証なし
 - `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketの許可Origin。カンマ区切り
@@ -70,9 +69,13 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御API呼び出しtimeout。既定値は `10`
 - `MEETING_TITLE_LOOKUP_USER_IDS`: Teams会議名解決用。Microsoft Graph user object id を推奨。UPN/email も指定できますが、Bot 側で `/users/{upn}` により object id 解決してから使います
-- `DECISCOPE_GO_SQLITE_PATH`: SQLite fallback用file path
 - `UPLOAD_DIR`: local upload directory
 - `FRONTEND_URL`, `ALLOWED_ORIGINS`: CORS設定
+- `SESSION_COOKIE_SECURE`: `true` の場合、セッションCookieに `Secure` 属性を付与
+- `DECISCOPE_SEED_DEMO_DATA`: `true` の場合、起動時にデモ用workspaceをPostgreSQLへ投入
+- `AUTH_PROVIDER`, `FIREBASE_PROJECT_ID`, `FIREBASE_SERVICE_ACCOUNT_JSON` /
+  `GOOGLE_APPLICATION_CREDENTIALS`, `FIREBASE_CREDENTIALS_JSON`: Firebase認証設定。
+  詳細は [docs/firebase-auth.md](docs/firebase-auth.md) を参照してください
 
 完全な例は [.env.example](.env.example) を参照してください。`.env` はGit管理対象外です。
 

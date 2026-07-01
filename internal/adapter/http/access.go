@@ -27,10 +27,6 @@ func requireWorkspaceAccess(service WorkspaceAccessUseCases) func(http.Handler) 
 	})
 }
 
-func requireWorkspaceOwner(service WorkspaceAccessUseCases) func(http.Handler) http.Handler {
-	return requireWorkspaceRole(service, domain.IsWorkspaceOwner)
-}
-
 func requireWorkspaceAdminOrOwner(service WorkspaceAccessUseCases) func(http.Handler) http.Handler {
 	return requireWorkspaceRole(service, domain.CanManageMeetingSessions)
 }

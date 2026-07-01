@@ -79,19 +79,6 @@ Content-Type: application/json
 }
 
 
-### fixture一覧
-GET {{baseUrl}}/v1/fixtures
-
-
-### fixture replay start
-POST {{baseUrl}}/v1/meetings/{{meeting_id}}/replay/start
-Content-Type: application/json
-
-{
-  "fixture": "demo.jsonl"
-}
-
-
 ### durable events
 GET {{baseUrl}}/v1/meetings/{{meeting_id}}/events?after_seq=0
 
