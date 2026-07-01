@@ -2,7 +2,7 @@
 
 DeciScopeのローカルMVP向け、Go + `chi`製バックエンドです。
 
-会議API、WebSocketリアルタイム配信、fixture replay、PostgreSQL永続化、
+会議API、WebSocketリアルタイム配信、PostgreSQL永続化、
 Azure EchoBot向け文字起こし取り込み、mock upload/job、Markdownレポート生成を
 提供します。外部STT、外部LLMには接続しません。
 
@@ -25,7 +25,7 @@ internal/app
 - `internal/app`: 設定読込と具体実装の組み立て
 - `internal/domain`: Domain Entity、Error、純粋なRule
 - `internal/application`: Use CaseとOutbound Port
-- `internal/adapter`: HTTP、WebSocket、fixture、Repository実装
+- `internal/adapter`: HTTP、WebSocket、Repository実装
 - `internal/infrastructure`: DB接続、Migration、Firebase、filesystem storage
 
 詳細は [docs/backend-architecture.md](docs/backend-architecture.md) を参照してください。
@@ -71,7 +71,6 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御API呼び出しtimeout。既定値は `10`
 - `MEETING_TITLE_LOOKUP_USER_IDS`: Teams会議名解決用。Microsoft Graph user object id を推奨。UPN/email も指定できますが、Bot 側で `/users/{upn}` により object id 解決してから使います
 - `DECISCOPE_GO_SQLITE_PATH`: SQLite fallback用file path
-- `FIXTURE_DIR`: fixture JSONL directory
 - `UPLOAD_DIR`: local upload directory
 - `FRONTEND_URL`, `ALLOWED_ORIGINS`: CORS設定
 
@@ -433,8 +432,6 @@ Invoke-RestMethod `
 - `GET /v1/meetings/{meeting_id}/segments?after_seq=0`
 - `GET /v1/meetings/{meeting_id}/report`
 - `WS /v1/realtime?meeting_id={meeting_id}`
-- `GET /v1/fixtures`
-- `POST /v1/meetings/{meeting_id}/replay/start`
 
 API一覧は [docs/api.md](docs/api.md)、ローカル起動手順は
 [docs/local-dev.md](docs/local-dev.md) を参照してください。

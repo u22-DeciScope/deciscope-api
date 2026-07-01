@@ -23,9 +23,8 @@ type CoreUseCases interface {
 
 type CoreAPI struct {
 	service CoreUseCases
-	replay  application.ReplayController
 }
 
-func NewCoreAPI(service CoreUseCases, replay application.ReplayController) *CoreAPI {
-	return &CoreAPI{service: service, replay: replay}
+func NewCoreAPI(service CoreUseCases) *CoreAPI {
+	return &CoreAPI{service: service}
 }

@@ -398,12 +398,3 @@ func normalizedJoinURLString(parsed url.URL) string {
 	return parsed.String()
 }
 
-func NormalizeFixtureName(name string) string {
-	name = strings.TrimSpace(name)
-	name = strings.ReplaceAll(name, "\\", "/")
-	name = strings.TrimPrefix(name, "/")
-	if name == "" {
-		return "demo.jsonl"
-	}
-	return name
-}

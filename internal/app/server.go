@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"time"
 
-	"deciscope-core-api/internal/adapter/fixture"
 	httpadapter "deciscope-core-api/internal/adapter/http"
 	authmiddleware "deciscope-core-api/internal/adapter/http/middleware"
 	"deciscope-core-api/internal/adapter/realtime"
@@ -109,13 +108,12 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		repositories.Meetings, repositories.Events, repositories.Reports,
 		repositories.Jobs, repositories.Uploads, hub, storage.NewLocal(config.UploadDir),
 	)
-	replay := fixture.NewManager(service, fixture.NewLocalLoader(config.FixtureDir))
 	authService := appauth.NewService(authRepository, tokenVerifier, 7*24*time.Hour)
 	workspaceService := appworkspace.NewService(authRepository)
 	accessService := appaccess.NewService(authRepository)
 
 	handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
-		CoreAPI:       httpadapter.NewCoreAPI(service, replay),
+		CoreAPI:       httpadapter.NewCoreAPI(service),
 		AuthAPI:       httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
 		WorkspaceAPI:  httpadapter.NewWorkspaceAPI(workspaceService, hub),
 		TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),

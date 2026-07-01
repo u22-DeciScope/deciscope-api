@@ -3,7 +3,6 @@ package httpadapter
 import (
 	"encoding/json"
 
-	"deciscope-core-api/internal/application"
 	"deciscope-core-api/internal/domain"
 )
 
@@ -67,18 +66,6 @@ type uploadResponse struct {
 	CreatedAt   string `json:"created_at"`
 }
 
-type replayStatusResponse struct {
-	MeetingID string `json:"meeting_id"`
-	Fixture   string `json:"fixture"`
-	Status    string `json:"status"`
-	StartedAt string `json:"started_at,omitempty"`
-}
-
-type fixtureResponse struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-}
-
 func meetingDTO(v domain.Meeting) meetingResponse {
 	return meetingResponse(v)
 }
@@ -101,18 +88,6 @@ func jobDTO(v domain.Job) jobResponse {
 
 func uploadDTO(v domain.Upload) uploadResponse {
 	return uploadResponse(v)
-}
-
-func replayStatusDTO(v application.ReplayStatus) replayStatusResponse {
-	return replayStatusResponse(v)
-}
-
-func fixtureDTOs(values []application.FixtureInfo) []fixtureResponse {
-	result := make([]fixtureResponse, len(values))
-	for i, value := range values {
-		result[i] = fixtureResponse(value)
-	}
-	return result
 }
 
 func meetingDTOs(values []domain.Meeting) []meetingResponse {

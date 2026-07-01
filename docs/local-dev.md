@@ -50,7 +50,6 @@ DECISCOPE_WS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://
 DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
 DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
 DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
-FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 FRONTEND_URL=http://localhost:5193
 ALLOWED_ORIGINS=http://localhost:5193
@@ -65,7 +64,6 @@ ALLOWED_ORIGINS=http://localhost:5193
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います。
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません。
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御APIのHTTP timeout秒数。既定値は `10` です。
-- `FIXTURE_DIR`: fixture JSONLディレクトリ。
 - `UPLOAD_DIR`: mock uploadの保存先。
 - `FRONTEND_URL`: CORSの基準origin。未指定時は `http://localhost:5193`。
 - `ALLOWED_ORIGINS`: CORS許可originのカンマ区切り。
@@ -81,8 +79,7 @@ GET http://<PC_TAILSCALE_IP>:9090/readyz
 ```
 
 現在、ブラウザ用の `/debug` 画面は提供していません。以下のAPIとWebSocketを
-使ってfixture replay、durable event、transcript segment、Markdown reportを
-確認します。
+使ってdurable event、transcript segment、Markdown reportを確認します。
 
 ## 手動クイックデモ
 
@@ -111,17 +108,6 @@ ws://localhost:9090/v1/realtime?meeting_id={meeting_id}
   "type": "client.hello",
   "meeting_id": "{meeting_id}",
   "last_seq": 0
-}
-```
-
-fixture replayを開始します。
-
-```http
-POST http://localhost:9090/v1/meetings/{meeting_id}/replay/start
-Content-Type: application/json
-
-{
-  "fixture": "demo.jsonl"
 }
 ```
 
@@ -203,7 +189,7 @@ go vet ./...
 
 Repository契約テストはMemoryとPostgreSQLへ同じスイートを実行します。
 ApplicationとHTTP HandlerはFake Port・Fake Use Caseでテストします。
-Fixture、Realtime、サーバー結合、依存方向のテストも実行されます。
+Realtime、サーバー結合、依存方向のテストも実行されます。
 
 WindowsのApplication Controlが自動生成されたtest exeを拒否する環境では、
 対象Packageを固定名でbuildして実行すると検証できます。

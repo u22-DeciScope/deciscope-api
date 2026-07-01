@@ -182,10 +182,10 @@ Accept: text/markdown
 
 ```json
 {
-  "code": "fixture_parse_failed",
-  "message": "invalid character ...",
-  "retryable": false
+  "code": "catchup_failed",
+  "message": "failed to load missed events",
+  "retryable": true
 }
 ```
 
-fixture replay や将来の STT / 分析処理で発生したエラーを画面へ通知するためのイベントです。
+WebSocket再接続時のcatch-up失敗など、実行時エラーを画面へ通知するためのイベントです。

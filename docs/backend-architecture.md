@@ -18,7 +18,7 @@ HTTP/WebSocket
 ```
 
 `internal/app/server.go` is the composition root. It creates concrete database,
-repository, storage, Firebase, realtime, fixture, and HTTP objects and injects
+repository, storage, Firebase, realtime, and HTTP objects and injects
 them into the application.
 
 ## Current package layout
@@ -31,7 +31,6 @@ internal/
   application/auth/    authentication use case and ports
   adapter/http/        router, handlers, DTOs, middleware
   adapter/realtime/    hub, WebSocket handler/client, protocol
-  adapter/fixture/     fixture loader and replay manager
   adapter/repository/  Memory/PostgreSQL repositories and contract tests
   infrastructure/      database, Firebase, local storage
   architecture/        automated dependency checks
@@ -47,7 +46,6 @@ interfaces. Application use cases depend on ports declared in
 - HTTP keeps request parsing, response DTOs, status codes, and routing.
 - Realtime separates room publishing, WebSocket handling, connection clients,
   and protocol messages.
-- Fixture separates fixture loading from replay state management.
 - Repository implementations are split by port responsibility and share one
   contract test suite.
 
@@ -73,7 +71,7 @@ deployments. The Memory implementation remains available only as a test double.
 
 ## Current limitations
 
-- Meeting, fixture, upload, and realtime routes are not protected by auth.
+- Meeting, upload, and realtime routes are not protected by auth.
 - Firebase login persists users, workspaces, and sessions through PostgreSQL.
 - Upload storage is local filesystem only.
 - Queue/worker, external STT, and external LLM are not implemented.

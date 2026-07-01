@@ -20,7 +20,7 @@ import (
 
 func TestCoreAPIHTTPContractWithFakeUseCases(t *testing.T) {
 	useCases := &fakeCoreUseCases{}
-	api := NewCoreAPI(useCases, nil)
+	api := NewCoreAPI(useCases)
 	router := chi.NewRouter()
 	router.Get("/workspaces/{workspace_code}/meetings", api.ListMeetings)
 	router.Post("/workspaces/{workspace_code}/meetings", api.CreateMeeting)

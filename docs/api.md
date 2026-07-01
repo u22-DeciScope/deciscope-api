@@ -245,30 +245,6 @@ WS /v1/realtime?meeting_id={meeting_id}&last_seq={seq}
 WebSocket接続後、Clientは任意で `client.hello` を送れます。Serverは
 `last_seq` より後のdurable eventを再送してからlive event配信に移ります。
 
-## Fixture再生
-
-```http
-GET  /v1/fixtures
-POST /v1/meetings/{meeting_id}/replay/start
-POST /v1/meetings/{meeting_id}/replay/pause
-POST /v1/meetings/{meeting_id}/replay/resume
-POST /v1/meetings/{meeting_id}/replay/reset
-```
-
-Replay開始リクエスト:
-
-```json
-{
-  "fixture": "demo.jsonl"
-}
-```
-
-- fixture名が空の場合は `demo.jsonl` が使われます。
-- fixtureは `FIXTURE_DIR` 配下の `.jsonl` fileです。
-- `start` は既存の同一会議Replayを停止してから開始します。
-- `pause` / `resume` は実行中のReplayを一時停止・再開します。
-- `reset` は会議のEvent、Segment、Reportを削除し、状態を `created` に戻します。
-
 ## レポート
 
 ```http
