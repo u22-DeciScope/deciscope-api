@@ -29,10 +29,10 @@ type Config struct {
 	BotControl          botcontrol.Config
 	Firebase            firebase.Config
 	UploadDir           string
-	FixtureDir          string
 	FrontendURL         string
 	AllowedOrigins      string
 	SessionCookieSecure bool
+	SeedDemoData        bool
 }
 
 type TranscriptIngestConfig struct {
@@ -75,10 +75,10 @@ func ConfigFromEnv() Config {
 			Enabled:         os.Getenv("AUTH_PROVIDER") == "firebase",
 		},
 		UploadDir:           os.Getenv("UPLOAD_DIR"),
-		FixtureDir:          os.Getenv("FIXTURE_DIR"),
 		FrontendURL:         os.Getenv("FRONTEND_URL"),
 		AllowedOrigins:      os.Getenv("ALLOWED_ORIGINS"),
 		SessionCookieSecure: strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
+		SeedDemoData:        strings.EqualFold(strings.TrimSpace(os.Getenv("DECISCOPE_SEED_DEMO_DATA")), "true"),
 	}
 }
 

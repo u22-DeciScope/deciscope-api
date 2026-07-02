@@ -15,11 +15,19 @@ import (
 )
 
 type AuthWorkspaceRepository struct {
-	db *sql.DB
+	db       *sql.DB
+	seedDemo bool
 }
 
 func NewAuthWorkspaceRepository(db *sql.DB) *AuthWorkspaceRepository {
 	return &AuthWorkspaceRepository{db: db}
+}
+
+// WithDemoWorkspace は、ログイン時にユーザーをデモ用ワークスペース（domain.DemoWorkspaceID）へ
+// 自動参加させるかどうかを設定する。DECISCOPE_SEED_DEMO_DATA が有効な開発環境でのみ true にする。
+func (r *AuthWorkspaceRepository) WithDemoWorkspace(enabled bool) *AuthWorkspaceRepository {
+	r.seedDemo = enabled
+	return r
 }
 
 func (r *AuthWorkspaceRepository) FindOrCreateUser(ctx context.Context, identity appauth.Identity) (*domain.User, error) {
@@ -89,12 +97,16 @@ func (r *AuthWorkspaceRepository) AcceptInvitations(ctx context.Context, userID,
 	}
 	rows.Close()
 	for _, invitation := range invitations {
+		role := domain.NormalizeWorkspaceRole(invitation.role)
+		if role == "" {
+			role = domain.WorkspaceRoleViewer
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO workspace_members (workspace_id, user_id, role, joined_at)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (workspace_id, user_id) DO NOTHING
 		`,
-			invitation.workspaceID, userID, invitation.role, now); err != nil {
+			invitation.workspaceID, userID, role, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE workspace_invitations SET status = 'accepted', accepted_by = $1, accepted_at = $2 WHERE id = $3`,
@@ -111,6 +123,9 @@ func (r *AuthWorkspaceRepository) EnsureInitialWorkspace(ctx context.Context, us
 		return nil, err
 	}
 	if len(workspaces) > 0 {
+		if err := r.ensureDemoMembership(ctx, userID); err != nil {
+			return nil, err
+		}
 		return &workspaces[0], nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -119,7 +134,7 @@ func (r *AuthWorkspaceRepository) EnsureInitialWorkspace(ctx context.Context, us
 		name = defaultWorkspaceBase(email)
 	}
 	name += "のワークスペース"
-	workspace := domain.Workspace{ID: domain.NewUUID(), Name: name, Role: "owner", CreatedAt: now, UpdatedAt: now}
+	workspace := domain.Workspace{ID: domain.NewUUID(), Name: name, Role: domain.WorkspaceRoleOwner, CreatedAt: now, UpdatedAt: now}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -133,7 +148,32 @@ func (r *AuthWorkspaceRepository) EnsureInitialWorkspace(ctx context.Context, us
 		workspace.ID, userID, now); err != nil {
 		return nil, err
 	}
-	return &workspace, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	if err := r.ensureDemoMembership(ctx, userID); err != nil {
+		return nil, err
+	}
+	return &workspace, nil
+}
+
+// ensureDemoMembership は、デモ用ワークスペースが存在する場合にユーザーを admin として参加させる。
+// 開発環境（WithDemoWorkspace 有効）専用。デモワークスペースが未シードのときは何もしない。
+func (r *AuthWorkspaceRepository) ensureDemoMembership(ctx context.Context, userID string) error {
+	if !r.seedDemo {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO workspace_members (workspace_id, user_id, role, joined_at)
+		SELECT $1, $2, 'admin', $3
+		WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = $1)
+		ON CONFLICT (workspace_id, user_id) DO NOTHING
+	`, domain.DemoWorkspaceID, userID, now)
+	if err != nil {
+		return fmt.Errorf("ensure demo workspace membership: %w", err)
+	}
+	return nil
 }
 
 func (r *AuthWorkspaceRepository) CreateSession(ctx context.Context, session domain.Session) error {
@@ -191,6 +231,7 @@ func (r *AuthWorkspaceRepository) ListWorkspaces(ctx context.Context, userID str
 		if err := rows.Scan(&workspace.ID, &workspace.Name, &workspace.Role, &workspace.CreatedAt, &workspace.UpdatedAt); err != nil {
 			return nil, err
 		}
+		workspace.Role = domain.NormalizeWorkspaceRole(workspace.Role)
 		result = append(result, workspace)
 	}
 	return result, rows.Err()
@@ -206,11 +247,12 @@ func (r *AuthWorkspaceRepository) GetWorkspace(ctx context.Context, userID, work
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
+	workspace.Role = domain.NormalizeWorkspaceRole(workspace.Role)
 	return &workspace, err
 }
 
 func (r *AuthWorkspaceRepository) UpdateWorkspaceName(ctx context.Context, userID, workspaceID, name string) (*domain.Workspace, error) {
-	if err := r.requireOwner(ctx, userID, workspaceID); err != nil {
+	if err := r.requireWorkspaceManager(ctx, userID, workspaceID); err != nil {
 		return nil, err
 	}
 	_, err := r.db.ExecContext(ctx, `UPDATE workspaces SET name = $1, updated_at = $2 WHERE id = $3`, name, time.Now().UTC().Format(time.RFC3339), workspaceID)
@@ -240,19 +282,24 @@ func (r *AuthWorkspaceRepository) ListMembers(ctx context.Context, userID, works
 		if err := rows.Scan(&member.WorkspaceID, &member.UserID, &member.DisplayName, &member.Email, &member.Role, &member.JoinedAt); err != nil {
 			return nil, err
 		}
+		member.Role = domain.NormalizeWorkspaceRole(member.Role)
 		result = append(result, member)
 	}
 	return result, rows.Err()
 }
 
-func (r *AuthWorkspaceRepository) CreateInvitation(ctx context.Context, userID, workspaceID, email string) (*domain.WorkspaceInvitation, error) {
-	if err := r.requireOwner(ctx, userID, workspaceID); err != nil {
+func (r *AuthWorkspaceRepository) CreateInvitation(ctx context.Context, userID, workspaceID, email, role string) (*domain.WorkspaceInvitation, error) {
+	if err := r.requireWorkspaceManager(ctx, userID, workspaceID); err != nil {
 		return nil, err
+	}
+	role = domain.NormalizeWorkspaceRole(role)
+	if !domain.ValidWorkspaceInvitationRole(role) {
+		return nil, domain.ErrInvalidArgument
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	invitation := domain.WorkspaceInvitation{
 		ID: domain.NewUUID(), WorkspaceID: workspaceID, Email: strings.TrimSpace(email),
-		NormalizedEmail: normalizeEmail(email), Role: "member", Status: "pending", InvitedBy: userID, CreatedAt: now,
+		NormalizedEmail: normalizeEmail(email), Role: role, Status: "pending", InvitedBy: userID, CreatedAt: now,
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO workspace_invitations (id, workspace_id, email, normalized_email, role, status, invited_by, created_at)
@@ -262,7 +309,7 @@ func (r *AuthWorkspaceRepository) CreateInvitation(ctx context.Context, userID, 
 }
 
 func (r *AuthWorkspaceRepository) ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error) {
-	if err := r.requireOwner(ctx, userID, workspaceID); err != nil {
+	if err := r.requireWorkspaceManager(ctx, userID, workspaceID); err != nil {
 		return nil, err
 	}
 	rows, err := r.db.QueryContext(ctx, `
@@ -279,13 +326,14 @@ func (r *AuthWorkspaceRepository) ListInvitations(ctx context.Context, userID, w
 		if err := rows.Scan(&invitation.ID, &invitation.WorkspaceID, &invitation.Email, &invitation.NormalizedEmail, &invitation.Role, &invitation.Status, &invitation.InvitedBy, &invitation.CreatedAt); err != nil {
 			return nil, err
 		}
+		invitation.Role = domain.NormalizeWorkspaceRole(invitation.Role)
 		result = append(result, invitation)
 	}
 	return result, rows.Err()
 }
 
 func (r *AuthWorkspaceRepository) RevokeInvitation(ctx context.Context, userID, workspaceID, invitationID string) error {
-	if err := r.requireOwner(ctx, userID, workspaceID); err != nil {
+	if err := r.requireWorkspaceManager(ctx, userID, workspaceID); err != nil {
 		return err
 	}
 	result, err := r.db.ExecContext(ctx, `
@@ -302,7 +350,7 @@ func (r *AuthWorkspaceRepository) RevokeInvitation(ctx context.Context, userID, 
 }
 
 func (r *AuthWorkspaceRepository) RemoveMember(ctx context.Context, userID, workspaceID, memberID string) error {
-	if err := r.requireOwner(ctx, userID, workspaceID); err != nil {
+	if err := r.requireWorkspaceManager(ctx, userID, workspaceID); err != nil {
 		return err
 	}
 	var role string
@@ -311,11 +359,44 @@ func (r *AuthWorkspaceRepository) RemoveMember(ctx context.Context, userID, work
 	} else if err != nil {
 		return err
 	}
-	if role == "owner" {
+	if domain.IsWorkspaceOwner(role) {
 		return domain.ErrForbidden
 	}
 	_, err := r.db.ExecContext(ctx, `DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`, workspaceID, memberID)
 	return err
+}
+
+func (r *AuthWorkspaceRepository) UpdateMemberRole(ctx context.Context, userID, workspaceID, memberID, role string) (*domain.WorkspaceMember, error) {
+	if err := r.requireWorkspaceManager(ctx, userID, workspaceID); err != nil {
+		return nil, err
+	}
+	role = domain.NormalizeWorkspaceRole(role)
+	if !domain.ValidWorkspaceInvitationRole(role) {
+		return nil, domain.ErrInvalidArgument
+	}
+	var existingRole string
+	if err := r.db.QueryRowContext(ctx, `SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`, workspaceID, memberID).Scan(&existingRole); errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if domain.IsWorkspaceOwner(existingRole) {
+		return nil, domain.ErrForbidden
+	}
+	_, err := r.db.ExecContext(ctx, `UPDATE workspace_members SET role = $1 WHERE workspace_id = $2 AND user_id = $3`, role, workspaceID, memberID)
+	if err != nil {
+		return nil, err
+	}
+	members, err := r.ListMembers(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, member := range members {
+		if member.UserID == memberID {
+			return &member, nil
+		}
+	}
+	return nil, domain.ErrNotFound
 }
 
 func (r *AuthWorkspaceRepository) CanAccessMeeting(ctx context.Context, userID, meetingID string) error {
@@ -352,7 +433,7 @@ func (r *AuthWorkspaceRepository) CanAccessJob(ctx context.Context, userID, jobI
 	return nil
 }
 
-func (r *AuthWorkspaceRepository) requireOwner(ctx context.Context, userID, workspaceID string) error {
+func (r *AuthWorkspaceRepository) requireWorkspaceManager(ctx context.Context, userID, workspaceID string) error {
 	var role string
 	err := r.db.QueryRowContext(ctx, `SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`, workspaceID, userID).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -361,7 +442,7 @@ func (r *AuthWorkspaceRepository) requireOwner(ctx context.Context, userID, work
 	if err != nil {
 		return err
 	}
-	if role != "owner" {
+	if !domain.CanManageWorkspace(role) {
 		return domain.ErrForbidden
 	}
 	return nil

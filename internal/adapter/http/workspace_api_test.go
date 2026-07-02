@@ -49,7 +49,7 @@ func (fakeWorkspaceUseCases) ListMembers(context.Context, string, string) ([]dom
 	return nil, nil
 }
 
-func (fakeWorkspaceUseCases) CreateInvitation(context.Context, string, string, string) (*domain.WorkspaceInvitation, error) {
+func (fakeWorkspaceUseCases) CreateInvitation(context.Context, string, string, string, string) (*domain.WorkspaceInvitation, error) {
 	return nil, domain.ErrConflict
 }
 
@@ -63,6 +63,10 @@ func (fakeWorkspaceUseCases) RevokeInvitation(context.Context, string, string, s
 
 func (fakeWorkspaceUseCases) RemoveMember(context.Context, string, string, string) error {
 	return nil
+}
+
+func (fakeWorkspaceUseCases) UpdateMemberRole(context.Context, string, string, string, string) (*domain.WorkspaceMember, error) {
+	return &domain.WorkspaceMember{}, nil
 }
 
 type fakeSessionAuthenticator struct{}

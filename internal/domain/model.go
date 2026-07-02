@@ -22,6 +22,11 @@ const (
 	EventError               = "error"
 )
 
+// DemoWorkspaceID は開発用のシードデータ（デモ会議）を格納する固定ワークスペースの ID。
+// DECISCOPE_SEED_DEMO_DATA が有効なときだけ作成され、ログインしたユーザーはこのワークスペースへ
+// 自動参加してデモ会議を閲覧できる。本番環境では使用しない。
+const DemoWorkspaceID = "ws_demo_deciscope"
+
 type Meeting struct {
 	ID          string
 	WorkspaceID string
@@ -97,6 +102,9 @@ const (
 
 type MeetingSession struct {
 	ID                          string
+	WorkspaceID                 string
+	CreatedByUserID             string
+	MeetingID                   string
 	JoinURL                     string
 	JoinURLHash                 string
 	Title                       string
@@ -118,6 +126,13 @@ type MeetingSession struct {
 	TitleResolutionErrorCode    string
 	TitleResolutionErrorMessage string
 	TitleResolvedAt             time.Time
+	Purpose                     string
+	Context                     string
+	Agenda                      string
+	DecisionPoints              string
+	Concerns                    string
+	ExpectedOutput              string
+	CustomInstruction           string
 	Status                      MeetingSessionStatus
 	BotCallID                   string
 	RequestedAt                 time.Time
@@ -171,6 +186,13 @@ type MeetingSessionMetadataUpdate struct {
 	TitleResolutionErrorCode    string
 	TitleResolutionErrorMessage string
 	TitleResolvedAt             *time.Time
+	Purpose                     string
+	Context                     string
+	Agenda                      string
+	DecisionPoints              string
+	Concerns                    string
+	ExpectedOutput              string
+	CustomInstruction           string
 	UpdatedAt                   time.Time
 }
 
@@ -376,12 +398,3 @@ func normalizedJoinURLString(parsed url.URL) string {
 	return parsed.String()
 }
 
-func NormalizeFixtureName(name string) string {
-	name = strings.TrimSpace(name)
-	name = strings.ReplaceAll(name, "\\", "/")
-	name = strings.TrimPrefix(name, "/")
-	if name == "" {
-		return "demo.jsonl"
-	}
-	return name
-}

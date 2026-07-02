@@ -14,15 +14,6 @@ func TestDurableEventTypes(t *testing.T) {
 	}
 }
 
-func TestNormalizeFixtureName(t *testing.T) {
-	if got := NormalizeFixtureName(`\nested\demo.jsonl`); got != "nested/demo.jsonl" {
-		t.Fatalf("NormalizeFixtureName() = %q", got)
-	}
-	if got := NormalizeFixtureName(""); got != "demo.jsonl" {
-		t.Fatalf("empty fixture = %q", got)
-	}
-}
-
 func TestNormalizeTeamsJoinURL(t *testing.T) {
 	got, err := NormalizeTeamsJoinURL(" https://teams.microsoft.com/l/meetup-join/abc ")
 	if err != nil {

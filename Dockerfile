@@ -14,13 +14,11 @@ RUN apk add --no-cache ca-certificates \
 
 WORKDIR /app
 COPY --from=build /out/deciscope-api /app/deciscope-api
-COPY fixtures /app/fixtures
 
 RUN mkdir -p /app/uploads && chown -R deciscope:deciscope /app
 
 USER deciscope
 ENV PORT=9090
-ENV FIXTURE_DIR=/app/fixtures/meetings
 ENV UPLOAD_DIR=/app/uploads
 EXPOSE 9090
 

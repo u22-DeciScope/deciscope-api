@@ -15,10 +15,11 @@ type WorkspaceUseCases interface {
 	GetWorkspace(ctx context.Context, userID, workspaceID string) (*domain.Workspace, error)
 	UpdateWorkspaceName(ctx context.Context, userID, workspaceID, name string) (*domain.Workspace, error)
 	ListMembers(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceMember, error)
-	CreateInvitation(ctx context.Context, userID, workspaceID, email string) (*domain.WorkspaceInvitation, error)
+	CreateInvitation(ctx context.Context, userID, workspaceID, email, role string) (*domain.WorkspaceInvitation, error)
 	ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error)
 	RevokeInvitation(ctx context.Context, userID, workspaceID, invitationID string) error
 	RemoveMember(ctx context.Context, userID, workspaceID, memberID string) error
+	UpdateMemberRole(ctx context.Context, userID, workspaceID, memberID, role string) (*domain.WorkspaceMember, error)
 }
 
 type WorkspaceAPI struct {
@@ -35,6 +36,9 @@ func (api *WorkspaceAPI) List(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if values == nil {
+		values = []domain.Workspace{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workspaces": values})
 }
@@ -70,18 +74,22 @@ func (api *WorkspaceAPI) ListMembers(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	if values == nil {
+		values = []domain.WorkspaceMember{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"members": values})
 }
 
 func (api *WorkspaceAPI) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email string `json:"email"`
+		Role  string `json:"role"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	value, err := api.service.CreateInvitation(r.Context(), currentUserID(r), chi.URLParam(r, "workspace_code"), req.Email)
+	value, err := api.service.CreateInvitation(r.Context(), currentUserID(r), chi.URLParam(r, "workspace_code"), req.Email, req.Role)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -94,6 +102,9 @@ func (api *WorkspaceAPI) ListInvitations(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if values == nil {
+		values = []domain.WorkspaceInvitation{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"invitations": values})
 }
@@ -119,10 +130,34 @@ func (api *WorkspaceAPI) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (api *WorkspaceAPI) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Role string `json:"role"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	value, err := api.service.UpdateMemberRole(r.Context(), currentUserID(r), chi.URLParam(r, "workspace_code"), chi.URLParam(r, "member_id"), req.Role)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
+}
+
 func currentUserID(r *http.Request) string {
 	session, _ := authmiddleware.SessionFromContext(r.Context())
 	if session == nil || session.User == nil {
 		return ""
 	}
 	return session.User.ID
+}
+
+func currentUserEmail(r *http.Request) string {
+	session, _ := authmiddleware.SessionFromContext(r.Context())
+	if session == nil || session.User == nil {
+		return ""
+	}
+	return session.User.Email
 }

@@ -47,6 +47,7 @@ func NewTranscriptHub() *TranscriptHub {
 func (h *TranscriptHub) PublishTranscriptSegment(segment domain.TranscriptSegment) {
 	h.mu.RLock()
 	clients := make([]*transcriptClient, 0, len(h.clients))
+	totalSubscriberCount := len(h.clients)
 	for c := range h.clients {
 		if c.matchesSegment(segment) {
 			clients = append(clients, c)
@@ -54,8 +55,8 @@ func (h *TranscriptHub) PublishTranscriptSegment(segment domain.TranscriptSegmen
 	}
 	h.mu.RUnlock()
 
-	log.Printf("Transcript broadcasted. sessionId=%s eventId=%s callId=%s sequenceNo=%d isFinal=%t speakerId=%s speakerName=%s textLength=%d subscriberCount=%d",
-		segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, transcriptSegmentIsFinal(segment), segment.SpeakerID, segment.SpeakerName, len([]rune(strings.TrimSpace(segment.Text))), len(clients))
+	log.Printf("Transcript broadcasted. sessionId=%s eventId=%s callId=%s sequenceNo=%d isFinal=%t speakerId=%s speakerName=%s textLength=%d subscriberCount=%d totalSubscriberCount=%d",
+		segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, transcriptSegmentIsFinal(segment), segment.SpeakerID, segment.SpeakerName, len([]rune(strings.TrimSpace(segment.Text))), len(clients), totalSubscriberCount)
 	for _, c := range clients {
 		c.enqueueSegment(segment)
 	}
@@ -64,6 +65,7 @@ func (h *TranscriptHub) PublishTranscriptSegment(segment domain.TranscriptSegmen
 func (h *TranscriptHub) PublishMeetingSessionStatusChanged(session domain.MeetingSession) {
 	h.mu.RLock()
 	clients := make([]*transcriptClient, 0, len(h.clients))
+	totalSubscriberCount := len(h.clients)
 	for c := range h.clients {
 		if c.matchesSession(session) {
 			clients = append(clients, c)
@@ -71,7 +73,7 @@ func (h *TranscriptHub) PublishMeetingSessionStatusChanged(session domain.Meetin
 	}
 	h.mu.RUnlock()
 
-	log.Printf("Meeting session status broadcast. sessionId=%s status=%s botCallId=%s clients=%d", session.ID, session.Status, session.BotCallID, len(clients))
+	log.Printf("Meeting session status broadcast. sessionId=%s status=%s botCallId=%s subscriberCount=%d totalSubscriberCount=%d", session.ID, session.Status, session.BotCallID, len(clients), totalSubscriberCount)
 	for _, c := range clients {
 		c.enqueueSession(session)
 	}
@@ -79,23 +81,31 @@ func (h *TranscriptHub) PublishMeetingSessionStatusChanged(session domain.Meetin
 
 func (h *TranscriptHub) ServeTranscriptSegments(config TranscriptWebSocketConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		callID := strings.TrimSpace(r.URL.Query().Get("callId"))
+		sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+		log.Printf("Transcript websocket request received. path=%s callId=%s sessionId=%s origin=%s remoteAddr=%s", path, callID, sessionID, origin, r.RemoteAddr)
+
 		if !config.authorized(r.URL.Query().Get("token")) {
+			log.Printf("Transcript websocket request rejected. path=%s callId=%s sessionId=%s origin=%s reason=unauthorized", path, callID, sessionID, origin)
 			writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
 		}
-		if !config.originAllowed(r.Header.Get("Origin")) {
+		if !config.originAllowed(origin) {
+			log.Printf("Transcript websocket request rejected. path=%s callId=%s sessionId=%s origin=%s reason=forbidden_origin", path, callID, sessionID, origin)
 			writeError(w, http.StatusForbidden, "forbidden_origin", "origin is not allowed")
 			return
 		}
 
-		callID := strings.TrimSpace(r.URL.Query().Get("callId"))
-		sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 		conn, reader, err := accept(w, r)
 		if err != nil {
+			log.Printf("Transcript websocket upgrade failed. path=%s callId=%s sessionId=%s origin=%s error=%v", path, callID, sessionID, origin, err)
 			writeError(w, http.StatusBadRequest, "websocket_upgrade_failed", err.Error())
 			return
 		}
 		defer conn.Close()
+		log.Printf("Transcript websocket upgrade accepted. path=%s callId=%s sessionId=%s origin=%s", path, callID, sessionID, origin)
 
 		c := newTranscriptClient(callID, sessionID, conn, reader)
 		h.subscribe(c)
@@ -111,7 +121,7 @@ func (h *TranscriptHub) subscribe(c *transcriptClient) {
 	h.clients[c] = struct{}{}
 	count := len(h.clients)
 	h.mu.Unlock()
-	log.Printf("Transcript websocket connected. callId=%s sessionId=%s clients=%d", c.callID, c.sessionID, count)
+	log.Printf("Transcript websocket subscriber added. callId=%s sessionId=%s subscriberCount=%d", c.callID, c.sessionID, count)
 }
 
 func (h *TranscriptHub) unsubscribe(c *transcriptClient) {
@@ -121,7 +131,7 @@ func (h *TranscriptHub) unsubscribe(c *transcriptClient) {
 		count := len(h.clients)
 		h.mu.Unlock()
 		close(c.done)
-		log.Printf("Transcript websocket disconnected. callId=%s sessionId=%s clients=%d", c.callID, c.sessionID, count)
+		log.Printf("Transcript websocket subscriber removed. callId=%s sessionId=%s subscriberCount=%d", c.callID, c.sessionID, count)
 	})
 }
 

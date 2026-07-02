@@ -18,7 +18,6 @@ app -> adapter / infrastructure -> application -> domain
 - `internal/adapter/http`: HTTP routing, request parsing, responses, and auth
   middleware.
 - `internal/adapter/realtime`: WebSocket protocol and event publishing.
-- `internal/adapter/fixture`: local fixture replay.
 - `internal/adapter/repository`: persistence implementations and repository
   contract tests.
 - `internal/infrastructure`: database setup, migrations, Firebase construction,

@@ -50,6 +50,7 @@ type MeetingSessionRepository interface {
 	CreateMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, error)
 	CreateOrReuseMeetingSession(ctx context.Context, session domain.MeetingSession) (*domain.MeetingSession, bool, error)
 	GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error)
+	ListMeetingSessions(ctx context.Context, workspaceID string, limit int) ([]domain.MeetingSession, error)
 	UpdateMeetingSessionStatus(ctx context.Context, update domain.MeetingSessionStatusUpdate) (*domain.MeetingSession, error)
 	UpdateMeetingSessionMetadata(ctx context.Context, update domain.MeetingSessionMetadataUpdate) (*domain.MeetingSession, error)
 	MarkStaleMeetingSessions(ctx context.Context, staleBefore time.Time, updatedAt time.Time) ([]domain.MeetingSession, error)

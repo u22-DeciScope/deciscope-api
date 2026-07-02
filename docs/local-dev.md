@@ -12,15 +12,21 @@ docker compose up --build -d
 VMなど別端末から接続する場合は、`.env` の `DECISCOPE_BACKEND_ADDR` に
 `<PC_TAILSCALE_IP>:9090` のような待受addressを設定できます。
 `DECISCOPE_BACKEND_ADDR` が未設定の場合は `PORT` がfallbackとして使われます。
-`DECISCOPE_TRANSCRIPT_ONLY=true` の場合は、PostgreSQLなしで `/healthz` と
-`/api/v1/transcript-segments` だけを起動します。
+`DECISCOPE_TRANSCRIPT_ONLY=true` の場合も、PostgreSQLへの接続自体は必要です
+（会議・認証まわりのcore repositoryだけ初期化しません）。
+
+`docker compose up` を使わず `go run .` で直接起動することもできますが、
+`compose.yaml` の `postgres` serviceはPCホストへportを公開していないため、
+その場合は別途host側で到達可能なPostgreSQL（ローカルインストール、または
+`compose.yaml` に一時的に `ports: ["5432:5432"]` を追加したもの）が必要です。
 
 ```powershell
 go run . migrate
 go run . serve
 ```
 
-起動時は `.env` を読み込み、その後 `.env.local` で上書きします。
+起動時は `.env` を読み込み、その後 `.env.local` が存在すれば上書きします
+（`.env.local` はDocker Composeからは読み込まれません。`go run .` 専用です）。
 
 ## データベース設定
 
@@ -30,8 +36,7 @@ DECISCOPE_TRANSCRIPT_STORE=postgres
 ```
 
 - `DATABASE_URL`: PostgreSQL接続URLです。必須です。
-- `DECISCOPE_TRANSCRIPT_STORE`: 既定は `postgres` です。SQLite fallback時だけ `sqlite` にします。
-- `DECISCOPE_GO_SQLITE_PATH`: SQLite fallback用file pathです。
+- `DECISCOPE_TRANSCRIPT_STORE`: 既定は `postgres` です（省略可）。
 
 接続生成は `internal/infrastructure/database` の `database.Open`、
 スキーマ更新は `go run . migrate` またはComposeの `migrate` serviceが担当します。
@@ -50,7 +55,6 @@ DECISCOPE_WS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://
 DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
 DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
 DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
-FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 FRONTEND_URL=http://localhost:5193
 ALLOWED_ORIGINS=http://localhost:5193
@@ -65,7 +69,6 @@ ALLOWED_ORIGINS=http://localhost:5193
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います。
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません。
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御APIのHTTP timeout秒数。既定値は `10` です。
-- `FIXTURE_DIR`: fixture JSONLディレクトリ。
 - `UPLOAD_DIR`: mock uploadの保存先。
 - `FRONTEND_URL`: CORSの基準origin。未指定時は `http://localhost:5193`。
 - `ALLOWED_ORIGINS`: CORS許可originのカンマ区切り。
@@ -81,8 +84,7 @@ GET http://<PC_TAILSCALE_IP>:9090/readyz
 ```
 
 現在、ブラウザ用の `/debug` 画面は提供していません。以下のAPIとWebSocketを
-使ってfixture replay、durable event、transcript segment、Markdown reportを
-確認します。
+使ってdurable event、transcript segment、Markdown reportを確認します。
 
 ## 手動クイックデモ
 
@@ -111,17 +113,6 @@ ws://localhost:9090/v1/realtime?meeting_id={meeting_id}
   "type": "client.hello",
   "meeting_id": "{meeting_id}",
   "last_seq": 0
-}
-```
-
-fixture replayを開始します。
-
-```http
-POST http://localhost:9090/v1/meetings/{meeting_id}/replay/start
-Content-Type: application/json
-
-{
-  "fixture": "demo.jsonl"
 }
 ```
 
@@ -203,7 +194,7 @@ go vet ./...
 
 Repository契約テストはMemoryとPostgreSQLへ同じスイートを実行します。
 ApplicationとHTTP HandlerはFake Port・Fake Use Caseでテストします。
-Fixture、Realtime、サーバー結合、依存方向のテストも実行されます。
+Realtime、サーバー結合、依存方向のテストも実行されます。
 
 WindowsのApplication Controlが自動生成されたtest exeを拒否する環境では、
 対象Packageを固定名でbuildして実行すると検証できます。

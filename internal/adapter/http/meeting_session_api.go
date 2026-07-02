@@ -22,6 +22,7 @@ const meetingSessionBodyLimitBytes int64 = 64 * 1024
 type MeetingSessionUseCases interface {
 	CreateMeetingSession(ctx context.Context, input application.MeetingSessionCreateInput) (*application.MeetingSessionCreateResult, error)
 	GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error)
+	ListMeetingSessions(ctx context.Context, workspaceID string, limit int) ([]domain.MeetingSession, error)
 	EndMeetingSession(ctx context.Context, input application.MeetingSessionEndInput) (*domain.MeetingSession, error)
 	UpdateMeetingSessionStatus(ctx context.Context, input application.MeetingSessionStatusUpdateInput) (*domain.MeetingSession, error)
 	UpdateMeetingSessionMetadata(ctx context.Context, input application.MeetingSessionMetadataUpdateInput) (*domain.MeetingSession, error)
@@ -29,16 +30,52 @@ type MeetingSessionUseCases interface {
 	ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error)
 }
 
-type MeetingSessionAPI struct {
-	service MeetingSessionUseCases
-	apiKey  string
+type TranscriptListUseCases interface {
+	ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error)
 }
 
-func NewMeetingSessionAPI(service MeetingSessionUseCases, apiKey string) *MeetingSessionAPI {
-	return &MeetingSessionAPI{service: service, apiKey: apiKey}
+type MeetingSessionAPI struct {
+	service            MeetingSessionUseCases
+	transcript         TranscriptListUseCases
+	transcriptRealtime http.HandlerFunc
+	apiKey             string
+}
+
+type MeetingSessionAPIOption func(*MeetingSessionAPI)
+
+func WithMeetingSessionTranscriptService(service TranscriptListUseCases) MeetingSessionAPIOption {
+	return func(api *MeetingSessionAPI) {
+		api.transcript = service
+	}
+}
+
+func WithMeetingSessionTranscriptRealtime(handler http.HandlerFunc) MeetingSessionAPIOption {
+	return func(api *MeetingSessionAPI) {
+		api.transcriptRealtime = handler
+	}
+}
+
+func NewMeetingSessionAPI(service MeetingSessionUseCases, apiKey string, options ...MeetingSessionAPIOption) *MeetingSessionAPI {
+	api := &MeetingSessionAPI{service: service, apiKey: apiKey}
+	for _, option := range options {
+		option(api)
+	}
+	return api
 }
 
 func (api *MeetingSessionAPI) Create(w http.ResponseWriter, r *http.Request) {
+	api.create(w, r, application.MeetingSessionCreateInput{})
+}
+
+func (api *MeetingSessionAPI) CreateForWorkspace(w http.ResponseWriter, r *http.Request) {
+	api.create(w, r, application.MeetingSessionCreateInput{
+		WorkspaceID:     strings.TrimSpace(chi.URLParam(r, "workspace_code")),
+		CreatedByUserID: currentUserID(r),
+		CreatedByEmail:  currentUserEmail(r),
+	})
+}
+
+func (api *MeetingSessionAPI) create(w http.ResponseWriter, r *http.Request, defaults application.MeetingSessionCreateInput) {
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
 		return
@@ -48,16 +85,25 @@ func (api *MeetingSessionAPI) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := api.service.CreateMeetingSession(r.Context(), application.MeetingSessionCreateInput{
-		JoinURL:                     request.JoinURL,
-		Title:                       request.title(),
-		UserProvidedTitle:           request.userProvidedTitle(),
-		CandidateUserIDs:            request.candidateUserIDs(),
-		CandidateUserPrincipalNames: request.candidateUserPrincipalNames(),
-		CreatedByMicrosoftUserID:    request.createdByMicrosoftUserID(),
-		CreatedByEmail:              request.createdByEmail(),
-		OrganizerUserID:             request.organizerUserID(),
-	})
+	input := defaults
+	input.JoinURL = request.JoinURL
+	input.Title = request.title()
+	input.UserProvidedTitle = request.userProvidedTitle()
+	input.CandidateUserIDs = request.candidateUserIDs()
+	input.CandidateUserPrincipalNames = request.candidateUserPrincipalNames()
+	input.CreatedByMicrosoftUserID = request.createdByMicrosoftUserID()
+	if createdByEmail := request.createdByEmail(); createdByEmail != "" || input.CreatedByEmail == "" {
+		input.CreatedByEmail = createdByEmail
+	}
+	input.OrganizerUserID = request.organizerUserID()
+	input.Purpose = request.purpose()
+	input.Context = request.context()
+	input.Agenda = request.agenda()
+	input.DecisionPoints = request.decisionPoints()
+	input.Concerns = request.concerns()
+	input.ExpectedOutput = request.expectedOutput()
+	input.CustomInstruction = request.customInstruction()
+	result, err := api.service.CreateMeetingSession(r.Context(), input)
 	var session *domain.MeetingSession
 	if result != nil {
 		session = result.Session
@@ -98,6 +144,9 @@ func (api *MeetingSessionAPI) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, status, meetingSessionCreateResponse{
 		SessionID:           session.ID,
+		WorkspaceID:         session.WorkspaceID,
+		CreatedByUserID:     session.CreatedByUserID,
+		MeetingID:           session.MeetingID,
 		Title:               session.Title,
 		DisplayTitle:        session.Title,
 		TitleSource:         session.TitleSource,
@@ -115,6 +164,13 @@ func (api *MeetingSessionAPI) Create(w http.ResponseWriter, r *http.Request) {
 		OrganizerEmail:      session.OrganizerEmail,
 		ScheduledStartAt:    optionalTimeValue(session.ScheduledStartAt),
 		ScheduledEndAt:      optionalTimeValue(session.ScheduledEndAt),
+		Purpose:             session.Purpose,
+		Context:             session.Context,
+		Agenda:              session.Agenda,
+		DecisionPoints:      session.DecisionPoints,
+		Concerns:            session.Concerns,
+		ExpectedOutput:      session.ExpectedOutput,
+		CustomInstruction:   session.CustomInstruction,
 		Status:              string(session.Status),
 		MeetingURLHash:      session.JoinURLHash,
 		Reused:              result.Reused,
@@ -134,6 +190,29 @@ func (api *MeetingSessionAPI) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
 	log.Printf("Meeting session get response sent. sessionId=%s joinUrlHash=%s status=%s title=%q titleSource=%s botCallId=%s updatedAt=%s", session.ID, session.JoinURLHash, session.Status, session.Title, session.TitleSource, session.BotCallID, session.UpdatedAt.UTC().Format(time.RFC3339Nano))
+}
+
+func (api *MeetingSessionAPI) ListForWorkspace(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "workspace_code"))
+	limit, err := parseMeetingSessionDebugLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	sessions, err := api.service.ListMeetingSessions(r.Context(), workspaceID, limit)
+	if err != nil {
+		writeMeetingSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meetingSessionListResponse{Items: meetingSessionResponsesFromDomain(sessions)})
+}
+
+func (api *MeetingSessionAPI) GetForWorkspace(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
 }
 
 func (api *MeetingSessionAPI) End(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +237,55 @@ func (api *MeetingSessionAPI) End(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
 	log.Printf("Meeting session end response sent. sessionId=%s joinUrlHash=%s status=%s botCallId=%s updatedAt=%s", session.ID, session.JoinURLHash, session.Status, session.BotCallID, session.UpdatedAt.UTC().Format(time.RFC3339Nano))
+}
+
+func (api *MeetingSessionAPI) EndForWorkspace(w http.ResponseWriter, r *http.Request) {
+	if _, ok := api.workspaceMeetingSession(w, r); !ok {
+		return
+	}
+	api.End(w, r)
+}
+
+func (api *MeetingSessionAPI) ListWorkspaceTranscriptSegments(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	if api.transcript == nil {
+		writeError(w, http.StatusServiceUnavailable, "transcript_unavailable", "transcript service is unavailable")
+		return
+	}
+	limit, err := parseTranscriptLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	segments, err := api.transcript.ListTranscriptSegments(r.Context(), "", session.ID, limit)
+	if err != nil {
+		log.Printf("Workspace transcript list failed. workspaceId=%s sessionId=%s limit=%d error=%v", session.WorkspaceID, session.ID, limit, err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, transcriptSegmentListResponse{Items: transcriptSegmentItems(segments)})
+}
+
+func (api *MeetingSessionAPI) StreamWorkspaceTranscriptSegments(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	if api.transcriptRealtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "transcript_stream_unavailable", "transcript stream is unavailable")
+		return
+	}
+	log.Printf("Workspace transcript websocket request received. path=%s workspaceId=%s sessionId=%s origin=%s remoteAddr=%s", r.URL.Path, session.WorkspaceID, session.ID, r.Header.Get("Origin"), r.RemoteAddr)
+	cloned := r.Clone(r.Context())
+	query := cloned.URL.Query()
+	query.Set("sessionId", session.ID)
+	query.Del("callId")
+	cloned.URL.RawQuery = query.Encode()
+	log.Printf("Workspace transcript websocket request forwarding. path=%s workspaceId=%s sessionId=%s origin=%s", cloned.URL.Path, session.WorkspaceID, session.ID, cloned.Header.Get("Origin"))
+	api.transcriptRealtime(w, cloned)
 }
 
 func (api *MeetingSessionAPI) CleanupStale(w http.ResponseWriter, r *http.Request) {
@@ -309,10 +437,27 @@ type meetingSessionCreateRequest struct {
 	CreatedByEmailSnake              string   `json:"created_by_email"`
 	OrganizerUserID                  string   `json:"organizerUserId"`
 	OrganizerUserIDSnake             string   `json:"organizer_user_id"`
+	Purpose                          string   `json:"purpose"`
+	PurposeSnake                     string   `json:"-"`
+	Context                          string   `json:"context"`
+	ContextSnake                     string   `json:"-"`
+	Agenda                           string   `json:"agenda"`
+	AgendaSnake                      string   `json:"-"`
+	DecisionPoints                   string   `json:"decisionPoints"`
+	DecisionPointsSnake              string   `json:"decision_points"`
+	Concerns                         string   `json:"concerns"`
+	ConcernsSnake                    string   `json:"-"`
+	ExpectedOutput                   string   `json:"expectedOutput"`
+	ExpectedOutputSnake              string   `json:"expected_output"`
+	CustomInstruction                string   `json:"customInstruction"`
+	CustomInstructionSnake           string   `json:"custom_instruction"`
 }
 
 type meetingSessionCreateResponse struct {
 	SessionID           string  `json:"sessionId"`
+	WorkspaceID         string  `json:"workspaceId,omitempty"`
+	CreatedByUserID     string  `json:"createdByUserId,omitempty"`
+	MeetingID           string  `json:"meetingId,omitempty"`
 	Title               string  `json:"title,omitempty"`
 	DisplayTitle        string  `json:"displayTitle,omitempty"`
 	TitleSource         string  `json:"titleSource,omitempty"`
@@ -330,6 +475,13 @@ type meetingSessionCreateResponse struct {
 	OrganizerEmail      string  `json:"organizerEmail,omitempty"`
 	ScheduledStartAt    *string `json:"scheduledStartAt,omitempty"`
 	ScheduledEndAt      *string `json:"scheduledEndAt,omitempty"`
+	Purpose             string  `json:"purpose,omitempty"`
+	Context             string  `json:"context,omitempty"`
+	Agenda              string  `json:"agenda,omitempty"`
+	DecisionPoints      string  `json:"decisionPoints,omitempty"`
+	Concerns            string  `json:"concerns,omitempty"`
+	ExpectedOutput      string  `json:"expectedOutput,omitempty"`
+	CustomInstruction   string  `json:"customInstruction,omitempty"`
 	Status              string  `json:"status"`
 	MeetingURLHash      string  `json:"meetingUrlHash,omitempty"`
 	Reused              bool    `json:"reused"`
@@ -404,6 +556,9 @@ type meetingSessionMetadataUpdateRequest struct {
 
 type meetingSessionResponse struct {
 	SessionID                   string  `json:"sessionId"`
+	WorkspaceID                 string  `json:"workspaceId,omitempty"`
+	CreatedByUserID             string  `json:"createdByUserId,omitempty"`
+	MeetingID                   string  `json:"meetingId,omitempty"`
 	Title                       string  `json:"title,omitempty"`
 	DisplayTitle                string  `json:"displayTitle,omitempty"`
 	TitleSource                 string  `json:"titleSource,omitempty"`
@@ -424,6 +579,13 @@ type meetingSessionResponse struct {
 	TitleResolutionErrorCode    string  `json:"titleResolutionErrorCode,omitempty"`
 	TitleResolutionErrorMessage string  `json:"titleResolutionErrorMessage,omitempty"`
 	TitleResolvedAt             *string `json:"titleResolvedAt,omitempty"`
+	Purpose                     string  `json:"purpose,omitempty"`
+	Context                     string  `json:"context,omitempty"`
+	Agenda                      string  `json:"agenda,omitempty"`
+	DecisionPoints              string  `json:"decisionPoints,omitempty"`
+	Concerns                    string  `json:"concerns,omitempty"`
+	ExpectedOutput              string  `json:"expectedOutput,omitempty"`
+	CustomInstruction           string  `json:"customInstruction,omitempty"`
 	Status                      string  `json:"status"`
 	MeetingURLHash              string  `json:"meetingUrlHash,omitempty"`
 	BotCallID                   string  `json:"botCallId,omitempty"`
@@ -443,12 +605,19 @@ type meetingSessionCleanupResponse struct {
 	Items []meetingSessionResponse `json:"items"`
 }
 
+type meetingSessionListResponse struct {
+	Items []meetingSessionResponse `json:"items"`
+}
+
 type meetingSessionDebugListResponse struct {
 	Items []meetingSessionDebugResponse `json:"items"`
 }
 
 type meetingSessionDebugResponse struct {
 	SessionID         string  `json:"sessionId"`
+	WorkspaceID       string  `json:"workspaceId,omitempty"`
+	CreatedByUserID   string  `json:"createdByUserId,omitempty"`
+	MeetingID         string  `json:"meetingId,omitempty"`
 	Title             string  `json:"title,omitempty"`
 	TitleSource       string  `json:"titleSource,omitempty"`
 	UserProvidedTitle string  `json:"userProvidedTitle,omitempty"`
@@ -470,6 +639,9 @@ func meetingSessionResponseFromDomain(session domain.MeetingSession) meetingSess
 	lastError := optionalString(session.LastError)
 	return meetingSessionResponse{
 		SessionID:                   session.ID,
+		WorkspaceID:                 session.WorkspaceID,
+		CreatedByUserID:             session.CreatedByUserID,
+		MeetingID:                   session.MeetingID,
 		Title:                       session.Title,
 		DisplayTitle:                session.Title,
 		TitleSource:                 session.TitleSource,
@@ -490,6 +662,13 @@ func meetingSessionResponseFromDomain(session domain.MeetingSession) meetingSess
 		TitleResolutionErrorCode:    session.TitleResolutionErrorCode,
 		TitleResolutionErrorMessage: session.TitleResolutionErrorMessage,
 		TitleResolvedAt:             optionalTime(session.TitleResolvedAt),
+		Purpose:                     session.Purpose,
+		Context:                     session.Context,
+		Agenda:                      session.Agenda,
+		DecisionPoints:              session.DecisionPoints,
+		Concerns:                    session.Concerns,
+		ExpectedOutput:              session.ExpectedOutput,
+		CustomInstruction:           session.CustomInstruction,
 		Status:                      string(session.Status),
 		MeetingURLHash:              session.JoinURLHash,
 		BotCallID:                   session.BotCallID,
@@ -518,6 +697,9 @@ func meetingSessionDebugResponsesFromDomain(sessions []domain.MeetingSessionDebu
 	for _, session := range sessions {
 		items = append(items, meetingSessionDebugResponse{
 			SessionID:         session.ID,
+			WorkspaceID:       session.WorkspaceID,
+			CreatedByUserID:   session.CreatedByUserID,
+			MeetingID:         session.MeetingID,
 			Title:             session.Title,
 			TitleSource:       session.TitleSource,
 			UserProvidedTitle: session.UserProvidedTitle,
@@ -688,6 +870,43 @@ func (request meetingSessionCreateRequest) organizerUserID() string {
 	return ""
 }
 
+func (request meetingSessionCreateRequest) purpose() string {
+	return firstRequestString(request.Purpose, request.PurposeSnake)
+}
+
+func (request meetingSessionCreateRequest) context() string {
+	return firstRequestString(request.Context, request.ContextSnake)
+}
+
+func (request meetingSessionCreateRequest) agenda() string {
+	return firstRequestString(request.Agenda, request.AgendaSnake)
+}
+
+func (request meetingSessionCreateRequest) decisionPoints() string {
+	return firstRequestString(request.DecisionPoints, request.DecisionPointsSnake)
+}
+
+func (request meetingSessionCreateRequest) concerns() string {
+	return firstRequestString(request.Concerns, request.ConcernsSnake)
+}
+
+func (request meetingSessionCreateRequest) expectedOutput() string {
+	return firstRequestString(request.ExpectedOutput, request.ExpectedOutputSnake)
+}
+
+func (request meetingSessionCreateRequest) customInstruction() string {
+	return firstRequestString(request.CustomInstruction, request.CustomInstructionSnake)
+}
+
+func firstRequestString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func uniqueRequestStrings(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
@@ -704,6 +923,25 @@ func uniqueRequestStrings(values []string) []string {
 		result = append(result, trimmed)
 	}
 	return result
+}
+
+func (api *MeetingSessionAPI) workspaceMeetingSession(w http.ResponseWriter, r *http.Request) (*domain.MeetingSession, bool) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "workspace_code"))
+	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
+	if workspaceID == "" || sessionID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "workspaceId and sessionId are required")
+		return nil, false
+	}
+	session, err := api.service.GetMeetingSession(r.Context(), sessionID)
+	if err != nil {
+		writeMeetingSessionError(w, err)
+		return nil, false
+	}
+	if session.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "meeting session not found")
+		return nil, false
+	}
+	return session, true
 }
 
 func (request meetingSessionMetadataUpdateRequest) title() string {
@@ -866,6 +1104,10 @@ func (request meetingSessionMetadataUpdateRequest) titleResolvedAt() string {
 func writeMeetingSessionError(w http.ResponseWriter, err error) {
 	if errors.Is(err, domain.ErrInvalidArgument) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if errors.Is(err, domain.ErrForbidden) {
+		writeError(w, http.StatusForbidden, "forbidden", "forbidden")
 		return
 	}
 	if errors.Is(err, domain.ErrNotFound) {

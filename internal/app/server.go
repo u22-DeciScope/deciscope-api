@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"time"
 
-	"deciscope-core-api/internal/adapter/fixture"
 	httpadapter "deciscope-core-api/internal/adapter/http"
 	authmiddleware "deciscope-core-api/internal/adapter/http/middleware"
 	"deciscope-core-api/internal/adapter/realtime"
@@ -69,11 +68,19 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		return &ServerRuntime{Handler: handler, closers: transcriptRuntime.closers}, nil
 	}
 
-	repositories, authRepository, postgresDB, err := buildRepositories(ctx, config.Database)
+	repositories, authRepository, postgresDB, err := buildRepositories(ctx, config.Database, config.SeedDemoData)
 	if err != nil {
 		return nil, err
 	}
 	closers := []func() error{postgresDB.Close}
+
+	if config.SeedDemoData {
+		if err := database.SeedDemoData(ctx, postgresDB); err != nil {
+			_ = closeAll(closers)
+			return nil, fmt.Errorf("seed demo data: %w", err)
+		}
+		log.Printf("demo seed data ensured (DECISCOPE_SEED_DEMO_DATA enabled)")
+	}
 
 	transcriptHub := realtime.NewTranscriptHub()
 	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptHub)
@@ -101,17 +108,21 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		repositories.Meetings, repositories.Events, repositories.Reports,
 		repositories.Jobs, repositories.Uploads, hub, storage.NewLocal(config.UploadDir),
 	)
-	replay := fixture.NewManager(service, fixture.NewLocalLoader(config.FixtureDir))
 	authService := appauth.NewService(authRepository, tokenVerifier, 7*24*time.Hour)
 	workspaceService := appworkspace.NewService(authRepository)
 	accessService := appaccess.NewService(authRepository)
 
 	handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
-		CoreAPI:            httpadapter.NewCoreAPI(service, replay),
-		AuthAPI:            httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
-		WorkspaceAPI:       httpadapter.NewWorkspaceAPI(workspaceService, hub),
-		TranscriptAPI:      httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
-		MeetingSessionAPI:  httpadapter.NewMeetingSessionAPI(meetingSessionService, config.TranscriptIngest.APIKey),
+		CoreAPI:       httpadapter.NewCoreAPI(service),
+		AuthAPI:       httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
+		WorkspaceAPI:  httpadapter.NewWorkspaceAPI(workspaceService, hub),
+		TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
+		MeetingSessionAPI: httpadapter.NewMeetingSessionAPI(
+			meetingSessionService,
+			config.TranscriptIngest.APIKey,
+			httpadapter.WithMeetingSessionTranscriptService(transcriptRuntime.service),
+			httpadapter.WithMeetingSessionTranscriptRealtime(transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket))),
+		),
 		TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
 		AuthService:        authService,
 		Workspace:          workspaceService,
@@ -160,14 +171,15 @@ type authWorkspaceRepository interface {
 	appaccess.Repository
 }
 
-func buildRepositories(ctx context.Context, config database.Config) (repositorySet, authWorkspaceRepository, *sql.DB, error) {
+func buildRepositories(ctx context.Context, config database.Config, seedDemoData bool) (repositorySet, authWorkspaceRepository, *sql.DB, error) {
 	conn, err := database.Open(ctx, config)
 	if err != nil {
 		return repositorySet{}, nil, nil, fmt.Errorf("open database: %w", err)
 	}
 	store := postgresrepository.NewStore(conn)
 	log.Printf("postgres database repository ready")
-	return repositoriesFromStore(store), postgresrepository.NewAuthWorkspaceRepository(conn), conn, nil
+	authRepository := postgresrepository.NewAuthWorkspaceRepository(conn).WithDemoWorkspace(seedDemoData)
+	return repositoriesFromStore(store), authRepository, conn, nil
 }
 
 type transcriptIngestRuntime struct {

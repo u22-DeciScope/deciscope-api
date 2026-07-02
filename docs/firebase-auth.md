@@ -50,7 +50,6 @@ DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
 DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
 DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
 DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
-FIXTURE_DIR=./fixtures/meetings
 UPLOAD_DIR=./uploads
 ALLOWED_ORIGINS=http://localhost:5193
 
@@ -70,13 +69,19 @@ path, make sure that path exists inside the container, or use
 
 ## Local Flow
 
-1. Start the backend.
+1. Start the backend. The usual way is Docker Compose (it builds the API image
+   and starts PostgreSQL together):
 
 ```powershell
 cd <backend-repo>
-go run . migrate
-go run . serve
+docker compose up --build -d
 ```
+
+   `go run . migrate` / `go run . serve` also work, but only if a PostgreSQL
+   instance is reachable at the `DATABASE_URL` in `.env` — the default
+   `compose.yaml` `postgres` service does not publish its port to the host, so
+   running `go run .` against the Compose Postgres directly will fail to
+   connect unless you expose the port or run a separate local PostgreSQL.
 
 2. Start the web app.
 

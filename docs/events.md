@@ -145,6 +145,8 @@ transcript.partial
 
 議論構造ツリーを画面に反映するためのイベントです。
 
+ノードの `kind` は `topic` / `issue` / `question` / `risk` / `decision` を使います。フロントエンドの議論ツリー（`DiscussionTree`）はこの語彙で色分けし、未知の `kind` は `topic` 表示にフォールバックします。`analysis.delta` の `kind`（`issue` / `question` / `risk`）と語彙を揃えています。
+
 ### speaker.summary.delta
 
 ```json
@@ -180,10 +182,10 @@ Accept: text/markdown
 
 ```json
 {
-  "code": "fixture_parse_failed",
-  "message": "invalid character ...",
-  "retryable": false
+  "code": "catchup_failed",
+  "message": "failed to load missed events",
+  "retryable": true
 }
 ```
 
-fixture replay や将来の STT / 分析処理で発生したエラーを画面へ通知するためのイベントです。
+WebSocket再接続時のcatch-up失敗など、実行時エラーを画面へ通知するためのイベントです。

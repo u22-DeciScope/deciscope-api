@@ -32,6 +32,25 @@ PUT  /v1/session/current-workspace
 `/health`、`/debug`、`/login`、`/register` は現在のRouterには
 登録されていません。
 
+## Workspace
+
+```http
+GET    /v1/workspaces
+GET    /v1/workspaces/{workspace_code}
+PATCH  /v1/workspaces/{workspace_code}
+GET    /v1/workspaces/{workspace_code}/members
+PATCH  /v1/workspaces/{workspace_code}/members/{member_id}
+DELETE /v1/workspaces/{workspace_code}/members/{member_id}
+GET    /v1/workspaces/{workspace_code}/invitations
+POST   /v1/workspaces/{workspace_code}/invitations
+DELETE /v1/workspaces/{workspace_code}/invitations/{invitation_id}
+```
+
+- すべて認証必須です。`{workspace_code}` 配下はさらにworkspaceへのアクセス権が必要です。
+- `PATCH /` (workspace名更新)、members/invitationsの変更系は、workspaceの
+  admin/ownerロールが必要です。
+- `RemoveMember` はworkspace member削除時に、そのmemberの既存接続を切断します。
+
 ## EchoBot文字起こし取り込み
 
 ```http
@@ -195,6 +214,43 @@ X-DeciScope-Api-Key: <shared secret>
 `status` は `pending_join`, `command_sent`, `joining`, `joined`, `recording`,
 `ended`, `failed` のいずれかです。失敗時は `message` が `lastError` として保存されます。
 
+Botからのmetadata更新:
+
+```http
+PATCH /api/v1/bot/meeting-sessions/{sessionId}/metadata
+Content-Type: application/json
+X-DeciScope-Api-Key: <shared secret>
+```
+
+会議名などTeams会議のmetadataだけを更新します（statusは変更しません）。
+
+保守/デバッグ用（`X-DeciScope-Api-Key` が必要）:
+
+```http
+GET  /api/v1/debug/meeting-sessions?limit=100
+POST /api/v1/meeting-sessions/cleanup-stale
+```
+
+- `debug/meeting-sessions` は直近のセッション一覧を返す調査用APIです。
+- `cleanup-stale` は放置されたセッションを `stale` 状態に遷移させ、対象件数を返します。
+
+Workspace配下の会議セッション（認証必須、フロントエンドはこちらを使用）:
+
+```http
+GET  /v1/workspaces/{workspace_code}/meeting-sessions
+POST /v1/workspaces/{workspace_code}/meeting-sessions
+GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}
+POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/end
+GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments
+GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream
+```
+
+- `POST`（作成）と `POST .../end`（終了）はworkspaceのadmin/ownerロールが必要です。
+- `transcript-segments` は保存済みSegmentの取得、`transcript-stream` はWebSocketでの
+  リアルタイム配信です。
+- 非workspace版の `GET /api/v1/meeting-sessions/{session_id}/transcript-segments`
+  （認証なし、`{session_id}` のみで絞り込み）も引き続き利用できます。
+
 ## 会議
 
 ```http
@@ -245,30 +301,6 @@ WS /v1/realtime?meeting_id={meeting_id}&last_seq={seq}
 WebSocket接続後、Clientは任意で `client.hello` を送れます。Serverは
 `last_seq` より後のdurable eventを再送してからlive event配信に移ります。
 
-## Fixture再生
-
-```http
-GET  /v1/fixtures
-POST /v1/meetings/{meeting_id}/replay/start
-POST /v1/meetings/{meeting_id}/replay/pause
-POST /v1/meetings/{meeting_id}/replay/resume
-POST /v1/meetings/{meeting_id}/replay/reset
-```
-
-Replay開始リクエスト:
-
-```json
-{
-  "fixture": "demo.jsonl"
-}
-```
-
-- fixture名が空の場合は `demo.jsonl` が使われます。
-- fixtureは `FIXTURE_DIR` 配下の `.jsonl` fileです。
-- `start` は既存の同一会議Replayを停止してから開始します。
-- `pause` / `resume` は実行中のReplayを一時停止・再開します。
-- `reset` は会議のEvent、Segment、Reportを削除し、状態を `created` に戻します。
-
 ## レポート
 
 ```http
@@ -282,13 +314,13 @@ Reportがない場合は、現在のSegmentと分析Eventから生成して保�
 ## アップロードとジョブ
 
 ```http
-POST /v1/uploads
+POST /v1/workspaces/{workspace_code}/uploads
 GET  /v1/jobs/{job_id}
 ```
 
-`POST /v1/uploads` は `multipart/form-data` の `file` fieldを受け取ります。
-現在はfileをlocalの `UPLOAD_DIR` に保存し、`file.extract_audio` のmock jobを
-完了状態にします。実際の音声抽出、STT、LLM分析は未実装です。
+`POST /v1/workspaces/{workspace_code}/uploads` は `multipart/form-data` の
+`file` fieldを受け取ります。現在はfileをlocalの `UPLOAD_DIR` に保存し、
+`file.extract_audio` のmock jobを完了状態にします。実際の音声抽出、STT、LLM分析は未実装です。
 
 ## エラー形式
 
