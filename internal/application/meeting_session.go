@@ -20,10 +20,11 @@ const DefaultMeetingSessionStaleAfter = 2 * time.Hour
 const defaultMeetingSessionTitle = "Teams会議"
 
 type MeetingSessionService struct {
-	repository MeetingSessionRepository
-	commander  BotJoinCommander
-	publisher  MeetingSessionPublisher
-	now        func() time.Time
+	repository    MeetingSessionRepository
+	commander     BotJoinCommander
+	publisher     MeetingSessionPublisher
+	endedObserver MeetingSessionEndedObserver
+	now           func() time.Time
 }
 
 type MeetingSessionCreateResult struct {
@@ -109,6 +110,14 @@ func NewMeetingSessionService(repository MeetingSessionRepository, commander Bot
 		publisher:  statusPublisher,
 		now:        time.Now,
 	}
+}
+
+// SetMeetingSessionEndedObserver registers an observer notified whenever a
+// session transitions into the Ended status. It is an optional,
+// post-construction dependency so the existing NewMeetingSessionService
+// constructor signature and call sites do not change.
+func (s *MeetingSessionService) SetMeetingSessionEndedObserver(observer MeetingSessionEndedObserver) {
+	s.endedObserver = observer
 }
 
 func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input MeetingSessionCreateInput) (*MeetingSessionCreateResult, error) {
@@ -383,7 +392,20 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 			updated.ID, updated.JoinURLHash, incomingTitle, incomingTitleSource, titleDecision.Decision, updated.Title, updated.TitleSource)
 	}
 	s.publishStatusChanged(*updated)
+	if updated.Status == domain.MeetingSessionEnded {
+		previousWasTerminal := previousErr == nil && previous != nil && isTerminalMeetingSessionStatus(previous.Status)
+		if !previousWasTerminal {
+			s.notifyMeetingSessionEnded(*updated)
+		}
+	}
 	return updated, nil
+}
+
+func (s *MeetingSessionService) notifyMeetingSessionEnded(session domain.MeetingSession) {
+	if s.endedObserver == nil {
+		return
+	}
+	s.endedObserver.NotifyMeetingSessionEnded(session)
 }
 
 func (s *MeetingSessionService) UpdateMeetingSessionMetadata(ctx context.Context, input MeetingSessionMetadataUpdateInput) (*domain.MeetingSession, error) {

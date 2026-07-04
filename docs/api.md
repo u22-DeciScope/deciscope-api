@@ -155,6 +155,71 @@ WebSocket message:
 }
 ```
 
+AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` のみのクライアントには配信しません）:
+
+```json
+{
+  "type": "ai_analysis.updated",
+  "sentAtUtc": "2026-06-27T00:00:00Z",
+  "data": {
+    "sessionId": "session_...",
+    "analysisType": "live",
+    "status": "completed",
+    "version": 4,
+    "payload": {
+      "summary": "議論全体のこれまでの要約",
+      "currentTopic": "現在の主なトピック",
+      "items": [
+        {
+          "id": "risk-db-migration",
+          "kind": "risk",
+          "severity": "high",
+          "title": "移行中のダウンタイム",
+          "body": "DB移行作業でダウンタイムが発生する懸念。",
+          "status": "open"
+        }
+      ],
+      "tree": {
+        "nodes": [
+          { "id": "topic-db", "kind": "topic", "label": "DBマイグレーション" },
+          { "id": "risk-db-migration", "kind": "risk", "label": "ダウンタイム懸念" }
+        ],
+        "edges": [
+          { "source": "topic-db", "target": "risk-db-migration" }
+        ]
+      }
+    },
+    "model": "gpt-4o-mini",
+    "updatedAtUtc": "2026-06-27T00:00:00Z",
+    "intervalSeconds": 10
+  }
+}
+```
+
+- `analysisType` は `live`（会議中）または `final`（会議終了時）です。
+- `status` が `failed` の場合は `error` フィールドが追加されます。`payload` は直近の成功結果を保持します
+- AI機能が無効な場合、このイベントは配信されません
+- `intervalSeconds` はライブ分析のチェック間隔（秒）です。`analysisType` が `live` のとき設定され、
+  「次回更新まで約N秒」の表示に使えます。`final` では付きません
+- ライブ分析の生成開始時には、`status: "running"` のイベントを1回配信します（version/payloadは
+  現在値のまま）。これはWebSocket配信のみのephemeralな通知で、DBには保存されないため
+  `GET .../ai-analyses` には現れません
+- live分析の内部動作: モデルは各ラウンドで差分（新規・変化したitem、追加・変化したtreeノード、
+  新規edge、解消済みidの `resolvedIds`）のみを申告し、サーバーが前回状態へ決定論的にマージします。
+  保存・配信されるpayloadは常にマージ後の完全な状態なので、クライアントは差分を意識する必要はありません
+- live payloadの `items[].kind` は `issue | question | risk | decision | todo`、
+  `severity` は `low | medium | high`、`status` は `open`（新規）| `updated`（更新）です。
+  itemsは最大30件で、超過時は最も古いitemから除去されます
+- 解消・回答・完了した論点は、モデルが `resolvedIds`（解消済みitemのid配列）で申告します。
+  `resolvedIds` はモデル→サーバー間の指示用フィールドで、サーバーが該当itemと同じidのtreeノード・
+  そのノードに接続するedgeを除去した後にクリアするため、保存・配信されるpayloadには現れません
+- `tree` は現在の議論構造で、ノードの `kind`（`topic | issue | question | risk | decision`）は
+  `tree.update` イベント（[events.md](./events.md)）と同じ語彙です。ノードは最大12個で、
+  超過時はtopicノードを残して最も古い非topicノードから除去されます（接続edgeも連動除去）。
+  対応するitemがあるノードはitemと同じ `id` を共有します。ノードが無い場合 `tree` は `null` です。
+  topicノードが無い場合は `currentTopic` から `topic-current` ノードをサーバー側で補完し、
+  親を持たないノードを `topic-current` に接続します
+
 ## Teams Bot会議セッション
 
 フロントエンドはVM Botを直接呼びません。Teams会議URLをGo APIへ登録し、
@@ -243,11 +308,48 @@ GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}
 POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/end
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream
+GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
 ```
 
 - `POST`（作成）と `POST .../end`（終了）はworkspaceのadmin/ownerロールが必要です。
 - `transcript-segments` は保存済みSegmentの取得、`transcript-stream` はWebSocketでの
   リアルタイム配信です。
+- `ai-analyses` は最新のライブ分析・最終要約を返します。存在しない分析は `null` で、
+  `404` にはなりません。AI機能が未設定の場合も `live`/`final` はともに `null` です
+
+```json
+{
+  "sessionId": "session_...",
+  "live": {
+    "analysisType": "live",
+    "status": "completed",
+    "version": 4,
+    "payload": {
+      "summary": "議論全体のこれまでの要約",
+      "currentTopic": "現在の主なトピック",
+      "items": [
+        { "id": "risk-db-migration", "kind": "risk", "severity": "high", "title": "移行中のダウンタイム", "body": "DB移行作業でダウンタイムが発生する懸念。", "status": "open" }
+      ],
+      "tree": {
+        "nodes": [
+          { "id": "topic-db", "kind": "topic", "label": "DBマイグレーション" },
+          { "id": "risk-db-migration", "kind": "risk", "label": "ダウンタイム懸念" }
+        ],
+        "edges": [
+          { "source": "topic-db", "target": "risk-db-migration" }
+        ]
+      }
+    },
+    "model": "gpt-4o-mini",
+    "updatedAtUtc": "2026-06-27T00:00:00Z"
+  },
+  "final": null,
+  "liveIntervalSeconds": 10
+}
+```
+
+- `liveIntervalSeconds` はライブ分析のチェック間隔（秒）です。AI機能またはライブ分析が
+  無効の場合は `0` になります
 - 非workspace版の `GET /api/v1/meeting-sessions/{session_id}/transcript-segments`
   （認証なし、`{session_id}` のみで絞り込み）も引き続き利用できます。
 

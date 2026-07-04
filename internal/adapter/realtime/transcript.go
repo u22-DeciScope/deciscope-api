@@ -3,6 +3,7 @@ package realtime
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -15,6 +16,7 @@ import (
 const (
 	transcriptSegmentCreatedType    = "transcript_segment.created"
 	meetingSessionStatusChangedType = "meeting_session.status_changed"
+	meetingAIAnalysisUpdatedType    = "ai_analysis.updated"
 )
 
 var defaultTranscriptAllowedOrigins = []string{
@@ -59,6 +61,24 @@ func (h *TranscriptHub) PublishTranscriptSegment(segment domain.TranscriptSegmen
 		segment.SessionID, segment.EventID, segment.CallID, segment.SequenceNo, transcriptSegmentIsFinal(segment), segment.SpeakerID, segment.SpeakerName, len([]rune(strings.TrimSpace(segment.Text))), len(clients), totalSubscriberCount)
 	for _, c := range clients {
 		c.enqueueSegment(segment)
+	}
+}
+
+func (h *TranscriptHub) PublishMeetingAIAnalysis(analysis domain.MeetingAIAnalysis) {
+	h.mu.RLock()
+	clients := make([]*transcriptClient, 0, len(h.clients))
+	totalSubscriberCount := len(h.clients)
+	for c := range h.clients {
+		if c.matchesAIAnalysis(analysis) {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	log.Printf("Meeting AI analysis broadcast. sessionId=%s analysisType=%s status=%s version=%d subscriberCount=%d totalSubscriberCount=%d",
+		analysis.SessionID, analysis.Type, analysis.Status, analysis.Version, len(clients), totalSubscriberCount)
+	for _, c := range clients {
+		c.enqueueAIAnalysis(analysis)
 	}
 }
 
@@ -205,6 +225,10 @@ func (c *transcriptClient) enqueueSession(session domain.MeetingSession) {
 	c.enqueue(transcriptOutboundEvent{session: &session})
 }
 
+func (c *transcriptClient) enqueueAIAnalysis(analysis domain.MeetingAIAnalysis) {
+	c.enqueue(transcriptOutboundEvent{aiAnalysis: &analysis})
+}
+
 func (c *transcriptClient) enqueue(event transcriptOutboundEvent) {
 	select {
 	case c.send <- event:
@@ -287,6 +311,19 @@ func (c *transcriptClient) matchesSession(session domain.MeetingSession) bool {
 	return true
 }
 
+// matchesAIAnalysis is sessionId-based like matchesSession, but a client
+// subscribed only by callId never receives AI analysis events because
+// MeetingAIAnalysis has no callId to match against.
+func (c *transcriptClient) matchesAIAnalysis(analysis domain.MeetingAIAnalysis) bool {
+	if c.sessionID != "" {
+		return c.sessionID == analysis.SessionID
+	}
+	if c.callID != "" {
+		return false
+	}
+	return true
+}
+
 func (c *transcriptClient) writeEvent(h *TranscriptHub, event transcriptOutboundEvent) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -295,14 +332,17 @@ func (c *transcriptClient) writeEvent(h *TranscriptHub, event transcriptOutbound
 		return writeJSON(c.conn, transcriptSegmentProtocolMessage(*event.segment, h.now()))
 	case event.session != nil:
 		return writeJSON(c.conn, meetingSessionStatusProtocolMessage(*event.session, h.now()))
+	case event.aiAnalysis != nil:
+		return writeJSON(c.conn, meetingAIAnalysisProtocolMessage(*event.aiAnalysis, h.now()))
 	default:
 		return nil
 	}
 }
 
 type transcriptOutboundEvent struct {
-	segment *domain.TranscriptSegment
-	session *domain.MeetingSession
+	segment    *domain.TranscriptSegment
+	session    *domain.MeetingSession
+	aiAnalysis *domain.MeetingAIAnalysis
 }
 
 type transcriptSegmentMessage struct {
@@ -409,6 +449,42 @@ func meetingSessionStatusProtocolMessage(session domain.MeetingSession, sentAt t
 			EndedAt:                     optionalProtocolTime(session.EndedAt),
 			EndReason:                   session.EndReason,
 			LastError:                   session.LastError,
+		},
+	}
+}
+
+type meetingAIAnalysisMessage struct {
+	Type      string                `json:"type"`
+	SentAtUTC string                `json:"sentAtUtc"`
+	Data      meetingAIAnalysisData `json:"data"`
+}
+
+type meetingAIAnalysisData struct {
+	SessionID       string          `json:"sessionId"`
+	AnalysisType    string          `json:"analysisType"`
+	Status          string          `json:"status"`
+	Version         int64           `json:"version"`
+	Payload         json.RawMessage `json:"payload"`
+	Model           string          `json:"model,omitempty"`
+	UpdatedAtUTC    string          `json:"updatedAtUtc"`
+	IntervalSeconds int             `json:"intervalSeconds,omitempty"`
+	Error           string          `json:"error,omitempty"`
+}
+
+func meetingAIAnalysisProtocolMessage(analysis domain.MeetingAIAnalysis, sentAt time.Time) meetingAIAnalysisMessage {
+	return meetingAIAnalysisMessage{
+		Type:      meetingAIAnalysisUpdatedType,
+		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
+		Data: meetingAIAnalysisData{
+			SessionID:       analysis.SessionID,
+			AnalysisType:    string(analysis.Type),
+			Status:          string(analysis.Status),
+			Version:         analysis.Version,
+			Payload:         analysis.Payload,
+			Model:           analysis.Model,
+			UpdatedAtUTC:    analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			IntervalSeconds: analysis.IntervalSeconds,
+			Error:           analysis.LastError,
 		},
 	}
 }

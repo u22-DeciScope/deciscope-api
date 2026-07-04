@@ -298,6 +298,71 @@ func TestMeetingSessionServiceEndsSessionAndSendsBotCommand(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionServiceNotifiesEndedObserverOnNonTerminalToEndedTransition(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionRecording
+	observer := &fakeMeetingSessionEndedObserver{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{})
+	service.SetMeetingSessionEndedObserver(observer)
+
+	if _, err := service.UpdateMeetingSessionStatus(context.Background(), application.MeetingSessionStatusUpdateInput{
+		SessionID: "session_1",
+		Status:    domain.MeetingSessionEnded,
+		Reason:    "manual_end_requested",
+	}); err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
+	}
+	if len(observer.sessions) != 1 || observer.sessions[0].Status != domain.MeetingSessionEnded {
+		t.Fatalf("notified sessions = %+v", observer.sessions)
+	}
+}
+
+func TestMeetingSessionServiceDoesNotNotifyEndedObserverWhenAlreadyTerminal(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionEnded
+	repository.session.EndedAt = repository.session.CreatedAt.Add(time.Minute)
+	observer := &fakeMeetingSessionEndedObserver{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{})
+	service.SetMeetingSessionEndedObserver(observer)
+
+	if _, err := service.UpdateMeetingSessionStatus(context.Background(), application.MeetingSessionStatusUpdateInput{
+		SessionID: "session_1",
+		Status:    domain.MeetingSessionEnded,
+		Reason:    "duplicate_end",
+	}); err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
+	}
+	if len(observer.sessions) != 0 {
+		t.Fatalf("notified sessions = %+v, want none", observer.sessions)
+	}
+}
+
+func TestMeetingSessionServiceDoesNotNotifyEndedObserverForNonEndedTransitions(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	observer := &fakeMeetingSessionEndedObserver{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{})
+	service.SetMeetingSessionEndedObserver(observer)
+
+	if _, err := service.UpdateMeetingSessionStatus(context.Background(), application.MeetingSessionStatusUpdateInput{
+		SessionID: "session_1",
+		Status:    domain.MeetingSessionJoined,
+		BotCallID: "call-1",
+	}); err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
+	}
+	if len(observer.sessions) != 0 {
+		t.Fatalf("notified sessions = %+v, want none", observer.sessions)
+	}
+}
+
+type fakeMeetingSessionEndedObserver struct {
+	sessions []domain.MeetingSession
+}
+
+func (f *fakeMeetingSessionEndedObserver) NotifyMeetingSessionEnded(session domain.MeetingSession) {
+	f.sessions = append(f.sessions, session)
+}
+
 type fakeMeetingSessionRepository struct {
 	created      domain.MeetingSession
 	updated      domain.MeetingSessionStatusUpdate
@@ -339,7 +404,11 @@ func (f *fakeMeetingSessionRepository) GetMeetingSession(_ context.Context, sess
 	if sessionID != f.session.ID {
 		return nil, domain.ErrNotFound
 	}
-	return &f.session, nil
+	// Return a copy, like a real repository query would, so callers that
+	// hold on to a previously fetched session are not affected by a later
+	// mutation of the fake's internal state (e.g. via UpdateMeetingSessionStatus).
+	snapshot := f.session
+	return &snapshot, nil
 }
 
 func (f *fakeMeetingSessionRepository) ListMeetingSessions(_ context.Context, workspaceID string, _ int) ([]domain.MeetingSession, error) {

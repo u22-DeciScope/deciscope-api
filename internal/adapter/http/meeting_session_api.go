@@ -34,10 +34,15 @@ type TranscriptListUseCases interface {
 	ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error)
 }
 
+type MeetingAIAnalysisUseCases interface {
+	GetMeetingAIAnalyses(ctx context.Context, sessionID string) (*application.MeetingAIAnalysesSnapshot, error)
+}
+
 type MeetingSessionAPI struct {
 	service            MeetingSessionUseCases
 	transcript         TranscriptListUseCases
 	transcriptRealtime http.HandlerFunc
+	aiAnalysis         MeetingAIAnalysisUseCases
 	apiKey             string
 }
 
@@ -52,6 +57,12 @@ func WithMeetingSessionTranscriptService(service TranscriptListUseCases) Meeting
 func WithMeetingSessionTranscriptRealtime(handler http.HandlerFunc) MeetingSessionAPIOption {
 	return func(api *MeetingSessionAPI) {
 		api.transcriptRealtime = handler
+	}
+}
+
+func WithMeetingSessionAIAnalysisService(service MeetingAIAnalysisUseCases) MeetingSessionAPIOption {
+	return func(api *MeetingSessionAPI) {
+		api.aiAnalysis = service
 	}
 }
 
@@ -286,6 +297,28 @@ func (api *MeetingSessionAPI) StreamWorkspaceTranscriptSegments(w http.ResponseW
 	cloned.URL.RawQuery = query.Encode()
 	log.Printf("Workspace transcript websocket request forwarding. path=%s workspaceId=%s sessionId=%s origin=%s", cloned.URL.Path, session.WorkspaceID, session.ID, cloned.Header.Get("Origin"))
 	api.transcriptRealtime(w, cloned)
+}
+
+func (api *MeetingSessionAPI) GetWorkspaceAIAnalyses(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	if api.aiAnalysis == nil {
+		writeError(w, http.StatusServiceUnavailable, "ai_analysis_unavailable", "AI analysis service is unavailable")
+		return
+	}
+	snapshot, err := api.aiAnalysis.GetMeetingAIAnalyses(r.Context(), session.ID)
+	if err != nil {
+		if errors.Is(err, domain.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		log.Printf("Workspace AI analyses fetch failed. workspaceId=%s sessionId=%s error=%v", session.WorkspaceID, session.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, meetingAIAnalysesResponseFromSnapshot(session.ID, snapshot))
 }
 
 func (api *MeetingSessionAPI) CleanupStale(w http.ResponseWriter, r *http.Request) {
@@ -718,6 +751,48 @@ func meetingSessionDebugResponsesFromDomain(sessions []domain.MeetingSessionDebu
 		})
 	}
 	return items
+}
+
+type meetingAIAnalysesResponse struct {
+	SessionID           string                     `json:"sessionId"`
+	Live                *meetingAIAnalysisResponse `json:"live"`
+	Final               *meetingAIAnalysisResponse `json:"final"`
+	LiveIntervalSeconds int                        `json:"liveIntervalSeconds"`
+}
+
+type meetingAIAnalysisResponse struct {
+	AnalysisType string          `json:"analysisType"`
+	Status       string          `json:"status"`
+	Version      int64           `json:"version"`
+	Payload      json.RawMessage `json:"payload"`
+	Model        string          `json:"model,omitempty"`
+	UpdatedAtUTC string          `json:"updatedAtUtc"`
+	Error        string          `json:"error,omitempty"`
+}
+
+func meetingAIAnalysesResponseFromSnapshot(sessionID string, snapshot *application.MeetingAIAnalysesSnapshot) meetingAIAnalysesResponse {
+	response := meetingAIAnalysesResponse{SessionID: sessionID}
+	if snapshot != nil {
+		response.Live = meetingAIAnalysisResponseFromDomain(snapshot.Live)
+		response.Final = meetingAIAnalysisResponseFromDomain(snapshot.Final)
+		response.LiveIntervalSeconds = snapshot.LiveIntervalSeconds
+	}
+	return response
+}
+
+func meetingAIAnalysisResponseFromDomain(analysis *domain.MeetingAIAnalysis) *meetingAIAnalysisResponse {
+	if analysis == nil {
+		return nil
+	}
+	return &meetingAIAnalysisResponse{
+		AnalysisType: string(analysis.Type),
+		Status:       string(analysis.Status),
+		Version:      analysis.Version,
+		Payload:      analysis.Payload,
+		Model:        analysis.Model,
+		UpdatedAtUTC: analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		Error:        analysis.LastError,
+	}
 }
 
 func optionalTime(value time.Time) *string {

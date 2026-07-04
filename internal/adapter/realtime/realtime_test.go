@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -207,6 +208,108 @@ func TestTranscriptSegmentProtocolMessageMarksPartial(t *testing.T) {
 	message := transcriptSegmentProtocolMessage(segment, time.Date(2026, 6, 27, 0, 0, 1, 0, time.UTC))
 	if message.Data.IsFinal {
 		t.Fatalf("message data = %+v", message.Data)
+	}
+}
+
+func TestTranscriptHubPublishMeetingAIAnalysisFiltersBySessionID(t *testing.T) {
+	hub := NewTranscriptHub()
+	allSessions := &transcriptClient{send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	matching := &transcriptClient{sessionID: "session_1", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	otherSession := &transcriptClient{sessionID: "session_2", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	callIDOnly := &transcriptClient{callID: "call-1", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	hub.subscribe(allSessions)
+	hub.subscribe(matching)
+	hub.subscribe(otherSession)
+	hub.subscribe(callIDOnly)
+	t.Cleanup(func() {
+		hub.unsubscribe(allSessions)
+		hub.unsubscribe(matching)
+		hub.unsubscribe(otherSession)
+		hub.unsubscribe(callIDOnly)
+	})
+
+	analysis := domain.MeetingAIAnalysis{
+		SessionID: "session_1",
+		Type:      domain.MeetingAIAnalysisLive,
+		Status:    domain.MeetingAIAnalysisCompleted,
+		Version:   4,
+		Payload:   json.RawMessage(`{"summary":"進行中"}`),
+	}
+	hub.PublishMeetingAIAnalysis(analysis)
+
+	for name, client := range map[string]*transcriptClient{"all": allSessions, "matching": matching} {
+		select {
+		case got := <-client.send:
+			if got.aiAnalysis == nil || got.aiAnalysis.SessionID != "session_1" {
+				t.Fatalf("%s got = %+v", name, got)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not receive ai analysis", name)
+		}
+	}
+	for name, client := range map[string]*transcriptClient{"other session": otherSession, "callId only": callIDOnly} {
+		select {
+		case got := <-client.send:
+			t.Fatalf("%s unexpectedly received %+v", name, got)
+		default:
+		}
+	}
+}
+
+func TestMeetingAIAnalysisProtocolMessage(t *testing.T) {
+	analysis := domain.MeetingAIAnalysis{
+		SessionID:       "session_1",
+		Type:            domain.MeetingAIAnalysisLive,
+		Status:          domain.MeetingAIAnalysisCompleted,
+		Version:         4,
+		Payload:         json.RawMessage(`{"summary":"進行中です"}`),
+		Model:           "gpt-4o-mini",
+		UpdatedAt:       time.Date(2026, 6, 27, 0, 0, 3, 0, time.UTC),
+		IntervalSeconds: 10,
+	}
+	message := meetingAIAnalysisProtocolMessage(analysis, time.Date(2026, 6, 27, 0, 0, 4, 0, time.UTC))
+	if message.Type != meetingAIAnalysisUpdatedType || message.SentAtUTC != "2026-06-27T00:00:04Z" {
+		t.Fatalf("message = %+v", message)
+	}
+	if message.Data.SessionID != "session_1" || message.Data.AnalysisType != "live" || message.Data.Status != "completed" ||
+		message.Data.Version != 4 || message.Data.Model != "gpt-4o-mini" || message.Data.UpdatedAtUTC != "2026-06-27T00:00:03Z" {
+		t.Fatalf("message data = %+v", message.Data)
+	}
+	if message.Data.IntervalSeconds != 10 {
+		t.Fatalf("intervalSeconds = %d, want 10", message.Data.IntervalSeconds)
+	}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"intervalSeconds":10`) {
+		t.Fatalf("encoded = %s, want intervalSeconds field", string(encoded))
+	}
+	if !strings.Contains(string(message.Data.Payload), "進行中です") {
+		t.Fatalf("payload = %s", string(message.Data.Payload))
+	}
+}
+
+func TestMeetingAIAnalysisProtocolMessageNullPayloadOnFailure(t *testing.T) {
+	analysis := domain.MeetingAIAnalysis{
+		SessionID: "session_1",
+		Type:      domain.MeetingAIAnalysisLive,
+		Status:    domain.MeetingAIAnalysisFailed,
+		LastError: "azure openai timeout",
+	}
+	message := meetingAIAnalysisProtocolMessage(analysis, time.Date(2026, 6, 27, 0, 0, 4, 0, time.UTC))
+	if message.Data.Error != "azure openai timeout" {
+		t.Fatalf("data.Error = %q", message.Data.Error)
+	}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"payload":null`) {
+		t.Fatalf("encoded = %s, want null payload", string(encoded))
+	}
+	if strings.Contains(string(encoded), "intervalSeconds") {
+		t.Fatalf("encoded = %s, want intervalSeconds omitted when zero", string(encoded))
 	}
 }
 

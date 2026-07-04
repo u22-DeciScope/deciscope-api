@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"deciscope-core-api/internal/infrastructure/azureopenai"
 	"deciscope-core-api/internal/infrastructure/botcontrol"
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/firebase"
@@ -21,6 +22,17 @@ const (
 	TranscriptStorePostgres = "postgres"
 )
 
+const (
+	defaultAzureOpenAIAPIVersion         = "2024-10-21"
+	defaultAIRequestTimeoutSeconds       = 20
+	defaultAIFinalSummaryTimeoutSeconds  = 60
+	defaultAILiveAnalysisIntervalSeconds = 10
+	minAILiveAnalysisIntervalSeconds     = 5
+	defaultAILiveAnalysisMinChars        = 80
+	defaultAILiveAnalysisMaxInputChars   = 4000
+	defaultAIFinalSummaryMaxInputChars   = 12000
+)
+
 type Config struct {
 	Database            database.Config
 	TranscriptIngest    TranscriptIngestConfig
@@ -28,6 +40,7 @@ type Config struct {
 	TranscriptOnly      bool
 	BotControl          botcontrol.Config
 	Firebase            firebase.Config
+	AI                  AIConfig
 	UploadDir           string
 	FrontendURL         string
 	AllowedOrigins      string
@@ -43,6 +56,43 @@ type TranscriptIngestConfig struct {
 type TranscriptWebSocketConfig struct {
 	ClientToken    string
 	AllowedOrigins string
+}
+
+// AIConfig holds the AI meeting analysis configuration. Azure OpenAI
+// credentials live in AzureOpenAI; the live/final feature flags below are
+// automatically forced off (see MissingAzureOpenAIVars) whenever Azure
+// OpenAI is not fully configured.
+type AIConfig struct {
+	AzureOpenAI               azureopenai.Config
+	LiveAnalysisEnabled       bool
+	LiveAnalysisInterval      time.Duration
+	LiveAnalysisMinChars      int
+	LiveAnalysisMaxInputChars int
+	FinalSummaryEnabled       bool
+	FinalSummaryMaxInputChars int
+	FinalSummaryTimeout       time.Duration
+}
+
+// MissingAzureOpenAIVars returns the names of the required Azure OpenAI
+// environment variables that are not set. A non-empty result means the AI
+// feature is fully disabled regardless of the individual feature flags.
+func (c AIConfig) MissingAzureOpenAIVars() []string {
+	var missing []string
+	if strings.TrimSpace(c.AzureOpenAI.Endpoint) == "" {
+		missing = append(missing, "AZURE_OPENAI_ENDPOINT")
+	}
+	if strings.TrimSpace(c.AzureOpenAI.APIKey) == "" {
+		missing = append(missing, "AZURE_OPENAI_API_KEY")
+	}
+	if strings.TrimSpace(c.AzureOpenAI.Deployment) == "" {
+		missing = append(missing, "AZURE_OPENAI_DEPLOYMENT")
+	}
+	return missing
+}
+
+// Enabled reports whether Azure OpenAI is fully configured.
+func (c AIConfig) Enabled() bool {
+	return len(c.MissingAzureOpenAIVars()) == 0
 }
 
 func ConfigFromEnv() Config {
@@ -74,12 +124,60 @@ func ConfigFromEnv() Config {
 			ProjectID:       os.Getenv("FIREBASE_PROJECT_ID"),
 			Enabled:         os.Getenv("AUTH_PROVIDER") == "firebase",
 		},
+		AI:                  aiConfigFromEnv(),
 		UploadDir:           os.Getenv("UPLOAD_DIR"),
 		FrontendURL:         os.Getenv("FRONTEND_URL"),
 		AllowedOrigins:      os.Getenv("ALLOWED_ORIGINS"),
 		SessionCookieSecure: strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
 		SeedDemoData:        strings.EqualFold(strings.TrimSpace(os.Getenv("DECISCOPE_SEED_DEMO_DATA")), "true"),
 	}
+}
+
+func aiConfigFromEnv() AIConfig {
+	requestTimeout := secondsDurationFromEnv(os.Getenv("AI_REQUEST_TIMEOUT_SECONDS"), defaultAIRequestTimeoutSeconds, 1)
+	return AIConfig{
+		AzureOpenAI: azureopenai.Config{
+			Endpoint:   strings.TrimSpace(os.Getenv("AZURE_OPENAI_ENDPOINT")),
+			APIKey:     strings.TrimSpace(os.Getenv("AZURE_OPENAI_API_KEY")),
+			Deployment: strings.TrimSpace(os.Getenv("AZURE_OPENAI_DEPLOYMENT")),
+			APIVersion: firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_API_VERSION")), defaultAzureOpenAIAPIVersion),
+			Timeout:    requestTimeout,
+		},
+		LiveAnalysisEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_LIVE_ANALYSIS_ENABLED")),
+		LiveAnalysisInterval:      secondsDurationFromEnv(os.Getenv("AI_LIVE_ANALYSIS_INTERVAL_SECONDS"), defaultAILiveAnalysisIntervalSeconds, minAILiveAnalysisIntervalSeconds),
+		LiveAnalysisMinChars:      positiveIntFromEnv(os.Getenv("AI_LIVE_ANALYSIS_MIN_CHARS"), defaultAILiveAnalysisMinChars),
+		LiveAnalysisMaxInputChars: positiveIntFromEnv(os.Getenv("AI_LIVE_ANALYSIS_MAX_INPUT_CHARS"), defaultAILiveAnalysisMaxInputChars),
+		FinalSummaryEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_FINAL_SUMMARY_ENABLED")),
+		FinalSummaryMaxInputChars: positiveIntFromEnv(os.Getenv("AI_FINAL_SUMMARY_MAX_INPUT_CHARS"), defaultAIFinalSummaryMaxInputChars),
+		FinalSummaryTimeout:       secondsDurationFromEnv(os.Getenv("AI_FINAL_SUMMARY_TIMEOUT_SECONDS"), defaultAIFinalSummaryTimeoutSeconds, 1),
+	}
+}
+
+func secondsDurationFromEnv(value string, defaultSeconds, minSeconds int) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || seconds <= 0 {
+		seconds = defaultSeconds
+	}
+	if seconds < minSeconds {
+		seconds = minSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func positiveIntFromEnv(value string, defaultValue int) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return defaultValue
+	}
+	return parsed
+}
+
+func boolFromEnvDefaultTrue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return true
+	}
+	return strings.EqualFold(trimmed, "true")
 }
 
 func botControlTimeoutFromEnv(value string) time.Duration {

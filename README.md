@@ -79,6 +79,23 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 
 完全な例は [.env.example](.env.example) を参照してください。`.env` はGit管理対象外です。
 
+### AI会議分析 (Azure OpenAI)
+
+- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`: Azure OpenAI接続情報。
+  いずれか1つでも未設定の場合、AI分析機能全体が自動的に無効化されます(起動時に警告ログを1行出力)。
+  transcript取り込みや会議終了処理はAI機能の有無に関係なく動作し続けます
+- `AZURE_OPENAI_API_VERSION`: Azure OpenAI REST APIのバージョン。既定値は `2024-10-21`
+- `AI_LIVE_ANALYSIS_ENABLED`: 会議中ライブAI分析を行うか。既定値は `true`
+- `AI_LIVE_ANALYSIS_INTERVAL_SECONDS`: ライブ分析の実行間隔。既定値は `10`、最小値は `5`
+- `AI_LIVE_ANALYSIS_MIN_CHARS`: ライブ分析を実行する最小の新規文字数。既定値は `80`
+- `AI_LIVE_ANALYSIS_MAX_INPUT_CHARS`: ライブ分析1回あたりに送る差分transcriptの最大文字数。既定値は `4000`
+- `AI_FINAL_SUMMARY_ENABLED`: 会議終了時のAI最終要約生成を行うか。既定値は `true`
+- `AI_FINAL_SUMMARY_MAX_INPUT_CHARS`: 最終要約に送るtranscriptの最大文字数(超過分は末尾優先で切り詰め)。既定値は `12000`
+- `AI_REQUEST_TIMEOUT_SECONDS`: ライブ分析のAzure OpenAI呼び出しtimeout。既定値は `20`
+- `AI_FINAL_SUMMARY_TIMEOUT_SECONDS`: 最終要約のAzure OpenAI呼び出しtimeout。既定値は `60`
+
+`DECISCOPE_TRANSCRIPT_ONLY=true` のtranscript-onlyモードでは、AI分析機能は組み込まれません。
+
 Teams会議名を Microsoft Graph の `/users/{id}/onlineMeetings` から取得する場合、
 `MEETING_TITLE_LOOKUP_USER_IDS` には会議作成者、または会議を参照できる対象ユーザーの
 Azure AD / Microsoft Graph user object id を指定してください。UPN/email を指定した場合は

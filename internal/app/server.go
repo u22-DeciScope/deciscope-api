@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	httpadapter "deciscope-core-api/internal/adapter/http"
@@ -17,6 +18,8 @@ import (
 	appaccess "deciscope-core-api/internal/application/access"
 	appauth "deciscope-core-api/internal/application/auth"
 	appworkspace "deciscope-core-api/internal/application/workspace"
+	"deciscope-core-api/internal/domain"
+	"deciscope-core-api/internal/infrastructure/azureopenai"
 	"deciscope-core-api/internal/infrastructure/botcontrol"
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/firebase"
@@ -65,6 +68,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 			},
 		})
 		log.Printf("transcript-only mode enabled; core postgres repositories are not initialized")
+		log.Printf("AI meeting analysis disabled; transcript-only mode does not initialize AI analysis")
 		return &ServerRuntime{Handler: handler, closers: transcriptRuntime.closers}, nil
 	}
 
@@ -83,7 +87,10 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	}
 
 	transcriptHub := realtime.NewTranscriptHub()
-	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptHub)
+	meetingSessionRepository := postgresrepository.NewMeetingSessionRepository(postgresDB)
+	analysisService := buildMeetingAnalysisService(config.AI, postgresDB, meetingSessionRepository, transcriptHub)
+	transcriptPublisher := compositeTranscriptSegmentPublisher{publishers: []application.TranscriptSegmentPublisher{transcriptHub, analysisService}}
+	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptPublisher)
 	if err != nil {
 		_ = closeAll(closers)
 		return nil, err
@@ -99,10 +106,17 @@ func NewServerRuntime() (*ServerRuntime, error) {
 
 	hub := realtime.NewHub()
 	meetingSessionService := application.NewMeetingSessionService(
-		postgresrepository.NewMeetingSessionRepository(postgresDB),
+		meetingSessionRepository,
 		botcontrol.NewClient(config.BotControl),
 		transcriptHub,
 	)
+	meetingSessionService.SetMeetingSessionEndedObserver(analysisService)
+	analysisCtx, cancelAnalysis := context.WithCancel(context.Background())
+	analysisService.Start(analysisCtx)
+	closers = append(closers, func() error {
+		cancelAnalysis()
+		return analysisService.Close()
+	})
 	tokenVerifier := firebase.NewTokenVerifier(authClient)
 	service := application.NewService(
 		repositories.Meetings, repositories.Events, repositories.Reports,
@@ -122,6 +136,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 			config.TranscriptIngest.APIKey,
 			httpadapter.WithMeetingSessionTranscriptService(transcriptRuntime.service),
 			httpadapter.WithMeetingSessionTranscriptRealtime(transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket))),
+			httpadapter.WithMeetingSessionAIAnalysisService(analysisService),
 		),
 		TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
 		AuthService:        authService,
@@ -211,6 +226,57 @@ func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, d
 		},
 		closers: closers,
 	}, nil
+}
+
+// compositeTranscriptSegmentPublisher fans a stored final transcript segment
+// out to every listener (the realtime hub and the AI analysis service)
+// without TranscriptIngestService knowing about either one.
+type compositeTranscriptSegmentPublisher struct {
+	publishers []application.TranscriptSegmentPublisher
+}
+
+func (p compositeTranscriptSegmentPublisher) PublishTranscriptSegment(segment domain.TranscriptSegment) {
+	for _, publisher := range p.publishers {
+		publisher.PublishTranscriptSegment(segment)
+	}
+}
+
+// buildMeetingAnalysisService always returns a non-nil service. When Azure
+// OpenAI is not fully configured, MeetingAnalysisConfig.Enabled is false and
+// every operation on the service becomes a no-op, so callers never need nil
+// checks.
+func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSessionRepository application.MeetingSessionRepository, publisher application.MeetingAIAnalysisPublisher) *application.MeetingAnalysisService {
+	enabled := config.Enabled()
+	if !enabled {
+		log.Printf("AI meeting analysis disabled; missing environment variables: %s", strings.Join(config.MissingAzureOpenAIVars(), ", "))
+	} else {
+		log.Printf("AI meeting analysis enabled. deployment=%s liveAnalysisEnabled=%t finalSummaryEnabled=%t liveIntervalSeconds=%.0f",
+			config.AzureOpenAI.Deployment, config.LiveAnalysisEnabled, config.FinalSummaryEnabled, config.LiveAnalysisInterval.Seconds())
+	}
+
+	analysisRepository := postgresrepository.NewMeetingAIAnalysisRepository(postgresDB)
+	transcriptSegmentRepository := postgresrepository.NewTranscriptSegmentRepository(postgresDB)
+	completer := azureopenai.NewClient(config.AzureOpenAI)
+
+	return application.NewMeetingAnalysisService(
+		analysisRepository,
+		transcriptSegmentRepository,
+		meetingSessionRepository,
+		completer,
+		application.MeetingAnalysisConfig{
+			Enabled:             enabled,
+			LiveEnabled:         config.LiveAnalysisEnabled,
+			LiveInterval:        config.LiveAnalysisInterval,
+			LiveMinChars:        config.LiveAnalysisMinChars,
+			LiveMaxInputChars:   config.LiveAnalysisMaxInputChars,
+			LiveRequestTimeout:  config.AzureOpenAI.Timeout,
+			FinalEnabled:        config.FinalSummaryEnabled,
+			FinalMaxInputChars:  config.FinalSummaryMaxInputChars,
+			FinalRequestTimeout: config.FinalSummaryTimeout,
+			Model:               config.AzureOpenAI.Deployment,
+		},
+		publisher,
+	)
 }
 
 func transcriptRealtimeConfig(config TranscriptWebSocketConfig) realtime.TranscriptWebSocketConfig {

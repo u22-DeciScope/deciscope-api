@@ -219,6 +219,151 @@ func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *
 	}
 }
 
+func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionRecording,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	analysis := &fakeMeetingAIAnalysisUseCases{
+		snapshot: &application.MeetingAIAnalysesSnapshot{
+			SessionID: "session_1",
+			Live: &domain.MeetingAIAnalysis{
+				SessionID: "session_1",
+				Type:      domain.MeetingAIAnalysisLive,
+				Status:    domain.MeetingAIAnalysisCompleted,
+				Version:   4,
+				Payload:   json.RawMessage(`{"summary":"進行中です"}`),
+				Model:     "gpt-4o-mini",
+				UpdatedAt: mustTime(t, "2026-06-27T00:00:02Z"),
+			},
+			LiveIntervalSeconds: 10,
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/ai-analyses", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceAIAnalyses(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if analysis.gotSessionID != "session_1" {
+		t.Fatalf("gotSessionID = %q", analysis.gotSessionID)
+	}
+	var body meetingAIAnalysesResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.SessionID != "session_1" || body.Live == nil || body.Live.Version != 4 || body.Live.Status != "completed" {
+		t.Fatalf("body = %+v", body)
+	}
+	if body.Final != nil {
+		t.Fatalf("body.Final = %+v, want nil", body.Final)
+	}
+	if !strings.Contains(string(body.Live.Payload), "進行中です") {
+		t.Fatalf("body.Live.Payload = %s", string(body.Live.Payload))
+	}
+	if body.LiveIntervalSeconds != 10 {
+		t.Fatalf("body.LiveIntervalSeconds = %d, want 10", body.LiveIntervalSeconds)
+	}
+}
+
+func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsNullsWhenNoAnalysisExists(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionRecording,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	analysis := &fakeMeetingAIAnalysisUseCases{snapshot: &application.MeetingAIAnalysesSnapshot{SessionID: "session_1"}}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/ai-analyses", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceAIAnalyses(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	var body meetingAIAnalysesResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Live != nil || body.Final != nil {
+		t.Fatalf("body = %+v, want nil live/final", body)
+	}
+}
+
+func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsServiceUnavailableWhenNotWired(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionRecording,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/ai-analyses", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceAIAnalyses(resp, req)
+
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsNotFoundForOtherWorkspace(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_other",
+			Status:      domain.MeetingSessionRecording,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	analysis := &fakeMeetingAIAnalysisUseCases{snapshot: &application.MeetingAIAnalysesSnapshot{SessionID: "session_1"}}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/ai-analyses", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceAIAnalyses(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+type fakeMeetingAIAnalysisUseCases struct {
+	snapshot     *application.MeetingAIAnalysesSnapshot
+	err          error
+	gotSessionID string
+}
+
+func (f *fakeMeetingAIAnalysisUseCases) GetMeetingAIAnalyses(_ context.Context, sessionID string) (*application.MeetingAIAnalysesSnapshot, error) {
+	f.gotSessionID = sessionID
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.snapshot, nil
+}
+
 type fakeMeetingSessionUseCases struct {
 	session     domain.MeetingSession
 	err         error

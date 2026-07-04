@@ -83,6 +83,41 @@ type MeetingSessionPublisher interface {
 	PublishMeetingSessionStatusChanged(session domain.MeetingSession)
 }
 
+// MeetingSessionEndedObserver is notified when a meeting session transitions
+// into the Ended status. It is used to trigger the asynchronous AI final
+// summary without giving MeetingSessionService a direct dependency on the AI
+// analysis service.
+type MeetingSessionEndedObserver interface {
+	NotifyMeetingSessionEnded(session domain.MeetingSession)
+}
+
+type MeetingAIAnalysisRepository interface {
+	UpsertMeetingAIAnalysis(ctx context.Context, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, error)
+	GetMeetingAIAnalysis(ctx context.Context, sessionID string, analysisType domain.MeetingAIAnalysisType) (*domain.MeetingAIAnalysis, error)
+}
+
+type MeetingAIAnalysisPublisher interface {
+	PublishMeetingAIAnalysis(analysis domain.MeetingAIAnalysis)
+}
+
+// AIChatRequest and AIChatResult keep the Azure OpenAI wire format out of
+// Application. Infrastructure adapters translate to/from the provider SDK.
+type AIChatRequest struct {
+	System    string
+	User      string
+	MaxTokens int
+}
+
+type AIChatResult struct {
+	Content          string
+	PromptTokens     int
+	CompletionTokens int
+}
+
+type AIChatCompleter interface {
+	Complete(ctx context.Context, request AIChatRequest) (AIChatResult, error)
+}
+
 type Publisher interface {
 	Publish(event domain.Event)
 }
