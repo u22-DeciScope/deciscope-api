@@ -182,7 +182,14 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
       "tree": {
         "nodes": [
           { "id": "topic-db", "kind": "topic", "label": "DBマイグレーション" },
-          { "id": "risk-db-migration", "kind": "risk", "label": "ダウンタイム懸念" }
+          {
+            "id": "risk-db-migration",
+            "kind": "risk",
+            "label": "ダウンタイム懸念",
+            "status": "open",
+            "description": "DB移行中にサービス停止が発生する可能性を確認している。",
+            "relatedItemIds": ["risk-db-migration"]
+          }
         ],
         "edges": [
           { "source": "topic-db", "target": "risk-db-migration" }
@@ -208,17 +215,28 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
   新規edge、解消済みidの `resolvedIds`）のみを申告し、サーバーが前回状態へ決定論的にマージします。
   保存・配信されるpayloadは常にマージ後の完全な状態なので、クライアントは差分を意識する必要はありません
 - live payloadの `items[].kind` は `issue | question | risk | decision | todo`、
-  `severity` は `low | medium | high`、`status` は `open`（新規）| `updated`（更新）です。
-  itemsは最大30件で、超過時は最も古いitemから除去されます
+  `severity` は `low | medium | high`、`status` は `open`（新規）| `updated`（更新）|
+  `resolved`（解決済）です。
+  未解決（`status` が `resolved` 以外）のitemと解決済み（`status: "resolved"`）のitemは
+  それぞれ独立に最大50件までで、超過時は各区分ごとに最も古いitemから除去されます
+  （解決済みitemが未解決itemの流入で追い出されること、およびその逆はありません）
 - 解消・回答・完了した論点は、モデルが `resolvedIds`（解消済みitemのid配列）で申告します。
-  `resolvedIds` はモデル→サーバー間の指示用フィールドで、サーバーが該当itemと同じidのtreeノード・
-  そのノードに接続するedgeを除去した後にクリアするため、保存・配信されるpayloadには現れません
+  `resolvedIds` はモデル→サーバー間の指示用フィールドで、サーバーが該当itemと同じidのtreeノードを
+  `status: "resolved"` にした後にクリアするため、保存・配信されるpayloadには現れません
 - `tree` は現在の議論構造で、ノードの `kind`（`topic | issue | question | risk | decision`）は
-  `tree.update` イベント（[events.md](./events.md)）と同じ語彙です。ノードは最大12個で、
-  超過時はtopicノードを残して最も古い非topicノードから除去されます（接続edgeも連動除去）。
+  `tree.update` イベント（[events.md](./events.md)）と同じ語彙です。topicノードと未解決
+  （`status` が `resolved` 以外）の非topicノードは合わせて最大36個で、超過時はtopicノードを
+  残して最も古い非topicノードから除去されます。解決済み（`status: "resolved"`）の非topicノードは
+  これとは別枠で最大36個までで、超過時は最も古い解決済みノードから除去されます（解決済みノードが
+  未解決ノードの流入で追い出されることはありません）。除去されたノードへの接続edgeも連動除去されます。
   対応するitemがあるノードはitemと同じ `id` を共有します。ノードが無い場合 `tree` は `null` です。
   topicノードが無い場合は `currentTopic` から `topic-current` ノードをサーバー側で補完し、
-  親を持たないノードを `topic-current` に接続します
+  topicノードがある場合も親を持たない非topicノードを主topicへ接続します
+- `tree.nodes[].description` は任意の短い説明文です。サーバー側で前後空白を除去し、長すぎる場合は
+  切り詰めます。`tree.nodes[].relatedItemIds` は関連する `items[].id` の配列です。存在しないitem idや
+  重複idはサーバー側で除外されます。既存互換のため、ノードidがitem idと一致する場合は
+  `relatedItemIds` が空でも関連カードとして扱えます。`tree.nodes[].status` は任意で、
+  `resolved` の場合もノードは削除されず、解決済みとして残ります
 
 ## Teams Bot会議セッション
 
@@ -277,7 +295,9 @@ X-DeciScope-Api-Key: <shared secret>
 ```
 
 `status` は `pending_join`, `command_sent`, `joining`, `joined`, `recording`,
-`ended`, `failed` のいずれかです。失敗時は `message` が `lastError` として保存されます。
+`speech_throttled`, `speech_error`, `ended`, `failed` のいずれかです。
+Speech認識の一時停止時は `speech_throttled` または `speech_error` として保存され、
+復帰時はBotが `recording` を再送します。失敗時やSpeech停止時の詳細は `lastError` に保存されます。
 
 Botからのmetadata更新:
 
@@ -312,6 +332,9 @@ GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
 ```
 
 - `POST`（作成）と `POST .../end`（終了）はworkspaceのadmin/ownerロールが必要です。
+- `POST .../end` はBotへの終了コマンド送信がタイムアウト・エラーになった場合でも
+  （VM Botが既に停止しているなど）セッションは `ended` として終了します（best-effort）。
+  Bot制御が未設定（`503 bot_control_not_configured`）の場合のみ終了に失敗します。
 - `transcript-segments` は保存済みSegmentの取得、`transcript-stream` はWebSocketでの
   リアルタイム配信です。
 - `ai-analyses` は最新のライブ分析・最終要約を返します。存在しない分析は `null` で、
@@ -333,7 +356,14 @@ GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
       "tree": {
         "nodes": [
           { "id": "topic-db", "kind": "topic", "label": "DBマイグレーション" },
-          { "id": "risk-db-migration", "kind": "risk", "label": "ダウンタイム懸念" }
+          {
+            "id": "risk-db-migration",
+            "kind": "risk",
+            "label": "ダウンタイム懸念",
+            "status": "open",
+            "description": "DB移行中にサービス停止が発生する可能性を確認している。",
+            "relatedItemIds": ["risk-db-migration"]
+          }
         ],
         "edges": [
           { "source": "topic-db", "target": "risk-db-migration" }

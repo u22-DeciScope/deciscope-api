@@ -164,6 +164,36 @@ func TestMeetingSessionServiceUpdatesBotStatus(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionServiceUpdatesSpeechThrottledStatus(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionRecording
+	repository.session.BotCallID = "call-1"
+	publisher := &fakeMeetingSessionPublisher{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{}, publisher)
+
+	session, err := service.UpdateMeetingSessionStatus(context.Background(), application.MeetingSessionStatusUpdateInput{
+		SessionID: "session_1",
+		Status:    domain.MeetingSessionSpeechThrottled,
+		BotCallID: "call-1",
+		Reason:    "azure_speech_throttled",
+		ErrorCode: "TooManyRequests",
+		Source:    "speech_pipeline",
+		Message:   "speech recognizer throttled; reconnecting",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
+	}
+	if session.Status != domain.MeetingSessionSpeechThrottled || session.JoinedAt.IsZero() {
+		t.Fatalf("session = %+v", session)
+	}
+	if !strings.Contains(session.LastError, "reason=azure_speech_throttled") || !strings.Contains(session.LastError, "errorCode=TooManyRequests") {
+		t.Fatalf("lastError = %q", session.LastError)
+	}
+	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionSpeechThrottled {
+		t.Fatalf("published sessions = %+v", publisher.sessions)
+	}
+}
+
 func TestMeetingSessionServiceSuppressesNonFatalFailedAfterJoined(t *testing.T) {
 	repository := newFakeMeetingSessionRepository()
 	repository.session.Status = domain.MeetingSessionJoined
@@ -295,6 +325,32 @@ func TestMeetingSessionServiceEndsSessionAndSendsBotCommand(t *testing.T) {
 	}
 	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionEnded {
 		t.Fatalf("published sessions = %+v", publisher.sessions)
+	}
+}
+
+func TestMeetingSessionServiceEndsSessionWhenBotCommandFails(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionRecording
+	repository.session.BotCallID = "call-1"
+	commander := &fakeBotJoinCommander{err: errors.New("bot control API returned 500")}
+	publisher := &fakeMeetingSessionPublisher{}
+	service := application.NewMeetingSessionService(repository, commander, publisher)
+
+	session, err := service.EndMeetingSession(context.Background(), application.MeetingSessionEndInput{
+		SessionID: "session_1",
+		Reason:    "manual_end_requested",
+	})
+	if err != nil {
+		t.Fatalf("EndMeetingSession() error = %v, want session to end even when the bot command fails", err)
+	}
+	if session.Status != domain.MeetingSessionEnded || session.EndedAt.IsZero() {
+		t.Fatalf("session = %+v, want ended despite bot command failure", session)
+	}
+	if commander.endCommand.SessionID != "session_1" || commander.endCommand.BotCallID != "call-1" {
+		t.Fatalf("end command = %+v", commander.endCommand)
+	}
+	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionEnded {
+		t.Fatalf("published sessions = %+v, want ended status published even on bot command failure", publisher.sessions)
 	}
 }
 

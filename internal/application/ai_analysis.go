@@ -28,8 +28,18 @@ const (
 )
 
 const (
-	liveAnalysisTreeMaxNodes  = 12
-	liveAnalysisItemsMaxCount = 30
+	liveAnalysisTreeMaxNodes  = 36
+	liveAnalysisItemsMaxCount = 50
+	// liveAnalysisResolvedItemsMaxCount and liveAnalysisTreeMaxResolvedNodes
+	// are separate caps for resolved items/nodes so that a burst of active
+	// discussion can never evict resolved entries (and vice versa). Without
+	// this, resolved items/nodes -- which tend to be the oldest entries in
+	// their list -- would be the first evicted by the shared cap, even though
+	// "resolved" is a terminal, intentionally-retained state.
+	liveAnalysisResolvedItemsMaxCount = 50
+	liveAnalysisTreeMaxResolvedNodes  = 36
+
+	liveAnalysisTreeDescriptionMaxRunes = 100
 )
 
 const liveAnalysisSystemPrompt = "あなたは日本語の会議分析アシスタントです。与えられた「前回の分析状態」を新しい発言で更新し、指定されたJSONスキーマのオブジェクトだけを出力してください。JSON以外の説明文やコードフェンスは出力しないでください。"
@@ -45,12 +55,19 @@ const liveAnalysisSchemaDescription = `{
       "severity": "low | medium | high",
       "title": "カード見出し(25字程度まで)",
       "body": "1〜2文の説明。todoで担当者や期限が分かる場合はここに含める",
-      "status": "open | updated"
+      "status": "open | updated | resolved"
     }
   ],
   "tree": {
     "nodes": [
-      {"id": "安定ID(itemsのidと共有可)", "kind": "topic | issue | question | risk | decision", "label": "短いラベル(20字程度)"}
+      {
+        "id": "安定ID(itemsのidと共有可)",
+        "kind": "topic | issue | question | risk | decision",
+        "label": "短いラベル(20字程度)",
+        "status": "open | updated | resolved",
+        "description": "ノード内容の短い説明(1〜2行、100字程度まで)",
+        "relatedItemIds": ["このノードに関連するitems[].id。対応itemと同じidのノードでは同じidを入れる"]
+      }
     ],
     "edges": [
       {"source": "ノードid", "target": "ノードid"}
@@ -62,9 +79,15 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - itemsには、このラウンドの新しい発言によって新しく生まれた論点・懸念・質問・決定事項・TODO、または内容が変化した既存item(idは既存のものを使う)だけを出力してください。変化のない既存itemは出力しないでください(サーバー側で保持されます)。
 - 新しい発言に新規の論点・懸念・質問・決定事項・TODOが含まれる場合は、必ず対応するitemを出力してください。
 - 新しく追加するitemはstatusを"open"に、既存itemを更新した場合はstatusを"updated"にしてください。
-- 新しい発言によって解消された懸念(risk)・回答が出た質問(question)・対応が完了した論点があれば、そのitemのidを必ずresolvedIdsに列挙してください。該当が無ければresolvedIdsは空配列にしてください。「解消した」「対応済み」という内容のitemを出力してはいけません。決定事項(decision)は会議中は残してください。
+- 新しい発言によって解消された懸念(risk)・回答が出た質問(question)・対応が完了した論点があれば、そのitemのidを必ずresolvedIdsに列挙してください。該当が無ければresolvedIdsは空配列にしてください。「解消した」「対応済み」という内容の新規itemを別IDで出力してはいけません。決定事項(decision)は会議中は残してください。
   例: 前回の分析状態に {"id":"risk-x","kind":"risk",...} があり、新しい発言でその懸念が解消したと明言された場合、resolvedIdsに"risk-x"を入れます。
+- 解決済みのitemやnodeは削除せず、statusを"resolved"として残してください。再度議論が始まった場合は既存idのままstatusを"updated"に戻してください。
 - treeも同様に、追加するノード・内容が変化したノード・新しいedgeだけを出力してください。既存の構造はサーバー側で保持されます。ノードのidは安定させ、対応するitemがある場合は同じidを使ってください。currentTopicが変わった場合は対応するtopicノードを出力してください。
+- treeに新しいノードを追加するときは、必ず親となる既存ノード(適切な親が無ければ現在のtopicノード)へのedgeを同じラウンドのedgesに必ず含めてください。edgeの無い孤立ノードを出力してはいけません。
+- edgeの親(source)には、可能な限りtopicノードではなく、内容が直接関連する既存のノードを選んでください。topicノード直下につなぐのは、適切な親が見つからない場合だけにしてください。
+- 新しいitemを出力したときは、必ず同じidのtreeノードと、その親となるノードへのedgeも同時に出力してください。
+- tree.nodes[].descriptionには、そのノードで何が議論されているかを1〜2行で短く書いてください。冗長な背景説明や会議全体の要約は入れないでください。
+- tree.nodes[].relatedItemIdsには、そのノードに関連するitems[].idだけを入れてください。存在しないidを作らないでください。対応するitemと同じidのノードでは、そのidを必ず含めてください。
 - severityは影響度で判断してください(会議の結論を左右するものはhigh)。`
 
 const finalAnalysisSystemPrompt = "あなたは日本語の会議分析アシスタントです。会議全体の文字起こしと事前情報から最終要約を作成し、指定されたJSONスキーマのオブジェクトだけを出力してください。JSON以外の説明文やコードフェンスは出力しないでください。"
@@ -353,7 +376,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, err, len(segments), inputChars, elapsed)
 		return
 	}
-	payload, parseErr := parseAndMergeLiveAnalysisPayload(result.Content, previousPayload)
+	treeStats := &liveAnalysisTreeMergeStats{}
+	payload, parseErr := parseAndMergeLiveAnalysisPayload(result.Content, previousPayload, treeStats)
 	if parseErr != nil {
 		s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
 		return
@@ -387,8 +411,14 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		log.Printf("Live AI analysis persist failed. sessionId=%s version=%d error=%v", sessionID, newVersion, upsertErr)
 		return
 	}
-	log.Printf("Live AI analysis completed. sessionId=%s segmentCount=%d inputChars=%d version=%d promptTokens=%d completionTokens=%d elapsed=%s",
-		sessionID, len(segments), inputChars, newVersion, result.PromptTokens, result.CompletionTokens, elapsed)
+	modelResolvedIDCount := countModelResolvedIDs(result.Content)
+	diffItemCount, diffTreeNodeCount, diffTreeEdgeCount := countLiveAnalysisDiffStats(result.Content)
+	stats := countLiveAnalysisPayloadStats(payload)
+	log.Printf("Live AI analysis completed. sessionId=%s segmentCount=%d inputChars=%d version=%d promptTokens=%d completionTokens=%d elapsed=%s modelResolvedIds=%d resolvedItems=%d totalItems=%d resolvedNodes=%d totalNodes=%d diffItems=%d diffTreeNodes=%d diffTreeEdges=%d droppedNodes=%d droppedNodeReasons=%s droppedEdges=%d synthesizedNodes=%d prunedTopicEdges=%d",
+		sessionID, len(segments), inputChars, newVersion, result.PromptTokens, result.CompletionTokens, elapsed,
+		modelResolvedIDCount, stats.ResolvedItems, stats.TotalItems, stats.ResolvedNodes, stats.TotalNodes,
+		diffItemCount, diffTreeNodeCount, diffTreeEdgeCount,
+		treeStats.droppedNodes(), treeStats.droppedNodeReasons(), treeStats.DroppedEdges, treeStats.SynthesizedNodes, treeStats.PrunedTopicEdges)
 	s.publishAnalysis(*saved)
 }
 
@@ -911,10 +941,10 @@ func truncateErrorMessage(err error, limit int) string {
 // silently ignored by json.Unmarshal.
 //
 // ResolvedIds is a model-to-server instruction channel only: the model lists
-// the ids of items resolved by the new utterances, the server removes those
-// items and tree nodes deterministically, and the field is cleared before
-// persisting so it never appears in stored/broadcast payloads or in the next
-// prompt's previous state.
+// the ids of items resolved by the new utterances, the server marks those
+// items and matching tree nodes as resolved deterministically, and the field
+// is cleared before persisting so it never appears in stored/broadcast payloads
+// or in the next prompt's previous state.
 type liveAnalysisPayload struct {
 	Summary      string             `json:"summary"`
 	CurrentTopic string             `json:"currentTopic"`
@@ -938,9 +968,12 @@ type liveAnalysisTree struct {
 }
 
 type liveAnalysisTreeNode struct {
-	ID    string `json:"id"`
-	Kind  string `json:"kind"`
-	Label string `json:"label"`
+	ID             string   `json:"id"`
+	Kind           string   `json:"kind"`
+	Label          string   `json:"label"`
+	Status         string   `json:"status,omitempty"`
+	Description    string   `json:"description,omitempty"`
+	RelatedItemIDs []string `json:"relatedItemIds,omitempty"`
 }
 
 type liveAnalysisTreeEdge struct {
@@ -982,7 +1015,16 @@ func validLiveAnalysisSeverity(severity string) bool {
 
 func validLiveAnalysisItemStatus(status string) bool {
 	switch status {
-	case "open", "updated":
+	case "open", "updated", "resolved":
+		return true
+	default:
+		return false
+	}
+}
+
+func validLiveAnalysisTreeNodeStatus(status string) bool {
+	switch status {
+	case "open", "updated", "resolved":
 		return true
 	default:
 		return false
@@ -999,13 +1041,10 @@ const liveAnalysisTopicLabelMaxRunes = 20
 // with no usable text or an out-of-vocabulary kind. Partially invalid output
 // never fails the whole payload; only the offending element is discarded.
 //
-// resolvedIDs carries the ids the model listed in resolvedIds; items with a
-// matching id are removed deterministically. Items whose status is
-// "resolved" are also removed as a defensive fallback, and their ids are
-// added to the same set (mutating the passed map) so the caller can remove
-// the matching tree nodes with the union of both sources. Because the
-// persisted payload is this normalized form, resolved items disappear from
-// the next prompt's previous state as well.
+// resolvedIDs carries the ids the model listed in resolvedIds. Items with a
+// matching id are kept but forced to status="resolved". Items whose status is
+// already "resolved" are added to the same set (mutating the passed map), so
+// previous-state items and matching tree nodes receive the same status.
 func normalizeLiveAnalysisItems(items []liveAnalysisItem, resolvedIDs map[string]struct{}) []liveAnalysisItem {
 	normalized := make([]liveAnalysisItem, 0, len(items))
 	for _, item := range items {
@@ -1015,14 +1054,8 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, resolvedIDs map[string
 		item.Title = strings.TrimSpace(item.Title)
 		item.Body = strings.TrimSpace(item.Body)
 		item.Status = strings.ToLower(strings.TrimSpace(item.Status))
-		if item.Status == "resolved" {
-			if item.ID != "" {
-				resolvedIDs[item.ID] = struct{}{}
-			}
-			continue
-		}
-		if _, resolved := resolvedIDs[item.ID]; item.ID != "" && resolved {
-			continue
+		if item.Status == "resolved" && item.ID != "" {
+			resolvedIDs[item.ID] = struct{}{}
 		}
 		if item.Title == "" && item.Body == "" {
 			continue
@@ -1036,6 +1069,9 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, resolvedIDs map[string
 		if !validLiveAnalysisItemStatus(item.Status) {
 			item.Status = "open"
 		}
+		if _, resolved := resolvedIDs[item.ID]; item.ID != "" && resolved {
+			item.Status = "resolved"
+		}
 		normalized = append(normalized, item)
 	}
 	return normalized
@@ -1043,16 +1079,20 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, resolvedIDs map[string
 
 // mergeLiveAnalysisItems merges the model's diff items into the previous
 // state: previous items keep their order, a diff item with an existing id
-// replaces that item in place (status forced to "updated"), and new ids are
-// appended. Items whose id is in resolvedIDs are removed. The merged list is
-// capped at liveAnalysisItemsMaxCount, evicting the oldest items first.
+// replaces that item in place (status forced to "updated" unless it is
+// resolved), and new ids are appended. Items whose id is in resolvedIDs are
+// retained and marked resolved. Active (status != "resolved") and resolved
+// items are then capped independently -- active at liveAnalysisItemsMaxCount
+// and resolved at liveAnalysisResolvedItemsMaxCount, each evicting its own
+// oldest entries first -- so a flood of one kind can never evict the other.
+// The returned list preserves the merged list's original relative order.
 func mergeLiveAnalysisItems(previous, diff []liveAnalysisItem, resolvedIDs map[string]struct{}) []liveAnalysisItem {
 	merged := make([]liveAnalysisItem, 0, len(previous)+len(diff))
 	index := make(map[string]int, len(previous)+len(diff))
 	for _, item := range previous {
 		if item.ID != "" {
 			if _, resolved := resolvedIDs[item.ID]; resolved {
-				continue
+				item.Status = "resolved"
 			}
 			index[item.ID] = len(merged)
 		}
@@ -1060,8 +1100,13 @@ func mergeLiveAnalysisItems(previous, diff []liveAnalysisItem, resolvedIDs map[s
 	}
 	for _, item := range diff {
 		if item.ID != "" {
+			if _, resolved := resolvedIDs[item.ID]; resolved {
+				item.Status = "resolved"
+			}
 			if at, ok := index[item.ID]; ok {
-				item.Status = "updated"
+				if item.Status != "resolved" {
+					item.Status = "updated"
+				}
 				merged[at] = item
 				continue
 			}
@@ -1069,57 +1114,245 @@ func mergeLiveAnalysisItems(previous, diff []liveAnalysisItem, resolvedIDs map[s
 		}
 		merged = append(merged, item)
 	}
-	if len(merged) > liveAnalysisItemsMaxCount {
-		merged = merged[len(merged)-liveAnalysisItemsMaxCount:]
+	return capLiveAnalysisItems(merged, liveAnalysisItemsMaxCount, liveAnalysisResolvedItemsMaxCount)
+}
+
+// capLiveAnalysisItems caps active and resolved items independently: active
+// (status != "resolved") items are capped at activeMax and resolved items at
+// resolvedMax, each evicting its own oldest entries first. The result
+// preserves the input's original relative order.
+func capLiveAnalysisItems(items []liveAnalysisItem, activeMax, resolvedMax int) []liveAnalysisItem {
+	activeCount, resolvedCount := 0, 0
+	for _, item := range items {
+		if item.Status == "resolved" {
+			resolvedCount++
+		} else {
+			activeCount++
+		}
 	}
-	return merged
+	if activeCount <= activeMax && resolvedCount <= resolvedMax {
+		return items
+	}
+
+	activeExcess := activeCount - activeMax
+	resolvedExcess := resolvedCount - resolvedMax
+	kept := make([]liveAnalysisItem, 0, len(items))
+	for _, item := range items {
+		if item.Status == "resolved" {
+			if resolvedExcess > 0 {
+				resolvedExcess--
+				continue
+			}
+		} else {
+			if activeExcess > 0 {
+				activeExcess--
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	return kept
+}
+
+// liveAnalysisTreeMergeStats collects diagnostics from a single
+// mergeLiveAnalysisTree call for observability logging only; it never
+// affects the merge result. Passing a nil *liveAnalysisTreeMergeStats
+// disables collection entirely, so mergeLiveAnalysisTree stays usable as a
+// plain pure function wherever the diagnostics are not needed (e.g. tests
+// that don't care about them, or via parseAndMergeLiveAnalysisPayload's
+// omitted variadic stats argument).
+type liveAnalysisTreeMergeStats struct {
+	// DroppedEmptyID/DroppedEmptyLabel/DroppedInvalidKind count nodes
+	// discarded by addNode's validation, broken down by reason, so an
+	// operator can tell "the model produced a tree node but it failed
+	// validation" apart from "the model produced no tree node at all"
+	// (countLiveAnalysisDiffStats covers the latter).
+	DroppedEmptyID     int
+	DroppedEmptyLabel  int
+	DroppedInvalidKind int
+	// DroppedEdges counts edges removed by finalizeLiveAnalysisTree because
+	// their source or target id is not in the final node set (whether
+	// because the model referenced an unknown id or because the node was
+	// evicted by the node cap).
+	DroppedEdges int
+	// SynthesizedNodes counts nodes mergeLiveAnalysisTree created itself
+	// (from an item that had no corresponding tree node) rather than
+	// receiving from the model.
+	SynthesizedNodes int
+	// PrunedTopicEdges counts redundant "primary topic -> X" fallback edges
+	// removed by pruneRedundantTopicFallbackEdges because X also has a more
+	// specific parent elsewhere in the tree. See pruneRedundantTopicFallbackEdges
+	// for what makes an edge a pruning candidate in the first place.
+	PrunedTopicEdges int
+}
+
+// droppedNodes returns the total node count dropped for any reason. A nil
+// receiver returns 0, matching the "collection disabled" contract.
+func (s *liveAnalysisTreeMergeStats) droppedNodes() int {
+	if s == nil {
+		return 0
+	}
+	return s.DroppedEmptyID + s.DroppedEmptyLabel + s.DroppedInvalidKind
+}
+
+// droppedNodeReasons renders the per-reason breakdown as a log-friendly
+// "[reason:count ...]" string, e.g. "[emptyLabel:1 invalidKind:1]". Reasons
+// with a zero count are omitted.
+func (s *liveAnalysisTreeMergeStats) droppedNodeReasons() string {
+	var parts []string
+	if s != nil {
+		if s.DroppedEmptyID > 0 {
+			parts = append(parts, fmt.Sprintf("emptyId:%d", s.DroppedEmptyID))
+		}
+		if s.DroppedEmptyLabel > 0 {
+			parts = append(parts, fmt.Sprintf("emptyLabel:%d", s.DroppedEmptyLabel))
+		}
+		if s.DroppedInvalidKind > 0 {
+			parts = append(parts, fmt.Sprintf("invalidKind:%d", s.DroppedInvalidKind))
+		}
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// liveAnalysisItemKindToTreeNodeKindFallback maps liveAnalysisItem kinds that
+// are not valid tree node kinds (validLiveAnalysisTreeNodeKind) to the
+// closest valid tree node kind. It is used only when synthesizing a tree
+// node from an item that has no corresponding tree node (see
+// mergeLiveAnalysisTree). Every valid item kind except "todo" is already a
+// valid tree node kind; "todo" maps to "issue" because a to-do is
+// functionally an actionable issue in the discussion tree's vocabulary.
+var liveAnalysisItemKindToTreeNodeKindFallback = map[string]string{
+	"todo": "issue",
+}
+
+// liveAnalysisTreeNodeKindForItem returns the tree node kind to use when
+// synthesizing a node for an item: the item's own kind when it is already a
+// valid tree node kind, its mapped fallback from
+// liveAnalysisItemKindToTreeNodeKindFallback otherwise, and "issue" as a
+// last-resort default (defensive only: normalizeLiveAnalysisItems already
+// restricts item.Kind to the known item vocabulary by the time this runs).
+func liveAnalysisTreeNodeKindForItem(itemKind string) string {
+	if validLiveAnalysisTreeNodeKind(itemKind) {
+		return itemKind
+	}
+	if mapped, ok := liveAnalysisItemKindToTreeNodeKindFallback[itemKind]; ok {
+		return mapped
+	}
+	return "issue"
 }
 
 // mergeLiveAnalysisTree merges the model's diff tree into the previous tree:
 // diff nodes upsert previous nodes by id (new nodes are appended), nodes with
-// a resolved id are removed, and edges are the deduplicated union of previous
-// and diff edges. The merged set then goes through finalizeLiveAnalysisTree
-// for topic completion, the node cap, and edge validation.
-func mergeLiveAnalysisTree(previous, diff *liveAnalysisTree, resolvedIDs map[string]struct{}, currentTopic string) *liveAnalysisTree {
+// a resolved id are retained and marked resolved, relatedItemIds are
+// normalized against the merged item set, and edges are the deduplicated union
+// of previous and diff edges.
+//
+// After the model's own nodes are merged, any item in items (except a
+// dismissed one) whose id has no corresponding tree node gets a node
+// synthesized for it (id/label/description/status derived from the item,
+// see the synthesis loop below), so a card the model reports always has a
+// matching tree node even when the model omits the tree entirely. A
+// synthesized node sitting near the eviction edge of the node cap may be
+// evicted and then re-synthesized on a later tick if the model still hasn't
+// emitted its own node for it; this is an accepted tradeoff, not a bug --
+// liveAnalysisTreeMaxNodes/liveAnalysisTreeMaxResolvedNodes were raised
+// specifically to keep this churn rare.
+//
+// The merged set then goes through finalizeLiveAnalysisTree for topic
+// completion, the node cap, and edge validation. stats may be nil to skip
+// diagnostics collection.
+func mergeLiveAnalysisTree(previous, diff *liveAnalysisTree, resolvedIDs map[string]struct{}, currentTopic string, items []liveAnalysisItem, stats *liveAnalysisTreeMergeStats) *liveAnalysisTree {
+	itemIDs := liveAnalysisItemIDSet(items)
 	var nodes []liveAnalysisTreeNode
 	index := make(map[string]int)
-	addNode := func(node liveAnalysisTreeNode) {
+	addNode := func(node liveAnalysisTreeNode, fromDiff bool) bool {
 		node.ID = strings.TrimSpace(node.ID)
 		node.Kind = strings.ToLower(strings.TrimSpace(node.Kind))
 		node.Label = strings.TrimSpace(node.Label)
-		if node.ID == "" || node.Label == "" {
-			return
+		node.Status = strings.ToLower(strings.TrimSpace(node.Status))
+		node.Description = truncateRunes(strings.TrimSpace(node.Description), liveAnalysisTreeDescriptionMaxRunes)
+		node.RelatedItemIDs = normalizeLiveAnalysisRelatedItemIDs(node.RelatedItemIDs, node.ID, itemIDs)
+		if node.ID == "" {
+			if stats != nil {
+				stats.DroppedEmptyID++
+			}
+			return false
+		}
+		if node.Label == "" {
+			if stats != nil {
+				stats.DroppedEmptyLabel++
+			}
+			return false
 		}
 		if !validLiveAnalysisTreeNodeKind(node.Kind) {
-			return
+			if stats != nil {
+				stats.DroppedInvalidKind++
+			}
+			return false
+		}
+		if node.Status != "" && !validLiveAnalysisTreeNodeStatus(node.Status) {
+			node.Status = ""
+		}
+		if _, resolved := resolvedIDs[node.ID]; resolved {
+			node.Status = "resolved"
 		}
 		if at, ok := index[node.ID]; ok {
+			if node.Status == "" {
+				if fromDiff && nodes[at].Status == "resolved" {
+					node.Status = "updated"
+				} else {
+					node.Status = nodes[at].Status
+				}
+			}
+			if node.Description == "" {
+				node.Description = nodes[at].Description
+			}
+			if len(node.RelatedItemIDs) == 0 {
+				node.RelatedItemIDs = nodes[at].RelatedItemIDs
+			}
 			nodes[at] = node
-			return
+			return true
 		}
 		index[node.ID] = len(nodes)
 		nodes = append(nodes, node)
+		return true
 	}
 	var rawEdges []liveAnalysisTreeEdge
 	if previous != nil {
 		for _, node := range previous.Nodes {
-			addNode(node)
+			addNode(node, false)
 		}
 		rawEdges = append(rawEdges, previous.Edges...)
 	}
 	if diff != nil {
 		for _, node := range diff.Nodes {
-			addNode(node)
+			addNode(node, true)
 		}
 		rawEdges = append(rawEdges, diff.Edges...)
 	}
 
-	kept := make([]liveAnalysisTreeNode, 0, len(nodes))
-	for _, node := range nodes {
-		if _, resolved := resolvedIDs[node.ID]; resolved {
+	for _, item := range items {
+		if item.ID == "" || item.Status == "dismissed" {
 			continue
 		}
-		kept = append(kept, node)
+		if _, ok := index[item.ID]; ok {
+			continue
+		}
+		status := ""
+		if item.Status == "resolved" {
+			status = "resolved"
+		}
+		synthesized := liveAnalysisTreeNode{
+			ID:             item.ID,
+			Kind:           liveAnalysisTreeNodeKindForItem(item.Kind),
+			Label:          item.Title,
+			Status:         status,
+			Description:    item.Body,
+			RelatedItemIDs: []string{item.ID},
+		}
+		if addNode(synthesized, false) && stats != nil {
+			stats.SynthesizedNodes++
+		}
 	}
 
 	edges := make([]liveAnalysisTreeEdge, 0, len(rawEdges))
@@ -1134,18 +1367,58 @@ func mergeLiveAnalysisTree(previous, diff *liveAnalysisTree, resolvedIDs map[str
 		seenEdges[key] = struct{}{}
 		edges = append(edges, edge)
 	}
-	return finalizeLiveAnalysisTree(kept, edges, currentTopic)
+	return finalizeLiveAnalysisTree(nodes, edges, currentTopic, stats)
+}
+
+func liveAnalysisItemIDSet(items []liveAnalysisItem) map[string]struct{} {
+	ids := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item.ID != "" {
+			ids[item.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+func normalizeLiveAnalysisRelatedItemIDs(ids []string, nodeID string, itemIDs map[string]struct{}) []string {
+	normalized := make([]string, 0, len(ids)+1)
+	seen := make(map[string]struct{}, len(ids)+1)
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := itemIDs[id]; !ok {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+
+	add(nodeID)
+	for _, id := range ids {
+		add(id)
+	}
+	return normalized
 }
 
 // finalizeLiveAnalysisTree applies the invariants of the stored tree to a
 // merged node/edge set: an empty node list collapses the tree to nil
 // (serialized as JSON null); when there is no topic node and currentTopic is
 // non-empty a synthetic "topic-current" node is inserted at the head (unless
-// a node already uses that id) and every node without an incoming edge is
-// connected from it; nodes are capped at liveAnalysisTreeMaxNodes keeping
-// topic nodes and evicting the oldest non-topic nodes first; and edges
-// referencing missing nodes are dropped.
-func finalizeLiveAnalysisTree(nodes []liveAnalysisTreeNode, edges []liveAnalysisTreeEdge, currentTopic string) *liveAnalysisTree {
+// a node already uses that id); resolved (status "resolved") non-topic nodes
+// and active nodes (topic nodes plus non-resolved non-topic nodes) are then
+// capped independently -- active at liveAnalysisTreeMaxNodes (keeping topic
+// nodes and evicting the oldest non-topic nodes first) and resolved at
+// liveAnalysisTreeMaxResolvedNodes (evicting the oldest resolved nodes
+// first) -- so a burst of active discussion can never evict resolved nodes
+// or vice versa; edges referencing missing nodes are dropped; and any node
+// without an incoming edge (including secondary topic nodes created by a
+// topic change) is connected to the primary topic node when one exists.
+func finalizeLiveAnalysisTree(nodes []liveAnalysisTreeNode, edges []liveAnalysisTreeEdge, currentTopic string, stats *liveAnalysisTreeMergeStats) *liveAnalysisTree {
 	if len(nodes) == 0 {
 		return nil
 	}
@@ -1171,7 +1444,7 @@ func finalizeLiveAnalysisTree(nodes []liveAnalysisTreeNode, edges []liveAnalysis
 		insertedTopic = true
 	}
 
-	nodes = capLiveAnalysisTreeNodes(nodes, liveAnalysisTreeMaxNodes)
+	nodes = capLiveAnalysisTreeNodes(nodes, liveAnalysisTreeMaxNodes, liveAnalysisTreeMaxResolvedNodes)
 	nodeIDs := make(map[string]struct{}, len(nodes))
 	for _, node := range nodes {
 		nodeIDs[node.ID] = struct{}{}
@@ -1186,28 +1459,215 @@ func finalizeLiveAnalysisTree(nodes []liveAnalysisTreeNode, edges []liveAnalysis
 		}
 		validEdges = append(validEdges, edge)
 	}
+	if stats != nil {
+		stats.DroppedEdges += len(edges) - len(validEdges)
+	}
 
-	if insertedTopic {
-		hasIncoming := make(map[string]bool, len(nodes))
-		for _, edge := range validEdges {
-			hasIncoming[edge.Target] = true
+	validEdges = connectOrphanLiveAnalysisTreeNodes(nodes, validEdges, insertedTopic)
+
+	topicID := primaryLiveAnalysisTopicID(nodes, insertedTopic)
+	prunedEdges := pruneRedundantTopicFallbackEdges(nodes, validEdges, topicID)
+	if stats != nil {
+		stats.PrunedTopicEdges += len(validEdges) - len(prunedEdges)
+	}
+	return &liveAnalysisTree{Nodes: nodes, Edges: prunedEdges}
+}
+
+// primaryLiveAnalysisTopicID returns the id of the tree's primary topic
+// node: the same node connectOrphanLiveAnalysisTreeNodes and
+// pruneRedundantTopicFallbackEdges treat as "the" topic node when a tree
+// carries more than one. It is the first topic-kind node in nodes, unless
+// preferCurrentTopic is set and a node with id liveAnalysisCurrentTopicNodeID
+// exists (the topic node for the newest topic change), in which case that
+// node wins instead. Returns "" when nodes contains no topic node.
+func primaryLiveAnalysisTopicID(nodes []liveAnalysisTreeNode, preferCurrentTopic bool) string {
+	topicID := ""
+	for _, node := range nodes {
+		if node.Kind != "topic" {
+			continue
 		}
-		for _, node := range nodes {
-			if node.ID == liveAnalysisCurrentTopicNodeID {
-				continue
-			}
-			if !hasIncoming[node.ID] {
-				validEdges = append(validEdges, liveAnalysisTreeEdge{Source: liveAnalysisCurrentTopicNodeID, Target: node.ID})
+		if topicID == "" {
+			topicID = node.ID
+		}
+		if preferCurrentTopic && node.ID == liveAnalysisCurrentTopicNodeID {
+			return node.ID
+		}
+	}
+	return topicID
+}
+
+func connectOrphanLiveAnalysisTreeNodes(nodes []liveAnalysisTreeNode, edges []liveAnalysisTreeEdge, preferCurrentTopic bool) []liveAnalysisTreeEdge {
+	topicID := primaryLiveAnalysisTopicID(nodes, preferCurrentTopic)
+	if topicID == "" {
+		return edges
+	}
+
+	hasIncoming := make(map[string]bool, len(nodes))
+	seenEdges := make(map[string]struct{}, len(edges)+len(nodes))
+	for _, edge := range edges {
+		hasIncoming[edge.Target] = true
+		seenEdges[edge.Source+"\x00"+edge.Target] = struct{}{}
+	}
+	for _, node := range nodes {
+		if node.ID == topicID || hasIncoming[node.ID] {
+			continue
+		}
+		key := topicID + "\x00" + node.ID
+		if _, ok := seenEdges[key]; ok {
+			continue
+		}
+		seenEdges[key] = struct{}{}
+		edges = append(edges, liveAnalysisTreeEdge{Source: topicID, Target: node.ID})
+	}
+	return edges
+}
+
+// pruneRedundantTopicFallbackEdges removes "primary topic -> X" edges that
+// have become redundant because X also has a direct edge from some other,
+// more specific node. This targets the exact edge shape
+// connectOrphanLiveAnalysisTreeNodes produces: when a node is first added
+// without a clear parent, that function connects it directly from the
+// primary topic node as a fallback. Edges are otherwise only ever added, not
+// removed, across merge rounds -- so if the model later reports the node's
+// real parent (some other node Y -> X) in a later round, the earlier
+// "topic -> X" fallback edge would linger forever, leaving the topic node
+// wrongly connected to nodes several levels deep in the discussion tree.
+//
+// A "topic -> X" edge is a pruning candidate only when X has at least one
+// other incoming edge from a source other than the topic node. This is
+// exactly what keeps the orphan-rescue behavior in
+// connectOrphanLiveAnalysisTreeNodes intact: a freshly rescued node has
+// exactly one incoming edge (the fallback itself), so it is never a
+// candidate here and the fallback survives until a real parent shows up.
+//
+// Because edges otherwise only accumulate, blindly dropping every candidate
+// could disconnect the tree if a candidate's target is only reachable
+// through the very edges being removed. To stay conservative, this computes
+// the set of nodes reachable from the topic using only the non-candidate
+// edges (i.e. the edges that would remain if every candidate were dropped),
+// and removes a candidate edge only when its target is still in that
+// reachable set. A candidate whose target would become unreachable is left
+// in place instead of being dropped.
+func pruneRedundantTopicFallbackEdges(nodes []liveAnalysisTreeNode, edges []liveAnalysisTreeEdge, topicID string) []liveAnalysisTreeEdge {
+	if topicID == "" || len(edges) == 0 {
+		return edges
+	}
+	nodeIDs := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		nodeIDs[node.ID] = struct{}{}
+	}
+
+	incomingFromOther := make(map[string]bool, len(edges))
+	for _, edge := range edges {
+		if edge.Source != topicID {
+			incomingFromOther[edge.Target] = true
+		}
+	}
+
+	candidate := make([]bool, len(edges))
+	hasCandidate := false
+	survivingEdges := make([]liveAnalysisTreeEdge, 0, len(edges))
+	for i, edge := range edges {
+		if edge.Source == topicID && incomingFromOther[edge.Target] {
+			candidate[i] = true
+			hasCandidate = true
+			continue
+		}
+		survivingEdges = append(survivingEdges, edge)
+	}
+	if !hasCandidate {
+		return edges
+	}
+
+	reachable := reachableLiveAnalysisNodeIDs(topicID, survivingEdges, nodeIDs)
+
+	pruned := make([]liveAnalysisTreeEdge, 0, len(edges))
+	removedAny := false
+	for i, edge := range edges {
+		if candidate[i] && reachable[edge.Target] {
+			removedAny = true
+			continue
+		}
+		pruned = append(pruned, edge)
+	}
+	if !removedAny {
+		return edges
+	}
+	return pruned
+}
+
+// reachableLiveAnalysisNodeIDs returns the set of node ids reachable from
+// rootID by following edges as directed source -> target links (a plain
+// BFS). Only ids present in validIDs are followed, defensively guarding
+// against edges referencing an id outside the current node set.
+func reachableLiveAnalysisNodeIDs(rootID string, edges []liveAnalysisTreeEdge, validIDs map[string]struct{}) map[string]bool {
+	adjacency := make(map[string][]string, len(edges))
+	for _, edge := range edges {
+		if _, ok := validIDs[edge.Source]; !ok {
+			continue
+		}
+		if _, ok := validIDs[edge.Target]; !ok {
+			continue
+		}
+		adjacency[edge.Source] = append(adjacency[edge.Source], edge.Target)
+	}
+	visited := map[string]bool{rootID: true}
+	queue := []string{rootID}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, next := range adjacency[current] {
+			if !visited[next] {
+				visited[next] = true
+				queue = append(queue, next)
 			}
 		}
 	}
-	return &liveAnalysisTree{Nodes: nodes, Edges: validEdges}
+	return visited
 }
 
-// capLiveAnalysisTreeNodes trims the node list to max entries, evicting the
-// oldest non-topic nodes first so topic nodes survive. If topic nodes alone
-// exceed the cap, the oldest topics are evicted too.
-func capLiveAnalysisTreeNodes(nodes []liveAnalysisTreeNode, max int) []liveAnalysisTreeNode {
+// capLiveAnalysisTreeNodes caps active and resolved nodes independently:
+// resolved (status "resolved") non-topic nodes go in one bucket capped at
+// maxResolved, and every other node (topic nodes plus non-resolved non-topic
+// nodes) goes in the active bucket capped at maxActive. Each bucket is capped
+// on its own so neither can evict the other, and the result preserves the
+// input's original relative order.
+func capLiveAnalysisTreeNodes(nodes []liveAnalysisTreeNode, maxActive, maxResolved int) []liveAnalysisTreeNode {
+	var activeNodes, resolvedNodes []liveAnalysisTreeNode
+	for _, node := range nodes {
+		if node.Kind != "topic" && node.Status == "resolved" {
+			resolvedNodes = append(resolvedNodes, node)
+		} else {
+			activeNodes = append(activeNodes, node)
+		}
+	}
+	if len(activeNodes) <= maxActive && len(resolvedNodes) <= maxResolved {
+		return nodes
+	}
+
+	keptActive := capActiveLiveAnalysisTreeNodes(activeNodes, maxActive)
+	keptResolved := capResolvedLiveAnalysisTreeNodes(resolvedNodes, maxResolved)
+
+	keepIDs := make(map[string]struct{}, len(keptActive)+len(keptResolved))
+	for _, node := range keptActive {
+		keepIDs[node.ID] = struct{}{}
+	}
+	for _, node := range keptResolved {
+		keepIDs[node.ID] = struct{}{}
+	}
+	kept := make([]liveAnalysisTreeNode, 0, len(keepIDs))
+	for _, node := range nodes {
+		if _, ok := keepIDs[node.ID]; ok {
+			kept = append(kept, node)
+		}
+	}
+	return kept
+}
+
+// capActiveLiveAnalysisTreeNodes trims the active node list to max entries,
+// evicting the oldest non-topic nodes first so topic nodes survive. If topic
+// nodes alone exceed the cap, the oldest topics are evicted too.
+func capActiveLiveAnalysisTreeNodes(nodes []liveAnalysisTreeNode, max int) []liveAnalysisTreeNode {
 	if len(nodes) <= max {
 		return nodes
 	}
@@ -1224,6 +1684,15 @@ func capLiveAnalysisTreeNodes(nodes []liveAnalysisTreeNode, max int) []liveAnaly
 		kept = kept[len(kept)-max:]
 	}
 	return kept
+}
+
+// capResolvedLiveAnalysisTreeNodes trims the resolved node list to max
+// entries, evicting the oldest resolved nodes first.
+func capResolvedLiveAnalysisTreeNodes(nodes []liveAnalysisTreeNode, max int) []liveAnalysisTreeNode {
+	if len(nodes) <= max {
+		return nodes
+	}
+	return nodes[len(nodes)-max:]
 }
 
 func truncateRunes(value string, limit int) string {
@@ -1256,7 +1725,17 @@ func previousLiveAnalysisState(previousPayload json.RawMessage) liveAnalysisPayl
 // stored and broadcast. The model only reports changes; the server owns
 // state retention, so weak-reasoning models cannot lose accumulated items by
 // echoing a stale snapshot.
-func parseAndMergeLiveAnalysisPayload(content string, previousPayload json.RawMessage) (json.RawMessage, error) {
+//
+// The optional trailing stats argument receives tree-merge diagnostics
+// (dropped nodes/edges, synthesized nodes) for observability logging; it is
+// a variadic *liveAnalysisTreeMergeStats rather than a plain trailing
+// parameter so every existing caller (including all tests) keeps compiling
+// unchanged. Pass no argument, or nil, to skip collection.
+func parseAndMergeLiveAnalysisPayload(content string, previousPayload json.RawMessage, stats ...*liveAnalysisTreeMergeStats) (json.RawMessage, error) {
+	var treeStats *liveAnalysisTreeMergeStats
+	if len(stats) > 0 {
+		treeStats = stats[0]
+	}
 	cleaned := stripJSONCodeFence(content)
 	var diff liveAnalysisPayload
 	if err := json.Unmarshal([]byte(cleaned), &diff); err != nil {
@@ -1277,7 +1756,7 @@ func parseAndMergeLiveAnalysisPayload(content string, previousPayload json.RawMe
 		CurrentTopic: firstNonEmptyTrimmed(diff.CurrentTopic, previous.CurrentTopic),
 	}
 	merged.Items = mergeLiveAnalysisItems(previous.Items, diffItems, resolvedIDs)
-	merged.Tree = mergeLiveAnalysisTree(previous.Tree, diff.Tree, resolvedIDs, merged.CurrentTopic)
+	merged.Tree = mergeLiveAnalysisTree(previous.Tree, diff.Tree, resolvedIDs, merged.CurrentTopic, merged.Items, treeStats)
 	if merged.isEmpty() {
 		return nil, fmt.Errorf("live analysis payload is empty")
 	}
@@ -1289,6 +1768,85 @@ func parseAndMergeLiveAnalysisPayload(content string, previousPayload json.RawMe
 		return nil, fmt.Errorf("marshal normalized live analysis payload: %w", err)
 	}
 	return normalized, nil
+}
+
+// liveAnalysisPayloadStats summarizes item/node counts of a merged live
+// analysis payload for observability logging only.
+type liveAnalysisPayloadStats struct {
+	TotalItems    int
+	ResolvedItems int
+	TotalNodes    int
+	ResolvedNodes int
+}
+
+// countLiveAnalysisPayloadStats re-parses an already-merged payload to count
+// items/nodes and how many of each are resolved. It re-parses rather than
+// threading extra return values through parseAndMergeLiveAnalysisPayload
+// because the counts are only needed for the completion log line.
+func countLiveAnalysisPayloadStats(payload json.RawMessage) liveAnalysisPayloadStats {
+	var stats liveAnalysisPayloadStats
+	if len(payload) == 0 {
+		return stats
+	}
+	var parsed liveAnalysisPayload
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return stats
+	}
+	stats.TotalItems = len(parsed.Items)
+	for _, item := range parsed.Items {
+		if item.Status == "resolved" {
+			stats.ResolvedItems++
+		}
+	}
+	if parsed.Tree != nil {
+		stats.TotalNodes = len(parsed.Tree.Nodes)
+		for _, node := range parsed.Tree.Nodes {
+			if node.Status == "resolved" {
+				stats.ResolvedNodes++
+			}
+		}
+	}
+	return stats
+}
+
+// countModelResolvedIDs counts how many resolvedIds the model reported in its
+// raw completion output for this round. It is used only for observability
+// logging, so an operator can tell "the model never reports resolvedIds"
+// apart from "the model reports them but they get dropped/evicted downstream".
+func countModelResolvedIDs(content string) int {
+	cleaned := stripJSONCodeFence(content)
+	var diff liveAnalysisPayload
+	if err := json.Unmarshal([]byte(cleaned), &diff); err != nil {
+		return 0
+	}
+	count := 0
+	for _, id := range diff.ResolvedIds {
+		if strings.TrimSpace(id) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+// countLiveAnalysisDiffStats counts how many items, tree nodes, and tree
+// edges the model reported in its raw completion output for this round,
+// before any validation or merge. Like countModelResolvedIDs, it is used
+// only for observability logging, so an operator can tell "the model
+// reported 0 diff tree nodes" (the model itself never emits a tree) apart
+// from "the model reported N diff tree nodes but validation/merge dropped
+// them" (see liveAnalysisTreeMergeStats).
+func countLiveAnalysisDiffStats(content string) (items, treeNodes, treeEdges int) {
+	cleaned := stripJSONCodeFence(content)
+	var diff liveAnalysisPayload
+	if err := json.Unmarshal([]byte(cleaned), &diff); err != nil {
+		return 0, 0, 0
+	}
+	items = len(diff.Items)
+	if diff.Tree != nil {
+		treeNodes = len(diff.Tree.Nodes)
+		treeEdges = len(diff.Tree.Edges)
+	}
+	return items, treeNodes, treeEdges
 }
 
 func firstNonEmptyTrimmed(values ...string) string {

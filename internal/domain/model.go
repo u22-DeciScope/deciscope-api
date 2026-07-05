@@ -88,16 +88,18 @@ type TranscriptSegmentStoreResult struct {
 type MeetingSessionStatus string
 
 const (
-	MeetingSessionRequested   MeetingSessionStatus = "requested"
-	MeetingSessionPendingJoin MeetingSessionStatus = "pending_join"
-	MeetingSessionCommandSent MeetingSessionStatus = "command_sent"
-	MeetingSessionJoining     MeetingSessionStatus = "joining"
-	MeetingSessionJoined      MeetingSessionStatus = "joined"
-	MeetingSessionActive      MeetingSessionStatus = "active"
-	MeetingSessionRecording   MeetingSessionStatus = "recording"
-	MeetingSessionEnded       MeetingSessionStatus = "ended"
-	MeetingSessionFailed      MeetingSessionStatus = "failed"
-	MeetingSessionStale       MeetingSessionStatus = "stale"
+	MeetingSessionRequested       MeetingSessionStatus = "requested"
+	MeetingSessionPendingJoin     MeetingSessionStatus = "pending_join"
+	MeetingSessionCommandSent     MeetingSessionStatus = "command_sent"
+	MeetingSessionJoining         MeetingSessionStatus = "joining"
+	MeetingSessionJoined          MeetingSessionStatus = "joined"
+	MeetingSessionActive          MeetingSessionStatus = "active"
+	MeetingSessionRecording       MeetingSessionStatus = "recording"
+	MeetingSessionSpeechError     MeetingSessionStatus = "speech_error"
+	MeetingSessionSpeechThrottled MeetingSessionStatus = "speech_throttled"
+	MeetingSessionEnded           MeetingSessionStatus = "ended"
+	MeetingSessionFailed          MeetingSessionStatus = "failed"
+	MeetingSessionStale           MeetingSessionStatus = "stale"
 )
 
 type MeetingSession struct {
@@ -313,7 +315,8 @@ func ValidMeetingSessionStatus(status MeetingSessionStatus) bool {
 	switch status {
 	case MeetingSessionRequested, MeetingSessionPendingJoin, MeetingSessionCommandSent,
 		MeetingSessionJoining, MeetingSessionJoined, MeetingSessionActive,
-		MeetingSessionRecording, MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
+		MeetingSessionRecording, MeetingSessionSpeechError, MeetingSessionSpeechThrottled,
+		MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
 		return true
 	default:
 		return false
@@ -329,6 +332,8 @@ func ReusableMeetingSessionStatuses() []MeetingSessionStatus {
 		MeetingSessionJoined,
 		MeetingSessionActive,
 		MeetingSessionRecording,
+		MeetingSessionSpeechError,
+		MeetingSessionSpeechThrottled,
 	}
 }
 
@@ -397,4 +402,3 @@ func normalizedJoinURLString(parsed url.URL) string {
 	}
 	return parsed.String()
 }
-

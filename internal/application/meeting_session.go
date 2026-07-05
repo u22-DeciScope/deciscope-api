@@ -297,6 +297,12 @@ func (s *MeetingSessionService) EndMeetingSession(ctx context.Context, input Mee
 		return nil, ErrBotControlNotConfigured
 	}
 
+	// Bot command failures are best-effort: the VM Bot may already be
+	// stopped/unreachable (e.g. it crashed or was killed out-of-band), and in
+	// that case there is no bot left to command anyway. Failing to notify it
+	// must not prevent the session from being marked ended, or the meeting
+	// screen can never be closed from the frontend.
+	message := reason
 	if err := s.commander.EndMeetingSession(ctx, BotEndCommand{
 		SessionID: previous.ID,
 		BotCallID: previous.BotCallID,
@@ -305,21 +311,22 @@ func (s *MeetingSessionService) EndMeetingSession(ctx context.Context, input Mee
 		if errors.Is(err, ErrBotControlNotConfigured) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("%w: %v", ErrBotControlCommandFailed, err)
+		log.Printf("Meeting session end bot command failed, ending session anyway (best-effort). sessionId=%s joinUrlHash=%s botCallId=%s reason=%s error=%v", previous.ID, previous.JoinURLHash, previous.BotCallID, reason, err)
+		message = fmt.Sprintf("%s (bot end command failed: %v)", reason, err)
 	}
 
 	updated, err := s.UpdateMeetingSessionStatus(ctx, MeetingSessionStatusUpdateInput{
 		SessionID: previous.ID,
 		Status:    domain.MeetingSessionEnded,
 		BotCallID: previous.BotCallID,
-		Message:   reason,
+		Message:   message,
 		Reason:    reason,
 		Source:    "frontend_manual_end",
 	})
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Meeting session manual end completed. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s reason=%s", updated.ID, updated.JoinURLHash, previous.Status, updated.Status, updated.BotCallID, reason)
+	log.Printf("Meeting session manual end completed. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s reason=%s message=%s", updated.ID, updated.JoinURLHash, previous.Status, updated.Status, updated.BotCallID, reason, message)
 	return updated, nil
 }
 
@@ -372,6 +379,9 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 		update.CommandSentAt = &now
 	case domain.MeetingSessionJoined, domain.MeetingSessionActive, domain.MeetingSessionRecording:
 		update.JoinedAt = &now
+	case domain.MeetingSessionSpeechError, domain.MeetingSessionSpeechThrottled:
+		update.JoinedAt = &now
+		update.LastError = summarizeMeetingSessionFailure(input)
 	case domain.MeetingSessionEnded, domain.MeetingSessionStale:
 		update.EndedAt = &now
 		update.EndReason = summarizeMeetingSessionEndReason(input)
@@ -535,7 +545,8 @@ func shouldSuppressMeetingSessionFailure(previous domain.MeetingSession, input M
 
 func isJoinedOrBeyondMeetingStatus(status domain.MeetingSessionStatus) bool {
 	switch status {
-	case domain.MeetingSessionJoined, domain.MeetingSessionActive, domain.MeetingSessionRecording:
+	case domain.MeetingSessionJoined, domain.MeetingSessionActive, domain.MeetingSessionRecording,
+		domain.MeetingSessionSpeechError, domain.MeetingSessionSpeechThrottled:
 		return true
 	default:
 		return false

@@ -174,7 +174,7 @@ func (r *MeetingSessionRepository) MarkStaleMeetingSessions(ctx context.Context,
 				ELSE last_error
 			END,
 			updated_at = $2
-		WHERE status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording')
+		WHERE status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording', 'speech_error', 'speech_throttled')
 			AND updated_at < $1
 		RETURNING id, COALESCE(workspace_id, ''), COALESCE(created_by_user_id, ''), COALESCE(meeting_id, ''),
 			join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
@@ -380,7 +380,7 @@ func findReusableMeetingSessionByWorkspaceJoinURLHash(ctx context.Context, query
 		FROM meeting_sessions
 		WHERE join_url_hash = $1
 			AND (($2 = '' AND workspace_id IS NULL) OR workspace_id = $2)
-			AND status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording')
+			AND status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording', 'speech_error', 'speech_throttled')
 		ORDER BY updated_at DESC, created_at DESC
 		LIMIT 1
 	`, joinURLHash, workspaceID)
