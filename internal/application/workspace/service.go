@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"deciscope-core-api/internal/domain"
 )
@@ -11,9 +12,15 @@ import (
 type Repository interface {
 	ListWorkspaces(ctx context.Context, userID string) ([]domain.Workspace, error)
 	GetWorkspace(ctx context.Context, userID, workspaceID string) (*domain.Workspace, error)
-	UpdateWorkspaceName(ctx context.Context, userID, workspaceID, name string) (*domain.Workspace, error)
+	CreateWorkspace(ctx context.Context, userID, name, description string) (*domain.Workspace, error)
+	UpdateWorkspace(ctx context.Context, userID, workspaceID string, name, description *string) (*domain.Workspace, error)
 	ListMembers(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceMember, error)
-	CreateInvitation(ctx context.Context, userID, workspaceID, email, role string) (*domain.WorkspaceInvitation, error)
+	MemberEmailExists(ctx context.Context, workspaceID, normalizedEmail string) (bool, error)
+	CreateInvitation(ctx context.Context, userID, workspaceID, email, role, tokenHash, expiresAt string) (*domain.WorkspaceInvitation, error)
+	DeleteInvitation(ctx context.Context, invitationID string) error
+	InvitationByTokenHash(ctx context.Context, tokenHash string) (*domain.WorkspaceInvitation, error)
+	AcceptInvitation(ctx context.Context, invitationID, userID string) error
+	WorkspaceNameByID(ctx context.Context, workspaceID string) (string, error)
 	ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error)
 	RevokeInvitation(ctx context.Context, userID, workspaceID, invitationID string) error
 	RemoveMember(ctx context.Context, userID, workspaceID, memberID string) error
@@ -21,11 +28,13 @@ type Repository interface {
 }
 
 type Service struct {
-	repository Repository
+	repository      Repository
+	mailer          InvitationMailer
+	frontendBaseURL string
 }
 
-func NewService(repository Repository) *Service {
-	return &Service{repository: repository}
+func NewService(repository Repository, mailer InvitationMailer, frontendBaseURL string) *Service {
+	return &Service{repository: repository, mailer: mailer, frontendBaseURL: frontendBaseURL}
 }
 
 func (s *Service) ListWorkspaces(ctx context.Context, userID string) ([]domain.Workspace, error) {
@@ -36,45 +45,47 @@ func (s *Service) GetWorkspace(ctx context.Context, userID, workspaceID string) 
 	return s.repository.GetWorkspace(ctx, userID, workspaceID)
 }
 
-func (s *Service) UpdateWorkspaceName(ctx context.Context, userID, workspaceID, name string) (*domain.Workspace, error) {
+func (s *Service) CreateWorkspace(ctx context.Context, userID, name, description string) (*domain.Workspace, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, fmt.Errorf("%w: workspace name is required", domain.ErrInvalidArgument)
 	}
-	return s.repository.UpdateWorkspaceName(ctx, userID, workspaceID, name)
+	return s.repository.CreateWorkspace(ctx, userID, name, strings.TrimSpace(description))
+}
+
+// UpdateWorkspace は nil のフィールドを変更せず、指定されたフィールドだけ更新する。
+func (s *Service) UpdateWorkspace(ctx context.Context, userID, workspaceID string, name, description *string) (*domain.Workspace, error) {
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" {
+			return nil, fmt.Errorf("%w: workspace name is required", domain.ErrInvalidArgument)
+		}
+		name = &trimmed
+	}
+	if description != nil {
+		trimmed := strings.TrimSpace(*description)
+		description = &trimmed
+	}
+	if name == nil && description == nil {
+		return nil, fmt.Errorf("%w: nothing to update", domain.ErrInvalidArgument)
+	}
+	return s.repository.UpdateWorkspace(ctx, userID, workspaceID, name, description)
 }
 
 func (s *Service) ListMembers(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceMember, error) {
 	return s.repository.ListMembers(ctx, userID, workspaceID)
 }
 
-func (s *Service) CreateInvitation(ctx context.Context, userID, workspaceID, email, role string) (*domain.WorkspaceInvitation, error) {
-	email = strings.TrimSpace(email)
-	normalizedEmail := normalizeEmail(email)
-	if normalizedEmail == "" {
-		return nil, fmt.Errorf("%w: email is required", domain.ErrInvalidArgument)
-	}
-	role = domain.NormalizeWorkspaceRole(role)
-	if role == "" {
-		role = domain.WorkspaceRoleViewer
-	}
-	if !domain.ValidWorkspaceInvitationRole(role) {
-		return nil, fmt.Errorf("%w: invitation role must be admin or viewer", domain.ErrInvalidArgument)
-	}
+func (s *Service) ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error) {
 	invitations, err := s.repository.ListInvitations(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	for _, invitation := range invitations {
-		if invitation.NormalizedEmail == normalizedEmail {
-			return nil, fmt.Errorf("%w: invitation already exists", domain.ErrConflict)
-		}
+	now := time.Now().UTC()
+	for i := range invitations {
+		invitations[i].Status = effectiveInvitationStatus(invitations[i], now)
 	}
-	return s.repository.CreateInvitation(ctx, userID, workspaceID, email, role)
-}
-
-func (s *Service) ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error) {
-	return s.repository.ListInvitations(ctx, userID, workspaceID)
+	return invitations, nil
 }
 
 func (s *Service) RevokeInvitation(ctx context.Context, userID, workspaceID, invitationID string) error {

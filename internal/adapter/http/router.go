@@ -66,18 +66,23 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", deps.CoreAPI.Health)
 		r.Post("/auth/login", deps.AuthAPI.Login)
+		// 招待previewは未ログインでも表示できる必要があるため認証不要。
+		// tokenが唯一の秘密情報であり、レスポンスは非機密情報のみ。
+		r.Get("/invitations/preview", deps.WorkspaceAPI.PreviewInvitation)
 		r.Group(func(r chi.Router) {
 			r.Use(authmiddleware.SessionAuth(deps.AuthService))
 			r.Get("/auth/me", deps.AuthAPI.Me)
 			r.Post("/auth/logout", deps.AuthAPI.Logout)
 			r.Put("/session/current-workspace", deps.AuthAPI.SetCurrentWorkspace)
+			r.Post("/invitations/accept", deps.WorkspaceAPI.AcceptInvitation)
 			r.Get("/workspaces", deps.WorkspaceAPI.List)
+			r.Post("/workspaces", deps.WorkspaceAPI.Create)
 			r.Route("/workspaces/{workspace_code}", func(r chi.Router) {
 				r.Use(requireWorkspaceAccess(deps.Workspace))
 				r.Get("/", deps.WorkspaceAPI.Get)
 				r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Patch("/", deps.WorkspaceAPI.Update)
 				r.Get("/members", deps.WorkspaceAPI.ListMembers)
-				r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Patch("/members/{member_id}", deps.WorkspaceAPI.UpdateMemberRole)
+				r.With(requireWorkspaceOwnerRole(deps.Workspace)).Patch("/members/{member_id}", deps.WorkspaceAPI.UpdateMemberRole)
 				r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Delete("/members/{member_id}", deps.WorkspaceAPI.RemoveMember)
 				r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Get("/invitations", deps.WorkspaceAPI.ListInvitations)
 				r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Post("/invitations", deps.WorkspaceAPI.CreateInvitation)

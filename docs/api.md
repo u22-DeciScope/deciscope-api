@@ -36,6 +36,7 @@ PUT  /v1/session/current-workspace
 
 ```http
 GET    /v1/workspaces
+POST   /v1/workspaces
 GET    /v1/workspaces/{workspace_code}
 PATCH  /v1/workspaces/{workspace_code}
 GET    /v1/workspaces/{workspace_code}/members
@@ -47,9 +48,55 @@ DELETE /v1/workspaces/{workspace_code}/invitations/{invitation_id}
 ```
 
 - すべて認証必須です。`{workspace_code}` 配下はさらにworkspaceへのアクセス権が必要です。
-- `PATCH /` (workspace名更新)、members/invitationsの変更系は、workspaceの
-  admin/ownerロールが必要です。
-- `RemoveMember` はworkspace member削除時に、そのmemberの既存接続を切断します。
+- `POST /v1/workspaces` は `{ "name": "...", "description": "..." }` を受け取り、
+  作成者を owner として `workspace_members` に登録します。`name` 空文字は `400` です。
+- `PATCH /` (workspace更新)は `name` / `description` を個別に更新できます
+  (JSONに含めたフィールドだけ更新)。admin/ownerロールが必要です。
+- members/invitationsの変更系は admin/owner ロールが必要です。
+  ただし `PATCH /members/{member_id}` (ロール変更)だけは owner のみ実行できます。
+  owner 自身のロール変更・owner の削除は常に拒否されるため、owner は最低1人残ります。
+- `RemoveMember` はworkspace member削除時に、そのmemberの既存接続
+  (`/v1/realtime` とworkspace経由のtranscript WebSocket) を切断します。
+  以後のAPI・WebSocketアクセスはリクエストごとの membership チェックで拒否されます。
+
+## Workspace招待 (メール招待)
+
+```http
+POST   /v1/workspaces/{workspace_code}/invitations   (owner/admin)
+GET    /v1/workspaces/{workspace_code}/invitations   (owner/admin)
+DELETE /v1/workspaces/{workspace_code}/invitations/{invitation_id} (owner/admin)
+GET    /v1/invitations/preview?token=...             (認証不要)
+POST   /v1/invitations/accept                        (認証必須)
+```
+
+- `POST /invitations` は `{ "email": "...", "role": "viewer|admin" }` を受け取り、
+  pending 招待を作成して招待メールを送信します。owner ロールは指定できません (`400`)。
+  既にメンバーのメールアドレスは `409`、同じメール宛の pending 招待がある場合も `409` です。
+- 招待リンクは `{FRONTEND_URL}/invitations/accept?token=<生token>` 形式で、有効期限は72時間です。
+  DBには生tokenを保存せず、SHA-256の `token_hash` のみ保存します。
+  `token_hash` はいかなるAPIレスポンスにも含めません。
+- メール送信に失敗した場合、作成した招待は削除 (rollback) され `500` を返します。
+- `GET /v1/invitations/preview` は承認前確認用にワークスペース名・招待先メール・ロール・
+  status・有効期限のみ返します (会議情報・メンバー一覧などの機密情報は返しません)。
+- `POST /v1/invitations/accept` は `{ "token": "..." }` を受け取り、
+  ログイン中ユーザーの正規化済みメールアドレスと招待先メールの一致を必須とします。
+  結果: 不一致 `403` / token不正 `404` / 期限切れ・取り消し済み `410` / 使用済み `409`。
+  成功時は `workspace_members` に追加し、招待を `accepted` に更新して参加ログを出力します。
+- ログインによる自動参加 (旧仕様) は廃止しました。参加は招待リンクの明示的な承諾のみです。
+
+招待メール送信の設定 (環境変数):
+
+```env
+DECISCOPE_ENV=development            # production で SMTP 未設定なら招待作成は失敗する
+DECISCOPE_SMTP_HOST=smtp.example.com
+DECISCOPE_SMTP_PORT=587
+DECISCOPE_SMTP_USERNAME=...
+DECISCOPE_SMTP_PASSWORD=...
+DECISCOPE_SMTP_FROM=no-reply@example.com
+```
+
+- SMTP未設定 + `DECISCOPE_ENV=development` (既定) の場合は dev fallback として
+  招待URL (生tokenを含む) をログに出力します。development 以外ではログに出しません。
 
 ## EchoBot文字起こし取り込み
 
@@ -246,7 +293,13 @@ Go APIがTailscale内のVM Bot制御APIへ参加命令を送ります。
 ```http
 POST /api/v1/meeting-sessions
 Content-Type: application/json
+X-DeciScope-Api-Key: <shared secret>
 ```
+
+- 非workspace版の作成・取得・終了 (`POST /api/v1/meeting-sessions`、
+  `GET /api/v1/meeting-sessions/{sessionId}`、`POST .../{sessionId}/end`) は
+  `DECISCOPE_INGEST_API_KEY` が必須です。ブラウザからは
+  `/v1/workspaces/{workspace_code}/meeting-sessions` (認証 + role チェックあり) を使ってください。
 
 ```json
 {
@@ -272,10 +325,11 @@ Content-Type: application/json
 - Bot制御APIの4xx/5xx/timeout時は `meeting_sessions.status=failed` と
   `last_error` を保存し、HTTPでは `502 bot_control_command_failed` を返します。
 
-取得:
+取得 (APIキー必須):
 
 ```http
 GET /api/v1/meeting-sessions/{sessionId}
+X-DeciScope-Api-Key: <shared secret>
 ```
 
 Botからの状態更新:

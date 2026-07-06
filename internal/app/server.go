@@ -22,8 +22,11 @@ import (
 	"deciscope-core-api/internal/infrastructure/azureopenai"
 	"deciscope-core-api/internal/infrastructure/botcontrol"
 	"deciscope-core-api/internal/infrastructure/database"
+	"deciscope-core-api/internal/infrastructure/email"
 	"deciscope-core-api/internal/infrastructure/firebase"
 	"deciscope-core-api/internal/infrastructure/storage"
+
+	"github.com/go-chi/chi/v5"
 )
 
 type ServerRuntime struct {
@@ -123,19 +126,31 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		repositories.Jobs, repositories.Uploads, hub, storage.NewLocal(config.UploadDir),
 	)
 	authService := appauth.NewService(authRepository, tokenVerifier, 7*24*time.Hour)
-	workspaceService := appworkspace.NewService(authRepository)
+	workspaceService := appworkspace.NewService(authRepository, buildInvitationMailer(config), config.FrontendURL)
 	accessService := appaccess.NewService(authRepository)
+	connectionCloser := workspaceConnectionCloser{hub: hub, transcripts: transcriptHub}
+
+	// workspace経由のtranscript購読には認証済みユーザーを紐づけ、
+	// メンバー削除時に既存WebSocket接続を切断できるようにする。
+	workspaceTranscriptConfig := transcriptRealtimeConfig(config.TranscriptWebSocket)
+	workspaceTranscriptConfig.ResolveMember = func(r *http.Request) (string, string) {
+		session, ok := authmiddleware.SessionFromContext(r.Context())
+		if !ok || session.User == nil {
+			return "", ""
+		}
+		return chi.URLParam(r, "workspace_code"), session.User.ID
+	}
 
 	handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
 		CoreAPI:       httpadapter.NewCoreAPI(service),
-		AuthAPI:       httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, hub),
-		WorkspaceAPI:  httpadapter.NewWorkspaceAPI(workspaceService, hub),
+		AuthAPI:       httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, connectionCloser),
+		WorkspaceAPI:  httpadapter.NewWorkspaceAPI(workspaceService, connectionCloser),
 		TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
 		MeetingSessionAPI: httpadapter.NewMeetingSessionAPI(
 			meetingSessionService,
 			config.TranscriptIngest.APIKey,
 			httpadapter.WithMeetingSessionTranscriptService(transcriptRuntime.service),
-			httpadapter.WithMeetingSessionTranscriptRealtime(transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket))),
+			httpadapter.WithMeetingSessionTranscriptRealtime(transcriptHub.ServeTranscriptSegments(workspaceTranscriptConfig)),
 			httpadapter.WithMeetingSessionAIAnalysisService(analysisService),
 		),
 		TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
@@ -283,6 +298,51 @@ func transcriptRealtimeConfig(config TranscriptWebSocketConfig) realtime.Transcr
 	return realtime.TranscriptWebSocketConfig{
 		ClientToken:    config.ClientToken,
 		AllowedOrigins: config.AllowedOrigins,
+	}
+}
+
+// buildInvitationMailer は招待メール送信の実装を環境に応じて選ぶ。
+//   - SMTP設定あり: 実際に送信
+//   - 未設定 + development: 招待URLをログ出力する dev fallback
+//   - 未設定 + production: 送信失敗にして招待を成功扱いにしない
+func buildInvitationMailer(config Config) appworkspace.InvitationMailer {
+	if config.InviteEmail.Configured() {
+		log.Printf("invitation email: SMTP mailer enabled (host=%s)", config.InviteEmail.SMTPHost)
+		return email.NewSMTPMailer(email.SMTPConfig{
+			Host:     config.InviteEmail.SMTPHost,
+			Port:     config.InviteEmail.SMTPPort,
+			Username: config.InviteEmail.SMTPUsername,
+			Password: config.InviteEmail.SMTPPassword,
+			From:     config.InviteEmail.From,
+		})
+	}
+	if config.Environment == "production" {
+		log.Printf("invitation email: SMTP is not configured in production; invitation creation will fail until DECISCOPE_SMTP_* is set")
+		return email.DisabledMailer{}
+	}
+	log.Printf("invitation email: dev fallback enabled; invitation URLs are logged instead of sent (DECISCOPE_ENV=development)")
+	return email.LogMailer{}
+}
+
+// workspaceConnectionCloser はメンバー削除・ログアウト時に、
+// realtime hub と transcript hub の両方の既存接続を閉じる。
+type workspaceConnectionCloser struct {
+	hub         *realtime.Hub
+	transcripts *realtime.TranscriptHub
+}
+
+func (c workspaceConnectionCloser) CloseSession(sessionID string) {
+	if c.hub != nil {
+		c.hub.CloseSession(sessionID)
+	}
+}
+
+func (c workspaceConnectionCloser) CloseWorkspaceMember(workspaceID, userID string) {
+	if c.hub != nil {
+		c.hub.CloseWorkspaceMember(workspaceID, userID)
+	}
+	if c.transcripts != nil {
+		c.transcripts.CloseWorkspaceMember(workspaceID, userID)
 	}
 }
 

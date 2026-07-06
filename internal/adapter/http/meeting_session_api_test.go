@@ -30,6 +30,7 @@ func TestMeetingSessionAPICreatesSession(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc","title":"週次定例","candidateUserPrincipalNames":["user@example.com"],"purpose":"意思決定","decision_points":"リリース可否"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
 	resp := httptest.NewRecorder()
 	api.Create(resp, req)
 
@@ -57,11 +58,45 @@ func TestMeetingSessionAPICreateMapsBotConfigError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
 	resp := httptest.NewRecorder()
 	api.Create(resp, req)
 
 	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+// レガシー (非workspace) の作成・取得・終了はAPIキーがないと 401 になる。
+// ブラウザからの直接呼び出しでBot参加や会議終了ができてしまうのを防ぐ。
+func TestMeetingSessionAPILegacyEndpointsRequireAPIKey(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+
+	create := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc"}`))
+	create.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	api.Create(createResp, create)
+	if createResp.Code != http.StatusUnauthorized {
+		t.Fatalf("Create without api key = %d, want 401", createResp.Code)
+	}
+
+	get := requestWithSessionParam(http.MethodGet, "/api/v1/meeting-sessions/session_1", "")
+	getResp := httptest.NewRecorder()
+	api.Get(getResp, get)
+	if getResp.Code != http.StatusUnauthorized {
+		t.Fatalf("Get without api key = %d, want 401", getResp.Code)
+	}
+
+	end := requestWithSessionParam(http.MethodPost, "/api/v1/meeting-sessions/session_1/end", `{"reason":"manual_end_requested"}`)
+	end.Header.Set("Content-Type", "application/json")
+	endResp := httptest.NewRecorder()
+	api.End(endResp, end)
+	if endResp.Code != http.StatusUnauthorized {
+		t.Fatalf("End without api key = %d, want 401", endResp.Code)
+	}
+	if service.createInput.JoinURL != "" || service.endInput.SessionID != "" {
+		t.Fatalf("service should not be called without api key: create=%+v end=%+v", service.createInput, service.endInput)
 	}
 }
 
@@ -163,6 +198,7 @@ func TestMeetingSessionAPIEndsSession(t *testing.T) {
 	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
 	req := requestWithSessionParam(http.MethodPost, "/api/v1/meeting-sessions/session_1/end", `{"reason":"manual_end_requested"}`)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
 	resp := httptest.NewRecorder()
 
 	api.End(resp, req)

@@ -235,11 +235,12 @@ type User struct {
 }
 
 type Workspace struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Role        string `json:"role"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 type WorkspaceMember struct {
@@ -259,8 +260,19 @@ type WorkspaceInvitation struct {
 	Role            string `json:"role"`
 	Status          string `json:"status"`
 	InvitedBy       string `json:"invited_by"`
-	CreatedAt       string `json:"created_at"`
+	InvitedByName   string `json:"invited_by_name,omitempty"`
+	// TokenHash は招待リンクtokenのSHA-256。生tokenはDBにもレスポンスにも含めない。
+	TokenHash string `json:"-"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	CreatedAt string `json:"created_at"`
 }
+
+const (
+	WorkspaceInvitationStatusPending  = "pending"
+	WorkspaceInvitationStatusAccepted = "accepted"
+	WorkspaceInvitationStatusRevoked  = "revoked"
+	WorkspaceInvitationStatusExpired  = "expired"
+)
 
 type Session struct {
 	ID                 string

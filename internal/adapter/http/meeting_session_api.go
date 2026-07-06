@@ -74,7 +74,14 @@ func NewMeetingSessionAPI(service MeetingSessionUseCases, apiKey string, options
 	return api
 }
 
+// Create はワークスペースを介さないレガシー作成エンドポイント。
+// ブラウザからは呼ばれない前提のため、Bot連携用のAPIキーを必須にする
+// (認可なしで誰でもBot参加を起動できてしまうのを防ぐ)。
 func (api *MeetingSessionAPI) Create(w http.ResponseWriter, r *http.Request) {
+	if !authorizedSecret(r.Header.Get("X-DeciScope-Api-Key"), api.apiKey) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
+		return
+	}
 	api.create(w, r, application.MeetingSessionCreateInput{})
 }
 
@@ -192,7 +199,12 @@ func (api *MeetingSessionAPI) create(w http.ResponseWriter, r *http.Request, def
 	log.Printf("Meeting session create response sent. sessionId=%s joinUrlHash=%s status=%s title=%q titleSource=%s reused=%t httpStatus=%d", session.ID, session.JoinURLHash, session.Status, session.Title, session.TitleSource, result.Reused, status)
 }
 
+// Get はワークスペースを介さないレガシー取得エンドポイント。APIキー必須。
 func (api *MeetingSessionAPI) Get(w http.ResponseWriter, r *http.Request) {
+	if !authorizedSecret(r.Header.Get("X-DeciScope-Api-Key"), api.apiKey) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
+		return
+	}
 	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
 	session, err := api.service.GetMeetingSession(r.Context(), sessionID)
 	if err != nil {
@@ -226,7 +238,16 @@ func (api *MeetingSessionAPI) GetForWorkspace(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
 }
 
+// End はワークスペースを介さないレガシー終了エンドポイント。APIキー必須。
 func (api *MeetingSessionAPI) End(w http.ResponseWriter, r *http.Request) {
+	if !authorizedSecret(r.Header.Get("X-DeciScope-Api-Key"), api.apiKey) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
+		return
+	}
+	api.end(w, r)
+}
+
+func (api *MeetingSessionAPI) end(w http.ResponseWriter, r *http.Request) {
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
 		return
@@ -254,7 +275,7 @@ func (api *MeetingSessionAPI) EndForWorkspace(w http.ResponseWriter, r *http.Req
 	if _, ok := api.workspaceMeetingSession(w, r); !ok {
 		return
 	}
-	api.End(w, r)
+	api.end(w, r)
 }
 
 func (api *MeetingSessionAPI) ListWorkspaceTranscriptSegments(w http.ResponseWriter, r *http.Request) {
@@ -1013,6 +1034,7 @@ func (api *MeetingSessionAPI) workspaceMeetingSession(w http.ResponseWriter, r *
 		return nil, false
 	}
 	if session.WorkspaceID != workspaceID {
+		log.Printf("Workspace/session mismatch rejected. requestedWorkspaceId=%s sessionWorkspaceId=%s sessionId=%s", workspaceID, session.WorkspaceID, session.ID)
 		writeError(w, http.StatusNotFound, "not_found", "meeting session not found")
 		return nil, false
 	}

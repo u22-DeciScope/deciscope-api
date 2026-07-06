@@ -80,7 +80,6 @@ func (r *fakeRepository) FindOrCreateUser(_ context.Context, identity appauth.Id
 	r.user = domain.User{ID: "u_test", DisplayName: identity.Name, Email: identity.Email}
 	return &r.user, nil
 }
-func (*fakeRepository) AcceptInvitations(context.Context, string, string) error { return nil }
 func (r *fakeRepository) EnsureInitialWorkspace(context.Context, string, string, string) (*domain.Workspace, error) {
 	r.workspace = domain.Workspace{ID: "w_test", Name: "User's Workspace", Role: "owner"}
 	return &r.workspace, nil

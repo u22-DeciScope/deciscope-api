@@ -36,7 +36,6 @@ type TokenVerifier interface {
 
 type Repository interface {
 	FindOrCreateUser(ctx context.Context, identity Identity) (*domain.User, error)
-	AcceptInvitations(ctx context.Context, userID, normalizedEmail string) error
 	EnsureInitialWorkspace(ctx context.Context, userID, displayName, email string) (*domain.Workspace, error)
 	CreateSession(ctx context.Context, session domain.Session) error
 	SessionByTokenHash(ctx context.Context, tokenHash string) (*domain.Session, *domain.User, error)
@@ -99,9 +98,8 @@ func (s *Service) Login(ctx context.Context, idToken string) (*LoginResult, erro
 	if err != nil {
 		return nil, fmt.Errorf("find or create user: %w", err)
 	}
-	if err := s.repository.AcceptInvitations(ctx, user.ID, normalizeEmail(identity.Email)); err != nil {
-		return nil, fmt.Errorf("accept invitations: %w", err)
-	}
+	// ワークスペースへの参加は招待リンクの明示的な承諾 (invitations/accept) のみで行う。
+	// ログイン時の自動参加は誤参加リスクがあるため行わない。
 	if _, err := s.repository.EnsureInitialWorkspace(ctx, user.ID, user.DisplayName, identity.Email); err != nil {
 		return nil, fmt.Errorf("ensure initial workspace: %w", err)
 	}

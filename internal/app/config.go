@@ -46,6 +46,21 @@ type Config struct {
 	AllowedOrigins      string
 	SessionCookieSecure bool
 	SeedDemoData        bool
+	// Environment は "development" / "production"。招待メールの dev fallback 判定に使う。
+	Environment string
+	InviteEmail InviteEmailConfig
+}
+
+type InviteEmailConfig struct {
+	SMTPHost     string
+	SMTPPort     string
+	SMTPUsername string
+	SMTPPassword string
+	From         string
+}
+
+func (c InviteEmailConfig) Configured() bool {
+	return strings.TrimSpace(c.SMTPHost) != "" && strings.TrimSpace(c.From) != ""
 }
 
 type TranscriptIngestConfig struct {
@@ -130,7 +145,25 @@ func ConfigFromEnv() Config {
 		AllowedOrigins:      os.Getenv("ALLOWED_ORIGINS"),
 		SessionCookieSecure: strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
 		SeedDemoData:        strings.EqualFold(strings.TrimSpace(os.Getenv("DECISCOPE_SEED_DEMO_DATA")), "true"),
+		Environment:         environmentFromEnv(),
+		InviteEmail: InviteEmailConfig{
+			SMTPHost:     strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_HOST")),
+			SMTPPort:     strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_PORT")),
+			SMTPUsername: strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_USERNAME")),
+			SMTPPassword: os.Getenv("DECISCOPE_SMTP_PASSWORD"),
+			From:         strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_FROM")),
+		},
 	}
+}
+
+// environmentFromEnv は DECISCOPE_ENV を読む。未設定時は development。
+// production ではメール未設定時に招待作成が失敗し、dev fallback (URLのログ出力) は無効になる。
+func environmentFromEnv() string {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("DECISCOPE_ENV")))
+	if value == "production" {
+		return "production"
+	}
+	return "development"
 }
 
 func aiConfigFromEnv() AIConfig {

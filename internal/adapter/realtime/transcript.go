@@ -31,6 +31,9 @@ var defaultTranscriptAllowedOrigins = []string{
 type TranscriptWebSocketConfig struct {
 	ClientToken    string
 	AllowedOrigins string
+	// ResolveMember はworkspace経由の接続で認証済みユーザーを接続に紐づける。
+	// 設定されている場合、メンバー削除時に CloseWorkspaceMember で該当接続を切断できる。
+	ResolveMember func(r *http.Request) (workspaceID, userID string)
 }
 
 type TranscriptHub struct {
@@ -128,6 +131,9 @@ func (h *TranscriptHub) ServeTranscriptSegments(config TranscriptWebSocketConfig
 		log.Printf("Transcript websocket upgrade accepted. path=%s callId=%s sessionId=%s origin=%s", path, callID, sessionID, origin)
 
 		c := newTranscriptClient(callID, sessionID, conn, reader)
+		if config.ResolveMember != nil {
+			c.workspaceID, c.userID = config.ResolveMember(r)
+		}
 		h.subscribe(c)
 		defer h.unsubscribe(c)
 
@@ -142,6 +148,26 @@ func (h *TranscriptHub) subscribe(c *transcriptClient) {
 	count := len(h.clients)
 	h.mu.Unlock()
 	log.Printf("Transcript websocket subscriber added. callId=%s sessionId=%s subscriberCount=%d", c.callID, c.sessionID, count)
+}
+
+// CloseWorkspaceMember は、workspaceから削除されたメンバーの既存transcript購読を切断する。
+// 対象はworkspace経由 (ResolveMember設定あり) で接続したクライアントのみ。
+func (h *TranscriptHub) CloseWorkspaceMember(workspaceID, userID string) {
+	if workspaceID == "" || userID == "" {
+		return
+	}
+	h.mu.RLock()
+	var clients []*transcriptClient
+	for c := range h.clients {
+		if c.workspaceID == workspaceID && c.userID == userID {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+	for _, c := range clients {
+		log.Printf("Transcript websocket closed for removed workspace member. workspaceId=%s userId=%s sessionId=%s", workspaceID, userID, c.sessionID)
+		_ = c.conn.Close()
+	}
 }
 
 func (h *TranscriptHub) unsubscribe(c *transcriptClient) {
@@ -196,14 +222,16 @@ func transcriptAllowedOrigins(value string) []string {
 }
 
 type transcriptClient struct {
-	callID    string
-	sessionID string
-	conn      netConn
-	reader    frameReader
-	send      chan transcriptOutboundEvent
-	done      chan struct{}
-	writeMu   sync.Mutex
-	closeOnce sync.Once
+	callID      string
+	sessionID   string
+	workspaceID string
+	userID      string
+	conn        netConn
+	reader      frameReader
+	send        chan transcriptOutboundEvent
+	done        chan struct{}
+	writeMu     sync.Mutex
+	closeOnce   sync.Once
 }
 
 func newTranscriptClient(callID, sessionID string, conn netConn, reader frameReader) *transcriptClient {
