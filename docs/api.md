@@ -48,8 +48,14 @@ DELETE /v1/workspaces/{workspace_code}/invitations/{invitation_id}
 ```
 
 - すべて認証必須です。`{workspace_code}` 配下はさらにworkspaceへのアクセス権が必要です。
+- ログイン時のワークスペース自動作成・固定デモワークスペースへの自動参加は廃止しました。
+  所属0件のユーザーは `GET /v1/workspaces` で空配列を受け取り、フロントエンドが
+  ワークスペース作成画面 (`/workspaces/new`) へ誘導します。
 - `POST /v1/workspaces` は `{ "name": "...", "description": "..." }` を受け取り、
   作成者を owner として `workspace_members` に登録します。`name` 空文字は `400` です。
+  所属0件のユーザーによる最初の作成時のみ、サンプル会議を1件投入します
+  (`DECISCOPE_CREATE_SAMPLE_MEETING_ON_FIRST_WORKSPACE`、development 既定で有効)。
+  サンプル会議の作成に失敗してもワークスペース作成自体は成功します。
 - `PATCH /` (workspace更新)は `name` / `description` を個別に更新できます
   (JSONに含めたフィールドだけ更新)。admin/ownerロールが必要です。
 - members/invitationsの変更系は admin/owner ロールが必要です。

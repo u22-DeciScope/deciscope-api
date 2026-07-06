@@ -75,18 +75,21 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		return &ServerRuntime{Handler: handler, closers: transcriptRuntime.closers}, nil
 	}
 
-	repositories, authRepository, postgresDB, err := buildRepositories(ctx, config.Database, config.SeedDemoData)
+	repositories, authRepository, postgresDB, err := buildRepositories(ctx, config.Database)
 	if err != nil {
 		return nil, err
 	}
 	closers := []func() error{postgresDB.Close}
 
+	// 固定デモワークスペースの seed は明示的な開発・検証用途のみ。
+	// 通常フローには関与せず、ログイン時の自動参加も行わない (閲覧するには手動で
+	// workspace_members に追加する必要がある)。
 	if config.SeedDemoData {
 		if err := database.SeedDemoData(ctx, postgresDB); err != nil {
 			_ = closeAll(closers)
 			return nil, fmt.Errorf("seed demo data: %w", err)
 		}
-		log.Printf("demo seed data ensured (DECISCOPE_SEED_DEMO_DATA enabled)")
+		log.Printf("demo seed data ensured (DECISCOPE_SEED_DEMO_DATA enabled; dev/test only)")
 	}
 
 	transcriptHub := realtime.NewTranscriptHub()
@@ -127,6 +130,12 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	)
 	authService := appauth.NewService(authRepository, tokenVerifier, 7*24*time.Hour)
 	workspaceService := appworkspace.NewService(authRepository, buildInvitationMailer(config), config.FrontendURL)
+	if config.CreateSampleMeetingOnFirstWorkspace {
+		workspaceService.SetSampleMeetingCreator(database.NewSampleMeetingSeeder(postgresDB))
+		log.Printf("sample meeting on first workspace: enabled")
+	} else {
+		log.Printf("sample meeting on first workspace: disabled")
+	}
 	accessService := appaccess.NewService(authRepository)
 	connectionCloser := workspaceConnectionCloser{hub: hub, transcripts: transcriptHub}
 
@@ -201,14 +210,14 @@ type authWorkspaceRepository interface {
 	appaccess.Repository
 }
 
-func buildRepositories(ctx context.Context, config database.Config, seedDemoData bool) (repositorySet, authWorkspaceRepository, *sql.DB, error) {
+func buildRepositories(ctx context.Context, config database.Config) (repositorySet, authWorkspaceRepository, *sql.DB, error) {
 	conn, err := database.Open(ctx, config)
 	if err != nil {
 		return repositorySet{}, nil, nil, fmt.Errorf("open database: %w", err)
 	}
 	store := postgresrepository.NewStore(conn)
 	log.Printf("postgres database repository ready")
-	authRepository := postgresrepository.NewAuthWorkspaceRepository(conn).WithDemoWorkspace(seedDemoData)
+	authRepository := postgresrepository.NewAuthWorkspaceRepository(conn)
 	return repositoriesFromStore(store), authRepository, conn, nil
 }
 

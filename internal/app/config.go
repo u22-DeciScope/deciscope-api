@@ -49,6 +49,9 @@ type Config struct {
 	// Environment は "development" / "production"。招待メールの dev fallback 判定に使う。
 	Environment string
 	InviteEmail InviteEmailConfig
+	// CreateSampleMeetingOnFirstWorkspace は、初回作成ワークスペースへ
+	// サンプル会議を投入するかどうか。既定: development=true / production=false。
+	CreateSampleMeetingOnFirstWorkspace bool
 }
 
 type InviteEmailConfig struct {
@@ -139,13 +142,14 @@ func ConfigFromEnv() Config {
 			ProjectID:       os.Getenv("FIREBASE_PROJECT_ID"),
 			Enabled:         os.Getenv("AUTH_PROVIDER") == "firebase",
 		},
-		AI:                  aiConfigFromEnv(),
-		UploadDir:           os.Getenv("UPLOAD_DIR"),
-		FrontendURL:         os.Getenv("FRONTEND_URL"),
-		AllowedOrigins:      os.Getenv("ALLOWED_ORIGINS"),
-		SessionCookieSecure: strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
-		SeedDemoData:        strings.EqualFold(strings.TrimSpace(os.Getenv("DECISCOPE_SEED_DEMO_DATA")), "true"),
-		Environment:         environmentFromEnv(),
+		AI:                                  aiConfigFromEnv(),
+		UploadDir:                           os.Getenv("UPLOAD_DIR"),
+		FrontendURL:                         os.Getenv("FRONTEND_URL"),
+		AllowedOrigins:                      os.Getenv("ALLOWED_ORIGINS"),
+		SessionCookieSecure:                 strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
+		SeedDemoData:                        strings.EqualFold(strings.TrimSpace(os.Getenv("DECISCOPE_SEED_DEMO_DATA")), "true"),
+		Environment:                         environmentFromEnv(),
+		CreateSampleMeetingOnFirstWorkspace: sampleMeetingFlagFromEnv(environmentFromEnv()),
 		InviteEmail: InviteEmailConfig{
 			SMTPHost:     strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_HOST")),
 			SMTPPort:     strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_PORT")),
@@ -154,6 +158,16 @@ func ConfigFromEnv() Config {
 			From:         strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_FROM")),
 		},
 	}
+}
+
+// sampleMeetingFlagFromEnv は DECISCOPE_CREATE_SAMPLE_MEETING_ON_FIRST_WORKSPACE を読む。
+// 未設定時は development で true、production で false。
+func sampleMeetingFlagFromEnv(environment string) bool {
+	value := strings.TrimSpace(os.Getenv("DECISCOPE_CREATE_SAMPLE_MEETING_ON_FIRST_WORKSPACE"))
+	if value == "" {
+		return environment != "production"
+	}
+	return strings.EqualFold(value, "true")
 }
 
 // environmentFromEnv は DECISCOPE_ENV を読む。未設定時は development。

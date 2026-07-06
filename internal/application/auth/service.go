@@ -36,7 +36,6 @@ type TokenVerifier interface {
 
 type Repository interface {
 	FindOrCreateUser(ctx context.Context, identity Identity) (*domain.User, error)
-	EnsureInitialWorkspace(ctx context.Context, userID, displayName, email string) (*domain.Workspace, error)
 	CreateSession(ctx context.Context, session domain.Session) error
 	SessionByTokenHash(ctx context.Context, tokenHash string) (*domain.Session, *domain.User, error)
 	RevokeSession(ctx context.Context, sessionID string) error
@@ -98,11 +97,8 @@ func (s *Service) Login(ctx context.Context, idToken string) (*LoginResult, erro
 	if err != nil {
 		return nil, fmt.Errorf("find or create user: %w", err)
 	}
-	// ワークスペースへの参加は招待リンクの明示的な承諾 (invitations/accept) のみで行う。
-	// ログイン時の自動参加は誤参加リスクがあるため行わない。
-	if _, err := s.repository.EnsureInitialWorkspace(ctx, user.ID, user.DisplayName, identity.Email); err != nil {
-		return nil, fmt.Errorf("ensure initial workspace: %w", err)
-	}
+	// ワークスペースはログイン時に自動作成しない。所属0件のユーザーはフロントエンドが
+	// ワークスペース作成画面へ誘導する。参加は明示的な作成または招待承諾のみ。
 	workspaces, err := s.repository.ListWorkspaces(ctx, user.ID)
 	if err != nil {
 		return nil, fmt.Errorf("list workspaces: %w", err)
@@ -146,13 +142,18 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (*SessionRe
 		return nil, err
 	}
 	if !hasWorkspace(workspaces, session.CurrentWorkspaceID) {
-		session.CurrentWorkspaceID = ""
+		next := ""
 		if len(workspaces) > 0 {
-			session.CurrentWorkspaceID = workspaces[0].ID
+			next = workspaces[0].ID
 		}
-		if err := s.repository.SetCurrentWorkspace(ctx, session.ID, session.CurrentWorkspaceID); err != nil {
-			return nil, err
+		// 所属0件のユーザー (current も next も空) では更新不要。
+		// 空文字でのUPDATEは workspaces へのFK制約に違反するため呼ばない。
+		if next != session.CurrentWorkspaceID {
+			if err := s.repository.SetCurrentWorkspace(ctx, session.ID, next); err != nil {
+				return nil, err
+			}
 		}
+		session.CurrentWorkspaceID = next
 	}
 	return &SessionResult{User: user, Workspaces: workspaces, Session: session}, nil
 }

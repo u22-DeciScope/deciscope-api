@@ -26,6 +26,71 @@ func TestServiceValidatesWorkspaceName(t *testing.T) {
 	}
 }
 
+func TestServiceCreatesSampleMeetingOnlyForFirstWorkspace(t *testing.T) {
+	ctx := context.Background()
+
+	// 所属0件で最初のワークスペースを作成したときだけサンプル会議を投入する。
+	repository := newFakeRepository()
+	creator := &fakeSampleMeetingCreator{}
+	service := newTestService(repository)
+	service.SetSampleMeetingCreator(creator)
+
+	first, err := service.CreateWorkspace(ctx, "u_new", "最初のWS", "")
+	if err != nil {
+		t.Fatalf("CreateWorkspace(first) error = %v", err)
+	}
+	if creator.calls != 1 || creator.lastWorkspaceID != first.ID || creator.lastUserID != "u_new" {
+		t.Fatalf("sample creator = %+v, want called once with created workspace id", creator)
+	}
+
+	// 既に所属がある場合は投入しない。
+	repository.workspacesByUser["u_member"] = []domain.Workspace{{ID: "w_existing"}}
+	if _, err := service.CreateWorkspace(ctx, "u_member", "2つ目のWS", ""); err != nil {
+		t.Fatalf("CreateWorkspace(second) error = %v", err)
+	}
+	if creator.calls != 1 {
+		t.Fatalf("sample creator calls = %d, want 1 (no sample for non-first workspace)", creator.calls)
+	}
+
+	// creator 未設定なら何も起きない。
+	plain := newTestService(newFakeRepository())
+	if _, err := plain.CreateWorkspace(ctx, "u_other", "WS", ""); err != nil {
+		t.Fatalf("CreateWorkspace(no creator) error = %v", err)
+	}
+}
+
+func TestServiceCreateWorkspaceSucceedsEvenIfSampleMeetingFails(t *testing.T) {
+	repository := newFakeRepository()
+	creator := &fakeSampleMeetingCreator{err: errors.New("sample insert failed")}
+	service := newTestService(repository)
+	service.SetSampleMeetingCreator(creator)
+
+	workspace, err := service.CreateWorkspace(context.Background(), "u_new", "最初のWS", "")
+	if err != nil {
+		t.Fatalf("CreateWorkspace() error = %v, want success even if sample fails", err)
+	}
+	if workspace == nil || workspace.ID == "" {
+		t.Fatalf("workspace = %+v", workspace)
+	}
+	if creator.calls != 1 {
+		t.Fatalf("sample creator calls = %d, want 1", creator.calls)
+	}
+}
+
+type fakeSampleMeetingCreator struct {
+	calls           int
+	lastWorkspaceID string
+	lastUserID      string
+	err             error
+}
+
+func (c *fakeSampleMeetingCreator) CreateSampleMeeting(_ context.Context, workspaceID, userID string) error {
+	c.calls++
+	c.lastWorkspaceID = workspaceID
+	c.lastUserID = userID
+	return c.err
+}
+
 func TestServiceCreateInvitationValidatesInput(t *testing.T) {
 	repository := newFakeRepository()
 	service := newTestService(repository)
@@ -226,31 +291,35 @@ func (failingMailer) SendInvitation(context.Context, InvitationEmail) error {
 }
 
 type fakeRepository struct {
-	invitations   map[string]domain.WorkspaceInvitation
-	members       []domain.WorkspaceMember
-	memberEmails  map[string]bool
-	accepted      map[string]bool
-	lastTokenHash string
+	invitations      map[string]domain.WorkspaceInvitation
+	members          []domain.WorkspaceMember
+	memberEmails     map[string]bool
+	accepted         map[string]bool
+	workspacesByUser map[string][]domain.Workspace
+	lastTokenHash    string
 }
 
 func newFakeRepository() *fakeRepository {
 	return &fakeRepository{
-		invitations:  make(map[string]domain.WorkspaceInvitation),
-		memberEmails: make(map[string]bool),
-		accepted:     make(map[string]bool),
+		invitations:      make(map[string]domain.WorkspaceInvitation),
+		memberEmails:     make(map[string]bool),
+		accepted:         make(map[string]bool),
+		workspacesByUser: make(map[string][]domain.Workspace),
 	}
 }
 
-func (r *fakeRepository) ListWorkspaces(context.Context, string) ([]domain.Workspace, error) {
-	return nil, nil
+func (r *fakeRepository) ListWorkspaces(_ context.Context, userID string) ([]domain.Workspace, error) {
+	return r.workspacesByUser[userID], nil
 }
 
 func (r *fakeRepository) GetWorkspace(_ context.Context, _, workspaceID string) (*domain.Workspace, error) {
 	return &domain.Workspace{ID: workspaceID, Name: "テストWS", Role: domain.WorkspaceRoleOwner}, nil
 }
 
-func (r *fakeRepository) CreateWorkspace(context.Context, string, string, string) (*domain.Workspace, error) {
-	return &domain.Workspace{}, nil
+func (r *fakeRepository) CreateWorkspace(_ context.Context, userID, name, description string) (*domain.Workspace, error) {
+	workspace := domain.Workspace{ID: domain.NewUUID(), Name: name, Description: description, Role: domain.WorkspaceRoleOwner}
+	r.workspacesByUser[userID] = append(r.workspacesByUser[userID], workspace)
+	return &workspace, nil
 }
 
 func (r *fakeRepository) UpdateWorkspace(context.Context, string, string, *string, *string) (*domain.Workspace, error) {

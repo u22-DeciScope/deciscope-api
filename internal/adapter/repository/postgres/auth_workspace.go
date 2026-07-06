@@ -15,19 +15,11 @@ import (
 )
 
 type AuthWorkspaceRepository struct {
-	db       *sql.DB
-	seedDemo bool
+	db *sql.DB
 }
 
 func NewAuthWorkspaceRepository(db *sql.DB) *AuthWorkspaceRepository {
 	return &AuthWorkspaceRepository{db: db}
-}
-
-// WithDemoWorkspace は、ログイン時にユーザーをデモ用ワークスペース（domain.DemoWorkspaceID）へ
-// 自動参加させるかどうかを設定する。DECISCOPE_SEED_DEMO_DATA が有効な開発環境でのみ true にする。
-func (r *AuthWorkspaceRepository) WithDemoWorkspace(enabled bool) *AuthWorkspaceRepository {
-	r.seedDemo = enabled
-	return r
 }
 
 func (r *AuthWorkspaceRepository) FindOrCreateUser(ctx context.Context, identity appauth.Identity) (*domain.User, error) {
@@ -74,32 +66,6 @@ func (r *AuthWorkspaceRepository) FindOrCreateUser(ctx context.Context, identity
 	return &user, nil
 }
 
-func (r *AuthWorkspaceRepository) EnsureInitialWorkspace(ctx context.Context, userID, displayName, email string) (*domain.Workspace, error) {
-	workspaces, err := r.ListWorkspaces(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if len(workspaces) > 0 {
-		if err := r.ensureDemoMembership(ctx, userID); err != nil {
-			return nil, err
-		}
-		return &workspaces[0], nil
-	}
-	name := strings.TrimSpace(displayName)
-	if name == "" {
-		name = defaultWorkspaceBase(email)
-	}
-	name += "のワークスペース"
-	workspace, err := r.insertWorkspace(ctx, userID, name, "")
-	if err != nil {
-		return nil, err
-	}
-	if err := r.ensureDemoMembership(ctx, userID); err != nil {
-		return nil, err
-	}
-	return workspace, nil
-}
-
 // CreateWorkspace はワークスペースを作成し、作成者を owner として workspace_members に登録する。
 func (r *AuthWorkspaceRepository) CreateWorkspace(ctx context.Context, userID, name, description string) (*domain.Workspace, error) {
 	return r.insertWorkspace(ctx, userID, name, description)
@@ -125,25 +91,6 @@ func (r *AuthWorkspaceRepository) insertWorkspace(ctx context.Context, userID, n
 		return nil, err
 	}
 	return &workspace, nil
-}
-
-// ensureDemoMembership は、デモ用ワークスペースが存在する場合にユーザーを admin として参加させる。
-// 開発環境（WithDemoWorkspace 有効）専用。デモワークスペースが未シードのときは何もしない。
-func (r *AuthWorkspaceRepository) ensureDemoMembership(ctx context.Context, userID string) error {
-	if !r.seedDemo {
-		return nil
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO workspace_members (workspace_id, user_id, role, joined_at)
-		SELECT $1, $2, 'admin', $3
-		WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = $1)
-		ON CONFLICT (workspace_id, user_id) DO NOTHING
-	`, domain.DemoWorkspaceID, userID, now)
-	if err != nil {
-		return fmt.Errorf("ensure demo workspace membership: %w", err)
-	}
-	return nil
 }
 
 func (r *AuthWorkspaceRepository) CreateSession(ctx context.Context, session domain.Session) error {
@@ -181,7 +128,8 @@ func (r *AuthWorkspaceRepository) RevokeSession(ctx context.Context, sessionID s
 }
 
 func (r *AuthWorkspaceRepository) SetCurrentWorkspace(ctx context.Context, sessionID, workspaceID string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE user_sessions SET current_workspace_id = $1 WHERE id = $2`, workspaceID, sessionID)
+	// 空文字はFK制約 (REFERENCES workspaces) に違反するため NULL として保存する。
+	_, err := r.db.ExecContext(ctx, `UPDATE user_sessions SET current_workspace_id = $1 WHERE id = $2`, nullable(workspaceID), sessionID)
 	return err
 }
 

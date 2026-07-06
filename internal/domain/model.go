@@ -22,11 +22,6 @@ const (
 	EventError               = "error"
 )
 
-// DemoWorkspaceID は開発用のシードデータ（デモ会議）を格納する固定ワークスペースの ID。
-// DECISCOPE_SEED_DEMO_DATA が有効なときだけ作成され、ログインしたユーザーはこのワークスペースへ
-// 自動参加してデモ会議を閲覧できる。本番環境では使用しない。
-const DemoWorkspaceID = "ws_demo_deciscope"
-
 type Meeting struct {
 	ID          string
 	WorkspaceID string

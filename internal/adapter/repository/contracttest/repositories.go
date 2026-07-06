@@ -246,9 +246,9 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatalf("FindOrCreateUser(member) error = %v", err)
 		}
-		workspace, err := repos.Auth.EnsureInitialWorkspace(ctx, owner.ID, owner.DisplayName, owner.Email)
+		workspace, err := repos.Auth.CreateWorkspace(ctx, owner.ID, "最初のワークスペース", "")
 		if err != nil {
-			t.Fatalf("EnsureInitialWorkspace() error = %v", err)
+			t.Fatalf("CreateWorkspace(initial) error = %v", err)
 		}
 
 		expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)

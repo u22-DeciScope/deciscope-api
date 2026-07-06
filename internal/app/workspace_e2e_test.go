@@ -76,7 +76,7 @@ func TestServerEnforcesWorkspaceRolesEndToEnd(t *testing.T) {
 		t.Fatalf("/v1/auth/me workspaces = null, want array: %s", me.Body.String())
 	}
 
-	// owner がワークスペースを作成できる。
+	// owner がワークスペースを作成できる (所属0件からの初回作成)。
 	created := serveJSON(t, runtime.Handler, http.MethodPost, "/v1/workspaces",
 		`{"name":"E2Eワークスペース","description":"E2E検証用"}`, ownerToken)
 	if created.Code != http.StatusCreated {
@@ -94,6 +94,32 @@ func TestServerEnforcesWorkspaceRolesEndToEnd(t *testing.T) {
 		t.Fatalf("created workspace = %+v, want owner role and description", workspace)
 	}
 	base := "/v1/workspaces/" + workspace.ID
+
+	// 初回作成ワークスペースにはサンプル会議が投入され、workspace_id が新WSに紐づく。
+	// (development 既定で DECISCOPE_CREATE_SAMPLE_MEETING_ON_FIRST_WORKSPACE が有効)
+	sample := serveJSON(t, runtime.Handler, http.MethodGet, base+"/meeting-sessions", "", ownerToken)
+	if sample.Code != http.StatusOK || !strings.Contains(sample.Body.String(), "サンプル") {
+		t.Fatalf("first workspace should contain sample meeting: status=%d body=%s", sample.Code, sample.Body.String())
+	}
+	if strings.Contains(sample.Body.String(), "ws_demo_deciscope") {
+		t.Fatalf("sample meeting must not reference the fixed demo workspace: %s", sample.Body.String())
+	}
+
+	// 2つ目のワークスペースにはサンプル会議を投入しない。
+	second := serveJSON(t, runtime.Handler, http.MethodPost, "/v1/workspaces", `{"name":"2つ目のWS"}`, ownerToken)
+	if second.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/workspaces (second) status = %d, body = %s", second.Code, second.Body.String())
+	}
+	var secondWorkspace struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &secondWorkspace); err != nil {
+		t.Fatalf("decode second workspace: %v", err)
+	}
+	secondSessions := serveJSON(t, runtime.Handler, http.MethodGet, "/v1/workspaces/"+secondWorkspace.ID+"/meeting-sessions", "", ownerToken)
+	if secondSessions.Code != http.StatusOK || strings.Contains(secondSessions.Body.String(), "サンプル") {
+		t.Fatalf("second workspace should not contain sample meeting: status=%d body=%s", secondSessions.Code, secondSessions.Body.String())
+	}
 
 	// 非メンバーはワークスペース詳細へアクセスできない。
 	forbidden := serveJSON(t, runtime.Handler, http.MethodGet, base+"/", "", viewerToken)

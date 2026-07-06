@@ -83,6 +83,12 @@ DECISCOPE_SMTP_FROM=
   production でSMTP未設定の場合は招待作成が失敗します。
 - `DECISCOPE_SMTP_*`: ワークスペース招待メールのSMTP設定。`HOST` と `FROM` の両方を
   設定すると実際に送信します。`USERNAME` 未設定なら認証なしで接続します。
+- `DECISCOPE_CREATE_SAMPLE_MEETING_ON_FIRST_WORKSPACE`: 所属0件のユーザーが最初の
+  ワークスペースを作成したとき、サンプル会議 (終了済みTeams会議 + 文字起こし +
+  議論ツリー / 分析カード) を1件投入します。未設定なら development で有効、production で無効。
+- `DECISCOPE_SEED_DEMO_DATA`: 固定デモワークスペース (`ws_demo_deciscope`) を投入する
+  旧式の開発用 seed。ログイン時の自動参加は廃止済みで、通常フローでは使いません。
+  初回ログインフローの確認では `false` のままにしてください。
 
 ## 動作確認
 

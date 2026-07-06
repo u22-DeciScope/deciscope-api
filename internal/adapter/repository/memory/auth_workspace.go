@@ -46,26 +46,6 @@ func (r *AuthWorkspaceRepository) FindOrCreateUser(_ context.Context, identity a
 	return &user, nil
 }
 
-func (r *AuthWorkspaceRepository) EnsureInitialWorkspace(_ context.Context, userID, displayName, email string) (*domain.Workspace, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for workspaceID, members := range r.members {
-		if members[userID] != "" {
-			workspace := r.workspaces[workspaceID]
-			workspace.Role = domain.NormalizeWorkspaceRole(members[userID])
-			return &workspace, nil
-		}
-	}
-	if displayName == "" {
-		displayName, _, _ = strings.Cut(email, "@")
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	workspace := domain.Workspace{ID: domain.NewUUID(), Name: displayName + "のワークスペース", Role: domain.WorkspaceRoleOwner, CreatedAt: now, UpdatedAt: now}
-	r.workspaces[workspace.ID] = workspace
-	r.members[workspace.ID] = map[string]string{userID: domain.WorkspaceRoleOwner}
-	return &workspace, nil
-}
-
 func (r *AuthWorkspaceRepository) CreateWorkspace(_ context.Context, userID, name, description string) (*domain.Workspace, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

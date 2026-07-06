@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -27,14 +28,27 @@ type Repository interface {
 	UpdateMemberRole(ctx context.Context, userID, workspaceID, memberID, role string) (*domain.WorkspaceMember, error)
 }
 
+// SampleMeetingCreator は、初回作成されたワークスペースへ初期サンプル会議を投入する outbound port。
+// 固定の workspace_id を前提とせず、必ず渡された workspace_id に紐づけて作成する。
+type SampleMeetingCreator interface {
+	CreateSampleMeeting(ctx context.Context, workspaceID, createdByUserID string) error
+}
+
 type Service struct {
 	repository      Repository
 	mailer          InvitationMailer
 	frontendBaseURL string
+	sampleMeetings  SampleMeetingCreator
 }
 
 func NewService(repository Repository, mailer InvitationMailer, frontendBaseURL string) *Service {
 	return &Service{repository: repository, mailer: mailer, frontendBaseURL: frontendBaseURL}
+}
+
+// SetSampleMeetingCreator を設定すると、ユーザーが所属0件の状態で最初のワークスペースを
+// 作成したときだけサンプル会議を投入する。未設定なら何もしない。
+func (s *Service) SetSampleMeetingCreator(creator SampleMeetingCreator) {
+	s.sampleMeetings = creator
 }
 
 func (s *Service) ListWorkspaces(ctx context.Context, userID string) ([]domain.Workspace, error) {
@@ -50,7 +64,25 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID, name, description
 	if name == "" {
 		return nil, fmt.Errorf("%w: workspace name is required", domain.ErrInvalidArgument)
 	}
-	return s.repository.CreateWorkspace(ctx, userID, name, strings.TrimSpace(description))
+	// サンプル会議は「所属0件のユーザーが最初のワークスペースを作成したとき」だけ投入するため、
+	// 作成前の所属数を確認しておく。
+	existing, err := s.repository.ListWorkspaces(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	workspace, err := s.repository.CreateWorkspace(ctx, userID, name, strings.TrimSpace(description))
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) == 0 && s.sampleMeetings != nil {
+		// サンプル会議の作成失敗で初回フローを止めない。失敗はログに残すだけにする。
+		if sampleErr := s.sampleMeetings.CreateSampleMeeting(ctx, workspace.ID, userID); sampleErr != nil {
+			log.Printf("sample meeting creation failed (workspace creation itself succeeded): workspace_id=%q user_id=%q error=%v", workspace.ID, userID, sampleErr)
+		} else {
+			log.Printf("sample meeting created for first workspace: workspace_id=%q user_id=%q", workspace.ID, userID)
+		}
+	}
+	return workspace, nil
 }
 
 // UpdateWorkspace は nil のフィールドを変更せず、指定されたフィールドだけ更新する。
