@@ -71,10 +71,17 @@ deployments. The Memory implementation remains available only as a test double.
 
 ## Current limitations
 
-- Meeting, upload, and realtime routes are not protected by auth.
+- `/v1` meeting, upload, and realtime routes are protected by session cookie
+  auth plus workspace/resource access checks. The legacy `/api/v1` VM Bot and
+  transcript routes use API-key/client-token checks instead.
 - Firebase login persists users, workspaces, and sessions through PostgreSQL.
-- Upload storage is local filesystem only.
-- Queue/worker, external STT, and external LLM are not implemented.
+- Upload storage is local filesystem only. Upload processing is a mock job, and
+  file STT/ffmpeg processing is outside the current product scope.
+- Redis Streams, MinIO/Object Storage, raw-audio Media Ingress, and a separate
+  Python worker are not part of the current Docker-first product path.
+- Azure OpenAI-backed live/final meeting analysis is implemented when the
+  relevant environment variables are configured. A generic provider-agnostic LLM
+  adapter layer is not implemented.
 
 ## Verification
 

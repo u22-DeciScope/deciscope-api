@@ -4,7 +4,10 @@ DeciScopeのローカルMVP向け、Go + `chi`製バックエンドです。
 
 会議API、WebSocketリアルタイム配信、PostgreSQL永続化、
 Azure EchoBot向け文字起こし取り込み、mock upload/job、Markdownレポート生成を
-提供します。外部STT、外部LLMには接続しません。
+提供します。Teams音声のSTTはVM上のTeams Botが担当し、このAPIはBotから送られる
+transcript segmentを受け取ります。Azure OpenAIを設定した場合は、会議中ライブ分析と
+会議終了時の最終要約も生成します。raw audioのMedia IngressやファイルSTT/ffmpeg処理は
+現在のプロダクト範囲には含めていません。
 
 ## Requirements
 
@@ -316,9 +319,10 @@ WebSocket message:
 
 ## Teams Bot Meeting Sessions
 
-フロントエンドはVM Botを直接叩きません。Teams会議URLはGo APIの
-`POST /api/v1/meeting-sessions` へ送信し、Go APIがTailscale内のVM Bot制御APIへ
-参加命令を送ります。
+フロントエンドはVM Botを直接叩きません。通常のブラウザUIは認証済みの
+`POST /v1/workspaces/{workspace_code}/meeting-sessions` へTeams会議URLを送信し、
+Go APIがTailscale内のVM Bot制御APIへ参加命令を送ります。
+`/api/v1/meeting-sessions` はAPI-keyを使う互換/手動確認用の非workspaceルートです。
 
 VM Bot制御APIの設定:
 
@@ -367,6 +371,9 @@ Invoke-WebRequest `
 ```powershell
 Invoke-RestMethod "http://localhost:9090/api/v1/meeting-sessions/<sessionId>"
 ```
+
+ブラウザUIと同じ経路を確認する場合は、Firebase loginで発行された
+`deciscope_session` Cookieを持つ状態で、workspace-scoped APIを使います。
 
 VM Botからの状態更新:
 
@@ -442,11 +449,16 @@ Invoke-RestMethod `
 - `POST /api/v1/transcript-segments`
 - `GET /api/v1/transcript-segments?callId={call_id}&limit=100`
 - `WS /api/v1/ws/transcript-segments?callId={call_id}`
-- `POST /api/v1/meeting-sessions`
-- `GET /api/v1/meeting-sessions/{session_id}`
+- `POST /api/v1/meeting-sessions` (互換/手動確認用。API key必須)
+- `GET /api/v1/meeting-sessions/{session_id}` (互換/手動確認用。API key必須)
 - `PATCH /api/v1/bot/meeting-sessions/{session_id}/status`
 - `GET /v1/workspaces/{workspace_code}/meetings`
 - `POST /v1/workspaces/{workspace_code}/meetings`
+- `GET /v1/workspaces/{workspace_code}/meeting-sessions`
+- `POST /v1/workspaces/{workspace_code}/meeting-sessions`
+- `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}`
+- `POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/end`
+- `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream`
 - `GET /v1/meetings/{meeting_id}`
 - `GET /v1/meetings/{meeting_id}/events?after_seq=0`
 - `GET /v1/meetings/{meeting_id}/segments?after_seq=0`

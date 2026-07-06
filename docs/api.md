@@ -26,8 +26,11 @@ PUT  /v1/session/current-workspace
 - `POST /v1/auth/login` は `idToken` を受け取り、Firebase認証結果を返します。
 - `/v1/auth/me`、`/v1/auth/logout`、workspace配下、meeting配下、WebSocketは
   認証ミドルウェアの対象です。
-- Firebaseが無効なローカル環境では、保護Routeで
-  `Authorization: Bearer dev:<uid>` を使用できます。
+- 保護された `/v1` Routeは、`/v1/auth/login` が発行する
+  `deciscope_session` Cookieで認証します。現在の実装にdev bearer fallbackはありません。
+  ローカルでブラウザUIを使う場合もFirebase Admin設定を用意してください。
+- `/api/v1/transcript-segments`、`/api/v1/meeting-sessions` などのVM Bot/互換ルートは、
+  session Cookieではなく `X-DeciScope-Api-Key` やclient tokenで保護します。
 
 `/health`、`/debug`、`/login`、`/register` は現在のRouterには
 登録されていません。
@@ -294,7 +297,9 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
 ## Teams Bot会議セッション
 
 フロントエンドはVM Botを直接呼びません。Teams会議URLをGo APIへ登録し、
-Go APIがTailscale内のVM Bot制御APIへ参加命令を送ります。
+Go APIがTailscale内のVM Bot制御APIへ参加命令を送ります。通常のブラウザUIは
+この後に記載するworkspace配下の会議セッションAPIを使い、次の `/api/v1` ルートは
+VM Bot連携や手動確認向けの互換APIとして残しています。
 
 ```http
 POST /api/v1/meeting-sessions
@@ -512,7 +517,9 @@ GET  /v1/jobs/{job_id}
 
 `POST /v1/workspaces/{workspace_code}/uploads` は `multipart/form-data` の
 `file` fieldを受け取ります。現在はfileをlocalの `UPLOAD_DIR` に保存し、
-`file.extract_audio` のmock jobを完了状態にします。実際の音声抽出、STT、LLM分析は未実装です。
+`file.extract_audio` のmock jobを完了状態にします。ファイルからの音声抽出、
+ffmpeg処理、ファイルSTTは現在のプロダクト範囲から外しています。Teams会議の文字起こしは
+VM上のTeams BotがAzure Speechで行い、Go APIはtranscript segmentを受け取ります。
 
 ## エラー形式
 

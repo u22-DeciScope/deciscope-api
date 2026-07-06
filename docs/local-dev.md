@@ -15,6 +15,10 @@ VMなど別端末から接続する場合は、`.env` の `DECISCOPE_BACKEND_ADD
 `DECISCOPE_TRANSCRIPT_ONLY=true` の場合も、PostgreSQLへの接続自体は必要です
 （会議・認証まわりのcore repositoryだけ初期化しません）。
 
+現在のDocker優先構成では、このリポジトリのComposeでPostgreSQL、migration、Go APIを起動し、
+フロントエンドは `deciscope-web` 側で起動します。Teams BotはDocker Composeには含めず、
+Windows VM上のBotへTailscale経由で接続します。
+
 `docker compose up` を使わず `go run .` で直接起動することもできますが、
 `compose.yaml` の `postgres` serviceはPCホストへportを公開していないため、
 その場合は別途host側で到達可能なPostgreSQL（ローカルインストール、または
@@ -67,7 +71,8 @@ DECISCOPE_SMTP_FROM=
 ```
 
 - `DECISCOPE_BACKEND_ADDR`: 待受address。設定時は `PORT` より優先します。
-- `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合はPostgreSQLを初期化しません。
+- `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は会議・認証まわりのcore repositoryを初期化せず、
+  文字起こし取り込みAPIだけを起動します。この場合もPostgreSQL接続は必要です。
 - `DECISCOPE_INGEST_API_KEY`: `POST /api/v1/transcript-segments` 用API key。32文字以上が必要です。
 - `DECISCOPE_WS_CLIENT_TOKEN`: `GET /api/v1/transcript-segments` と
   `WS /api/v1/ws/transcript-segments` 用の開発client token。未設定なら認証なしです。
@@ -169,7 +174,9 @@ Invoke-RestMethod `
     -Body $body
 ```
 
-Teams会議URLを登録し、VM Botへ参加命令を送ります。
+Teams会議URLを登録し、VM Botへ参加命令を送ります。ブラウザUIと同じ経路では
+`POST /v1/workspaces/{workspace_code}/meeting-sessions` を使います。次の例は
+API-keyで確認する互換/手動ルートです。
 
 ```powershell
 $body = @{
