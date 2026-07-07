@@ -55,6 +55,19 @@ type MeetingSessionRepository interface {
 	UpdateMeetingSessionMetadata(ctx context.Context, update domain.MeetingSessionMetadataUpdate) (*domain.MeetingSession, error)
 	MarkStaleMeetingSessions(ctx context.Context, staleBefore time.Time, updatedAt time.Time) ([]domain.MeetingSession, error)
 	ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error)
+	// TouchMeetingSessionBotSeen records that a heartbeat was received from the
+	// bot for sessionID at seenAt. It updates last_bot_status_at and updated_at
+	// only; it never changes status. The returned bool reports whether the
+	// session was actually updated: terminal sessions (ended/failed/stale) are
+	// left untouched and the bool is false, but the current session is still
+	// returned so callers can respond with it. A missing session returns
+	// domain.ErrNotFound.
+	TouchMeetingSessionBotSeen(ctx context.Context, sessionID string, seenAt time.Time) (*domain.MeetingSession, bool, error)
+	// ListMeetingSessionsForBotWatchdog returns the sessions the watchdog needs
+	// to evaluate: those whose status is one the bot could still be attached to
+	// (joined/active/recording/speech_error/speech_throttled) and that have a
+	// non-zero LastBotStatusAt.
+	ListMeetingSessionsForBotWatchdog(ctx context.Context) ([]domain.MeetingSession, error)
 }
 
 type BotJoinCommand struct {
@@ -81,6 +94,14 @@ type BotJoinCommander interface {
 
 type MeetingSessionPublisher interface {
 	PublishMeetingSessionStatusChanged(session domain.MeetingSession)
+}
+
+// MeetingSessionBotHealthPublisher is notified by the watchdog whenever a
+// session's bot connectivity transitions between healthy and unhealthy. It is
+// deliberately separate from MeetingSessionPublisher because bot health
+// changes are not meeting_session.status_changed events.
+type MeetingSessionBotHealthPublisher interface {
+	PublishMeetingSessionBotHealth(session domain.MeetingSession, healthy bool)
 }
 
 // MeetingSessionEndedObserver is notified when a meeting session transitions

@@ -218,6 +218,99 @@ func TestMeetingSessionAPIEndsSession(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionAPIRecordBotHeartbeatRequiresAPIKey(t *testing.T) {
+	api := NewMeetingSessionAPI(&fakeMeetingSessionUseCases{}, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", `{"botCallId":"call-1"}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeat(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", `{"botCallId":"call-1"}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.heartbeatSessionID != "session_1" {
+		t.Fatalf("heartbeatSessionID = %q, want session_1", service.heartbeatSessionID)
+	}
+	var body meetingSessionResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.SessionID != "session_1" || body.Status != "recording" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeatWithoutBodySucceeds(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	router := NewRouter(RouterDependencies{MeetingSessionAPI: api})
+
+	// No body and no Content-Type header at all: chi's AllowContentType
+	// middleware and the handler's own check must both let this through
+	// since docs/api.md documents the heartbeat body as optional.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", nil)
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.heartbeatSessionID != "session_1" {
+		t.Fatalf("heartbeatSessionID = %q, want session_1", service.heartbeatSessionID)
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeatReturnsNotFoundForUnknownSession(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", `{}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *testing.T) {
 	service := &fakeMeetingSessionUseCases{
 		session: domain.MeetingSession{
@@ -401,12 +494,13 @@ func (f *fakeMeetingAIAnalysisUseCases) GetMeetingAIAnalyses(_ context.Context, 
 }
 
 type fakeMeetingSessionUseCases struct {
-	session     domain.MeetingSession
-	err         error
-	createInput application.MeetingSessionCreateInput
-	endInput    application.MeetingSessionEndInput
-	update      application.MeetingSessionStatusUpdateInput
-	reused      bool
+	session            domain.MeetingSession
+	err                error
+	createInput        application.MeetingSessionCreateInput
+	endInput           application.MeetingSessionEndInput
+	update             application.MeetingSessionStatusUpdateInput
+	reused             bool
+	heartbeatSessionID string
 }
 
 func (f *fakeMeetingSessionUseCases) CreateMeetingSession(_ context.Context, input application.MeetingSessionCreateInput) (*application.MeetingSessionCreateResult, error) {
@@ -483,6 +577,17 @@ func (f *fakeMeetingSessionUseCases) ListMeetingSessionDebug(_ context.Context, 
 		return nil, f.err
 	}
 	return []domain.MeetingSessionDebug{{MeetingSession: f.session}}, nil
+}
+
+func (f *fakeMeetingSessionUseCases) RecordMeetingSessionHeartbeat(_ context.Context, sessionID string) (*domain.MeetingSession, error) {
+	f.heartbeatSessionID = sessionID
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.session.ID == "" {
+		return nil, fmt.Errorf("%w: meeting session not found", domain.ErrNotFound)
+	}
+	return &f.session, nil
 }
 
 func requestWithSessionParam(method, target, body string) *http.Request {

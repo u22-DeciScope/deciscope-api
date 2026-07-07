@@ -572,6 +572,14 @@ func (f *fakeAnalysisSessionRepository) ListMeetingSessionDebug(context.Context,
 	return nil, nil
 }
 
+func (f *fakeAnalysisSessionRepository) TouchMeetingSessionBotSeen(context.Context, string, time.Time) (*domain.MeetingSession, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
+
+func (f *fakeAnalysisSessionRepository) ListMeetingSessionsForBotWatchdog(context.Context) ([]domain.MeetingSession, error) {
+	return nil, nil
+}
+
 type fakeAnalysisTranscriptRepository struct {
 	segments []domain.TranscriptSegment
 }

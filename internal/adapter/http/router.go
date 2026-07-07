@@ -55,6 +55,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 		r.Post("/api/v1/meeting-sessions/{session_id}/end", deps.MeetingSessionAPI.End)
 		r.Patch("/api/v1/bot/meeting-sessions/{session_id}/metadata", deps.MeetingSessionAPI.UpdateBotMetadata)
 		r.Patch("/api/v1/bot/meeting-sessions/{session_id}/status", deps.MeetingSessionAPI.UpdateBotStatus)
+		r.Post("/api/v1/bot/meeting-sessions/{session_id}/heartbeat", deps.MeetingSessionAPI.RecordBotHeartbeat)
 	}
 	if deps.TranscriptRealtime != nil {
 		r.Get("/api/v1/ws/transcript-segments", deps.TranscriptRealtime)

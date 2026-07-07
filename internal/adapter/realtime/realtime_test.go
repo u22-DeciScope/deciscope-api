@@ -328,6 +328,69 @@ func TestMeetingSessionStatusProtocolMessage(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionBotHealthProtocolMessage(t *testing.T) {
+	session := domain.MeetingSession{
+		ID:              "session_1",
+		Status:          domain.MeetingSessionRecording,
+		LastBotStatusAt: time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC),
+	}
+	message := meetingSessionBotHealthProtocolMessage(session, false, time.Date(2026, 7, 7, 0, 1, 0, 0, time.UTC))
+	if message.Type != meetingSessionBotHealthType {
+		t.Fatalf("message.Type = %q", message.Type)
+	}
+	if meetingSessionBotHealthType != "meeting_session.bot_health_changed" {
+		t.Fatalf("meetingSessionBotHealthType = %q, want meeting_session.bot_health_changed", meetingSessionBotHealthType)
+	}
+	if message.SentAtUTC != "2026-07-07T00:01:00Z" {
+		t.Fatalf("message.SentAtUTC = %q", message.SentAtUTC)
+	}
+	if message.Data.SessionID != "session_1" || message.Data.Healthy {
+		t.Fatalf("message data = %+v", message.Data)
+	}
+	if message.Data.LastBotStatusAtUTC != "2026-07-07T00:00:00Z" {
+		t.Fatalf("message.Data.LastBotStatusAtUTC = %q", message.Data.LastBotStatusAtUTC)
+	}
+
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"type":"meeting_session.bot_health_changed"`) ||
+		!strings.Contains(string(encoded), `"sessionId":"session_1"`) ||
+		!strings.Contains(string(encoded), `"healthy":false`) {
+		t.Fatalf("encoded = %s", string(encoded))
+	}
+}
+
+func TestTranscriptHubPublishMeetingSessionBotHealthFiltersBySessionID(t *testing.T) {
+	hub := NewTranscriptHub()
+	matching := &transcriptClient{sessionID: "session_1", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	other := &transcriptClient{sessionID: "session_2", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	hub.subscribe(matching)
+	hub.subscribe(other)
+	t.Cleanup(func() {
+		hub.unsubscribe(matching)
+		hub.unsubscribe(other)
+	})
+
+	session := domain.MeetingSession{ID: "session_1", Status: domain.MeetingSessionRecording}
+	hub.PublishMeetingSessionBotHealth(session, true)
+
+	select {
+	case got := <-matching.send:
+		if got.botHealth == nil || got.botHealth.session.ID != "session_1" || !got.botHealth.healthy {
+			t.Fatalf("matching got = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("matching client did not receive bot health event")
+	}
+	select {
+	case got := <-other.send:
+		t.Fatalf("other session unexpectedly received %+v", got)
+	default:
+	}
+}
+
 type fakeEventStore struct {
 	events []domain.Event
 }

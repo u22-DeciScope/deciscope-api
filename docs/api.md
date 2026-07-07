@@ -374,6 +374,69 @@ X-DeciScope-Api-Key: <shared secret>
 
 会議名などTeams会議のmetadataだけを更新します（statusは変更しません）。
 
+Botからのハートビート:
+
+```http
+POST /api/v1/bot/meeting-sessions/{sessionId}/heartbeat
+Content-Type: application/json
+X-DeciScope-Api-Key: <shared secret>
+```
+
+```json
+{
+  "botCallId": "09005080-cce6-4132-9404-1e823df47ff9"
+}
+```
+
+- BotがVM上で生存している間、定期的に（既定20秒間隔）呼び出します。ボディは省略可・未知フィールド許容です。
+- `last_bot_status_at` と `updated_at` を現在時刻に更新するだけで、**statusは変更せず、WebSocket配信も行いません**
+  （高頻度に飛んでくるため、全クライアントへ毎回配信するとスパムになります）。
+- terminal状態（`ended` / `failed` / `stale`）のセッションは更新されず、現在のセッションをそのまま200で返します
+  （終了済みセッションを誤って復活させないため）。存在しないセッションは404です。
+- Bot接続の生死判定・自動終了は次項の常駐watchdogが行います。
+
+Bot接続死活監視（常駐watchdog）:
+
+- Go APIは常駐goroutineで、status が `joined` / `active` / `recording` / `speech_error` /
+  `speech_throttled` のいずれかで `last_bot_status_at` が記録済みのセッションを定期的に走査します。
+- `last_bot_status_at` からの経過が `DECISCOPE_SESSION_BOT_LOST_AFTER_SECONDS`
+  （既定60秒）以上になった時点で、WebSocketで `meeting_session.bot_health_changed`
+  （`healthy: false`）を1回だけ配信します（遷移時のみ）。ハートビートが再開して閾値を下回ると
+  `healthy: true` を1回だけ配信します。
+- さらに `DECISCOPE_SESSION_BOT_END_AFTER_SECONDS`（既定180秒）以上ハートビートが
+  途絶した場合、セッションを `endReason: "bot_unresponsive"` として自動的に `ended` にします
+  （VM Botのプロセス即死・強制停止でBotからの通知が届かないケースに対応するため）。
+- 環境変数:
+  - `DECISCOPE_SESSION_WATCHDOG_ENABLED`（既定 `true`）
+  - `DECISCOPE_SESSION_WATCHDOG_INTERVAL_SECONDS`（既定15、最小5）
+  - `DECISCOPE_SESSION_BOT_LOST_AFTER_SECONDS`（既定60、最小30）
+  - `DECISCOPE_SESSION_BOT_END_AFTER_SECONDS`（既定180。`LOST_AFTER` 以下の値を指定した場合は
+    自動的に補正されます）
+- **設定上の注意（footgun）**: Bot側のハートビート送信間隔 `DECISCOPE_BOT_HEARTBEAT_SECONDS`
+  （既定20秒、EchoBot側の環境変数）は、`DECISCOPE_SESSION_BOT_LOST_AFTER_SECONDS` の
+  1/3以下に設定することを推奨します。送信間隔を `LOST_AFTER`（既定60秒）以上にすると、
+  正常に稼働中でも喪失/復旧の `bot_health_changed` がフラッピングします。さらに送信間隔を
+  `END_AFTER`（既定180秒）以上にすると、正常に進行中の会議が誤って自動終了します。
+- **旧EchoBotとの組み合わせに関する注意**: ハートビート未対応の旧バージョンのEchoBotと、
+  watchdog有効（`DECISCOPE_SESSION_WATCHDOG_ENABLED=true`）の本APIを組み合わせると、
+  ハートビートが一切届かないため会議中のセッションが `DECISCOPE_SESSION_BOT_END_AFTER_SECONDS`
+  （既定約3分）で誤って自動終了します。デプロイ時はBot側のハートビート対応版を先行してリリースするか、
+  切替期間中は `DECISCOPE_SESSION_WATCHDOG_ENABLED=false` にしてください。
+
+WebSocketイベント形式（[events.md](./events.md) と同じ配信経路。`sessionId` で購読しているクライアントにのみ届きます）:
+
+```json
+{
+  "type": "meeting_session.bot_health_changed",
+  "sentAtUtc": "2026-07-07T00:01:00.000000000Z",
+  "data": {
+    "sessionId": "session_...",
+    "healthy": false,
+    "lastBotStatusAtUtc": "2026-07-07T00:00:00.000000000Z"
+  }
+}
+```
+
 保守/デバッグ用（`X-DeciScope-Api-Key` が必要）:
 
 ```http

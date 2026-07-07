@@ -411,6 +411,83 @@ func TestMeetingSessionServiceDoesNotNotifyEndedObserverForNonEndedTransitions(t
 	}
 }
 
+func TestMeetingSessionServiceRecordsHeartbeatWithoutPublishing(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionRecording
+	repository.session.LastBotStatusAt = repository.session.CreatedAt
+	publisher := &fakeMeetingSessionPublisher{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{}, publisher)
+
+	session, err := service.RecordMeetingSessionHeartbeat(context.Background(), "session_1")
+	if err != nil {
+		t.Fatalf("RecordMeetingSessionHeartbeat() error = %v", err)
+	}
+	if session.LastBotStatusAt.Equal(repository.session.CreatedAt) {
+		t.Fatalf("LastBotStatusAt was not updated: %+v", session)
+	}
+	if session.Status != domain.MeetingSessionRecording {
+		t.Fatalf("status changed unexpectedly: %+v", session)
+	}
+	if repository.touchCallCount != 1 || repository.touchedSessionID != "session_1" {
+		t.Fatalf("touch call = count=%d sessionId=%s", repository.touchCallCount, repository.touchedSessionID)
+	}
+	if len(publisher.sessions) != 0 {
+		t.Fatalf("heartbeat must not publish a status change event, got %+v", publisher.sessions)
+	}
+}
+
+func TestMeetingSessionServiceHeartbeatDoesNotReviveTerminalSession(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionEnded
+	repository.session.EndedAt = repository.session.CreatedAt.Add(time.Minute)
+	publisher := &fakeMeetingSessionPublisher{}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{}, publisher)
+
+	session, err := service.RecordMeetingSessionHeartbeat(context.Background(), "session_1")
+	if err != nil {
+		t.Fatalf("RecordMeetingSessionHeartbeat() error = %v", err)
+	}
+	if session.Status != domain.MeetingSessionEnded {
+		t.Fatalf("terminal session should not be revived: %+v", session)
+	}
+	if !session.LastBotStatusAt.IsZero() {
+		t.Fatalf("terminal session LastBotStatusAt should not be touched: %+v", session)
+	}
+	if len(publisher.sessions) != 0 {
+		t.Fatalf("heartbeat must not publish, got %+v", publisher.sessions)
+	}
+}
+
+func TestMeetingSessionServiceHeartbeatRejectsEmptySessionID(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{})
+
+	if _, err := service.RecordMeetingSessionHeartbeat(context.Background(), "   "); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("RecordMeetingSessionHeartbeat() error = %v, want invalid argument", err)
+	}
+	if repository.touchCallCount != 0 {
+		t.Fatalf("repository should not be called for an empty sessionId, touchCallCount=%d", repository.touchCallCount)
+	}
+}
+
+func TestMeetingSessionServiceHeartbeatReturnsNotFoundForUnknownSession(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{})
+
+	if _, err := service.RecordMeetingSessionHeartbeat(context.Background(), "session_missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("RecordMeetingSessionHeartbeat() error = %v, want not found", err)
+	}
+}
+
+func isFakeTerminalMeetingSessionStatus(status domain.MeetingSessionStatus) bool {
+	switch status {
+	case domain.MeetingSessionEnded, domain.MeetingSessionFailed, domain.MeetingSessionStale:
+		return true
+	default:
+		return false
+	}
+}
+
 type fakeMeetingSessionEndedObserver struct {
 	sessions []domain.MeetingSession
 }
@@ -420,10 +497,14 @@ func (f *fakeMeetingSessionEndedObserver) NotifyMeetingSessionEnded(session doma
 }
 
 type fakeMeetingSessionRepository struct {
-	created      domain.MeetingSession
-	updated      domain.MeetingSessionStatusUpdate
-	session      domain.MeetingSession
-	reuseSession domain.MeetingSession
+	created          domain.MeetingSession
+	updated          domain.MeetingSessionStatusUpdate
+	session          domain.MeetingSession
+	reuseSession     domain.MeetingSession
+	watchdogSessions []domain.MeetingSession
+	touchedSessionID string
+	touchedSeenAt    time.Time
+	touchCallCount   int
 }
 
 func newFakeMeetingSessionRepository() *fakeMeetingSessionRepository {
@@ -476,6 +557,27 @@ func (f *fakeMeetingSessionRepository) ListMeetingSessions(_ context.Context, wo
 
 func (f *fakeMeetingSessionRepository) MarkStaleMeetingSessions(_ context.Context, _ time.Time, _ time.Time) ([]domain.MeetingSession, error) {
 	return nil, nil
+}
+
+func (f *fakeMeetingSessionRepository) TouchMeetingSessionBotSeen(_ context.Context, sessionID string, seenAt time.Time) (*domain.MeetingSession, bool, error) {
+	f.touchCallCount++
+	f.touchedSessionID = sessionID
+	f.touchedSeenAt = seenAt
+	if sessionID != f.session.ID {
+		return nil, false, domain.ErrNotFound
+	}
+	if isFakeTerminalMeetingSessionStatus(f.session.Status) {
+		snapshot := f.session
+		return &snapshot, false, nil
+	}
+	f.session.LastBotStatusAt = seenAt
+	f.session.UpdatedAt = seenAt
+	snapshot := f.session
+	return &snapshot, true, nil
+}
+
+func (f *fakeMeetingSessionRepository) ListMeetingSessionsForBotWatchdog(_ context.Context) ([]domain.MeetingSession, error) {
+	return f.watchdogSessions, nil
 }
 
 func (f *fakeMeetingSessionRepository) ListMeetingSessionDebug(_ context.Context, _ int) ([]domain.MeetingSessionDebug, error) {

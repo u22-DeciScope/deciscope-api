@@ -33,6 +33,14 @@ const (
 	defaultAIFinalSummaryMaxInputChars   = 12000
 )
 
+const (
+	defaultSessionWatchdogIntervalSeconds = 15
+	minSessionWatchdogIntervalSeconds     = 5
+	defaultSessionBotLostAfterSeconds     = 60
+	minSessionBotLostAfterSeconds         = 30
+	defaultSessionBotEndAfterSeconds      = 180
+)
+
 type Config struct {
 	Database            database.Config
 	TranscriptIngest    TranscriptIngestConfig
@@ -41,6 +49,7 @@ type Config struct {
 	BotControl          botcontrol.Config
 	Firebase            firebase.Config
 	AI                  AIConfig
+	SessionWatchdog     MeetingSessionWatchdogConfig
 	UploadDir           string
 	FrontendURL         string
 	AllowedOrigins      string
@@ -113,6 +122,17 @@ func (c AIConfig) Enabled() bool {
 	return len(c.MissingAzureOpenAIVars()) == 0
 }
 
+// MeetingSessionWatchdogConfig controls the resident goroutine that detects a
+// bot that has stopped sending heartbeats (e.g. the VM process died or was
+// force-stopped) and ends the meeting session instead of leaving it active
+// until the unrelated 2h stale cleanup eventually catches it.
+type MeetingSessionWatchdogConfig struct {
+	Enabled   bool
+	Interval  time.Duration
+	LostAfter time.Duration
+	EndAfter  time.Duration
+}
+
 func ConfigFromEnv() Config {
 	transcriptOnly := strings.EqualFold(os.Getenv("DECISCOPE_TRANSCRIPT_ONLY"), "true")
 	transcriptStore := strings.ToLower(strings.TrimSpace(os.Getenv("DECISCOPE_TRANSCRIPT_STORE")))
@@ -143,6 +163,7 @@ func ConfigFromEnv() Config {
 			Enabled:         os.Getenv("AUTH_PROVIDER") == "firebase",
 		},
 		AI:                                  aiConfigFromEnv(),
+		SessionWatchdog:                     sessionWatchdogConfigFromEnv(),
 		UploadDir:                           os.Getenv("UPLOAD_DIR"),
 		FrontendURL:                         os.Getenv("FRONTEND_URL"),
 		AllowedOrigins:                      os.Getenv("ALLOWED_ORIGINS"),
@@ -197,6 +218,29 @@ func aiConfigFromEnv() AIConfig {
 		FinalSummaryEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_FINAL_SUMMARY_ENABLED")),
 		FinalSummaryMaxInputChars: positiveIntFromEnv(os.Getenv("AI_FINAL_SUMMARY_MAX_INPUT_CHARS"), defaultAIFinalSummaryMaxInputChars),
 		FinalSummaryTimeout:       secondsDurationFromEnv(os.Getenv("AI_FINAL_SUMMARY_TIMEOUT_SECONDS"), defaultAIFinalSummaryTimeoutSeconds, 1),
+	}
+}
+
+// sessionWatchdogConfigFromEnv reads DECISCOPE_SESSION_WATCHDOG_* /
+// DECISCOPE_SESSION_BOT_*_AFTER_SECONDS. EndAfter is coerced to be strictly
+// greater than LostAfter (falling back to the default when the configured
+// value would not be) so the watchdog can never end a session before it has
+// even been reported unhealthy.
+func sessionWatchdogConfigFromEnv() MeetingSessionWatchdogConfig {
+	lostAfter := secondsDurationFromEnv(os.Getenv("DECISCOPE_SESSION_BOT_LOST_AFTER_SECONDS"), defaultSessionBotLostAfterSeconds, minSessionBotLostAfterSeconds)
+	endAfterSeconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DECISCOPE_SESSION_BOT_END_AFTER_SECONDS")))
+	endAfter := time.Duration(endAfterSeconds) * time.Second
+	if err != nil || endAfterSeconds <= 0 || endAfter <= lostAfter {
+		endAfter = time.Duration(defaultSessionBotEndAfterSeconds) * time.Second
+		if endAfter <= lostAfter {
+			endAfter = lostAfter + time.Duration(defaultSessionBotEndAfterSeconds)*time.Second
+		}
+	}
+	return MeetingSessionWatchdogConfig{
+		Enabled:   boolFromEnvDefaultTrue(os.Getenv("DECISCOPE_SESSION_WATCHDOG_ENABLED")),
+		Interval:  secondsDurationFromEnv(os.Getenv("DECISCOPE_SESSION_WATCHDOG_INTERVAL_SECONDS"), defaultSessionWatchdogIntervalSeconds, minSessionWatchdogIntervalSeconds),
+		LostAfter: lostAfter,
+		EndAfter:  endAfter,
 	}
 }
 

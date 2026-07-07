@@ -17,6 +17,7 @@ const (
 	transcriptSegmentCreatedType    = "transcript_segment.created"
 	meetingSessionStatusChangedType = "meeting_session.status_changed"
 	meetingAIAnalysisUpdatedType    = "ai_analysis.updated"
+	meetingSessionBotHealthType     = "meeting_session.bot_health_changed"
 )
 
 var defaultTranscriptAllowedOrigins = []string{
@@ -99,6 +100,27 @@ func (h *TranscriptHub) PublishMeetingSessionStatusChanged(session domain.Meetin
 	log.Printf("Meeting session status broadcast. sessionId=%s status=%s botCallId=%s subscriberCount=%d totalSubscriberCount=%d", session.ID, session.Status, session.BotCallID, len(clients), totalSubscriberCount)
 	for _, c := range clients {
 		c.enqueueSession(session)
+	}
+}
+
+// PublishMeetingSessionBotHealth broadcasts a bot connectivity transition
+// (lost or recovered) to every client subscribed to session. It uses the same
+// client selection rule as PublishMeetingSessionStatusChanged (matchesSession)
+// so a client is only ever told about the sessions it is watching.
+func (h *TranscriptHub) PublishMeetingSessionBotHealth(session domain.MeetingSession, healthy bool) {
+	h.mu.RLock()
+	clients := make([]*transcriptClient, 0, len(h.clients))
+	totalSubscriberCount := len(h.clients)
+	for c := range h.clients {
+		if c.matchesSession(session) {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	log.Printf("Meeting session bot health broadcast. sessionId=%s healthy=%t subscriberCount=%d totalSubscriberCount=%d", session.ID, healthy, len(clients), totalSubscriberCount)
+	for _, c := range clients {
+		c.enqueueBotHealth(session, healthy)
 	}
 }
 
@@ -257,6 +279,10 @@ func (c *transcriptClient) enqueueAIAnalysis(analysis domain.MeetingAIAnalysis) 
 	c.enqueue(transcriptOutboundEvent{aiAnalysis: &analysis})
 }
 
+func (c *transcriptClient) enqueueBotHealth(session domain.MeetingSession, healthy bool) {
+	c.enqueue(transcriptOutboundEvent{botHealth: &meetingSessionBotHealthEvent{session: session, healthy: healthy}})
+}
+
 func (c *transcriptClient) enqueue(event transcriptOutboundEvent) {
 	select {
 	case c.send <- event:
@@ -362,6 +388,8 @@ func (c *transcriptClient) writeEvent(h *TranscriptHub, event transcriptOutbound
 		return writeJSON(c.conn, meetingSessionStatusProtocolMessage(*event.session, h.now()))
 	case event.aiAnalysis != nil:
 		return writeJSON(c.conn, meetingAIAnalysisProtocolMessage(*event.aiAnalysis, h.now()))
+	case event.botHealth != nil:
+		return writeJSON(c.conn, meetingSessionBotHealthProtocolMessage(event.botHealth.session, event.botHealth.healthy, h.now()))
 	default:
 		return nil
 	}
@@ -371,6 +399,12 @@ type transcriptOutboundEvent struct {
 	segment    *domain.TranscriptSegment
 	session    *domain.MeetingSession
 	aiAnalysis *domain.MeetingAIAnalysis
+	botHealth  *meetingSessionBotHealthEvent
+}
+
+type meetingSessionBotHealthEvent struct {
+	session domain.MeetingSession
+	healthy bool
 }
 
 type transcriptSegmentMessage struct {
@@ -477,6 +511,30 @@ func meetingSessionStatusProtocolMessage(session domain.MeetingSession, sentAt t
 			EndedAt:                     optionalProtocolTime(session.EndedAt),
 			EndReason:                   session.EndReason,
 			LastError:                   session.LastError,
+		},
+	}
+}
+
+type meetingSessionBotHealthMessage struct {
+	Type      string                      `json:"type"`
+	SentAtUTC string                      `json:"sentAtUtc"`
+	Data      meetingSessionBotHealthData `json:"data"`
+}
+
+type meetingSessionBotHealthData struct {
+	SessionID          string `json:"sessionId"`
+	Healthy            bool   `json:"healthy"`
+	LastBotStatusAtUTC string `json:"lastBotStatusAtUtc,omitempty"`
+}
+
+func meetingSessionBotHealthProtocolMessage(session domain.MeetingSession, healthy bool, sentAt time.Time) meetingSessionBotHealthMessage {
+	return meetingSessionBotHealthMessage{
+		Type:      meetingSessionBotHealthType,
+		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
+		Data: meetingSessionBotHealthData{
+			SessionID:          session.ID,
+			Healthy:            healthy,
+			LastBotStatusAtUTC: optionalProtocolTime(session.LastBotStatusAt),
 		},
 	}
 }

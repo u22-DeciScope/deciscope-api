@@ -4,7 +4,8 @@ DeciScope の画面更新は、会議ごとのイベントを REST と WebSocket
 
 このドキュメントは `/v1/realtime` (meeting_id ベース) のイベントを扱います。Teams Bot
 会議セッションの `transcript_segment.created` / `meeting_session.status_changed` /
-`ai_analysis.updated` イベントは `/api/v1/ws/transcript-segments` および
+`ai_analysis.updated` / `meeting_session.bot_health_changed` イベントは
+`/api/v1/ws/transcript-segments` および
 `/v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream` で
 配信され、詳細は [api.md](./api.md) を参照してください。
 

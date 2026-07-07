@@ -123,6 +123,28 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		cancelAnalysis()
 		return analysisService.Close()
 	})
+
+	if config.SessionWatchdog.Enabled {
+		watchdog := application.NewMeetingSessionWatchdog(
+			meetingSessionRepository,
+			meetingSessionService,
+			transcriptHub,
+			application.MeetingSessionWatchdogConfig{
+				Interval:  config.SessionWatchdog.Interval,
+				LostAfter: config.SessionWatchdog.LostAfter,
+				EndAfter:  config.SessionWatchdog.EndAfter,
+			},
+		)
+		watchdogCtx, cancelWatchdog := context.WithCancel(context.Background())
+		watchdog.Start(watchdogCtx)
+		closers = append(closers, func() error {
+			cancelWatchdog()
+			return nil
+		})
+		log.Printf("meeting session bot watchdog enabled. interval=%s lostAfter=%s endAfter=%s", config.SessionWatchdog.Interval, config.SessionWatchdog.LostAfter, config.SessionWatchdog.EndAfter)
+	} else {
+		log.Printf("meeting session bot watchdog disabled (DECISCOPE_SESSION_WATCHDOG_ENABLED=false)")
+	}
 	tokenVerifier := firebase.NewTokenVerifier(authClient)
 	service := application.NewService(
 		repositories.Meetings, repositories.Events, repositories.Reports,

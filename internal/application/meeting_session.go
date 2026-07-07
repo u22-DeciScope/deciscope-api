@@ -238,6 +238,27 @@ func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input 
 	return &MeetingSessionCreateResult{Session: updated}, nil
 }
 
+// RecordMeetingSessionHeartbeat records that the bot is still alive for
+// sessionID. Unlike UpdateMeetingSessionStatus, it never changes status and
+// never publishes a WebSocket event: heartbeats arrive frequently (e.g. every
+// 20s) and broadcasting one to every subscribed client on every heartbeat
+// would be pure spam. The watchdog goroutine is the only thing that reacts to
+// bot liveness changes, and it does so by polling last_bot_status_at rather
+// than being notified here.
+func (s *MeetingSessionService) RecordMeetingSessionHeartbeat(ctx context.Context, sessionID string) (*domain.MeetingSession, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("%w: sessionId is required", domain.ErrInvalidArgument)
+	}
+	now := s.now().UTC()
+	session, touched, err := s.repository.TouchMeetingSessionBotSeen(ctx, sessionID, now)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Meeting session heartbeat received. sessionId=%s status=%s touched=%t seenAt=%s", sessionID, session.Status, touched, now.Format(time.RFC3339Nano))
+	return session, nil
+}
+
 func (s *MeetingSessionService) GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {

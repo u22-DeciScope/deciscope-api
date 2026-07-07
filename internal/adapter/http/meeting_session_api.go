@@ -28,6 +28,7 @@ type MeetingSessionUseCases interface {
 	UpdateMeetingSessionMetadata(ctx context.Context, input application.MeetingSessionMetadataUpdateInput) (*domain.MeetingSession, error)
 	CleanupStaleMeetingSessions(ctx context.Context) ([]domain.MeetingSession, error)
 	ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error)
+	RecordMeetingSessionHeartbeat(ctx context.Context, sessionID string) (*domain.MeetingSession, error)
 }
 
 type TranscriptListUseCases interface {
@@ -473,6 +474,46 @@ func (api *MeetingSessionAPI) UpdateBotMetadata(w http.ResponseWriter, r *http.R
 	log.Printf("Meeting session title changed. sessionId=%s joinUrlHash=%s oldTitle=%q newTitle=%q oldTitleSource=%s newTitleSource=%s provider=%s externalMeetingId=%s threadId=%s updatedAt=%s",
 		session.ID, session.JoinURLHash, oldTitle, session.Title, oldTitleSource, session.TitleSource, session.Provider, session.ExternalMeetingID, session.ThreadID, session.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
+}
+
+// RecordBotHeartbeat receives a periodic liveness ping from the bot. It never
+// changes status and never publishes a WebSocket event (heartbeats arrive too
+// often, e.g. every 20s, for that to be anything but spam); the watchdog is
+// what turns silence into a bot_health_changed event or an ended session.
+//
+// The body is optional (see docs/api.md): when the request has no body at
+// all (Content-Length == 0), the Content-Type check and JSON decoding are
+// skipped entirely so a bodyless POST succeeds. This mirrors chi's
+// AllowContentType middleware, which likewise only enforces Content-Type
+// when a body is present. When a body is sent, it must still be valid JSON
+// with the expected content type; its only field (botCallId) is currently
+// read and discarded.
+func (api *MeetingSessionAPI) RecordBotHeartbeat(w http.ResponseWriter, r *http.Request) {
+	if !authorizedSecret(r.Header.Get("X-DeciScope-Api-Key"), api.apiKey) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
+		return
+	}
+	if r.ContentLength != 0 {
+		if !isJSONContentType(r.Header.Get("Content-Type")) {
+			writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		var request meetingSessionHeartbeatRequest
+		if !decodeLimitedJSONAllowUnknown(w, r, meetingSessionBodyLimitBytes, &request) {
+			return
+		}
+	}
+	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
+	session, err := api.service.RecordMeetingSessionHeartbeat(r.Context(), sessionID)
+	if err != nil {
+		writeMeetingSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
+}
+
+type meetingSessionHeartbeatRequest struct {
+	BotCallID string `json:"botCallId"`
 }
 
 type meetingSessionCreateRequest struct {
