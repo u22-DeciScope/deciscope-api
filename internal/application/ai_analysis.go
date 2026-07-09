@@ -88,7 +88,12 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - 新しいitemを出力したときは、必ず同じidのtreeノードと、その親となるノードへのedgeも同時に出力してください。
 - tree.nodes[].descriptionには、そのノードで何が議論されているかを1〜2行で短く書いてください。冗長な背景説明や会議全体の要約は入れないでください。
 - tree.nodes[].relatedItemIdsには、そのノードに関連するitems[].idだけを入れてください。存在しないidを作らないでください。対応するitemと同じidのノードでは、そのidを必ず含めてください。
-- severityは影響度で判断してください(会議の結論を左右するものはhigh)。`
+- severityは影響度で判断してください(会議の結論を左右するものはhigh)。
+- tree.nodes[].kindには topic / issue / question / risk / decision のみを使ってください。TODOや作業項目は、itemsでは kind="todo" として出してよいですが、tree.nodesに出すときは "todo" ではなく "issue" として表現してください。
+- ツリーは階層構造にしてください。root(最上位のtopicノード)の直下には「大分類」となるtopicノードだけを置き、その数は原則5〜8個程度に抑えてください。
+- 個々の論点・質問・リスク・決定・TODOは、root直下に直接つながず、内容が最も近い大分類topicノードの配下(またはその配下の既存ノードの下)に接続してください。
+- 新しい話題が既存の大分類やその配下のノードに近い場合は、新しいroot直下ノードを作らず、その大分類配下のissue/question/risk/decisionとして追加、または既存ノードを更新してください。
+- 大分類は会議の内容に合わせて決めてください(例:基盤・技術、分析ロジック、UI/UX、コスト、権限・セキュリティ、検証環境 など。会議に合わないものは使わない)。`
 
 const finalAnalysisSystemPrompt = "あなたは日本語の会議分析アシスタントです。会議全体の文字起こしと事前情報から最終要約を作成し、指定されたJSONスキーマのオブジェクトだけを出力してください。JSON以外の説明文やコードフェンスは出力しないでください。"
 
@@ -122,6 +127,9 @@ type MeetingAnalysisConfig struct {
 	// Model is the Azure OpenAI deployment name recorded on every analysis
 	// row and included in AI analysis log lines.
 	Model string
+
+	// DebugDroppedNodes は破棄ノード詳細ログを出すか。
+	DebugDroppedNodes bool
 }
 
 func (c MeetingAnalysisConfig) liveActive() bool {
@@ -151,6 +159,16 @@ type MeetingAnalysisService struct {
 
 	mu       sync.Mutex
 	sessions map[string]*liveAnalysisSessionState
+
+	// finalSummaryInFlight guards against concurrent final-summary generation
+	// for the same session. Two MeetingSessionEnded notifications can race (e.g.
+	// a bot "ended" status PATCH and the watchdog ending the session at nearly
+	// the same time), and each launches generateFinalSummary in its own
+	// goroutine. Without this, both goroutines can pass the existing-analysis DB
+	// check before either writes the "running" row, producing two final
+	// summaries. Keyed by sessionID; entries are added atomically under mu and
+	// removed when generation finishes.
+	finalSummaryInFlight map[string]struct{}
 
 	startOnce sync.Once
 	closeOnce sync.Once
@@ -190,15 +208,16 @@ func NewMeetingAnalysisService(
 		config.LiveInterval = defaultLiveAnalysisInterval
 	}
 	return &MeetingAnalysisService{
-		analysisRepo:   analysisRepo,
-		transcriptRepo: transcriptRepo,
-		sessionRepo:    sessionRepo,
-		completer:      completer,
-		publisher:      analysisPublisher,
-		config:         config,
-		now:            time.Now,
-		sessions:       make(map[string]*liveAnalysisSessionState),
-		stopCh:         make(chan struct{}),
+		analysisRepo:         analysisRepo,
+		transcriptRepo:       transcriptRepo,
+		sessionRepo:          sessionRepo,
+		completer:            completer,
+		publisher:            analysisPublisher,
+		config:               config,
+		now:                  time.Now,
+		sessions:             make(map[string]*liveAnalysisSessionState),
+		finalSummaryInFlight: make(map[string]struct{}),
+		stopCh:               make(chan struct{}),
 	}
 }
 
@@ -419,6 +438,15 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		modelResolvedIDCount, stats.ResolvedItems, stats.TotalItems, stats.ResolvedNodes, stats.TotalNodes,
 		diffItemCount, diffTreeNodeCount, diffTreeEdgeCount,
 		treeStats.droppedNodes(), treeStats.droppedNodeReasons(), treeStats.DroppedEdges, treeStats.SynthesizedNodes, treeStats.PrunedTopicEdges)
+	log.Printf("Live AI analysis tree metrics. sessionId=%s diffTreeNodes=%d diffTreeEdges=%d newNodeIds=%d updatedNodeIds=%d normalizedTodoNodes=%d droppedNodes=%d droppedNodeReasons=%s synthesizedNodes=%d orphanRescuedEdges=%d prunedTopicEdges=%d totalNodes=%d totalEdges=%d topicChildren=%d maxDepth=%d",
+		sessionID, diffTreeNodeCount, diffTreeEdgeCount, treeStats.DiffNewNodes, treeStats.DiffUpdatedNodes, treeStats.NormalizedTodoNodes,
+		treeStats.droppedNodes(), treeStats.droppedNodeReasons(), treeStats.SynthesizedNodes, treeStats.OrphanRescuedEdges, treeStats.PrunedTopicEdges,
+		stats.TotalNodes, treeStats.TotalEdges, treeStats.TopicChildCount, treeStats.MaxDepth)
+	if s.config.DebugDroppedNodes {
+		for _, detail := range treeStats.DroppedNodeDetails {
+			log.Printf("Live AI analysis dropped tree node. sessionId=%s id=%s kind=%s title=%q reason=%s", sessionID, detail.ID, detail.Kind, detail.Title, detail.Reason)
+		}
+	}
 	s.publishAnalysis(*saved)
 }
 
@@ -512,6 +540,20 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 		if r := recover(); r != nil {
 			log.Printf("Final AI summary panic recovered. sessionId=%s panic=%v", sessionID, r)
 		}
+	}()
+
+	s.mu.Lock()
+	if _, inFlight := s.finalSummaryInFlight[sessionID]; inFlight {
+		s.mu.Unlock()
+		log.Printf("Final AI summary skipped because generation is already in flight. sessionId=%s", sessionID)
+		return
+	}
+	s.finalSummaryInFlight[sessionID] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.finalSummaryInFlight, sessionID)
+		s.mu.Unlock()
 	}()
 
 	existing, err := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisFinal)
@@ -1184,6 +1226,34 @@ type liveAnalysisTreeMergeStats struct {
 	// specific parent elsewhere in the tree. See pruneRedundantTopicFallbackEdges
 	// for what makes an edge a pruning candidate in the first place.
 	PrunedTopicEdges int
+	// NormalizedTodoNodes は、モデルが tree 側に出した kind "todo" のノードを
+	// "issue" に正規化して救済した件数。
+	NormalizedTodoNodes int
+	// DiffNewNodes / DiffUpdatedNodes は、モデルの差分ノードのうち、それぞれ
+	// 「既存に無いidで新規追加されたもの」「既存idを上書き更新したもの」の件数。
+	// (サーバが合成したノードや前回状態のノードは数えない。)
+	DiffNewNodes     int
+	DiffUpdatedNodes int
+	// OrphanRescuedEdges は connectOrphanLiveAnalysisTreeNodes が追加した
+	// 「topic -> 孤立ノード」救済エッジの件数。
+	OrphanRescuedEdges int
+	// TotalEdges / TopicChildCount / MaxDepth はマージ確定後のツリー形状。
+	// TopicChildCount は主topicノードを source に持つエッジの異なるtarget数、
+	// MaxDepth は主topicノードからの最長深さ(topic自身を深さ0とする)。
+	TotalEdges      int
+	TopicChildCount int
+	MaxDepth        int
+	// DroppedNodeDetails は破棄された各ノードの詳細(開発用フラグ有効時のみログ出力)。
+	DroppedNodeDetails []liveAnalysisDroppedNodeDetail
+}
+
+// liveAnalysisDroppedNodeDetail は addNode が破棄した個々のノードの内訳。
+// Title はノードのlabel(会議内容を含みうるため、ログ出力は開発用フラグ有効時のみ)。
+type liveAnalysisDroppedNodeDetail struct {
+	ID     string
+	Kind   string
+	Title  string
+	Reason string
 }
 
 // droppedNodes returns the total node count dropped for any reason. A nil
@@ -1272,21 +1342,34 @@ func mergeLiveAnalysisTree(previous, diff *liveAnalysisTree, resolvedIDs map[str
 		node.Status = strings.ToLower(strings.TrimSpace(node.Status))
 		node.Description = truncateRunes(strings.TrimSpace(node.Description), liveAnalysisTreeDescriptionMaxRunes)
 		node.RelatedItemIDs = normalizeLiveAnalysisRelatedItemIDs(node.RelatedItemIDs, node.ID, itemIDs)
+		// モデルが tree 側に item専用の kind "todo" を出した場合の救済。tree の
+		// 語彙には "todo" が無いため、これが無いと本来ノードを追加しようとした
+		// モデルの出力が invalidKind として捨てられてしまう。意図的に "todo" だけを
+		// 対象にし、それ以外の未知kindは下の検証で従来どおり drop する。
+		if node.Kind == "todo" {
+			node.Kind = "issue"
+			if stats != nil {
+				stats.NormalizedTodoNodes++
+			}
+		}
 		if node.ID == "" {
 			if stats != nil {
 				stats.DroppedEmptyID++
+				stats.DroppedNodeDetails = append(stats.DroppedNodeDetails, liveAnalysisDroppedNodeDetail{ID: node.ID, Kind: node.Kind, Title: node.Label, Reason: "emptyId"})
 			}
 			return false
 		}
 		if node.Label == "" {
 			if stats != nil {
 				stats.DroppedEmptyLabel++
+				stats.DroppedNodeDetails = append(stats.DroppedNodeDetails, liveAnalysisDroppedNodeDetail{ID: node.ID, Kind: node.Kind, Title: node.Label, Reason: "emptyLabel"})
 			}
 			return false
 		}
 		if !validLiveAnalysisTreeNodeKind(node.Kind) {
 			if stats != nil {
 				stats.DroppedInvalidKind++
+				stats.DroppedNodeDetails = append(stats.DroppedNodeDetails, liveAnalysisDroppedNodeDetail{ID: node.ID, Kind: node.Kind, Title: node.Label, Reason: "invalidKind"})
 			}
 			return false
 		}
@@ -1311,10 +1394,16 @@ func mergeLiveAnalysisTree(previous, diff *liveAnalysisTree, resolvedIDs map[str
 				node.RelatedItemIDs = nodes[at].RelatedItemIDs
 			}
 			nodes[at] = node
+			if fromDiff && stats != nil {
+				stats.DiffUpdatedNodes++
+			}
 			return true
 		}
 		index[node.ID] = len(nodes)
 		nodes = append(nodes, node)
+		if fromDiff && stats != nil {
+			stats.DiffNewNodes++
+		}
 		return true
 	}
 	var rawEdges []liveAnalysisTreeEdge
@@ -1463,12 +1552,21 @@ func finalizeLiveAnalysisTree(nodes []liveAnalysisTreeNode, edges []liveAnalysis
 		stats.DroppedEdges += len(edges) - len(validEdges)
 	}
 
+	beforeOrphan := len(validEdges)
 	validEdges = connectOrphanLiveAnalysisTreeNodes(nodes, validEdges, insertedTopic)
+	if stats != nil {
+		stats.OrphanRescuedEdges += len(validEdges) - beforeOrphan
+	}
 
 	topicID := primaryLiveAnalysisTopicID(nodes, insertedTopic)
 	prunedEdges := pruneRedundantTopicFallbackEdges(nodes, validEdges, topicID)
 	if stats != nil {
 		stats.PrunedTopicEdges += len(validEdges) - len(prunedEdges)
+	}
+	if stats != nil {
+		stats.TotalEdges = len(prunedEdges)
+		stats.TopicChildCount = countLiveAnalysisTopicChildren(topicID, prunedEdges)
+		stats.MaxDepth = liveAnalysisTreeMaxDepth(topicID, prunedEdges)
 	}
 	return &liveAnalysisTree{Nodes: nodes, Edges: prunedEdges}
 }
@@ -1624,6 +1722,54 @@ func reachableLiveAnalysisNodeIDs(rootID string, edges []liveAnalysisTreeEdge, v
 		}
 	}
 	return visited
+}
+
+// countLiveAnalysisTopicChildren は topicID を source に持つエッジの異なる
+// target数(=topic直下のノード数)を返す。topicID が空なら0。
+func countLiveAnalysisTopicChildren(topicID string, edges []liveAnalysisTreeEdge) int {
+	if topicID == "" {
+		return 0
+	}
+	children := make(map[string]struct{})
+	for _, edge := range edges {
+		if edge.Source == topicID {
+			children[edge.Target] = struct{}{}
+		}
+	}
+	return len(children)
+}
+
+// liveAnalysisTreeMaxDepth は topicID から source->target 方向にたどれる最長深さ
+// を返す(topic自身を深さ0)。訪問済み管理でサイクルを防ぐ。topicID が空なら0。
+func liveAnalysisTreeMaxDepth(topicID string, edges []liveAnalysisTreeEdge) int {
+	if topicID == "" {
+		return 0
+	}
+	adjacency := make(map[string][]string, len(edges))
+	for _, edge := range edges {
+		adjacency[edge.Source] = append(adjacency[edge.Source], edge.Target)
+	}
+	type frame struct {
+		id    string
+		depth int
+	}
+	visited := map[string]bool{topicID: true}
+	queue := []frame{{id: topicID, depth: 0}}
+	maxDepth := 0
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current.depth > maxDepth {
+			maxDepth = current.depth
+		}
+		for _, next := range adjacency[current.id] {
+			if !visited[next] {
+				visited[next] = true
+				queue = append(queue, frame{id: next, depth: current.depth + 1})
+			}
+		}
+	}
+	return maxDepth
 }
 
 // capLiveAnalysisTreeNodes caps active and resolved nodes independently:

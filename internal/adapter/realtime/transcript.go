@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	transcriptSegmentCreatedType    = "transcript_segment.created"
-	meetingSessionStatusChangedType = "meeting_session.status_changed"
-	meetingAIAnalysisUpdatedType    = "ai_analysis.updated"
-	meetingSessionBotHealthType     = "meeting_session.bot_health_changed"
+	transcriptSegmentCreatedType       = "transcript_segment.created"
+	meetingSessionStatusChangedType    = "meeting_session.status_changed"
+	meetingAIAnalysisUpdatedType       = "ai_analysis.updated"
+	meetingSessionBotHealthType        = "meeting_session.bot_health_changed"
+	meetingSessionTranscriptHealthType = "meeting_session.transcript_health_changed"
 )
 
 var defaultTranscriptAllowedOrigins = []string{
@@ -121,6 +122,28 @@ func (h *TranscriptHub) PublishMeetingSessionBotHealth(session domain.MeetingSes
 	log.Printf("Meeting session bot health broadcast. sessionId=%s healthy=%t subscriberCount=%d totalSubscriberCount=%d", session.ID, healthy, len(clients), totalSubscriberCount)
 	for _, c := range clients {
 		c.enqueueBotHealth(session, healthy)
+	}
+}
+
+// PublishMeetingSessionTranscriptHealth broadcasts a transcript health
+// transition (ok/delayed/stalled) to every client subscribed to session. It
+// uses the same client selection rule as PublishMeetingSessionStatusChanged
+// (matchesSession) so a client is only ever told about the sessions it is
+// watching.
+func (h *TranscriptHub) PublishMeetingSessionTranscriptHealth(session domain.MeetingSession, transcriptHealth string, secondsSinceLastTranscript int) {
+	h.mu.RLock()
+	clients := make([]*transcriptClient, 0, len(h.clients))
+	totalSubscriberCount := len(h.clients)
+	for c := range h.clients {
+		if c.matchesSession(session) {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	log.Printf("Meeting session transcript health broadcast. sessionId=%s transcriptHealth=%s secondsSinceLastTranscript=%d subscriberCount=%d totalSubscriberCount=%d", session.ID, transcriptHealth, secondsSinceLastTranscript, len(clients), totalSubscriberCount)
+	for _, c := range clients {
+		c.enqueueTranscriptHealth(session, transcriptHealth, secondsSinceLastTranscript)
 	}
 }
 
@@ -283,6 +306,10 @@ func (c *transcriptClient) enqueueBotHealth(session domain.MeetingSession, healt
 	c.enqueue(transcriptOutboundEvent{botHealth: &meetingSessionBotHealthEvent{session: session, healthy: healthy}})
 }
 
+func (c *transcriptClient) enqueueTranscriptHealth(session domain.MeetingSession, transcriptHealth string, seconds int) {
+	c.enqueue(transcriptOutboundEvent{transcriptHealth: &meetingSessionTranscriptHealthEvent{session: session, transcriptHealth: transcriptHealth, seconds: seconds}})
+}
+
 func (c *transcriptClient) enqueue(event transcriptOutboundEvent) {
 	select {
 	case c.send <- event:
@@ -390,21 +417,30 @@ func (c *transcriptClient) writeEvent(h *TranscriptHub, event transcriptOutbound
 		return writeJSON(c.conn, meetingAIAnalysisProtocolMessage(*event.aiAnalysis, h.now()))
 	case event.botHealth != nil:
 		return writeJSON(c.conn, meetingSessionBotHealthProtocolMessage(event.botHealth.session, event.botHealth.healthy, h.now()))
+	case event.transcriptHealth != nil:
+		return writeJSON(c.conn, meetingSessionTranscriptHealthProtocolMessage(event.transcriptHealth.session, event.transcriptHealth.transcriptHealth, event.transcriptHealth.seconds, h.now()))
 	default:
 		return nil
 	}
 }
 
 type transcriptOutboundEvent struct {
-	segment    *domain.TranscriptSegment
-	session    *domain.MeetingSession
-	aiAnalysis *domain.MeetingAIAnalysis
-	botHealth  *meetingSessionBotHealthEvent
+	segment          *domain.TranscriptSegment
+	session          *domain.MeetingSession
+	aiAnalysis       *domain.MeetingAIAnalysis
+	botHealth        *meetingSessionBotHealthEvent
+	transcriptHealth *meetingSessionTranscriptHealthEvent
 }
 
 type meetingSessionBotHealthEvent struct {
 	session domain.MeetingSession
 	healthy bool
+}
+
+type meetingSessionTranscriptHealthEvent struct {
+	session          domain.MeetingSession
+	transcriptHealth string
+	seconds          int
 }
 
 type transcriptSegmentMessage struct {
@@ -535,6 +571,30 @@ func meetingSessionBotHealthProtocolMessage(session domain.MeetingSession, healt
 			SessionID:          session.ID,
 			Healthy:            healthy,
 			LastBotStatusAtUTC: optionalProtocolTime(session.LastBotStatusAt),
+		},
+	}
+}
+
+type meetingSessionTranscriptHealthMessage struct {
+	Type      string                             `json:"type"`
+	SentAtUTC string                             `json:"sentAtUtc"`
+	Data      meetingSessionTranscriptHealthData `json:"data"`
+}
+
+type meetingSessionTranscriptHealthData struct {
+	SessionID                  string `json:"sessionId"`
+	TranscriptHealth           string `json:"transcriptHealth"`
+	SecondsSinceLastTranscript int    `json:"secondsSinceLastTranscript"`
+}
+
+func meetingSessionTranscriptHealthProtocolMessage(session domain.MeetingSession, transcriptHealth string, secondsSinceLastTranscript int, sentAt time.Time) meetingSessionTranscriptHealthMessage {
+	return meetingSessionTranscriptHealthMessage{
+		Type:      meetingSessionTranscriptHealthType,
+		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
+		Data: meetingSessionTranscriptHealthData{
+			SessionID:                  session.ID,
+			TranscriptHealth:           transcriptHealth,
+			SecondsSinceLastTranscript: secondsSinceLastTranscript,
 		},
 	}
 }

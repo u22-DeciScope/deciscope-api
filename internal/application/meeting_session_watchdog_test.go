@@ -213,6 +213,173 @@ func TestMeetingSessionWatchdogIgnoresOutOfScopeStatus(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionWatchdogTranscriptHealthStalledAndRecovers(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	repository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_1",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-5 * time.Second),
+		}},
+	}
+	ender := &fakeWatchdogEnder{}
+	publisher := &fakeWatchdogPublisher{}
+	tracker := &fakeTranscriptActivityReader{}
+	transcriptPublisher := &fakeTranscriptHealthPublisher{}
+	watchdog := application.NewMeetingSessionWatchdog(repository, ender, publisher, application.MeetingSessionWatchdogConfig{
+		Interval:     15 * time.Second,
+		LostAfter:    60 * time.Second,
+		EndAfter:     180 * time.Second,
+		DelayedAfter: 30 * time.Second,
+		StalledAfter: 60 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetTranscriptActivity(tracker)
+	watchdog.SetTranscriptHealthPublisher(transcriptPublisher)
+
+	// (a) transcript last seen 90s ago (>= StalledAfter=60s) while the bot
+	// heartbeat is healthy and the session is recording: transcript_stalled
+	// must be published exactly once across repeated scans.
+	tracker.set("session_1", now.Add(-90*time.Second))
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() (stalled scan) error = %v", err)
+	}
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() (stalled scan repeat) error = %v", err)
+	}
+	events := transcriptPublisher.snapshot()
+	if len(events) != 1 || events[0].sessionID != "session_1" || events[0].health != "transcript_stalled" {
+		t.Fatalf("published events = %+v, want exactly one transcript_stalled event for session_1", events)
+	}
+
+	// (b) new transcript activity arrives: re-evaluating must publish a
+	// recovery event back to "ok".
+	tracker.set("session_1", now)
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() (recovery scan) error = %v", err)
+	}
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() (recovery scan repeat) error = %v", err)
+	}
+	events = transcriptPublisher.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("published events = %+v, want exactly one transcript_stalled + one ok", events)
+	}
+	if events[1].sessionID != "session_1" || events[1].health != "ok" {
+		t.Fatalf("recovery event = %+v, want ok for session_1", events[1])
+	}
+}
+
+func TestMeetingSessionWatchdogDoesNotPublishTranscriptWarningWhenNotRecordingOrUnhealthy(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	repository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{
+			{
+				// Healthy heartbeat, but not "recording": a stalled transcript
+				// here must not be reported as a transcript health problem.
+				ID:              "session_not_recording",
+				Status:          domain.MeetingSessionSpeechThrottled,
+				LastBotStatusAt: now.Add(-5 * time.Second),
+			},
+			{
+				// Recording, but the bot heartbeat itself is unhealthy: the bot
+				// outage is the primary signal, so no separate transcript
+				// warning should be published.
+				ID:              "session_unhealthy_bot",
+				Status:          domain.MeetingSessionRecording,
+				LastBotStatusAt: now.Add(-90 * time.Second),
+			},
+		},
+	}
+	ender := &fakeWatchdogEnder{}
+	publisher := &fakeWatchdogPublisher{}
+	tracker := &fakeTranscriptActivityReader{}
+	tracker.set("session_not_recording", now.Add(-200*time.Second))
+	tracker.set("session_unhealthy_bot", now.Add(-200*time.Second))
+	transcriptPublisher := &fakeTranscriptHealthPublisher{}
+	watchdog := application.NewMeetingSessionWatchdog(repository, ender, publisher, application.MeetingSessionWatchdogConfig{
+		Interval:     15 * time.Second,
+		LostAfter:    60 * time.Second,
+		EndAfter:     180 * time.Second,
+		DelayedAfter: 30 * time.Second,
+		StalledAfter: 60 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetTranscriptActivity(tracker)
+	watchdog.SetTranscriptHealthPublisher(transcriptPublisher)
+
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if events := transcriptPublisher.snapshot(); len(events) != 0 {
+		t.Fatalf("published events = %+v, want none (not recording / bot unhealthy must not report transcript warnings)", events)
+	}
+}
+
+type fakeTranscriptActivityReader struct {
+	mu       sync.Mutex
+	activity map[string]application.TranscriptActivity
+}
+
+func (f *fakeTranscriptActivityReader) EnsureSeen(sessionID string, at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.activity == nil {
+		f.activity = make(map[string]application.TranscriptActivity)
+	}
+	if _, ok := f.activity[sessionID]; ok {
+		return
+	}
+	f.activity[sessionID] = application.TranscriptActivity{LastTranscriptAt: at}
+}
+
+func (f *fakeTranscriptActivityReader) Activity(sessionID string) (application.TranscriptActivity, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	activity, ok := f.activity[sessionID]
+	return activity, ok
+}
+
+func (f *fakeTranscriptActivityReader) Forget(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.activity, sessionID)
+}
+
+// set directly seeds an activity entry for a test, bypassing EnsureSeen's
+// "do not overwrite" rule.
+func (f *fakeTranscriptActivityReader) set(sessionID string, lastTranscriptAt time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.activity == nil {
+		f.activity = make(map[string]application.TranscriptActivity)
+	}
+	f.activity[sessionID] = application.TranscriptActivity{LastTranscriptAt: lastTranscriptAt}
+}
+
+type transcriptHealthEvent struct {
+	sessionID string
+	health    string
+	seconds   int
+}
+
+type fakeTranscriptHealthPublisher struct {
+	mu     sync.Mutex
+	events []transcriptHealthEvent
+}
+
+func (f *fakeTranscriptHealthPublisher) PublishMeetingSessionTranscriptHealth(session domain.MeetingSession, transcriptHealth string, secondsSinceLastTranscript int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, transcriptHealthEvent{sessionID: session.ID, health: transcriptHealth, seconds: secondsSinceLastTranscript})
+}
+
+func (f *fakeTranscriptHealthPublisher) snapshot() []transcriptHealthEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]transcriptHealthEvent{}, f.events...)
+}
+
 type fakeWatchdogRepository struct {
 	mu       sync.Mutex
 	sessions []domain.MeetingSession

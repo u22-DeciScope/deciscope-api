@@ -269,6 +269,62 @@ func TestMeetingAnalysisServiceNotifyEndedGeneratesFinalSummary(t *testing.T) {
 	}
 }
 
+// TestMeetingAnalysisServiceNotifyEndedConcurrentCallsGenerateFinalSummaryOnce
+// reproduces the TOCTOU race where two MeetingSessionEnded notifications for
+// the same session fire almost simultaneously (e.g. a bot "ended" status
+// PATCH and the watchdog ending the session at nearly the same time). Each
+// notification launches generateFinalSummary in its own goroutine; without
+// the in-flight guard, both goroutines could pass the existing-analysis DB
+// check before either persisted the "running" row, producing two final
+// summaries. A gated completer blocks on the first Complete call so the test
+// can deterministically observe a call in flight before releasing it,
+// creating the race window regardless of goroutine scheduling.
+func TestMeetingAnalysisServiceNotifyEndedConcurrentCallsGenerateFinalSummaryOnce(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	completer := newGatedAIChatCompleter(application.AIChatResult{Content: finalAnalysisResultJSON})
+	transcriptRepo := &fakeAnalysisTranscriptRepository{segments: []domain.TranscriptSegment{
+		{SpeakerName: "田中さん", Text: "議論を始めましょう。"},
+		{SpeakerName: "佐藤さん", Text: "賛成です。"},
+	}}
+	config := testFinalOnlyConfig()
+	service := application.NewMeetingAnalysisService(repository, transcriptRepo, &fakeAnalysisSessionRepository{}, completer, config)
+
+	// Simulate the two near-simultaneous MeetingSessionEnded notifications;
+	// each call launches its own generateFinalSummary goroutine.
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+
+	// At this point, if the in-flight guard is missing, both goroutines could
+	// have reached the completer and be blocked there; if it is present, only
+	// the first one could have.
+	waitUntil(t, 2*time.Second, func() bool { return completer.startedCount() >= 1 })
+
+	completer.release()
+
+	waitUntil(t, 2*time.Second, func() bool {
+		last := repository.lastUpsert()
+		return last.Status == domain.MeetingAIAnalysisCompleted && last.Type == domain.MeetingAIAnalysisFinal
+	})
+
+	// Give a (incorrectly) unguarded second goroutine time to reach the
+	// completer too, so the assertions below are not just checking the first
+	// completion to land.
+	time.Sleep(150 * time.Millisecond)
+
+	if got := completer.callCount(); got != 1 {
+		t.Fatalf("completer callCount() = %d, want 1 (final summary must be generated only once for concurrent NotifyMeetingSessionEnded calls)", got)
+	}
+	completedFinalUpserts := 0
+	for _, upsert := range repository.upsertSnapshot() {
+		if upsert.Type == domain.MeetingAIAnalysisFinal && upsert.Status == domain.MeetingAIAnalysisCompleted {
+			completedFinalUpserts++
+		}
+	}
+	if completedFinalUpserts != 1 {
+		t.Fatalf("completed final upserts = %d, want 1", completedFinalUpserts)
+	}
+}
+
 func TestMeetingAnalysisServiceNotifyEndedSkipsWhenFinalAlreadyExists(t *testing.T) {
 	repository := newFakeAIAnalysisRepository()
 	repository.seed(domain.MeetingAIAnalysis{
@@ -514,6 +570,61 @@ func (f *fakeAIChatCompleter) requestSnapshot() []application.AIChatRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]application.AIChatRequest{}, f.requests...)
+}
+
+// gatedAIChatCompleter blocks every Complete call until release() is called,
+// and lets a test observe how many calls have started blocking via
+// startedCount(). Unlike fakeAIChatCompleter's block channel (which requires
+// the test to already know how many calls to expect before it can safely
+// close the channel), this counts starts as they happen, so a test can wait
+// for "at least one call is in flight" without assuming how many calls will
+// arrive -- which is exactly what's needed to reliably create the race
+// window for the final-summary in-flight guard.
+type gatedAIChatCompleter struct {
+	mu      sync.Mutex
+	started int
+	calls   int
+	result  application.AIChatResult
+
+	releaseOnce sync.Once
+	releaseCh   chan struct{}
+}
+
+func newGatedAIChatCompleter(result application.AIChatResult) *gatedAIChatCompleter {
+	return &gatedAIChatCompleter{result: result, releaseCh: make(chan struct{})}
+}
+
+func (g *gatedAIChatCompleter) Complete(ctx context.Context, _ application.AIChatRequest) (application.AIChatResult, error) {
+	g.mu.Lock()
+	g.started++
+	g.mu.Unlock()
+
+	select {
+	case <-g.releaseCh:
+	case <-ctx.Done():
+		return application.AIChatResult{}, ctx.Err()
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	return g.result, nil
+}
+
+func (g *gatedAIChatCompleter) release() {
+	g.releaseOnce.Do(func() { close(g.releaseCh) })
+}
+
+func (g *gatedAIChatCompleter) startedCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.started
+}
+
+func (g *gatedAIChatCompleter) callCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
 }
 
 type fakeAIAnalysisPublisher struct {

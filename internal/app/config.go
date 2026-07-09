@@ -39,6 +39,9 @@ const (
 	defaultSessionBotLostAfterSeconds     = 60
 	minSessionBotLostAfterSeconds         = 30
 	defaultSessionBotEndAfterSeconds      = 180
+	defaultTranscriptDelayedAfterSeconds  = 30
+	minTranscriptDelayedAfterSeconds      = 5
+	defaultTranscriptStalledAfterSeconds  = 60
 )
 
 type Config struct {
@@ -98,6 +101,9 @@ type AIConfig struct {
 	FinalSummaryEnabled       bool
 	FinalSummaryMaxInputChars int
 	FinalSummaryTimeout       time.Duration
+	// DebugDroppedNodes は破棄されたツリーノードの詳細(id/kind/title/reason)を
+	// 開発用にログ出力するか。既定: false。
+	DebugDroppedNodes bool
 }
 
 // MissingAzureOpenAIVars returns the names of the required Azure OpenAI
@@ -125,12 +131,16 @@ func (c AIConfig) Enabled() bool {
 // MeetingSessionWatchdogConfig controls the resident goroutine that detects a
 // bot that has stopped sending heartbeats (e.g. the VM process died or was
 // force-stopped) and ends the meeting session instead of leaving it active
-// until the unrelated 2h stale cleanup eventually catches it.
+// until the unrelated 2h stale cleanup eventually catches it. It also carries
+// the thresholds for the separate transcript health check (is text still
+// flowing, independent of the bot heartbeat).
 type MeetingSessionWatchdogConfig struct {
-	Enabled   bool
-	Interval  time.Duration
-	LostAfter time.Duration
-	EndAfter  time.Duration
+	Enabled                bool
+	Interval               time.Duration
+	LostAfter              time.Duration
+	EndAfter               time.Duration
+	TranscriptDelayedAfter time.Duration
+	TranscriptStalledAfter time.Duration
 }
 
 func ConfigFromEnv() Config {
@@ -218,6 +228,7 @@ func aiConfigFromEnv() AIConfig {
 		FinalSummaryEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_FINAL_SUMMARY_ENABLED")),
 		FinalSummaryMaxInputChars: positiveIntFromEnv(os.Getenv("AI_FINAL_SUMMARY_MAX_INPUT_CHARS"), defaultAIFinalSummaryMaxInputChars),
 		FinalSummaryTimeout:       secondsDurationFromEnv(os.Getenv("AI_FINAL_SUMMARY_TIMEOUT_SECONDS"), defaultAIFinalSummaryTimeoutSeconds, 1),
+		DebugDroppedNodes:         strings.EqualFold(strings.TrimSpace(os.Getenv("AI_ANALYSIS_DEBUG_DROPPED_NODES")), "true"),
 	}
 }
 
@@ -225,7 +236,8 @@ func aiConfigFromEnv() AIConfig {
 // DECISCOPE_SESSION_BOT_*_AFTER_SECONDS. EndAfter is coerced to be strictly
 // greater than LostAfter (falling back to the default when the configured
 // value would not be) so the watchdog can never end a session before it has
-// even been reported unhealthy.
+// even been reported unhealthy. TranscriptStalledAfter is coerced the same
+// way against TranscriptDelayedAfter.
 func sessionWatchdogConfigFromEnv() MeetingSessionWatchdogConfig {
 	lostAfter := secondsDurationFromEnv(os.Getenv("DECISCOPE_SESSION_BOT_LOST_AFTER_SECONDS"), defaultSessionBotLostAfterSeconds, minSessionBotLostAfterSeconds)
 	endAfterSeconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DECISCOPE_SESSION_BOT_END_AFTER_SECONDS")))
@@ -236,11 +248,22 @@ func sessionWatchdogConfigFromEnv() MeetingSessionWatchdogConfig {
 			endAfter = lostAfter + time.Duration(defaultSessionBotEndAfterSeconds)*time.Second
 		}
 	}
+	delayedAfter := secondsDurationFromEnv(os.Getenv("DECISCOPE_TRANSCRIPT_DELAYED_AFTER_SECONDS"), defaultTranscriptDelayedAfterSeconds, minTranscriptDelayedAfterSeconds)
+	stalledAfterSeconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DECISCOPE_TRANSCRIPT_STALLED_AFTER_SECONDS")))
+	stalledAfter := time.Duration(stalledAfterSeconds) * time.Second
+	if err != nil || stalledAfterSeconds <= 0 || stalledAfter <= delayedAfter {
+		stalledAfter = time.Duration(defaultTranscriptStalledAfterSeconds) * time.Second
+		if stalledAfter <= delayedAfter {
+			stalledAfter = delayedAfter + time.Duration(defaultTranscriptStalledAfterSeconds)*time.Second
+		}
+	}
 	return MeetingSessionWatchdogConfig{
-		Enabled:   boolFromEnvDefaultTrue(os.Getenv("DECISCOPE_SESSION_WATCHDOG_ENABLED")),
-		Interval:  secondsDurationFromEnv(os.Getenv("DECISCOPE_SESSION_WATCHDOG_INTERVAL_SECONDS"), defaultSessionWatchdogIntervalSeconds, minSessionWatchdogIntervalSeconds),
-		LostAfter: lostAfter,
-		EndAfter:  endAfter,
+		Enabled:                boolFromEnvDefaultTrue(os.Getenv("DECISCOPE_SESSION_WATCHDOG_ENABLED")),
+		Interval:               secondsDurationFromEnv(os.Getenv("DECISCOPE_SESSION_WATCHDOG_INTERVAL_SECONDS"), defaultSessionWatchdogIntervalSeconds, minSessionWatchdogIntervalSeconds),
+		LostAfter:              lostAfter,
+		EndAfter:               endAfter,
+		TranscriptDelayedAfter: delayedAfter,
+		TranscriptStalledAfter: stalledAfter,
 	}
 }
 

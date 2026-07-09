@@ -27,13 +27,18 @@ type MeetingSessionEnder interface {
 	UpdateMeetingSessionStatus(ctx context.Context, input MeetingSessionStatusUpdateInput) (*domain.MeetingSession, error)
 }
 
-// MeetingSessionWatchdogConfig configures the scan interval and the two
+// MeetingSessionWatchdogConfig configures the scan interval and the
 // thresholds the watchdog reacts to. LostAfter and EndAfter are measured
-// against domain.MeetingSession.LastBotStatusAt.
+// against domain.MeetingSession.LastBotStatusAt. DelayedAfter and
+// StalledAfter are measured against TranscriptActivity.LastTranscriptAt and
+// only apply while the bot heartbeat itself is healthy (see
+// evaluateTranscriptHealth).
 type MeetingSessionWatchdogConfig struct {
-	Interval  time.Duration
-	LostAfter time.Duration
-	EndAfter  time.Duration
+	Interval     time.Duration
+	LostAfter    time.Duration
+	EndAfter     time.Duration
+	DelayedAfter time.Duration
+	StalledAfter time.Duration
 }
 
 // MeetingSessionWatchdog periodically scans in-flight meeting sessions and
@@ -48,18 +53,23 @@ type MeetingSessionWatchdog struct {
 	config     MeetingSessionWatchdogConfig
 	now        func() time.Time
 
-	mu      sync.Mutex
-	healthy map[string]bool // sessionID -> last published health state
+	transcriptActivity        TranscriptActivityReader
+	transcriptHealthPublisher MeetingSessionTranscriptHealthPublisher
+
+	mu               sync.Mutex
+	healthy          map[string]bool   // sessionID -> last published bot health state
+	transcriptHealth map[string]string // sessionID -> last published transcript health state ("ok" by default)
 }
 
 func NewMeetingSessionWatchdog(repository MeetingSessionRepository, ender MeetingSessionEnder, publisher MeetingSessionBotHealthPublisher, config MeetingSessionWatchdogConfig) *MeetingSessionWatchdog {
 	return &MeetingSessionWatchdog{
-		repository: repository,
-		ender:      ender,
-		publisher:  publisher,
-		config:     config,
-		now:        time.Now,
-		healthy:    make(map[string]bool),
+		repository:       repository,
+		ender:            ender,
+		publisher:        publisher,
+		config:           config,
+		now:              time.Now,
+		healthy:          make(map[string]bool),
+		transcriptHealth: make(map[string]string),
 	}
 }
 
@@ -68,6 +78,20 @@ func NewMeetingSessionWatchdog(repository MeetingSessionRepository, ender Meetin
 // deterministically without waiting on wall-clock time.
 func (w *MeetingSessionWatchdog) SetNow(now func() time.Time) {
 	w.now = now
+}
+
+// SetTranscriptActivity injects the transcript activity reader used to
+// evaluate transcript health. It is a setter (like SetNow) rather than a
+// constructor parameter so existing callers are unaffected; transcript
+// health evaluation is a no-op until this is set.
+func (w *MeetingSessionWatchdog) SetTranscriptActivity(reader TranscriptActivityReader) {
+	w.transcriptActivity = reader
+}
+
+// SetTranscriptHealthPublisher injects the publisher notified of transcript
+// health transitions. See SetTranscriptActivity.
+func (w *MeetingSessionWatchdog) SetTranscriptHealthPublisher(pub MeetingSessionTranscriptHealthPublisher) {
+	w.transcriptHealthPublisher = pub
 }
 
 // Start launches the periodic scan goroutine. It returns immediately; the
@@ -143,13 +167,61 @@ func (w *MeetingSessionWatchdog) evaluate(ctx context.Context, session domain.Me
 	w.healthy[session.ID] = currentlyHealthy
 	w.mu.Unlock()
 
-	if !publish {
+	if publish {
+		log.Printf("Meeting session bot health changed. sessionId=%s healthy=%t lastBotStatusAt=%s elapsedSeconds=%.0f",
+			session.ID, currentlyHealthy, session.LastBotStatusAt.UTC().Format(time.RFC3339Nano), elapsed.Seconds())
+		if w.publisher != nil {
+			w.publisher.PublishMeetingSessionBotHealth(session, currentlyHealthy)
+		}
+	}
+
+	w.evaluateTranscriptHealth(session, now, currentlyHealthy)
+}
+
+// evaluateTranscriptHealth checks whether transcript segments are still
+// flowing for session and publishes a meeting_session.transcript_health_changed
+// event on transitions. Bot heartbeat health takes priority: if the bot is
+// unhealthy, or the session is not actively recording, a stalled transcript
+// is an expected symptom rather than a separate problem, so no transcript
+// warning is published (and any previously-published warning is not
+// re-evaluated here — it simply stops being refreshed until recording
+// resumes).
+func (w *MeetingSessionWatchdog) evaluateTranscriptHealth(session domain.MeetingSession, now time.Time, heartbeatHealthy bool) {
+	if w.transcriptActivity == nil {
 		return
 	}
-	log.Printf("Meeting session bot health changed. sessionId=%s healthy=%t lastBotStatusAt=%s elapsedSeconds=%.0f",
-		session.ID, currentlyHealthy, session.LastBotStatusAt.UTC().Format(time.RFC3339Nano), elapsed.Seconds())
-	if w.publisher != nil {
-		w.publisher.PublishMeetingSessionBotHealth(session, currentlyHealthy)
+	desired := "ok"
+	seconds := 0
+	if heartbeatHealthy && session.Status == domain.MeetingSessionRecording {
+		w.transcriptActivity.EnsureSeen(session.ID, now)
+		if act, ok := w.transcriptActivity.Activity(session.ID); ok && !act.LastTranscriptAt.IsZero() {
+			since := now.Sub(act.LastTranscriptAt.UTC())
+			if since < 0 {
+				since = 0
+			}
+			seconds = int(since.Seconds())
+			switch {
+			case w.config.StalledAfter > 0 && since >= w.config.StalledAfter:
+				desired = "transcript_stalled"
+			case w.config.DelayedAfter > 0 && since >= w.config.DelayedAfter:
+				desired = "transcript_delayed"
+			}
+		}
+	}
+
+	w.mu.Lock()
+	prev, known := w.transcriptHealth[session.ID]
+	changed := (!known && desired != "ok") || (known && prev != desired)
+	w.transcriptHealth[session.ID] = desired
+	w.mu.Unlock()
+
+	if !changed {
+		return
+	}
+	log.Printf("Meeting session transcript health changed. sessionId=%s transcriptHealth=%s secondsSinceLastTranscript=%d heartbeatHealthy=%t status=%s",
+		session.ID, desired, seconds, heartbeatHealthy, session.Status)
+	if w.transcriptHealthPublisher != nil {
+		w.transcriptHealthPublisher.PublishMeetingSessionTranscriptHealth(session, desired, seconds)
 	}
 }
 
@@ -170,15 +242,31 @@ func (w *MeetingSessionWatchdog) endSession(ctx context.Context, session domain.
 	}
 	w.mu.Lock()
 	delete(w.healthy, session.ID)
+	delete(w.transcriptHealth, session.ID)
 	w.mu.Unlock()
+	if w.transcriptActivity != nil {
+		w.transcriptActivity.Forget(session.ID)
+	}
 }
 
 func (w *MeetingSessionWatchdog) forgetMissing(seen map[string]struct{}) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	var forgotten []string
 	for id := range w.healthy {
 		if _, ok := seen[id]; !ok {
 			delete(w.healthy, id)
+		}
+	}
+	for id := range w.transcriptHealth {
+		if _, ok := seen[id]; !ok {
+			delete(w.transcriptHealth, id)
+			forgotten = append(forgotten, id)
+		}
+	}
+	w.mu.Unlock()
+	if w.transcriptActivity != nil {
+		for _, id := range forgotten {
+			w.transcriptActivity.Forget(id)
 		}
 	}
 }

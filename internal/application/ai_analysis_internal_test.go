@@ -310,7 +310,7 @@ func TestParseAndValidateLiveAnalysisPayloadDropsEdgesReferencingMissingNodes(t 
 			"nodes": [
 				{"id": "topic-main", "kind": "topic", "label": "進捗確認"},
 				{"id": "", "kind": "issue", "label": "id無しノード"},
-				{"id": "bad-kind-node", "kind": "todo", "label": "語彙外kind"}
+				{"id": "bad-kind-node", "kind": "unknown", "label": "語彙外kind"}
 			],
 			"edges": [
 				{"source": "topic-main", "target": "missing-node"},
@@ -1612,6 +1612,135 @@ func TestMergeLiveAnalysisTreeCollectsDiagnosticsOnStats(t *testing.T) {
 	}
 	if got := stats.droppedNodeReasons(); got != "[emptyLabel:1 invalidKind:1]" {
 		t.Fatalf("droppedNodeReasons() = %q, want %q", got, "[emptyLabel:1 invalidKind:1]")
+	}
+}
+
+func TestParseAndMergeLiveAnalysisPayloadRescuesTodoKindTreeNode(t *testing.T) {
+	// モデルが tree.nodes に item専用の kind "todo" を直接出したケース。tree の
+	// 語彙には "todo" が無いため、救済が無いと invalidKind として捨てられてしまう。
+	content := `{
+		"summary": "要約です",
+		"currentTopic": "進捗確認",
+		"items": [],
+		"tree": {
+			"nodes": [
+				{"id": "x", "kind": "todo", "label": "作業", "description": "資料を作成する"}
+			],
+			"edges": []
+		}
+	}`
+
+	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
+	if err != nil {
+		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
+	}
+	var payload liveAnalysisPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal normalized payload: %v", err)
+	}
+	if payload.Tree == nil {
+		t.Fatalf("tree = %+v, want kind \"todo\" node rescued as issue", payload.Tree)
+	}
+	var node *liveAnalysisTreeNode
+	for i := range payload.Tree.Nodes {
+		if payload.Tree.Nodes[i].ID == "x" {
+			node = &payload.Tree.Nodes[i]
+		}
+	}
+	if node == nil {
+		t.Fatalf("tree nodes = %+v, want node x kept", payload.Tree.Nodes)
+	}
+	if node.Kind != "issue" {
+		t.Fatalf("node kind = %q, want \"issue\" (todo rescued)", node.Kind)
+	}
+}
+
+func TestMergeLiveAnalysisTreeCountsNormalizedTodoNodes(t *testing.T) {
+	diff := &liveAnalysisTree{
+		Nodes: []liveAnalysisTreeNode{
+			{ID: "x", Kind: "todo", Label: "作業"},
+		},
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+
+	tree := mergeLiveAnalysisTree(nil, diff, map[string]struct{}{}, "", nil, stats)
+	if tree == nil {
+		t.Fatal("tree = nil, want node x kept")
+	}
+	if stats.NormalizedTodoNodes != 1 {
+		t.Fatalf("NormalizedTodoNodes = %d, want 1", stats.NormalizedTodoNodes)
+	}
+	if stats.droppedNodes() != 0 {
+		t.Fatalf("droppedNodes() = %d, want 0 (todo must not be dropped)", stats.droppedNodes())
+	}
+}
+
+func TestMergeLiveAnalysisTreeKeepsAllValidTreeNodeKinds(t *testing.T) {
+	// 回帰確認: topic/issue/question/risk/decision は従来どおりすべて残る。
+	diff := &liveAnalysisTree{
+		Nodes: []liveAnalysisTreeNode{
+			{ID: "n-topic", Kind: "topic", Label: "トピック"},
+			{ID: "n-issue", Kind: "issue", Label: "課題"},
+			{ID: "n-question", Kind: "question", Label: "質問"},
+			{ID: "n-risk", Kind: "risk", Label: "リスク"},
+			{ID: "n-decision", Kind: "decision", Label: "決定"},
+		},
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+
+	tree := mergeLiveAnalysisTree(nil, diff, map[string]struct{}{}, "", nil, stats)
+	if tree == nil || len(tree.Nodes) != 5 {
+		t.Fatalf("tree = %+v, want all 5 nodes kept", tree)
+	}
+	if stats.droppedNodes() != 0 {
+		t.Fatalf("droppedNodes() = %d, want 0", stats.droppedNodes())
+	}
+}
+
+func TestMergeLiveAnalysisTreeStillDropsUnknownKind(t *testing.T) {
+	// "todo" 以外の未知kindは、従来どおり invalidKind として drop されなければならない。
+	diff := &liveAnalysisTree{
+		Nodes: []liveAnalysisTreeNode{
+			{ID: "n-bad", Kind: "foobar", Label: "未知kind"},
+		},
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+
+	tree := mergeLiveAnalysisTree(nil, diff, map[string]struct{}{}, "", nil, stats)
+	if tree != nil {
+		t.Fatalf("tree = %+v, want nil (only node dropped)", tree)
+	}
+	if stats.DroppedInvalidKind != 1 {
+		t.Fatalf("DroppedInvalidKind = %d, want 1", stats.DroppedInvalidKind)
+	}
+	if stats.NormalizedTodoNodes != 0 {
+		t.Fatalf("NormalizedTodoNodes = %d, want 0 (foobar must not be rescued)", stats.NormalizedTodoNodes)
+	}
+}
+
+func TestMergeLiveAnalysisTreeCountsDiffNewAndUpdatedNodes(t *testing.T) {
+	previous := &liveAnalysisTree{
+		Nodes: []liveAnalysisTreeNode{
+			{ID: "existing", Kind: "issue", Label: "既存の課題"},
+		},
+	}
+	diff := &liveAnalysisTree{
+		Nodes: []liveAnalysisTreeNode{
+			{ID: "existing", Kind: "issue", Label: "更新後の課題"},
+			{ID: "new", Kind: "issue", Label: "新規の課題"},
+		},
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+
+	tree := mergeLiveAnalysisTree(previous, diff, map[string]struct{}{}, "", nil, stats)
+	if tree == nil || len(tree.Nodes) != 2 {
+		t.Fatalf("tree = %+v, want existing + new nodes", tree)
+	}
+	if stats.DiffUpdatedNodes != 1 {
+		t.Fatalf("DiffUpdatedNodes = %d, want 1 (existing)", stats.DiffUpdatedNodes)
+	}
+	if stats.DiffNewNodes != 1 {
+		t.Fatalf("DiffNewNodes = %d, want 1 (new)", stats.DiffNewNodes)
 	}
 }
 

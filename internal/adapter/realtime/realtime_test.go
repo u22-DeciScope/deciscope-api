@@ -391,6 +391,66 @@ func TestTranscriptHubPublishMeetingSessionBotHealthFiltersBySessionID(t *testin
 	}
 }
 
+func TestMeetingSessionTranscriptHealthProtocolMessage(t *testing.T) {
+	session := domain.MeetingSession{
+		ID:     "session_1",
+		Status: domain.MeetingSessionRecording,
+	}
+	message := meetingSessionTranscriptHealthProtocolMessage(session, "transcript_stalled", 90, time.Date(2026, 7, 7, 0, 1, 0, 0, time.UTC))
+	if message.Type != meetingSessionTranscriptHealthType {
+		t.Fatalf("message.Type = %q", message.Type)
+	}
+	if meetingSessionTranscriptHealthType != "meeting_session.transcript_health_changed" {
+		t.Fatalf("meetingSessionTranscriptHealthType = %q, want meeting_session.transcript_health_changed", meetingSessionTranscriptHealthType)
+	}
+	if message.SentAtUTC != "2026-07-07T00:01:00Z" {
+		t.Fatalf("message.SentAtUTC = %q", message.SentAtUTC)
+	}
+	if message.Data.SessionID != "session_1" || message.Data.TranscriptHealth != "transcript_stalled" || message.Data.SecondsSinceLastTranscript != 90 {
+		t.Fatalf("message data = %+v", message.Data)
+	}
+
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"type":"meeting_session.transcript_health_changed"`) ||
+		!strings.Contains(string(encoded), `"sessionId":"session_1"`) ||
+		!strings.Contains(string(encoded), `"transcriptHealth":"transcript_stalled"`) ||
+		!strings.Contains(string(encoded), `"secondsSinceLastTranscript":90`) {
+		t.Fatalf("encoded = %s", string(encoded))
+	}
+}
+
+func TestTranscriptHubPublishMeetingSessionTranscriptHealthFiltersBySessionID(t *testing.T) {
+	hub := NewTranscriptHub()
+	matching := &transcriptClient{sessionID: "session_1", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	other := &transcriptClient{sessionID: "session_2", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	hub.subscribe(matching)
+	hub.subscribe(other)
+	t.Cleanup(func() {
+		hub.unsubscribe(matching)
+		hub.unsubscribe(other)
+	})
+
+	session := domain.MeetingSession{ID: "session_1", Status: domain.MeetingSessionRecording}
+	hub.PublishMeetingSessionTranscriptHealth(session, "transcript_delayed", 35)
+
+	select {
+	case got := <-matching.send:
+		if got.transcriptHealth == nil || got.transcriptHealth.session.ID != "session_1" || got.transcriptHealth.transcriptHealth != "transcript_delayed" || got.transcriptHealth.seconds != 35 {
+			t.Fatalf("matching got = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("matching client did not receive transcript health event")
+	}
+	select {
+	case got := <-other.send:
+		t.Fatalf("other session unexpectedly received %+v", got)
+	default:
+	}
+}
+
 type fakeEventStore struct {
 	events []domain.Event
 }

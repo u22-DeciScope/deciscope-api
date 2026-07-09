@@ -104,6 +104,25 @@ type MeetingSessionBotHealthPublisher interface {
 	PublishMeetingSessionBotHealth(session domain.MeetingSession, healthy bool)
 }
 
+// TranscriptActivityReader is the read side of TranscriptActivityTracker that
+// the watchdog depends on. It is defined narrowly here, alongside the other
+// small port interfaces, so the watchdog does not depend on the tracker's
+// concrete type.
+type TranscriptActivityReader interface {
+	EnsureSeen(sessionID string, at time.Time)
+	Activity(sessionID string) (TranscriptActivity, bool)
+	Forget(sessionID string)
+}
+
+// MeetingSessionTranscriptHealthPublisher is notified by the watchdog
+// whenever a session's transcript health (as opposed to bot heartbeat health)
+// transitions between ok/delayed/stalled. It is deliberately separate from
+// MeetingSessionBotHealthPublisher because a stalled transcript is not the
+// same signal as a lost bot heartbeat.
+type MeetingSessionTranscriptHealthPublisher interface {
+	PublishMeetingSessionTranscriptHealth(session domain.MeetingSession, transcriptHealth string, secondsSinceLastTranscript int)
+}
+
 // MeetingSessionEndedObserver is notified when a meeting session transitions
 // into the Ended status. It is used to trigger the asynchronous AI final
 // summary without giving MeetingSessionService a direct dependency on the AI

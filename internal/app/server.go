@@ -95,7 +95,8 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	transcriptHub := realtime.NewTranscriptHub()
 	meetingSessionRepository := postgresrepository.NewMeetingSessionRepository(postgresDB)
 	analysisService := buildMeetingAnalysisService(config.AI, postgresDB, meetingSessionRepository, transcriptHub)
-	transcriptPublisher := compositeTranscriptSegmentPublisher{publishers: []application.TranscriptSegmentPublisher{transcriptHub, analysisService}}
+	transcriptActivityTracker := application.NewTranscriptActivityTracker()
+	transcriptPublisher := compositeTranscriptSegmentPublisher{publishers: []application.TranscriptSegmentPublisher{transcriptHub, analysisService, transcriptActivityTracker}}
 	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptPublisher)
 	if err != nil {
 		_ = closeAll(closers)
@@ -130,18 +131,23 @@ func NewServerRuntime() (*ServerRuntime, error) {
 			meetingSessionService,
 			transcriptHub,
 			application.MeetingSessionWatchdogConfig{
-				Interval:  config.SessionWatchdog.Interval,
-				LostAfter: config.SessionWatchdog.LostAfter,
-				EndAfter:  config.SessionWatchdog.EndAfter,
+				Interval:     config.SessionWatchdog.Interval,
+				LostAfter:    config.SessionWatchdog.LostAfter,
+				EndAfter:     config.SessionWatchdog.EndAfter,
+				DelayedAfter: config.SessionWatchdog.TranscriptDelayedAfter,
+				StalledAfter: config.SessionWatchdog.TranscriptStalledAfter,
 			},
 		)
+		watchdog.SetTranscriptActivity(transcriptActivityTracker)
+		watchdog.SetTranscriptHealthPublisher(transcriptHub)
 		watchdogCtx, cancelWatchdog := context.WithCancel(context.Background())
 		watchdog.Start(watchdogCtx)
 		closers = append(closers, func() error {
 			cancelWatchdog()
 			return nil
 		})
-		log.Printf("meeting session bot watchdog enabled. interval=%s lostAfter=%s endAfter=%s", config.SessionWatchdog.Interval, config.SessionWatchdog.LostAfter, config.SessionWatchdog.EndAfter)
+		log.Printf("meeting session bot watchdog enabled. interval=%s lostAfter=%s endAfter=%s transcriptDelayedAfter=%s transcriptStalledAfter=%s",
+			config.SessionWatchdog.Interval, config.SessionWatchdog.LostAfter, config.SessionWatchdog.EndAfter, config.SessionWatchdog.TranscriptDelayedAfter, config.SessionWatchdog.TranscriptStalledAfter)
 	} else {
 		log.Printf("meeting session bot watchdog disabled (DECISCOPE_SESSION_WATCHDOG_ENABLED=false)")
 	}
@@ -320,6 +326,7 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 			FinalMaxInputChars:  config.FinalSummaryMaxInputChars,
 			FinalRequestTimeout: config.FinalSummaryTimeout,
 			Model:               config.AzureOpenAI.Deployment,
+			DebugDroppedNodes:   config.DebugDroppedNodes,
 		},
 		publisher,
 	)
