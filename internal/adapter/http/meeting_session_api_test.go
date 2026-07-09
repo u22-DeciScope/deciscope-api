@@ -311,6 +311,80 @@ func TestMeetingSessionAPIRecordBotHeartbeatReturnsNotFoundForUnknownSession(t *
 	}
 }
 
+func TestMeetingSessionAPIRecordBotHeartbeatRecordsBotMediaMetrics(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	metricsStore := application.NewBotMediaMetricsStore()
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionBotMetricsStore(metricsStore))
+	body := `{
+		"botCallId": "call-1",
+		"lastAudioFrameAtUtc": "2026-06-27T00:04:58Z",
+		"lastNonZeroAudioAtUtc": "2026-06-27T00:04:50Z",
+		"lastNonEmptyTranscriptAtUtc": "2026-06-27T00:04:30Z",
+		"audioStalled": true,
+		"audioSocketReceiveStallCount": 3
+	}`
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	metrics, ok := metricsStore.Get("session_1")
+	if !ok {
+		t.Fatalf("metrics store should have recorded session_1's bot media metrics")
+	}
+	if !metrics.HasMetrics || !metrics.AudioStalled || metrics.AudioSocketReceiveStallCount != 3 {
+		t.Fatalf("recorded metrics = %+v, want HasMetrics=true AudioStalled=true AudioSocketReceiveStallCount=3", metrics)
+	}
+	if metrics.LastAudioFrameAt.IsZero() || metrics.LastNonZeroAudioAt.IsZero() || metrics.LastNonEmptyTranscriptAt.IsZero() {
+		t.Fatalf("recorded metrics timestamps not parsed: %+v", metrics)
+	}
+	if metrics.ReceivedAt.IsZero() {
+		t.Fatalf("recorded metrics ReceivedAt should be stamped by the store, got zero value")
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeatBareBodyDoesNotRecordMetrics(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	metricsStore := application.NewBotMediaMetricsStore()
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionBotMetricsStore(metricsStore))
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", `{"botCallId":"call-1"}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if _, ok := metricsStore.Get("session_1"); ok {
+		t.Fatalf("a heartbeat with only botCallId (no audio/transcript metrics) must not be recorded")
+	}
+}
+
 func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *testing.T) {
 	service := &fakeMeetingSessionUseCases{
 		session: domain.MeetingSession{

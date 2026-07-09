@@ -93,7 +93,10 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - ツリーは階層構造にしてください。root(最上位のtopicノード)の直下には「大分類」となるtopicノードだけを置き、その数は原則5〜8個程度に抑えてください。
 - 個々の論点・質問・リスク・決定・TODOは、root直下に直接つながず、内容が最も近い大分類topicノードの配下(またはその配下の既存ノードの下)に接続してください。
 - 新しい話題が既存の大分類やその配下のノードに近い場合は、新しいroot直下ノードを作らず、その大分類配下のissue/question/risk/decisionとして追加、または既存ノードを更新してください。
-- 大分類は会議の内容に合わせて決めてください(例:基盤・技術、分析ロジック、UI/UX、コスト、権限・セキュリティ、検証環境 など。会議に合わないものは使わない)。`
+- 大分類は会議の内容に合わせて決めてください(例:基盤・技術、分析ロジック、UI/UX、コスト、権限・セキュリティ、検証環境 など。会議に合わないものは使わない)。
+- 各論点・質問・リスク・決定・TODOは、必ずいずれかの大分類topicノードの配下に置いてください。大分類がまだ無い場合は、まず大分類topicノードを作ってからその配下に置いてください。
+- 新規ノードを出すときは、必ずそのノードへの親エッジ(parent edge)も同じラウンドで出力してください。親の無いノードを出してはいけません。
+- 親が曖昧な場合でも、root直下に逃がさず、最も近い既存の大分類topicまたはissueを親として選んでください。`
 
 const finalAnalysisSystemPrompt = "あなたは日本語の会議分析アシスタントです。会議全体の文字起こしと事前情報から最終要約を作成し、指定されたJSONスキーマのオブジェクトだけを出力してください。JSON以外の説明文やコードフェンスは出力しないでください。"
 
@@ -438,10 +441,10 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		modelResolvedIDCount, stats.ResolvedItems, stats.TotalItems, stats.ResolvedNodes, stats.TotalNodes,
 		diffItemCount, diffTreeNodeCount, diffTreeEdgeCount,
 		treeStats.droppedNodes(), treeStats.droppedNodeReasons(), treeStats.DroppedEdges, treeStats.SynthesizedNodes, treeStats.PrunedTopicEdges)
-	log.Printf("Live AI analysis tree metrics. sessionId=%s diffTreeNodes=%d diffTreeEdges=%d newNodeIds=%d updatedNodeIds=%d normalizedTodoNodes=%d droppedNodes=%d droppedNodeReasons=%s synthesizedNodes=%d orphanRescuedEdges=%d prunedTopicEdges=%d totalNodes=%d totalEdges=%d topicChildren=%d maxDepth=%d",
+	log.Printf("Live AI analysis tree metrics. sessionId=%s diffTreeNodes=%d diffTreeEdges=%d newNodeIds=%d updatedNodeIds=%d normalizedTodoNodes=%d droppedNodes=%d droppedNodeReasons=%s synthesizedNodes=%d orphanRescuedEdges=%d prunedTopicEdges=%d reparentedNodes=%d totalNodes=%d totalEdges=%d topicChildren=%d maxDepth=%d flatTreeDetected=%t",
 		sessionID, diffTreeNodeCount, diffTreeEdgeCount, treeStats.DiffNewNodes, treeStats.DiffUpdatedNodes, treeStats.NormalizedTodoNodes,
-		treeStats.droppedNodes(), treeStats.droppedNodeReasons(), treeStats.SynthesizedNodes, treeStats.OrphanRescuedEdges, treeStats.PrunedTopicEdges,
-		stats.TotalNodes, treeStats.TotalEdges, treeStats.TopicChildCount, treeStats.MaxDepth)
+		treeStats.droppedNodes(), treeStats.droppedNodeReasons(), treeStats.SynthesizedNodes, treeStats.OrphanRescuedEdges, treeStats.PrunedTopicEdges, treeStats.ReparentedNodes,
+		stats.TotalNodes, treeStats.TotalEdges, treeStats.TopicChildCount, treeStats.MaxDepth, treeStats.FlatTreeDetected)
 	if s.config.DebugDroppedNodes {
 		for _, detail := range treeStats.DroppedNodeDetails {
 			log.Printf("Live AI analysis dropped tree node. sessionId=%s id=%s kind=%s title=%q reason=%s", sessionID, detail.ID, detail.Kind, detail.Title, detail.Reason)
@@ -1196,6 +1199,20 @@ func capLiveAnalysisItems(items []liveAnalysisItem, activeMax, resolvedMax int) 
 	return kept
 }
 
+// flatTreeMinTopicChildren/flatTreeChildRatioThreshold are the thresholds
+// finalizeLiveAnalysisTree uses to flag a tree as "flat" (see
+// liveAnalysisTreeMergeStats.FlatTreeDetected): either the primary topic
+// node has an unusually large number of direct children with almost no
+// depth beyond it, or an unusually large share of all nodes hang directly
+// off the primary topic. This is observability only -- it never changes the
+// merge result -- so operators can tell "the model never produced 大分類
+// (major-category) topic nodes" apart from a healthy, intentionally broad
+// tree.
+const (
+	flatTreeMinTopicChildren    = 8
+	flatTreeChildRatioThreshold = 0.7
+)
+
 // liveAnalysisTreeMergeStats collects diagnostics from a single
 // mergeLiveAnalysisTree call for observability logging only; it never
 // affects the merge result. Passing a nil *liveAnalysisTreeMergeStats
@@ -1243,6 +1260,14 @@ type liveAnalysisTreeMergeStats struct {
 	TotalEdges      int
 	TopicChildCount int
 	MaxDepth        int
+	// FlatTreeDetected は、大分類(root以外のtopicノード)がほぼ無いまま個々の
+	// ノードがroot直下に並んでしまっている(平坦化)兆候を検知したか。
+	// flatTreeMinTopicChildren/flatTreeChildRatioThreshold のいずれかを満たすと
+	// true になる。マージ結果には影響しないログ用フラグ。
+	FlatTreeDetected bool
+	// ReparentedNodes は reparentRootFallbackNodes が「root直下への救済のみ」
+	// だったノードを、後から現れた大分類topicノード配下へ付け替えた件数。
+	ReparentedNodes int
 	// DroppedNodeDetails は破棄された各ノードの詳細(開発用フラグ有効時のみログ出力)。
 	DroppedNodeDetails []liveAnalysisDroppedNodeDetail
 }
@@ -1559,6 +1584,7 @@ func finalizeLiveAnalysisTree(nodes []liveAnalysisTreeNode, edges []liveAnalysis
 	}
 
 	topicID := primaryLiveAnalysisTopicID(nodes, insertedTopic)
+	validEdges = reparentRootFallbackNodes(nodes, validEdges, topicID, stats)
 	prunedEdges := pruneRedundantTopicFallbackEdges(nodes, validEdges, topicID)
 	if stats != nil {
 		stats.PrunedTopicEdges += len(validEdges) - len(prunedEdges)
@@ -1567,6 +1593,9 @@ func finalizeLiveAnalysisTree(nodes []liveAnalysisTreeNode, edges []liveAnalysis
 		stats.TotalEdges = len(prunedEdges)
 		stats.TopicChildCount = countLiveAnalysisTopicChildren(topicID, prunedEdges)
 		stats.MaxDepth = liveAnalysisTreeMaxDepth(topicID, prunedEdges)
+		totalNodes := len(nodes)
+		stats.FlatTreeDetected = (stats.TopicChildCount >= flatTreeMinTopicChildren && stats.MaxDepth <= 1) ||
+			(totalNodes > 0 && float64(stats.TopicChildCount)/float64(totalNodes) > flatTreeChildRatioThreshold)
 	}
 	return &liveAnalysisTree{Nodes: nodes, Edges: prunedEdges}
 }
@@ -1594,6 +1623,36 @@ func primaryLiveAnalysisTopicID(nodes []liveAnalysisTreeNode, preferCurrentTopic
 	return topicID
 }
 
+// chooseOrphanParentID は、親エッジが必要なノードに与える親idを選ぶ。
+// 詳細ノード(topic以外)は、root以外の「大分類」(root以外のtopicノード)のうち、
+// そのノードの子孫でない最新のものを優先する。適切な大分類が無ければ primaryTopicID
+// (root)を返す。topicノード(大分類)は常に primaryTopicID にぶら下げる
+// (既存の second-topic 挙動を保つ)。
+func chooseOrphanParentID(node liveAnalysisTreeNode, nodes []liveAnalysisTreeNode, edges []liveAnalysisTreeEdge, primaryTopicID string) string {
+	if node.Kind == "topic" {
+		return primaryTopicID
+	}
+	nodeIDs := make(map[string]struct{}, len(nodes))
+	for _, n := range nodes {
+		nodeIDs[n.ID] = struct{}{}
+	}
+	descendants := reachableLiveAnalysisNodeIDs(node.ID, edges, nodeIDs) // 自分+子孫(サイクル防止用)
+	best := ""
+	for _, n := range nodes { // nodes順で最後に見つかった候補=最新を採用
+		if n.Kind != "topic" || n.ID == primaryTopicID || n.ID == node.ID {
+			continue
+		}
+		if descendants[n.ID] { // 自分の子孫を親にしない
+			continue
+		}
+		best = n.ID
+	}
+	if best == "" {
+		return primaryTopicID
+	}
+	return best
+}
+
 func connectOrphanLiveAnalysisTreeNodes(nodes []liveAnalysisTreeNode, edges []liveAnalysisTreeEdge, preferCurrentTopic bool) []liveAnalysisTreeEdge {
 	topicID := primaryLiveAnalysisTopicID(nodes, preferCurrentTopic)
 	if topicID == "" {
@@ -1610,14 +1669,62 @@ func connectOrphanLiveAnalysisTreeNodes(nodes []liveAnalysisTreeNode, edges []li
 		if node.ID == topicID || hasIncoming[node.ID] {
 			continue
 		}
-		key := topicID + "\x00" + node.ID
+		parent := chooseOrphanParentID(node, nodes, edges, topicID)
+		if parent == node.ID {
+			continue
+		}
+		key := parent + "\x00" + node.ID
 		if _, ok := seenEdges[key]; ok {
 			continue
 		}
 		seenEdges[key] = struct{}{}
-		edges = append(edges, liveAnalysisTreeEdge{Source: topicID, Target: node.ID})
+		edges = append(edges, liveAnalysisTreeEdge{Source: parent, Target: node.ID})
 	}
 	return edges
+}
+
+// reparentRootFallbackNodes は、入ってくるエッジが primaryTopicID からの1本だけ
+// (=以前のラウンドで大分類が無くrootへ救済された)非topicノードを、いま利用可能な
+// 大分類(root以外のtopicノード)配下へ移動する。root直下の過剰なぶら下がりを、
+// 後続ラウンドで大分類が現れた時点で解消するための保守的な付け替え。サイクルは作らない。
+func reparentRootFallbackNodes(nodes []liveAnalysisTreeNode, edges []liveAnalysisTreeEdge, primaryTopicID string, stats *liveAnalysisTreeMergeStats) []liveAnalysisTreeEdge {
+	if primaryTopicID == "" {
+		return edges
+	}
+	// 各ノードの incoming source を集計
+	incoming := make(map[string][]string)
+	for _, e := range edges {
+		incoming[e.Target] = append(incoming[e.Target], e.Source)
+	}
+	result := edges
+	for _, n := range nodes {
+		if n.Kind == "topic" {
+			continue
+		}
+		srcs := incoming[n.ID]
+		// 入ってくるエッジが root からの1本だけの場合のみ対象
+		if len(srcs) != 1 || srcs[0] != primaryTopicID {
+			continue
+		}
+		parent := chooseOrphanParentID(n, nodes, result, primaryTopicID)
+		if parent == primaryTopicID || parent == n.ID {
+			continue
+		}
+		// root->n を削除し parent->n を追加
+		replaced := make([]liveAnalysisTreeEdge, 0, len(result))
+		for _, e := range result {
+			if e.Source == primaryTopicID && e.Target == n.ID {
+				continue
+			}
+			replaced = append(replaced, e)
+		}
+		replaced = append(replaced, liveAnalysisTreeEdge{Source: parent, Target: n.ID})
+		result = replaced
+		if stats != nil {
+			stats.ReparentedNodes++
+		}
+	}
+	return result
 }
 
 // pruneRedundantTopicFallbackEdges removes "primary topic -> X" edges that

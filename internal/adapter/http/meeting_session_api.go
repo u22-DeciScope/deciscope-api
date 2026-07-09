@@ -44,6 +44,7 @@ type MeetingSessionAPI struct {
 	transcript         TranscriptListUseCases
 	transcriptRealtime http.HandlerFunc
 	aiAnalysis         MeetingAIAnalysisUseCases
+	metricsStore       *application.BotMediaMetricsStore
 	apiKey             string
 }
 
@@ -64,6 +65,16 @@ func WithMeetingSessionTranscriptRealtime(handler http.HandlerFunc) MeetingSessi
 func WithMeetingSessionAIAnalysisService(service MeetingAIAnalysisUseCases) MeetingSessionAPIOption {
 	return func(api *MeetingSessionAPI) {
 		api.aiAnalysis = service
+	}
+}
+
+// WithMeetingSessionBotMetricsStore injects the store used to record the
+// audio/transcript liveness metrics the bot reports on RecordBotHeartbeat.
+// It is optional: when not set, heartbeat bodies are decoded (to validate
+// them) and discarded, exactly as before this option existed.
+func WithMeetingSessionBotMetricsStore(store *application.BotMediaMetricsStore) MeetingSessionAPIOption {
+	return func(api *MeetingSessionAPI) {
+		api.metricsStore = store
 	}
 }
 
@@ -486,24 +497,34 @@ func (api *MeetingSessionAPI) UpdateBotMetadata(w http.ResponseWriter, r *http.R
 // skipped entirely so a bodyless POST succeeds. This mirrors chi's
 // AllowContentType middleware, which likewise only enforces Content-Type
 // when a body is present. When a body is sent, it must still be valid JSON
-// with the expected content type; its only field (botCallId) is currently
-// read and discarded.
+// with the expected content type. Besides botCallId (read and discarded, as
+// before), the body may optionally carry audio/transcript liveness metrics;
+// when metricsStore is configured and the body actually contains at least
+// one such metric, they are recorded for the watchdog's transcript health
+// classification (see BotMediaMetricsStore). A bodyless heartbeat, or one
+// with only botCallId, does not touch previously recorded metrics — they
+// simply age out of freshness on their own.
 func (api *MeetingSessionAPI) RecordBotHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !authorizedSecret(r.Header.Get("X-DeciScope-Api-Key"), api.apiKey) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 		return
 	}
+	var request meetingSessionHeartbeatRequest
 	if r.ContentLength != 0 {
 		if !isJSONContentType(r.Header.Get("Content-Type")) {
 			writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
 			return
 		}
-		var request meetingSessionHeartbeatRequest
 		if !decodeLimitedJSONAllowUnknown(w, r, meetingSessionBodyLimitBytes, &request) {
 			return
 		}
 	}
 	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
+	if api.metricsStore != nil {
+		if metrics, ok := request.botMediaMetrics(); ok {
+			api.metricsStore.Record(sessionID, metrics)
+		}
+	}
 	session, err := api.service.RecordMeetingSessionHeartbeat(r.Context(), sessionID)
 	if err != nil {
 		writeMeetingSessionError(w, err)
@@ -513,7 +534,80 @@ func (api *MeetingSessionAPI) RecordBotHeartbeat(w http.ResponseWriter, r *http.
 }
 
 type meetingSessionHeartbeatRequest struct {
-	BotCallID string `json:"botCallId"`
+	BotCallID                        string  `json:"botCallId"`
+	LastAudioFrameAtUTC              string  `json:"lastAudioFrameAtUtc"`
+	LastNonZeroAudioAtUTC            string  `json:"lastNonZeroAudioAtUtc"`
+	LastNonEmptyTranscriptAtUTC      string  `json:"lastNonEmptyTranscriptAtUtc"`
+	LastFinalTranscriptAtUTC         string  `json:"lastFinalTranscriptAtUtc"`
+	LastPeakAmplitude                int     `json:"lastPeakAmplitude"`
+	LastRmsAmplitude                 float64 `json:"lastRmsAmplitude"`
+	AudioFrameCount                  int64   `json:"audioFrameCount"`
+	FramesSinceLastNonZeroAudio      int64   `json:"framesSinceLastNonZeroAudio"`
+	SecondsSinceLastNonZeroAudio     int     `json:"secondsSinceLastNonZeroAudio"`
+	ActiveSpeakerRecognizerCount     int     `json:"activeSpeakerRecognizerCount"`
+	MixedFallbackActive              bool    `json:"mixedFallbackActive"`
+	UnmixedAudioSeen                 bool    `json:"unmixedAudioSeen"`
+	LastAudioSocketReceiveStallAtUTC string  `json:"lastAudioSocketReceiveStallAtUtc"`
+	AudioSocketReceiveStallCount     int64   `json:"audioSocketReceiveStallCount"`
+	AudioStalled                     bool    `json:"audioStalled"`
+}
+
+// botMediaMetrics builds an application.BotMediaMetrics from the decoded
+// heartbeat request. ok reports whether the request actually carried at
+// least one audio/transcript metric field; a bare {"botCallId": "..."}
+// heartbeat (or no body at all, which decodes to the zero value) must not be
+// recorded, so it does not overwrite/refresh previously stored metrics with
+// an all-zero value.
+func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.BotMediaMetrics, bool) {
+	m := application.BotMediaMetrics{
+		LastAudioFrameAt:              parseOptionalRFC3339(request.LastAudioFrameAtUTC),
+		LastNonZeroAudioAt:            parseOptionalRFC3339(request.LastNonZeroAudioAtUTC),
+		LastNonEmptyTranscriptAt:      parseOptionalRFC3339(request.LastNonEmptyTranscriptAtUTC),
+		LastFinalTranscriptAt:         parseOptionalRFC3339(request.LastFinalTranscriptAtUTC),
+		LastPeakAmplitude:             request.LastPeakAmplitude,
+		LastRmsAmplitude:              request.LastRmsAmplitude,
+		AudioFrameCount:               request.AudioFrameCount,
+		FramesSinceLastNonZeroAudio:   request.FramesSinceLastNonZeroAudio,
+		SecondsSinceLastNonZeroAudio:  request.SecondsSinceLastNonZeroAudio,
+		ActiveSpeakerRecognizerCount:  request.ActiveSpeakerRecognizerCount,
+		MixedFallbackActive:           request.MixedFallbackActive,
+		UnmixedAudioSeen:              request.UnmixedAudioSeen,
+		LastAudioSocketReceiveStallAt: parseOptionalRFC3339(request.LastAudioSocketReceiveStallAtUTC),
+		AudioSocketReceiveStallCount:  request.AudioSocketReceiveStallCount,
+		AudioStalled:                  request.AudioStalled,
+	}
+	m.HasMetrics = !m.LastAudioFrameAt.IsZero() ||
+		!m.LastNonZeroAudioAt.IsZero() ||
+		!m.LastNonEmptyTranscriptAt.IsZero() ||
+		!m.LastFinalTranscriptAt.IsZero() ||
+		m.LastPeakAmplitude != 0 ||
+		m.LastRmsAmplitude != 0 ||
+		m.AudioFrameCount != 0 ||
+		m.FramesSinceLastNonZeroAudio != 0 ||
+		m.SecondsSinceLastNonZeroAudio != 0 ||
+		m.ActiveSpeakerRecognizerCount != 0 ||
+		m.MixedFallbackActive ||
+		m.UnmixedAudioSeen ||
+		!m.LastAudioSocketReceiveStallAt.IsZero() ||
+		m.AudioSocketReceiveStallCount != 0 ||
+		m.AudioStalled
+	return m, m.HasMetrics
+}
+
+// parseOptionalRFC3339 parses an optional RFC3339 timestamp string, treating
+// a blank or unparseable value as "not provided" (zero time) rather than an
+// error; the heartbeat endpoint must stay lenient about malformed optional
+// metrics fields instead of rejecting the whole heartbeat.
+func parseOptionalRFC3339(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
 }
 
 type meetingSessionCreateRequest struct {

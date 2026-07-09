@@ -96,6 +96,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	meetingSessionRepository := postgresrepository.NewMeetingSessionRepository(postgresDB)
 	analysisService := buildMeetingAnalysisService(config.AI, postgresDB, meetingSessionRepository, transcriptHub)
 	transcriptActivityTracker := application.NewTranscriptActivityTracker()
+	botMediaMetricsStore := application.NewBotMediaMetricsStore()
 	transcriptPublisher := compositeTranscriptSegmentPublisher{publishers: []application.TranscriptSegmentPublisher{transcriptHub, analysisService, transcriptActivityTracker}}
 	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptPublisher)
 	if err != nil {
@@ -131,23 +132,28 @@ func NewServerRuntime() (*ServerRuntime, error) {
 			meetingSessionService,
 			transcriptHub,
 			application.MeetingSessionWatchdogConfig{
-				Interval:     config.SessionWatchdog.Interval,
-				LostAfter:    config.SessionWatchdog.LostAfter,
-				EndAfter:     config.SessionWatchdog.EndAfter,
-				DelayedAfter: config.SessionWatchdog.TranscriptDelayedAfter,
-				StalledAfter: config.SessionWatchdog.TranscriptStalledAfter,
+				Interval:           config.SessionWatchdog.Interval,
+				LostAfter:          config.SessionWatchdog.LostAfter,
+				EndAfter:           config.SessionWatchdog.EndAfter,
+				DelayedAfter:       config.SessionWatchdog.TranscriptDelayedAfter,
+				StalledAfter:       config.SessionWatchdog.TranscriptStalledAfter,
+				AudioSilenceAfter:  config.SessionWatchdog.AudioSilenceAfter,
+				AudioStalledAfter:  config.SessionWatchdog.AudioStalledAfter,
+				SpeechStalledAfter: config.SessionWatchdog.SpeechStalledAfter,
 			},
 		)
 		watchdog.SetTranscriptActivity(transcriptActivityTracker)
 		watchdog.SetTranscriptHealthPublisher(transcriptHub)
+		watchdog.SetBotMetrics(botMediaMetricsStore)
 		watchdogCtx, cancelWatchdog := context.WithCancel(context.Background())
 		watchdog.Start(watchdogCtx)
 		closers = append(closers, func() error {
 			cancelWatchdog()
 			return nil
 		})
-		log.Printf("meeting session bot watchdog enabled. interval=%s lostAfter=%s endAfter=%s transcriptDelayedAfter=%s transcriptStalledAfter=%s",
-			config.SessionWatchdog.Interval, config.SessionWatchdog.LostAfter, config.SessionWatchdog.EndAfter, config.SessionWatchdog.TranscriptDelayedAfter, config.SessionWatchdog.TranscriptStalledAfter)
+		log.Printf("meeting session bot watchdog enabled. interval=%s lostAfter=%s endAfter=%s transcriptDelayedAfter=%s transcriptStalledAfter=%s audioSilenceAfter=%s audioStalledAfter=%s speechStalledAfter=%s",
+			config.SessionWatchdog.Interval, config.SessionWatchdog.LostAfter, config.SessionWatchdog.EndAfter, config.SessionWatchdog.TranscriptDelayedAfter, config.SessionWatchdog.TranscriptStalledAfter,
+			config.SessionWatchdog.AudioSilenceAfter, config.SessionWatchdog.AudioStalledAfter, config.SessionWatchdog.SpeechStalledAfter)
 	} else {
 		log.Printf("meeting session bot watchdog disabled (DECISCOPE_SESSION_WATCHDOG_ENABLED=false)")
 	}
@@ -189,6 +195,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 			httpadapter.WithMeetingSessionTranscriptService(transcriptRuntime.service),
 			httpadapter.WithMeetingSessionTranscriptRealtime(transcriptHub.ServeTranscriptSegments(workspaceTranscriptConfig)),
 			httpadapter.WithMeetingSessionAIAnalysisService(analysisService),
+			httpadapter.WithMeetingSessionBotMetricsStore(botMediaMetricsStore),
 		),
 		TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
 		AuthService:        authService,

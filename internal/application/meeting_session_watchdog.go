@@ -32,13 +32,20 @@ type MeetingSessionEnder interface {
 // against domain.MeetingSession.LastBotStatusAt. DelayedAfter and
 // StalledAfter are measured against TranscriptActivity.LastTranscriptAt and
 // only apply while the bot heartbeat itself is healthy (see
-// evaluateTranscriptHealth).
+// evaluateTranscriptHealth). AudioSilenceAfter, AudioStalledAfter and
+// SpeechStalledAfter are measured against the bot-reported BotMediaMetrics
+// timestamps and are only consulted once a transcript gap (>= DelayedAfter)
+// is already observed, to further classify it as silent/audio_stalled/
+// speech_stalled instead of the generic transcript_delayed/transcript_stalled.
 type MeetingSessionWatchdogConfig struct {
-	Interval     time.Duration
-	LostAfter    time.Duration
-	EndAfter     time.Duration
-	DelayedAfter time.Duration
-	StalledAfter time.Duration
+	Interval           time.Duration
+	LostAfter          time.Duration
+	EndAfter           time.Duration
+	DelayedAfter       time.Duration
+	StalledAfter       time.Duration
+	AudioSilenceAfter  time.Duration
+	AudioStalledAfter  time.Duration
+	SpeechStalledAfter time.Duration
 }
 
 // MeetingSessionWatchdog periodically scans in-flight meeting sessions and
@@ -55,6 +62,7 @@ type MeetingSessionWatchdog struct {
 
 	transcriptActivity        TranscriptActivityReader
 	transcriptHealthPublisher MeetingSessionTranscriptHealthPublisher
+	botMetrics                BotMediaMetricsReader
 
 	mu               sync.Mutex
 	healthy          map[string]bool   // sessionID -> last published bot health state
@@ -92,6 +100,16 @@ func (w *MeetingSessionWatchdog) SetTranscriptActivity(reader TranscriptActivity
 // health transitions. See SetTranscriptActivity.
 func (w *MeetingSessionWatchdog) SetTranscriptHealthPublisher(pub MeetingSessionTranscriptHealthPublisher) {
 	w.transcriptHealthPublisher = pub
+}
+
+// SetBotMetrics injects the bot-reported audio/transcript metrics reader
+// used to classify a transcript gap as silent/audio_stalled/speech_stalled
+// instead of the generic transcript_delayed/transcript_stalled. It is a
+// setter (like SetTranscriptActivity) rather than a constructor parameter so
+// existing callers are unaffected; when unset, transcript gaps always fall
+// back to the plain threshold classification.
+func (w *MeetingSessionWatchdog) SetBotMetrics(reader BotMediaMetricsReader) {
+	w.botMetrics = reader
 }
 
 // Start launches the periodic scan goroutine. It returns immediately; the
@@ -186,6 +204,13 @@ func (w *MeetingSessionWatchdog) evaluate(ctx context.Context, session domain.Me
 // warning is published (and any previously-published warning is not
 // re-evaluated here — it simply stops being refreshed until recording
 // resumes).
+//
+// Once a transcript gap is observed (elapsed time since the last transcript
+// segment reaches DelayedAfter), classifyTranscriptGap further distinguishes
+// silent/audio_stalled/speech_stalled using the bot-reported BotMediaMetrics
+// when they are available and fresh; otherwise (no metrics reader, no
+// metrics recorded yet, or metrics too old to trust) it safely degrades to
+// the original transcript_delayed/transcript_stalled threshold classification.
 func (w *MeetingSessionWatchdog) evaluateTranscriptHealth(session domain.MeetingSession, now time.Time, heartbeatHealthy bool) {
 	if w.transcriptActivity == nil {
 		return
@@ -200,11 +225,8 @@ func (w *MeetingSessionWatchdog) evaluateTranscriptHealth(session domain.Meeting
 				since = 0
 			}
 			seconds = int(since.Seconds())
-			switch {
-			case w.config.StalledAfter > 0 && since >= w.config.StalledAfter:
-				desired = "transcript_stalled"
-			case w.config.DelayedAfter > 0 && since >= w.config.DelayedAfter:
-				desired = "transcript_delayed"
+			if since >= w.config.DelayedAfter {
+				desired = w.classifyTranscriptGap(session.ID, now, since)
 			}
 		}
 	}
@@ -223,6 +245,63 @@ func (w *MeetingSessionWatchdog) evaluateTranscriptHealth(session domain.Meeting
 	if w.transcriptHealthPublisher != nil {
 		w.transcriptHealthPublisher.PublishMeetingSessionTranscriptHealth(session, desired, seconds)
 	}
+}
+
+// classifyTranscriptGap decides the transcript health state to report for a
+// session whose last transcript segment is at least DelayedAfter old. It
+// first tries to classify the gap using fresh bot-reported media metrics
+// (silent/audio_stalled/speech_stalled); when that is not possible, it falls
+// back to the plain transcript_delayed/transcript_stalled threshold
+// classification.
+func (w *MeetingSessionWatchdog) classifyTranscriptGap(sessionID string, now time.Time, since time.Duration) string {
+	if w.botMetrics != nil {
+		if m, ok := w.botMetrics.Get(sessionID); ok && m.HasMetrics && !m.ReceivedAt.IsZero() {
+			metricsAge := now.Sub(m.ReceivedAt.UTC())
+			if metricsAge < 0 {
+				metricsAge = 0
+			}
+			if w.config.LostAfter > 0 && metricsAge < w.config.LostAfter {
+				if state, matched := classifyBotMediaGap(m, now, w.config); matched {
+					return state
+				}
+			}
+		}
+	}
+	switch {
+	case w.config.StalledAfter > 0 && since >= w.config.StalledAfter:
+		return "transcript_stalled"
+	case w.config.DelayedAfter > 0 && since >= w.config.DelayedAfter:
+		return "transcript_delayed"
+	default:
+		return "ok"
+	}
+}
+
+// classifyBotMediaGap classifies a transcript gap using the bot-reported
+// media metrics m as of now. It returns ("", false) when none of the
+// audio-based conditions apply, so the caller should fall back to the
+// transcript-gap threshold classification instead.
+func classifyBotMediaGap(m BotMediaMetrics, now time.Time, config MeetingSessionWatchdogConfig) (string, bool) {
+	audioStalled := m.AudioStalled ||
+		(!m.LastAudioSocketReceiveStallAt.IsZero() && now.Sub(m.LastAudioSocketReceiveStallAt.UTC()) < config.StalledAfter) ||
+		(!m.LastAudioFrameAt.IsZero() && now.Sub(m.LastAudioFrameAt.UTC()) >= config.AudioStalledAfter)
+	if audioStalled {
+		return "audio_stalled", true
+	}
+
+	frameRecent := !m.LastAudioFrameAt.IsZero() && now.Sub(m.LastAudioFrameAt.UTC()) < config.AudioStalledAfter
+	nonZeroAudioStale := m.LastNonZeroAudioAt.IsZero() || now.Sub(m.LastNonZeroAudioAt.UTC()) >= config.AudioSilenceAfter
+	if nonZeroAudioStale && frameRecent {
+		return "silent", true
+	}
+
+	nonZeroAudioRecent := !m.LastNonZeroAudioAt.IsZero() && now.Sub(m.LastNonZeroAudioAt.UTC()) < config.AudioSilenceAfter
+	transcriptStale := m.LastNonEmptyTranscriptAt.IsZero() || now.Sub(m.LastNonEmptyTranscriptAt.UTC()) >= config.SpeechStalledAfter
+	if nonZeroAudioRecent && transcriptStale {
+		return "speech_stalled", true
+	}
+
+	return "", false
 }
 
 func (w *MeetingSessionWatchdog) endSession(ctx context.Context, session domain.MeetingSession, elapsed time.Duration) {
@@ -247,6 +326,9 @@ func (w *MeetingSessionWatchdog) endSession(ctx context.Context, session domain.
 	if w.transcriptActivity != nil {
 		w.transcriptActivity.Forget(session.ID)
 	}
+	if w.botMetrics != nil {
+		w.botMetrics.Forget(session.ID)
+	}
 }
 
 func (w *MeetingSessionWatchdog) forgetMissing(seen map[string]struct{}) {
@@ -267,6 +349,11 @@ func (w *MeetingSessionWatchdog) forgetMissing(seen map[string]struct{}) {
 	if w.transcriptActivity != nil {
 		for _, id := range forgotten {
 			w.transcriptActivity.Forget(id)
+		}
+	}
+	if w.botMetrics != nil {
+		for _, id := range forgotten {
+			w.botMetrics.Forget(id)
 		}
 	}
 }

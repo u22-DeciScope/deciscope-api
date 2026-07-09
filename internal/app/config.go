@@ -42,6 +42,12 @@ const (
 	defaultTranscriptDelayedAfterSeconds  = 30
 	minTranscriptDelayedAfterSeconds      = 5
 	defaultTranscriptStalledAfterSeconds  = 60
+	defaultAudioSilenceAfterSeconds       = 30
+	minAudioSilenceAfterSeconds           = 5
+	defaultAudioStalledAfterSeconds       = 60
+	minAudioStalledAfterSeconds           = 5
+	defaultSpeechStalledAfterSeconds      = 60
+	minSpeechStalledAfterSeconds          = 5
 )
 
 type Config struct {
@@ -133,7 +139,9 @@ func (c AIConfig) Enabled() bool {
 // force-stopped) and ends the meeting session instead of leaving it active
 // until the unrelated 2h stale cleanup eventually catches it. It also carries
 // the thresholds for the separate transcript health check (is text still
-// flowing, independent of the bot heartbeat).
+// flowing, independent of the bot heartbeat), and for further classifying a
+// transcript gap using bot-reported audio/transcript metrics
+// (silent/audio_stalled/speech_stalled) when those metrics are available.
 type MeetingSessionWatchdogConfig struct {
 	Enabled                bool
 	Interval               time.Duration
@@ -141,6 +149,9 @@ type MeetingSessionWatchdogConfig struct {
 	EndAfter               time.Duration
 	TranscriptDelayedAfter time.Duration
 	TranscriptStalledAfter time.Duration
+	AudioSilenceAfter      time.Duration
+	AudioStalledAfter      time.Duration
+	SpeechStalledAfter     time.Duration
 }
 
 func ConfigFromEnv() Config {
@@ -264,6 +275,9 @@ func sessionWatchdogConfigFromEnv() MeetingSessionWatchdogConfig {
 		EndAfter:               endAfter,
 		TranscriptDelayedAfter: delayedAfter,
 		TranscriptStalledAfter: stalledAfter,
+		AudioSilenceAfter:      secondsDurationFromEnv(os.Getenv("DECISCOPE_AUDIO_SILENCE_AFTER_SECONDS"), defaultAudioSilenceAfterSeconds, minAudioSilenceAfterSeconds),
+		AudioStalledAfter:      secondsDurationFromEnv(os.Getenv("DECISCOPE_AUDIO_STALLED_AFTER_SECONDS"), defaultAudioStalledAfterSeconds, minAudioStalledAfterSeconds),
+		SpeechStalledAfter:     secondsDurationFromEnv(os.Getenv("DECISCOPE_SPEECH_STALLED_AFTER_SECONDS"), defaultSpeechStalledAfterSeconds, minSpeechStalledAfterSeconds),
 	}
 }
 

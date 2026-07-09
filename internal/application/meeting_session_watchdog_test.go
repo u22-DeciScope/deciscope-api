@@ -316,6 +316,435 @@ func TestMeetingSessionWatchdogDoesNotPublishTranscriptWarningWhenNotRecordingOr
 	}
 }
 
+func TestMeetingSessionWatchdogTranscriptHealthSilentWithFreshBotMetrics(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	repository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_1",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-5 * time.Second),
+		}},
+	}
+	ender := &fakeWatchdogEnder{}
+	publisher := &fakeWatchdogPublisher{}
+	tracker := &fakeTranscriptActivityReader{}
+	transcriptPublisher := &fakeTranscriptHealthPublisher{}
+	metrics := &fakeBotMediaMetricsReader{}
+	watchdog := application.NewMeetingSessionWatchdog(repository, ender, publisher, application.MeetingSessionWatchdogConfig{
+		Interval:           15 * time.Second,
+		LostAfter:          60 * time.Second,
+		EndAfter:           180 * time.Second,
+		DelayedAfter:       30 * time.Second,
+		StalledAfter:       60 * time.Second,
+		AudioSilenceAfter:  30 * time.Second,
+		AudioStalledAfter:  60 * time.Second,
+		SpeechStalledAfter: 60 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetTranscriptActivity(tracker)
+	watchdog.SetTranscriptHealthPublisher(transcriptPublisher)
+	watchdog.SetBotMetrics(metrics)
+
+	// Transcript gap of 40s (>= DelayedAfter=30s, < StalledAfter=60s). Bot
+	// metrics are fresh: a recent audio frame arrived, but no non-zero audio
+	// (no one is speaking) and no stall signal at all: silent.
+	tracker.set("session_1", now.Add(-40*time.Second))
+	metrics.set("session_1", application.BotMediaMetrics{
+		HasMetrics:       true,
+		ReceivedAt:       now.Add(-2 * time.Second),
+		LastAudioFrameAt: now.Add(-2 * time.Second),
+	})
+
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	events := transcriptPublisher.snapshot()
+	if len(events) != 1 || events[0].sessionID != "session_1" || events[0].health != "silent" {
+		t.Fatalf("published events = %+v, want exactly one silent event for session_1", events)
+	}
+}
+
+func TestMeetingSessionWatchdogTranscriptHealthAudioStalledWithFreshBotMetrics(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	repository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_1",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-5 * time.Second),
+		}},
+	}
+	ender := &fakeWatchdogEnder{}
+	publisher := &fakeWatchdogPublisher{}
+	tracker := &fakeTranscriptActivityReader{}
+	transcriptPublisher := &fakeTranscriptHealthPublisher{}
+	metrics := &fakeBotMediaMetricsReader{}
+	watchdog := application.NewMeetingSessionWatchdog(repository, ender, publisher, application.MeetingSessionWatchdogConfig{
+		Interval:           15 * time.Second,
+		LostAfter:          60 * time.Second,
+		EndAfter:           180 * time.Second,
+		DelayedAfter:       30 * time.Second,
+		StalledAfter:       60 * time.Second,
+		AudioSilenceAfter:  30 * time.Second,
+		AudioStalledAfter:  60 * time.Second,
+		SpeechStalledAfter: 60 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetTranscriptActivity(tracker)
+	watchdog.SetTranscriptHealthPublisher(transcriptPublisher)
+	watchdog.SetBotMetrics(metrics)
+
+	tracker.set("session_1", now.Add(-40*time.Second))
+	metrics.set("session_1", application.BotMediaMetrics{
+		HasMetrics:   true,
+		ReceivedAt:   now.Add(-2 * time.Second),
+		AudioStalled: true,
+	})
+
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	events := transcriptPublisher.snapshot()
+	if len(events) != 1 || events[0].sessionID != "session_1" || events[0].health != "audio_stalled" {
+		t.Fatalf("published events = %+v, want exactly one audio_stalled event for session_1 (AudioStalled=true)", events)
+	}
+}
+
+func TestMeetingSessionWatchdogTranscriptHealthAudioStalledFromRecentReceiveStall(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	repository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_1",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-5 * time.Second),
+		}},
+	}
+	ender := &fakeWatchdogEnder{}
+	publisher := &fakeWatchdogPublisher{}
+	tracker := &fakeTranscriptActivityReader{}
+	transcriptPublisher := &fakeTranscriptHealthPublisher{}
+	metrics := &fakeBotMediaMetricsReader{}
+	watchdog := application.NewMeetingSessionWatchdog(repository, ender, publisher, application.MeetingSessionWatchdogConfig{
+		Interval:           15 * time.Second,
+		LostAfter:          60 * time.Second,
+		EndAfter:           180 * time.Second,
+		DelayedAfter:       30 * time.Second,
+		StalledAfter:       60 * time.Second,
+		AudioSilenceAfter:  30 * time.Second,
+		AudioStalledAfter:  60 * time.Second,
+		SpeechStalledAfter: 60 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetTranscriptActivity(tracker)
+	watchdog.SetTranscriptHealthPublisher(transcriptPublisher)
+	watchdog.SetBotMetrics(metrics)
+
+	tracker.set("session_1", now.Add(-40*time.Second))
+	// AudioStalled is false, but a receive-stall event was reported recently
+	// (10s ago, within StalledAfter=60s): still audio_stalled.
+	metrics.set("session_1", application.BotMediaMetrics{
+		HasMetrics:                    true,
+		ReceivedAt:                    now.Add(-2 * time.Second),
+		LastAudioFrameAt:              now.Add(-2 * time.Second),
+		LastAudioSocketReceiveStallAt: now.Add(-10 * time.Second),
+	})
+
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	events := transcriptPublisher.snapshot()
+	if len(events) != 1 || events[0].sessionID != "session_1" || events[0].health != "audio_stalled" {
+		t.Fatalf("published events = %+v, want exactly one audio_stalled event for session_1 (recent receive stall)", events)
+	}
+}
+
+func TestMeetingSessionWatchdogTranscriptHealthSpeechStalledWithFreshBotMetrics(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	repository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_1",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-5 * time.Second),
+		}},
+	}
+	ender := &fakeWatchdogEnder{}
+	publisher := &fakeWatchdogPublisher{}
+	tracker := &fakeTranscriptActivityReader{}
+	transcriptPublisher := &fakeTranscriptHealthPublisher{}
+	metrics := &fakeBotMediaMetricsReader{}
+	watchdog := application.NewMeetingSessionWatchdog(repository, ender, publisher, application.MeetingSessionWatchdogConfig{
+		Interval:           15 * time.Second,
+		LostAfter:          60 * time.Second,
+		EndAfter:           180 * time.Second,
+		DelayedAfter:       30 * time.Second,
+		StalledAfter:       60 * time.Second,
+		AudioSilenceAfter:  30 * time.Second,
+		AudioStalledAfter:  60 * time.Second,
+		SpeechStalledAfter: 60 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetTranscriptActivity(tracker)
+	watchdog.SetTranscriptHealthPublisher(transcriptPublisher)
+	watchdog.SetBotMetrics(metrics)
+
+	// Transcript gap of 40s. Bot metrics: recent non-zero audio (someone is
+	// speaking), but the last non-empty transcript is 90s old (>=
+	// SpeechStalledAfter=60s): speech recognition itself appears stuck.
+	tracker.set("session_1", now.Add(-40*time.Second))
+	metrics.set("session_1", application.BotMediaMetrics{
+		HasMetrics:               true,
+		ReceivedAt:               now.Add(-2 * time.Second),
+		LastAudioFrameAt:         now.Add(-2 * time.Second),
+		LastNonZeroAudioAt:       now.Add(-5 * time.Second),
+		LastNonEmptyTranscriptAt: now.Add(-90 * time.Second),
+	})
+
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	events := transcriptPublisher.snapshot()
+	if len(events) != 1 || events[0].sessionID != "session_1" || events[0].health != "speech_stalled" {
+		t.Fatalf("published events = %+v, want exactly one speech_stalled event for session_1", events)
+	}
+}
+
+func TestMeetingSessionWatchdogTranscriptHealthUnhealthyHeartbeatIgnoresBotMetrics(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	repository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_1",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-90 * time.Second), // unhealthy: elapsed >= LostAfter
+		}},
+	}
+	ender := &fakeWatchdogEnder{}
+	publisher := &fakeWatchdogPublisher{}
+	tracker := &fakeTranscriptActivityReader{}
+	transcriptPublisher := &fakeTranscriptHealthPublisher{}
+	metrics := &fakeBotMediaMetricsReader{}
+	watchdog := application.NewMeetingSessionWatchdog(repository, ender, publisher, application.MeetingSessionWatchdogConfig{
+		Interval:           15 * time.Second,
+		LostAfter:          60 * time.Second,
+		EndAfter:           180 * time.Second,
+		DelayedAfter:       30 * time.Second,
+		StalledAfter:       60 * time.Second,
+		AudioSilenceAfter:  30 * time.Second,
+		AudioStalledAfter:  60 * time.Second,
+		SpeechStalledAfter: 60 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetTranscriptActivity(tracker)
+	watchdog.SetTranscriptHealthPublisher(transcriptPublisher)
+	watchdog.SetBotMetrics(metrics)
+
+	tracker.set("session_1", now.Add(-200*time.Second))
+	// Metrics would classify as audio_stalled if consulted, but the bot
+	// heartbeat itself is unhealthy, so the bot outage must remain the only
+	// signal: no transcript health warning at all.
+	metrics.set("session_1", application.BotMediaMetrics{
+		HasMetrics:   true,
+		ReceivedAt:   now.Add(-2 * time.Second),
+		AudioStalled: true,
+	})
+
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if events := transcriptPublisher.snapshot(); len(events) != 0 {
+		t.Fatalf("published events = %+v, want none (bot heartbeat unhealthy must take priority over bot metrics)", events)
+	}
+}
+
+func TestMeetingSessionWatchdogTranscriptHealthFallsBackWhenBotMetricsStale(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	repository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_1",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-5 * time.Second),
+		}},
+	}
+	ender := &fakeWatchdogEnder{}
+	publisher := &fakeWatchdogPublisher{}
+	tracker := &fakeTranscriptActivityReader{}
+	transcriptPublisher := &fakeTranscriptHealthPublisher{}
+	metrics := &fakeBotMediaMetricsReader{}
+	watchdog := application.NewMeetingSessionWatchdog(repository, ender, publisher, application.MeetingSessionWatchdogConfig{
+		Interval:           15 * time.Second,
+		LostAfter:          60 * time.Second,
+		EndAfter:           180 * time.Second,
+		DelayedAfter:       30 * time.Second,
+		StalledAfter:       60 * time.Second,
+		AudioSilenceAfter:  30 * time.Second,
+		AudioStalledAfter:  60 * time.Second,
+		SpeechStalledAfter: 60 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetTranscriptActivity(tracker)
+	watchdog.SetTranscriptHealthPublisher(transcriptPublisher)
+	watchdog.SetBotMetrics(metrics)
+
+	// Transcript gap of 70s (>= StalledAfter=60s): would be transcript_stalled
+	// by the plain fallback. Bot metrics say AudioStalled=true, which would
+	// normally win as audio_stalled, but they were received 120s ago — older
+	// than the freshness limit (LostAfter=60s) — so they must be ignored and
+	// the gap must safely degrade to the plain threshold classification.
+	tracker.set("session_1", now.Add(-70*time.Second))
+	metrics.set("session_1", application.BotMediaMetrics{
+		HasMetrics:   true,
+		ReceivedAt:   now.Add(-120 * time.Second),
+		AudioStalled: true,
+	})
+
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	events := transcriptPublisher.snapshot()
+	if len(events) != 1 || events[0].sessionID != "session_1" || events[0].health != "transcript_stalled" {
+		t.Fatalf("published events = %+v, want exactly one transcript_stalled event (stale bot metrics must be ignored)", events)
+	}
+}
+
+func TestMeetingSessionWatchdogTranscriptHealthFallsBackWhenBotMetricsNeverRecorded(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	repository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_1",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-5 * time.Second),
+		}},
+	}
+	ender := &fakeWatchdogEnder{}
+	publisher := &fakeWatchdogPublisher{}
+	tracker := &fakeTranscriptActivityReader{}
+	transcriptPublisher := &fakeTranscriptHealthPublisher{}
+	// A bot metrics reader is configured, but this session never reported
+	// any metrics (Get returns ok=false): the watchdog must still safely
+	// degrade to the plain transcript_delayed/transcript_stalled threshold
+	// classification instead of erroring or reporting "ok".
+	metrics := &fakeBotMediaMetricsReader{}
+	watchdog := application.NewMeetingSessionWatchdog(repository, ender, publisher, application.MeetingSessionWatchdogConfig{
+		Interval:           15 * time.Second,
+		LostAfter:          60 * time.Second,
+		EndAfter:           180 * time.Second,
+		DelayedAfter:       30 * time.Second,
+		StalledAfter:       60 * time.Second,
+		AudioSilenceAfter:  30 * time.Second,
+		AudioStalledAfter:  60 * time.Second,
+		SpeechStalledAfter: 60 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetTranscriptActivity(tracker)
+	watchdog.SetTranscriptHealthPublisher(transcriptPublisher)
+	watchdog.SetBotMetrics(metrics)
+
+	tracker.set("session_1", now.Add(-40*time.Second)) // >= DelayedAfter(30s), < StalledAfter(60s)
+
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	events := transcriptPublisher.snapshot()
+	if len(events) != 1 || events[0].sessionID != "session_1" || events[0].health != "transcript_delayed" {
+		t.Fatalf("published events = %+v, want exactly one transcript_delayed event (no bot metrics recorded)", events)
+	}
+}
+
+func TestMeetingSessionWatchdogForgetsBotMetricsOnEndSessionAndForgetMissing(t *testing.T) {
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	endedRepository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_ended",
+			BotCallID:       "call-1",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-200 * time.Second), // >= EndAfter
+		}},
+	}
+	metrics := &fakeBotMediaMetricsReader{}
+	metrics.set("session_ended", application.BotMediaMetrics{HasMetrics: true, ReceivedAt: now})
+	watchdog := application.NewMeetingSessionWatchdog(endedRepository, &fakeWatchdogEnder{}, &fakeWatchdogPublisher{}, application.MeetingSessionWatchdogConfig{
+		Interval:  15 * time.Second,
+		LostAfter: 60 * time.Second,
+		EndAfter:  180 * time.Second,
+	})
+	watchdog.SetNow(func() time.Time { return now })
+	watchdog.SetBotMetrics(metrics)
+
+	if err := watchdog.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() (end scan) error = %v", err)
+	}
+	if _, ok := metrics.Get("session_ended"); ok {
+		t.Fatalf("endSession must forget the session's bot metrics")
+	}
+
+	// Separately: a session that simply disappears from the watchdog's
+	// listing (e.g. it left the watched status set) must also have its bot
+	// metrics forgotten via forgetMissing.
+	missingRepository := &fakeWatchdogRepository{
+		sessions: []domain.MeetingSession{{
+			ID:              "session_missing",
+			Status:          domain.MeetingSessionRecording,
+			LastBotStatusAt: now.Add(-5 * time.Second),
+		}},
+	}
+	tracker := &fakeTranscriptActivityReader{}
+	metrics2 := &fakeBotMediaMetricsReader{}
+	metrics2.set("session_missing", application.BotMediaMetrics{HasMetrics: true, ReceivedAt: now})
+	watchdog2 := application.NewMeetingSessionWatchdog(missingRepository, &fakeWatchdogEnder{}, &fakeWatchdogPublisher{}, application.MeetingSessionWatchdogConfig{
+		Interval:     15 * time.Second,
+		LostAfter:    60 * time.Second,
+		EndAfter:     180 * time.Second,
+		DelayedAfter: 30 * time.Second,
+		StalledAfter: 60 * time.Second,
+	})
+	watchdog2.SetNow(func() time.Time { return now })
+	watchdog2.SetTranscriptActivity(tracker)
+	watchdog2.SetBotMetrics(metrics2)
+
+	if err := watchdog2.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() (first scan) error = %v", err)
+	}
+	if _, ok := metrics2.Get("session_missing"); !ok {
+		t.Fatalf("precondition failed: session_missing bot metrics should still be recorded after the first scan")
+	}
+
+	missingRepository.mu.Lock()
+	missingRepository.sessions = nil
+	missingRepository.mu.Unlock()
+
+	if err := watchdog2.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() (second scan, session missing) error = %v", err)
+	}
+	if _, ok := metrics2.Get("session_missing"); ok {
+		t.Fatalf("forgetMissing must forget bot metrics for a session that dropped out of the watchdog listing")
+	}
+}
+
+type fakeBotMediaMetricsReader struct {
+	mu      sync.Mutex
+	metrics map[string]application.BotMediaMetrics
+}
+
+func (f *fakeBotMediaMetricsReader) set(sessionID string, m application.BotMediaMetrics) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.metrics == nil {
+		f.metrics = make(map[string]application.BotMediaMetrics)
+	}
+	f.metrics[sessionID] = m
+}
+
+func (f *fakeBotMediaMetricsReader) Get(sessionID string) (application.BotMediaMetrics, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, ok := f.metrics[sessionID]
+	return m, ok
+}
+
+func (f *fakeBotMediaMetricsReader) Forget(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.metrics, sessionID)
+}
+
 type fakeTranscriptActivityReader struct {
 	mu       sync.Mutex
 	activity map[string]application.TranscriptActivity

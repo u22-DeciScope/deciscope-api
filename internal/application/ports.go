@@ -123,6 +123,15 @@ type MeetingSessionTranscriptHealthPublisher interface {
 	PublishMeetingSessionTranscriptHealth(session domain.MeetingSession, transcriptHealth string, secondsSinceLastTranscript int)
 }
 
+// BotMediaMetricsReader is the read side of BotMediaMetricsStore that the
+// watchdog depends on. It is defined narrowly here, alongside the other
+// small port interfaces, so the watchdog does not depend on the store's
+// concrete type.
+type BotMediaMetricsReader interface {
+	Get(sessionID string) (BotMediaMetrics, bool)
+	Forget(sessionID string)
+}
+
 // MeetingSessionEndedObserver is notified when a meeting session transitions
 // into the Ended status. It is used to trigger the asynchronous AI final
 // summary without giving MeetingSessionService a direct dependency on the AI

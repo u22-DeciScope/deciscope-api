@@ -1917,6 +1917,179 @@ func TestFinalizeLiveAnalysisTreeNeverPrunesEdgesFromNonPrimaryTopicNode(t *test
 	}
 }
 
+func TestChooseOrphanParentIDAttachesDetailNodesUnderMajorTopicNotRoot(t *testing.T) {
+	// root topic + 大分類(major category)topic 1個 + 詳細(issue)ノード5個をすべて
+	// 孤立(edgeなし)の状態で渡す。平坦化バグでは全詳細ノードがrootへ直付けされて
+	// いたが、大分類topicが存在するときは詳細ノードはそちら経由でぶら下がり、
+	// rootのout-degreeは大分類1個分だけに収まらなければならない。
+	diff := &liveAnalysisTree{
+		Nodes: []liveAnalysisTreeNode{
+			{ID: "topic-root", Kind: "topic", Label: "root"},
+			{ID: "topic-major", Kind: "topic", Label: "大分類"},
+			{ID: "issue-1", Kind: "issue", Label: "詳細1"},
+			{ID: "issue-2", Kind: "issue", Label: "詳細2"},
+			{ID: "issue-3", Kind: "issue", Label: "詳細3"},
+			{ID: "issue-4", Kind: "issue", Label: "詳細4"},
+			{ID: "issue-5", Kind: "issue", Label: "詳細5"},
+		},
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+
+	tree := mergeLiveAnalysisTree(nil, diff, map[string]struct{}{}, "", nil, stats)
+	if tree == nil {
+		t.Fatal("tree = nil, want non-nil")
+	}
+	if got := countLiveAnalysisTopicChildren("topic-root", tree.Edges); got != 1 {
+		t.Fatalf("root out-degree = %d, want 1 (only topic-major hangs directly off root)", got)
+	}
+	for _, id := range []string{"issue-1", "issue-2", "issue-3", "issue-4", "issue-5"} {
+		found := false
+		for _, edge := range tree.Edges {
+			if edge.Source == "topic-major" && edge.Target == id {
+				found = true
+			}
+			if edge.Source == "topic-root" && edge.Target == id {
+				t.Fatalf("edges = %+v, want %s attached under topic-major, not directly under root", tree.Edges, id)
+			}
+		}
+		if !found {
+			t.Fatalf("edges = %+v, want %s attached under topic-major", tree.Edges, id)
+		}
+	}
+}
+
+func TestFinalizeLiveAnalysisTreeDetectsFlatTreeByAbsoluteChildCount(t *testing.T) {
+	// 大分類topicが無いまま詳細ノード8個(flatTreeMinTopicChildren)が全てroot
+	// 直下に並ぶと、平坦化(flat tree)として検知されなければならない。
+	nodes := []liveAnalysisTreeNode{{ID: "topic-root", Kind: "topic", Label: "root"}}
+	for i := 0; i < flatTreeMinTopicChildren; i++ {
+		nodes = append(nodes, liveAnalysisTreeNode{ID: fmt.Sprintf("issue-%d", i), Kind: "issue", Label: fmt.Sprintf("詳細%d", i)})
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+
+	tree := finalizeLiveAnalysisTree(nodes, nil, "", stats)
+	if tree == nil {
+		t.Fatal("tree = nil, want non-nil")
+	}
+	if !stats.FlatTreeDetected {
+		t.Fatalf("FlatTreeDetected = false, want true (topicChildren=%d maxDepth=%d)", stats.TopicChildCount, stats.MaxDepth)
+	}
+}
+
+func TestFinalizeLiveAnalysisTreeDoesNotDetectFlatTreeWhenDeep(t *testing.T) {
+	// root + 大分類1個 + その配下に詳細ノードが連なる深いツリーでは、
+	// rootのout-degreeは1のままなので平坦化として検知してはいけない。
+	nodes := []liveAnalysisTreeNode{
+		{ID: "topic-root", Kind: "topic", Label: "root"},
+		{ID: "topic-major", Kind: "topic", Label: "大分類"},
+	}
+	for i := 0; i < flatTreeMinTopicChildren; i++ {
+		nodes = append(nodes, liveAnalysisTreeNode{ID: fmt.Sprintf("issue-%d", i), Kind: "issue", Label: fmt.Sprintf("詳細%d", i)})
+	}
+	edges := []liveAnalysisTreeEdge{{Source: "topic-root", Target: "topic-major"}}
+	for i := 0; i < flatTreeMinTopicChildren; i++ {
+		edges = append(edges, liveAnalysisTreeEdge{Source: "topic-major", Target: fmt.Sprintf("issue-%d", i)})
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+
+	tree := finalizeLiveAnalysisTree(nodes, edges, "", stats)
+	if tree == nil {
+		t.Fatal("tree = nil, want non-nil")
+	}
+	if stats.FlatTreeDetected {
+		t.Fatalf("FlatTreeDetected = true, want false (topicChildren=%d maxDepth=%d, deep tree via topic-major)", stats.TopicChildCount, stats.MaxDepth)
+	}
+	if stats.MaxDepth < 2 {
+		t.Fatalf("MaxDepth = %d, want >= 2", stats.MaxDepth)
+	}
+}
+
+func TestFinalizeLiveAnalysisTreeDetectsFlatTreeByChildRatioEvenWithoutDroppedNodes(t *testing.T) {
+	// droppedNodes=0 でも、topicChildren/totalNodes が
+	// flatTreeChildRatioThreshold(0.7)を超えれば平坦化として検知しなければ
+	// ならない。ここでは絶対数(flatTreeMinTopicChildren=8)には満たない5件の
+	// 詳細ノードだけを使い、比率側の条件だけがトリガーになることを確認する。
+	nodes := []liveAnalysisTreeNode{{ID: "topic-root", Kind: "topic", Label: "root"}}
+	for i := 0; i < 5; i++ {
+		nodes = append(nodes, liveAnalysisTreeNode{ID: fmt.Sprintf("issue-%d", i), Kind: "issue", Label: fmt.Sprintf("詳細%d", i)})
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+
+	tree := finalizeLiveAnalysisTree(nodes, nil, "", stats)
+	if tree == nil {
+		t.Fatal("tree = nil, want non-nil")
+	}
+	if stats.droppedNodes() != 0 {
+		t.Fatalf("droppedNodes() = %d, want 0", stats.droppedNodes())
+	}
+	if stats.TopicChildCount >= flatTreeMinTopicChildren {
+		t.Fatalf("TopicChildCount = %d, want below flatTreeMinTopicChildren so only the ratio condition can trigger", stats.TopicChildCount)
+	}
+	if !stats.FlatTreeDetected {
+		t.Fatalf("FlatTreeDetected = false, want true via child-ratio threshold (topicChildren=%d totalNodes=%d)", stats.TopicChildCount, len(nodes))
+	}
+}
+
+func TestFinalizeLiveAnalysisTreeReparentsRootFallbackNodeWhenMajorTopicAppearsLater(t *testing.T) {
+	// previous ラウンドでは大分類が無く、issue-x が root(primaryTopicID)から
+	// 直接ぶら下がる「救済」状態だった。今回のラウンドで大分類topicノードが
+	// 追加されたら、issue-x はその大分類配下へ付け替わり、ツリーはroot直下の
+	// 平坦な形から深さ2以上へ変わらなければならない。
+	previous := `{
+		"summary": "前回",
+		"currentTopic": "進捗確認",
+		"items": [],
+		"tree": {
+			"nodes": [
+				{"id": "topic-root", "kind": "topic", "label": "進捗確認"},
+				{"id": "issue-x", "kind": "issue", "label": "課題X"}
+			],
+			"edges": [
+				{"source": "topic-root", "target": "issue-x"}
+			]
+		}
+	}`
+	diff := `{
+		"summary": "更新",
+		"currentTopic": "進捗確認",
+		"items": [],
+		"tree": {
+			"nodes": [
+				{"id": "topic-major", "kind": "topic", "label": "大分類"}
+			],
+			"edges": []
+		}
+	}`
+
+	stats := &liveAnalysisTreeMergeStats{}
+	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous), stats)
+	if err != nil {
+		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
+	}
+	var payload liveAnalysisPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal merged payload: %v", err)
+	}
+	if stats.ReparentedNodes < 1 {
+		t.Fatalf("ReparentedNodes = %d, want >= 1", stats.ReparentedNodes)
+	}
+	if stats.MaxDepth < 2 {
+		t.Fatalf("MaxDepth = %d, want >= 2 (issue-x moved under topic-major)", stats.MaxDepth)
+	}
+	foundReparented := false
+	for _, edge := range payload.Tree.Edges {
+		if edge.Source == "topic-major" && edge.Target == "issue-x" {
+			foundReparented = true
+		}
+		if edge.Source == "topic-root" && edge.Target == "issue-x" {
+			t.Fatalf("edges = %+v, want stale topic-root -> issue-x fallback removed by reparenting", payload.Tree.Edges)
+		}
+	}
+	if !foundReparented {
+		t.Fatalf("edges = %+v, want issue-x reparented under topic-major", payload.Tree.Edges)
+	}
+}
+
 func TestParseAndValidateFinalAnalysisPayloadParsesSchema(t *testing.T) {
 	content := `{"suggestedTitle":"週次定例","overview":"概要です","decisions":[{"text":"リリース承認","importance":"high"}],"actionItems":[{"text":"資料作成","owner":"田中","due":"来週","priority":"medium"}],"openIssues":["未確定の予算"],"keyPoints":["重要な論点"],"nextMeetingTopics":["次回議題"]}`
 
