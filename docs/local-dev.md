@@ -15,6 +15,10 @@ VMなど別端末から接続する場合は、`.env` の `DECISCOPE_BACKEND_ADD
 `DECISCOPE_TRANSCRIPT_ONLY=true` の場合も、PostgreSQLへの接続自体は必要です
 （会議・認証まわりのcore repositoryだけ初期化しません）。
 
+現在のDocker優先構成では、このリポジトリのComposeでPostgreSQL、migration、Go APIを起動し、
+フロントエンドは `deciscope-web` 側で起動します。Teams BotはDocker Composeには含めず、
+Windows VM上のBotへTailscale経由で接続します。
+
 `docker compose up` を使わず `go run .` で直接起動することもできますが、
 `compose.yaml` の `postgres` serviceはPCホストへportを公開していないため、
 その場合は別途host側で到達可能なPostgreSQL（ローカルインストール、または
@@ -50,7 +54,6 @@ PORT=9090
 DECISCOPE_BACKEND_ADDR=127.0.0.1:9090
 DECISCOPE_TRANSCRIPT_ONLY=false
 DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
-DECISCOPE_WS_CLIENT_TOKEN=dev-ws-token
 DECISCOPE_WS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
 DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
 DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
@@ -58,20 +61,36 @@ DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
 UPLOAD_DIR=./uploads
 FRONTEND_URL=http://localhost:5193
 ALLOWED_ORIGINS=http://localhost:5193
+DECISCOPE_ENV=development
+DECISCOPE_SMTP_HOST=
+DECISCOPE_SMTP_PORT=587
+DECISCOPE_SMTP_USERNAME=
+DECISCOPE_SMTP_PASSWORD=
+DECISCOPE_SMTP_FROM=
 ```
 
 - `DECISCOPE_BACKEND_ADDR`: 待受address。設定時は `PORT` より優先します。
-- `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合はPostgreSQLを初期化しません。
+- `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は会議・認証まわりのcore repositoryを初期化せず、
+  文字起こし取り込みAPIだけを起動します。この場合もPostgreSQL接続は必要です。
 - `DECISCOPE_INGEST_API_KEY`: `POST /api/v1/transcript-segments` 用API key。32文字以上が必要です。
-- `DECISCOPE_WS_CLIENT_TOKEN`: `GET /api/v1/transcript-segments` と
-  `WS /api/v1/ws/transcript-segments` 用の開発client token。未設定なら認証なしです。
 - `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketを許可するOriginのカンマ区切り。
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います。
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません。
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御APIのHTTP timeout秒数。既定値は `10` です。
 - `UPLOAD_DIR`: mock uploadの保存先。
-- `FRONTEND_URL`: CORSの基準origin。未指定時は `http://localhost:5193`。
+- `FRONTEND_URL`: CORSの基準originであり、招待メール内の参加リンクのbase URLにも使います。
 - `ALLOWED_ORIGINS`: CORS許可originのカンマ区切り。
+- `DECISCOPE_ENV`: `development` (既定) / `production`。development でSMTP未設定の場合、
+  ワークスペース招待メールは送信されず、招待URL (生tokenを含む) をログに出力します。
+  production でSMTP未設定の場合は招待作成が失敗します。
+- `DECISCOPE_SMTP_*`: ワークスペース招待メールのSMTP設定。`HOST` と `FROM` の両方を
+  設定すると実際に送信します。`USERNAME` 未設定なら認証なしで接続します。
+- `DECISCOPE_CREATE_SAMPLE_MEETING_ON_FIRST_WORKSPACE`: 所属0件のユーザーが最初の
+  ワークスペースを作成したとき、サンプル会議 (終了済みTeams会議 + 文字起こし +
+  議論ツリー / 分析カード) を1件投入します。未設定なら development で有効、production で無効。
+- `DECISCOPE_SEED_DEMO_DATA`: 固定デモワークスペース (`ws_demo_deciscope`) を投入する
+  旧式の開発用 seed。ログイン時の自動参加は廃止済みで、通常フローでは使いません。
+  初回ログインフローの確認では `false` のままにしてください。
 
 ## 動作確認
 
@@ -152,7 +171,9 @@ Invoke-RestMethod `
     -Body $body
 ```
 
-Teams会議URLを登録し、VM Botへ参加命令を送ります。
+Teams会議URLを登録し、VM Botへ参加命令を送ります。ブラウザUIと同じ経路では
+`POST /v1/workspaces/{workspace_code}/meeting-sessions` を使います。次の例は
+API-keyで確認する互換/手動ルートです。
 
 ```powershell
 $body = @{
@@ -167,19 +188,9 @@ Invoke-WebRequest `
     -UseBasicParsing
 ```
 
-保存済み文字起こしを履歴取得します。
-
-```http
-GET http://<PC_TAILSCALE_IP>:9090/api/v1/transcript-segments?callId=manual-test-call&limit=100&token=dev-ws-token
-```
-
-リアルタイム配信は次へWebSocket接続します。VM BotはWebSocketへ接続せず、
-既存のHTTP POSTだけを使います。
-
-```text
-ws://localhost:9090/api/v1/ws/transcript-segments?token=dev-ws-token
-ws://localhost:9090/api/v1/ws/transcript-segments?callId=manual-test-call&token=dev-ws-token
-```
+保存済み文字起こしとリアルタイム配信は、ログイン済みフロントエンドから
+workspace-scoped transcript APIを使って確認します。VM BotはWebSocketへ接続せず、
+既存のAPI-key付きHTTP POSTだけを使います。
 
 フロントエンドもDocker Composeで動かす場合、フロントエンドコンテナからGo APIへは
 `http://api:9090` で到達できます。ブラウザからは `api:9090` ではなく、

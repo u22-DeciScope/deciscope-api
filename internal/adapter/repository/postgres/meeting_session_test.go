@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -147,6 +148,164 @@ func TestMeetingSessionRepositoryMarksStaleSessions(t *testing.T) {
 	}
 	if len(stale) != 1 || stale[0].Status != domain.MeetingSessionStale {
 		t.Fatalf("stale = %+v", stale)
+	}
+}
+
+func TestMeetingSessionRepositoryTouchMeetingSessionBotSeenUpdatesActiveSession(t *testing.T) {
+	repository, db := newTestMeetingSessionRepository(t)
+	resetTestDatabase(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC)
+	session := domain.MeetingSession{
+		ID:          "session_heartbeat",
+		JoinURL:     "https://teams.microsoft.com/l/meetup-join/heartbeat",
+		JoinURLHash: "heartbeat-hash",
+		Status:      domain.MeetingSessionRecording,
+		RequestedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if _, err := repository.CreateMeetingSession(ctx, session); err != nil {
+		t.Fatalf("CreateMeetingSession() error = %v", err)
+	}
+
+	seenAt := now.Add(20 * time.Second)
+	updated, touched, err := repository.TouchMeetingSessionBotSeen(ctx, session.ID, seenAt)
+	if err != nil {
+		t.Fatalf("TouchMeetingSessionBotSeen() error = %v", err)
+	}
+	if !touched {
+		t.Fatalf("touched = %v, want true for a non-terminal session", touched)
+	}
+	if updated.Status != domain.MeetingSessionRecording {
+		t.Fatalf("status changed unexpectedly: %+v", updated)
+	}
+	if !updated.LastBotStatusAt.Equal(seenAt) || !updated.UpdatedAt.Equal(seenAt) {
+		t.Fatalf("updated = %+v, want lastBotStatusAt/updatedAt = %s", updated, seenAt)
+	}
+}
+
+func TestMeetingSessionRepositoryTouchMeetingSessionBotSeenDoesNotReviveTerminalSession(t *testing.T) {
+	repository, db := newTestMeetingSessionRepository(t)
+	resetTestDatabase(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC)
+	session := domain.MeetingSession{
+		ID:          "session_ended",
+		JoinURL:     "https://teams.microsoft.com/l/meetup-join/ended",
+		JoinURLHash: "ended-hash",
+		Status:      domain.MeetingSessionRecording,
+		RequestedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if _, err := repository.CreateMeetingSession(ctx, session); err != nil {
+		t.Fatalf("CreateMeetingSession() error = %v", err)
+	}
+	endedAt := now.Add(time.Minute)
+	if _, err := repository.UpdateMeetingSessionStatus(ctx, domain.MeetingSessionStatusUpdate{
+		SessionID: session.ID,
+		Status:    domain.MeetingSessionEnded,
+		EndedAt:   &endedAt,
+		UpdatedAt: endedAt,
+	}); err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus(ended) error = %v", err)
+	}
+
+	seenAt := now.Add(2 * time.Minute)
+	updated, touched, err := repository.TouchMeetingSessionBotSeen(ctx, session.ID, seenAt)
+	if err != nil {
+		t.Fatalf("TouchMeetingSessionBotSeen() error = %v", err)
+	}
+	if touched {
+		t.Fatalf("touched = %v, want false for a terminal session", touched)
+	}
+	if updated.Status != domain.MeetingSessionEnded {
+		t.Fatalf("status = %s, want ended (session should not be revived)", updated.Status)
+	}
+	if updated.LastBotStatusAt.Equal(seenAt) {
+		t.Fatalf("LastBotStatusAt should not have been updated for a terminal session: %+v", updated)
+	}
+}
+
+func TestMeetingSessionRepositoryTouchMeetingSessionBotSeenReturnsNotFoundForUnknownSession(t *testing.T) {
+	repository, db := newTestMeetingSessionRepository(t)
+	resetTestDatabase(t, db)
+
+	if _, _, err := repository.TouchMeetingSessionBotSeen(context.Background(), "session_missing", time.Now()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("TouchMeetingSessionBotSeen() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestMeetingSessionRepositoryListMeetingSessionsForBotWatchdogFiltersByStatusAndLastBotStatusAt(t *testing.T) {
+	repository, db := newTestMeetingSessionRepository(t)
+	resetTestDatabase(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC)
+
+	// In scope: recording status with a heartbeat recorded.
+	inScope := domain.MeetingSession{
+		ID:          "session_in_scope",
+		JoinURL:     "https://teams.microsoft.com/l/meetup-join/in-scope",
+		JoinURLHash: "in-scope-hash",
+		Status:      domain.MeetingSessionRecording,
+		RequestedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if _, err := repository.CreateMeetingSession(ctx, inScope); err != nil {
+		t.Fatalf("CreateMeetingSession(inScope) error = %v", err)
+	}
+	if _, _, err := repository.TouchMeetingSessionBotSeen(ctx, inScope.ID, now.Add(time.Second)); err != nil {
+		t.Fatalf("TouchMeetingSessionBotSeen(inScope) error = %v", err)
+	}
+
+	// Out of scope: recording status but no heartbeat recorded yet (zero LastBotStatusAt).
+	noHeartbeat := domain.MeetingSession{
+		ID:          "session_no_heartbeat",
+		JoinURL:     "https://teams.microsoft.com/l/meetup-join/no-heartbeat",
+		JoinURLHash: "no-heartbeat-hash",
+		Status:      domain.MeetingSessionRecording,
+		RequestedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if _, err := repository.CreateMeetingSession(ctx, noHeartbeat); err != nil {
+		t.Fatalf("CreateMeetingSession(noHeartbeat) error = %v", err)
+	}
+
+	// Out of scope: terminal status even though it has a heartbeat.
+	ended := domain.MeetingSession{
+		ID:          "session_ended_scope",
+		JoinURL:     "https://teams.microsoft.com/l/meetup-join/ended-scope",
+		JoinURLHash: "ended-scope-hash",
+		Status:      domain.MeetingSessionRecording,
+		RequestedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if _, err := repository.CreateMeetingSession(ctx, ended); err != nil {
+		t.Fatalf("CreateMeetingSession(ended) error = %v", err)
+	}
+	if _, _, err := repository.TouchMeetingSessionBotSeen(ctx, ended.ID, now.Add(time.Second)); err != nil {
+		t.Fatalf("TouchMeetingSessionBotSeen(ended) error = %v", err)
+	}
+	endedAt := now.Add(2 * time.Second)
+	if _, err := repository.UpdateMeetingSessionStatus(ctx, domain.MeetingSessionStatusUpdate{
+		SessionID: ended.ID,
+		Status:    domain.MeetingSessionEnded,
+		EndedAt:   &endedAt,
+		UpdatedAt: endedAt,
+	}); err != nil {
+		t.Fatalf("UpdateMeetingSessionStatus(ended) error = %v", err)
+	}
+
+	sessions, err := repository.ListMeetingSessionsForBotWatchdog(ctx)
+	if err != nil {
+		t.Fatalf("ListMeetingSessionsForBotWatchdog() error = %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != inScope.ID {
+		t.Fatalf("sessions = %+v, want exactly [%s]", sessions, inScope.ID)
 	}
 }
 

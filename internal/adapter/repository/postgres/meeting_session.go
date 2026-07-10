@@ -174,7 +174,7 @@ func (r *MeetingSessionRepository) MarkStaleMeetingSessions(ctx context.Context,
 				ELSE last_error
 			END,
 			updated_at = $2
-		WHERE status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording')
+		WHERE status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording', 'speech_error', 'speech_throttled')
 			AND updated_at < $1
 		RETURNING id, COALESCE(workspace_id, ''), COALESCE(created_by_user_id, ''), COALESCE(meeting_id, ''),
 			join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
@@ -361,6 +361,72 @@ func (r *MeetingSessionRepository) UpdateMeetingSessionMetadata(ctx context.Cont
 	return scanMeetingSession(row)
 }
 
+// TouchMeetingSessionBotSeen records a bot heartbeat by bumping
+// last_bot_status_at and updated_at only; status is never touched. Sessions
+// already in a terminal status (ended/failed/stale) are left untouched so a
+// stray late heartbeat cannot revive them; the current session is still
+// returned with touched=false so the caller (the heartbeat HTTP handler) can
+// respond with 200 and the up-to-date session either way.
+func (r *MeetingSessionRepository) TouchMeetingSessionBotSeen(ctx context.Context, sessionID string, seenAt time.Time) (*domain.MeetingSession, bool, error) {
+	row := r.db.QueryRowContext(ctx, `
+		UPDATE meeting_sessions
+		SET last_bot_status_at = $2,
+			updated_at = $2
+		WHERE id = $1
+			AND status NOT IN ('ended', 'failed', 'stale')
+		RETURNING id, COALESCE(workspace_id, ''), COALESCE(created_by_user_id, ''), COALESCE(meeting_id, ''),
+			join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
+			title_updated_at, COALESCE(user_provided_title, ''), COALESCE(graph_title, ''),
+			COALESCE(provider, ''), COALESCE(external_meeting_id, ''), COALESCE(join_meeting_id, ''),
+			COALESCE(join_web_url, ''), COALESCE(canonical_join_web_url, ''),
+			COALESCE(thread_id, ''), COALESCE(organizer_id, ''), COALESCE(organizer_name, ''), COALESCE(organizer_email, ''),
+			scheduled_start_at, scheduled_end_at, COALESCE(title_resolution_error_code, ''),
+			COALESCE(title_resolution_error_message, ''), title_resolved_at, COALESCE(purpose, ''), COALESCE(context, ''), COALESCE(agenda, ''), COALESCE(decision_points, ''), COALESCE(concerns, ''), COALESCE(expected_output, ''), COALESCE(custom_instruction, ''), status,
+			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
+			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
+	`, sessionID, seenAt.UTC().Format(time.RFC3339Nano))
+	updated, err := scanMeetingSession(row)
+	if err == nil {
+		return updated, true, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return nil, false, err
+	}
+	// 0 rows updated: either the session does not exist, or it is terminal.
+	// Fall back to a plain read so the two cases are distinguished (ErrNotFound
+	// vs. an unmodified terminal session).
+	existing, getErr := r.GetMeetingSession(ctx, sessionID)
+	if getErr != nil {
+		return nil, false, getErr
+	}
+	return existing, false, nil
+}
+
+// ListMeetingSessionsForBotWatchdog returns the sessions the watchdog needs to
+// evaluate: those whose status implies a bot should still be attached, and
+// that have received at least one heartbeat/status update so far.
+func (r *MeetingSessionRepository) ListMeetingSessionsForBotWatchdog(ctx context.Context) ([]domain.MeetingSession, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, COALESCE(workspace_id, ''), COALESCE(created_by_user_id, ''), COALESCE(meeting_id, ''),
+			join_url, join_url_hash, COALESCE(title, ''), COALESCE(title_source, ''),
+			title_updated_at, COALESCE(user_provided_title, ''), COALESCE(graph_title, ''),
+			COALESCE(provider, ''), COALESCE(external_meeting_id, ''), COALESCE(join_meeting_id, ''),
+			COALESCE(join_web_url, ''), COALESCE(canonical_join_web_url, ''),
+			COALESCE(thread_id, ''), COALESCE(organizer_id, ''), COALESCE(organizer_name, ''), COALESCE(organizer_email, ''),
+			scheduled_start_at, scheduled_end_at, COALESCE(title_resolution_error_code, ''),
+			COALESCE(title_resolution_error_message, ''), title_resolved_at, COALESCE(purpose, ''), COALESCE(context, ''), COALESCE(agenda, ''), COALESCE(decision_points, ''), COALESCE(concerns, ''), COALESCE(expected_output, ''), COALESCE(custom_instruction, ''), status,
+			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
+			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
+		FROM meeting_sessions
+		WHERE status IN ('joined', 'active', 'recording', 'speech_error', 'speech_throttled')
+			AND last_bot_status_at IS NOT NULL
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list meeting sessions for bot watchdog: %w", err)
+	}
+	return scanMeetingSessionRows(rows)
+}
+
 type meetingSessionQueryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
@@ -380,7 +446,7 @@ func findReusableMeetingSessionByWorkspaceJoinURLHash(ctx context.Context, query
 		FROM meeting_sessions
 		WHERE join_url_hash = $1
 			AND (($2 = '' AND workspace_id IS NULL) OR workspace_id = $2)
-			AND status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording')
+			AND status IN ('requested', 'pending_join', 'command_sent', 'joining', 'joined', 'active', 'recording', 'speech_error', 'speech_throttled')
 		ORDER BY updated_at DESC, created_at DESC
 		LIMIT 1
 	`, joinURLHash, workspaceID)

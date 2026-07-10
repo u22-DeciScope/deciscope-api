@@ -110,6 +110,11 @@ func (api *AuthAPI) setSessionCookie(w http.ResponseWriter, token, expiresAt str
 }
 
 func sessionResponse(user *domain.User, workspaces []domain.Workspace, session *domain.Session) map[string]any {
+	// nil sliceは "workspaces": null にシリアライズされ、クライアント側の .map() 呼び出しを
+	// クラッシュさせるため、必ず空配列を返す。
+	if workspaces == nil {
+		workspaces = []domain.Workspace{}
+	}
 	return map[string]any{
 		"user": user, "workspaces": workspaces, "current_workspace_id": session.CurrentWorkspaceID,
 		"expires_at": session.ExpiresAt,

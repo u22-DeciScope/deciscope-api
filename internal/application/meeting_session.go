@@ -20,10 +20,11 @@ const DefaultMeetingSessionStaleAfter = 2 * time.Hour
 const defaultMeetingSessionTitle = "Teams会議"
 
 type MeetingSessionService struct {
-	repository MeetingSessionRepository
-	commander  BotJoinCommander
-	publisher  MeetingSessionPublisher
-	now        func() time.Time
+	repository    MeetingSessionRepository
+	commander     BotJoinCommander
+	publisher     MeetingSessionPublisher
+	endedObserver MeetingSessionEndedObserver
+	now           func() time.Time
 }
 
 type MeetingSessionCreateResult struct {
@@ -109,6 +110,14 @@ func NewMeetingSessionService(repository MeetingSessionRepository, commander Bot
 		publisher:  statusPublisher,
 		now:        time.Now,
 	}
+}
+
+// SetMeetingSessionEndedObserver registers an observer notified whenever a
+// session transitions into the Ended status. It is an optional,
+// post-construction dependency so the existing NewMeetingSessionService
+// constructor signature and call sites do not change.
+func (s *MeetingSessionService) SetMeetingSessionEndedObserver(observer MeetingSessionEndedObserver) {
+	s.endedObserver = observer
 }
 
 func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input MeetingSessionCreateInput) (*MeetingSessionCreateResult, error) {
@@ -229,6 +238,27 @@ func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input 
 	return &MeetingSessionCreateResult{Session: updated}, nil
 }
 
+// RecordMeetingSessionHeartbeat records that the bot is still alive for
+// sessionID. Unlike UpdateMeetingSessionStatus, it never changes status and
+// never publishes a WebSocket event: heartbeats arrive frequently (e.g. every
+// 20s) and broadcasting one to every subscribed client on every heartbeat
+// would be pure spam. The watchdog goroutine is the only thing that reacts to
+// bot liveness changes, and it does so by polling last_bot_status_at rather
+// than being notified here.
+func (s *MeetingSessionService) RecordMeetingSessionHeartbeat(ctx context.Context, sessionID string) (*domain.MeetingSession, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("%w: sessionId is required", domain.ErrInvalidArgument)
+	}
+	now := s.now().UTC()
+	session, touched, err := s.repository.TouchMeetingSessionBotSeen(ctx, sessionID, now)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Meeting session heartbeat received. sessionId=%s status=%s touched=%t seenAt=%s", sessionID, session.Status, touched, now.Format(time.RFC3339Nano))
+	return session, nil
+}
+
 func (s *MeetingSessionService) GetMeetingSession(ctx context.Context, sessionID string) (*domain.MeetingSession, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -288,6 +318,12 @@ func (s *MeetingSessionService) EndMeetingSession(ctx context.Context, input Mee
 		return nil, ErrBotControlNotConfigured
 	}
 
+	// Bot command failures are best-effort: the VM Bot may already be
+	// stopped/unreachable (e.g. it crashed or was killed out-of-band), and in
+	// that case there is no bot left to command anyway. Failing to notify it
+	// must not prevent the session from being marked ended, or the meeting
+	// screen can never be closed from the frontend.
+	message := reason
 	if err := s.commander.EndMeetingSession(ctx, BotEndCommand{
 		SessionID: previous.ID,
 		BotCallID: previous.BotCallID,
@@ -296,21 +332,22 @@ func (s *MeetingSessionService) EndMeetingSession(ctx context.Context, input Mee
 		if errors.Is(err, ErrBotControlNotConfigured) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("%w: %v", ErrBotControlCommandFailed, err)
+		log.Printf("Meeting session end bot command failed, ending session anyway (best-effort). sessionId=%s joinUrlHash=%s botCallId=%s reason=%s error=%v", previous.ID, previous.JoinURLHash, previous.BotCallID, reason, err)
+		message = fmt.Sprintf("%s (bot end command failed: %v)", reason, err)
 	}
 
 	updated, err := s.UpdateMeetingSessionStatus(ctx, MeetingSessionStatusUpdateInput{
 		SessionID: previous.ID,
 		Status:    domain.MeetingSessionEnded,
 		BotCallID: previous.BotCallID,
-		Message:   reason,
+		Message:   message,
 		Reason:    reason,
 		Source:    "frontend_manual_end",
 	})
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Meeting session manual end completed. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s reason=%s", updated.ID, updated.JoinURLHash, previous.Status, updated.Status, updated.BotCallID, reason)
+	log.Printf("Meeting session manual end completed. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s reason=%s message=%s", updated.ID, updated.JoinURLHash, previous.Status, updated.Status, updated.BotCallID, reason, message)
 	return updated, nil
 }
 
@@ -363,6 +400,9 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 		update.CommandSentAt = &now
 	case domain.MeetingSessionJoined, domain.MeetingSessionActive, domain.MeetingSessionRecording:
 		update.JoinedAt = &now
+	case domain.MeetingSessionSpeechError, domain.MeetingSessionSpeechThrottled:
+		update.JoinedAt = &now
+		update.LastError = summarizeMeetingSessionFailure(input)
 	case domain.MeetingSessionEnded, domain.MeetingSessionStale:
 		update.EndedAt = &now
 		update.EndReason = summarizeMeetingSessionEndReason(input)
@@ -383,7 +423,20 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 			updated.ID, updated.JoinURLHash, incomingTitle, incomingTitleSource, titleDecision.Decision, updated.Title, updated.TitleSource)
 	}
 	s.publishStatusChanged(*updated)
+	if updated.Status == domain.MeetingSessionEnded {
+		previousWasTerminal := previousErr == nil && previous != nil && isTerminalMeetingSessionStatus(previous.Status)
+		if !previousWasTerminal {
+			s.notifyMeetingSessionEnded(*updated)
+		}
+	}
 	return updated, nil
+}
+
+func (s *MeetingSessionService) notifyMeetingSessionEnded(session domain.MeetingSession) {
+	if s.endedObserver == nil {
+		return
+	}
+	s.endedObserver.NotifyMeetingSessionEnded(session)
 }
 
 func (s *MeetingSessionService) UpdateMeetingSessionMetadata(ctx context.Context, input MeetingSessionMetadataUpdateInput) (*domain.MeetingSession, error) {
@@ -513,7 +566,8 @@ func shouldSuppressMeetingSessionFailure(previous domain.MeetingSession, input M
 
 func isJoinedOrBeyondMeetingStatus(status domain.MeetingSessionStatus) bool {
 	switch status {
-	case domain.MeetingSessionJoined, domain.MeetingSessionActive, domain.MeetingSessionRecording:
+	case domain.MeetingSessionJoined, domain.MeetingSessionActive, domain.MeetingSessionRecording,
+		domain.MeetingSessionSpeechError, domain.MeetingSessionSpeechThrottled:
 		return true
 	default:
 		return false
@@ -815,12 +869,10 @@ func meetingSessionCreateTitleSource(title string) string {
 	return "fallback"
 }
 
-func shouldApplyCreateTitleToReusedSession(session domain.MeetingSession, title string) bool {
-	if strings.TrimSpace(title) == "" {
-		return false
-	}
-	titleSource := strings.TrimSpace(session.TitleSource)
-	return titleSource == "" || titleSource == "fallback"
+// ユーザーが明示的にタイトルを入力して再入室した場合は、既存のタイトル
+// (Graph由来を含む)より入力値を優先する。空入力なら既存タイトルを維持する。
+func shouldApplyCreateTitleToReusedSession(_ domain.MeetingSession, title string) bool {
+	return strings.TrimSpace(title) != ""
 }
 
 type meetingSessionTitleUpdateDecision struct {
@@ -846,10 +898,10 @@ func decideMeetingSessionTitleUpdate(previous *domain.MeetingSession, incomingTi
 	}
 	if incomingRank >= oldRank {
 		switch incomingRank {
+		case 4:
+			return meetingSessionTitleUpdateDecision{ApplyTitle: true, Decision: "overwrite_with_user_input"}
 		case 3:
 			return meetingSessionTitleUpdateDecision{ApplyTitle: true, Decision: "overwrite_with_graph"}
-		case 2:
-			return meetingSessionTitleUpdateDecision{ApplyTitle: true, Decision: "overwrite_with_user_input"}
 		default:
 			if oldRank <= 1 {
 				return meetingSessionTitleUpdateDecision{ApplyTitle: true, Decision: "overwrite_with_fallback"}
@@ -859,24 +911,32 @@ func decideMeetingSessionTitleUpdate(previous *domain.MeetingSession, incomingTi
 	return meetingSessionTitleUpdateDecision{Decision: "keep_existing"}
 }
 
+// タイトルの優先順位。ユーザーが画面で入力したタイトル(user_input)を最優先とし、
+// Teams/Graph由来のタイトルでは上書きしない(Graph名は graph_title として別途保持し、
+// 一覧画面などで補助表示する)。
 func meetingSessionTitleSourceRank(source string) int {
-	source = strings.ToLower(strings.TrimSpace(source))
 	switch {
-	case source == "graph_online_meeting" ||
-		source == "graph_calendar_event" ||
-		source == "teams_metadata" ||
-		strings.HasPrefix(source, "graph_"):
+	case strings.EqualFold(strings.TrimSpace(source), "user_input"):
+		return 4
+	case isGraphMeetingTitleSource(source):
 		return 3
-	case source == "user_input":
-		return 2
-	case source == "fallback":
+	case strings.EqualFold(strings.TrimSpace(source), "fallback"):
 		return 1
 	default:
-		if source == "" {
+		if strings.TrimSpace(source) == "" {
 			return 0
 		}
 		return 1
 	}
+}
+
+// Teams/Graph 由来のタイトルソースかどうか(graph_title の保存判定にも使う)。
+func isGraphMeetingTitleSource(source string) bool {
+	source = strings.ToLower(strings.TrimSpace(source))
+	return source == "graph_online_meeting" ||
+		source == "graph_calendar_event" ||
+		source == "teams_metadata" ||
+		strings.HasPrefix(source, "graph_")
 }
 
 func metadataUserProvidedTitle(input MeetingSessionMetadataUpdateInput, titleSource string, title string) string {
@@ -893,7 +953,9 @@ func metadataGraphTitle(input MeetingSessionMetadataUpdateInput, titleSource str
 	if value := strings.TrimSpace(input.GraphTitle); value != "" {
 		return value
 	}
-	if meetingSessionTitleSourceRank(titleSource) >= 3 {
+	// タイトルとして採用されなかった場合(user_input優先)でも、Graph由来の
+	// タイトルは graph_title として保存する。
+	if isGraphMeetingTitleSource(titleSource) {
 		return strings.TrimSpace(title)
 	}
 	return ""

@@ -2,6 +2,12 @@
 
 DeciScope の画面更新は、会議ごとのイベントを REST と WebSocket で受け取る設計です。
 
+このドキュメントは `/v1/realtime` (meeting_id ベース) のイベントを扱います。Teams Bot
+会議セッションの `transcript_segment.created` / `meeting_session.status_changed` /
+`ai_analysis.updated` / `meeting_session.bot_health_changed` イベントは
+`/v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream` で
+配信され、詳細は [api.md](./api.md) を参照してください。
+
 ## WebSocket
 
 ```text
@@ -137,7 +143,14 @@ transcript.partial
   "version": 1,
   "mode": "snapshot",
   "nodes": [
-    { "id": "n_topic_price", "kind": "topic", "label": "価格改定" }
+    {
+      "id": "n_topic_price",
+      "kind": "topic",
+      "label": "価格改定",
+      "status": "open",
+      "description": "価格改定の対象と時期について整理している。",
+      "relatedItemIds": ["an_001"]
+    }
   ],
   "edges": []
 }
@@ -146,6 +159,8 @@ transcript.partial
 議論構造ツリーを画面に反映するためのイベントです。
 
 ノードの `kind` は `topic` / `issue` / `question` / `risk` / `decision` を使います。フロントエンドの議論ツリー（`DiscussionTree`）はこの語彙で色分けし、未知の `kind` は `topic` 表示にフォールバックします。`analysis.delta` の `kind`（`issue` / `question` / `risk`）と語彙を揃えています。
+
+`status` は任意で、live analysis では `open` / `updated` / `resolved` を使います。`description` はノード内容を短く説明する任意フィールド、`relatedItemIds` は関連する `analysis.delta` / live analysis `items` のid配列です。live analysisでは存在しないitem idはサーバー側で除外されますが、解消済みitem idは `resolved` カードへの関連として保持されます。
 
 ### speaker.summary.delta
 

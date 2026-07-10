@@ -31,6 +31,10 @@ func requireWorkspaceAdminOrOwner(service WorkspaceAccessUseCases) func(http.Han
 	return requireWorkspaceRole(service, domain.CanManageMeetingSessions)
 }
 
+func requireWorkspaceOwnerRole(service WorkspaceAccessUseCases) func(http.Handler) http.Handler {
+	return requireWorkspaceRole(service, domain.IsWorkspaceOwner)
+}
+
 func requireWorkspaceRole(service WorkspaceAccessUseCases, allowed func(string) bool) func(http.Handler) http.Handler {
 	return requireAccess(func(r *http.Request, session *appauth.SessionResult) error {
 		workspace, err := service.GetWorkspace(r.Context(), session.User.ID, chi.URLParam(r, "workspace_code"))

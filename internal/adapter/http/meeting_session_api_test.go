@@ -30,6 +30,7 @@ func TestMeetingSessionAPICreatesSession(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc","title":"週次定例","candidateUserPrincipalNames":["user@example.com"],"purpose":"意思決定","decision_points":"リリース可否"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
 	resp := httptest.NewRecorder()
 	api.Create(resp, req)
 
@@ -57,11 +58,45 @@ func TestMeetingSessionAPICreateMapsBotConfigError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
 	resp := httptest.NewRecorder()
 	api.Create(resp, req)
 
 	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+// レガシー (非workspace) の作成・取得・終了はAPIキーがないと 401 になる。
+// ブラウザからの直接呼び出しでBot参加や会議終了ができてしまうのを防ぐ。
+func TestMeetingSessionAPILegacyEndpointsRequireAPIKey(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+
+	create := httptest.NewRequest(http.MethodPost, "/api/v1/meeting-sessions", strings.NewReader(`{"joinUrl":"https://teams.microsoft.com/l/meetup-join/abc"}`))
+	create.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	api.Create(createResp, create)
+	if createResp.Code != http.StatusUnauthorized {
+		t.Fatalf("Create without api key = %d, want 401", createResp.Code)
+	}
+
+	get := requestWithSessionParam(http.MethodGet, "/api/v1/meeting-sessions/session_1", "")
+	getResp := httptest.NewRecorder()
+	api.Get(getResp, get)
+	if getResp.Code != http.StatusUnauthorized {
+		t.Fatalf("Get without api key = %d, want 401", getResp.Code)
+	}
+
+	end := requestWithSessionParam(http.MethodPost, "/api/v1/meeting-sessions/session_1/end", `{"reason":"manual_end_requested"}`)
+	end.Header.Set("Content-Type", "application/json")
+	endResp := httptest.NewRecorder()
+	api.End(endResp, end)
+	if endResp.Code != http.StatusUnauthorized {
+		t.Fatalf("End without api key = %d, want 401", endResp.Code)
+	}
+	if service.createInput.JoinURL != "" || service.endInput.SessionID != "" {
+		t.Fatalf("service should not be called without api key: create=%+v end=%+v", service.createInput, service.endInput)
 	}
 }
 
@@ -163,6 +198,7 @@ func TestMeetingSessionAPIEndsSession(t *testing.T) {
 	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
 	req := requestWithSessionParam(http.MethodPost, "/api/v1/meeting-sessions/session_1/end", `{"reason":"manual_end_requested"}`)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
 	resp := httptest.NewRecorder()
 
 	api.End(resp, req)
@@ -182,6 +218,173 @@ func TestMeetingSessionAPIEndsSession(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionAPIRecordBotHeartbeatRequiresAPIKey(t *testing.T) {
+	api := NewMeetingSessionAPI(&fakeMeetingSessionUseCases{}, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", `{"botCallId":"call-1"}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeat(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", `{"botCallId":"call-1"}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.heartbeatSessionID != "session_1" {
+		t.Fatalf("heartbeatSessionID = %q, want session_1", service.heartbeatSessionID)
+	}
+	var body meetingSessionResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.SessionID != "session_1" || body.Status != "recording" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeatWithoutBodySucceeds(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	router := NewRouter(RouterDependencies{MeetingSessionAPI: api})
+
+	// No body and no Content-Type header at all: chi's AllowContentType
+	// middleware and the handler's own check must both let this through
+	// since docs/api.md documents the heartbeat body as optional.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", nil)
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.heartbeatSessionID != "session_1" {
+		t.Fatalf("heartbeatSessionID = %q, want session_1", service.heartbeatSessionID)
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeatReturnsNotFoundForUnknownSession(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", `{}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeatRecordsBotMediaMetrics(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	metricsStore := application.NewBotMediaMetricsStore()
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionBotMetricsStore(metricsStore))
+	body := `{
+		"botCallId": "call-1",
+		"lastAudioFrameAtUtc": "2026-06-27T00:04:58Z",
+		"lastNonZeroAudioAtUtc": "2026-06-27T00:04:50Z",
+		"lastNonEmptyTranscriptAtUtc": "2026-06-27T00:04:30Z",
+		"audioStalled": true,
+		"audioSocketReceiveStallCount": 3
+	}`
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	metrics, ok := metricsStore.Get("session_1")
+	if !ok {
+		t.Fatalf("metrics store should have recorded session_1's bot media metrics")
+	}
+	if !metrics.HasMetrics || !metrics.AudioStalled || metrics.AudioSocketReceiveStallCount != 3 {
+		t.Fatalf("recorded metrics = %+v, want HasMetrics=true AudioStalled=true AudioSocketReceiveStallCount=3", metrics)
+	}
+	if metrics.LastAudioFrameAt.IsZero() || metrics.LastNonZeroAudioAt.IsZero() || metrics.LastNonEmptyTranscriptAt.IsZero() {
+		t.Fatalf("recorded metrics timestamps not parsed: %+v", metrics)
+	}
+	if metrics.ReceivedAt.IsZero() {
+		t.Fatalf("recorded metrics ReceivedAt should be stamped by the store, got zero value")
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeatBareBodyDoesNotRecordMetrics(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	metricsStore := application.NewBotMediaMetricsStore()
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionBotMetricsStore(metricsStore))
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", `{"botCallId":"call-1"}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if _, ok := metricsStore.Get("session_1"); ok {
+		t.Fatalf("a heartbeat with only botCallId (no audio/transcript metrics) must not be recorded")
+	}
+}
+
 func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *testing.T) {
 	service := &fakeMeetingSessionUseCases{
 		session: domain.MeetingSession{
@@ -196,6 +399,7 @@ func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *
 	var gotPath string
 	var gotSessionID string
 	var gotCallID string
+	var gotToken string
 	api := NewMeetingSessionAPI(
 		service,
 		testTranscriptAPIKey,
@@ -203,10 +407,11 @@ func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *
 			gotPath = r.URL.Path
 			gotSessionID = r.URL.Query().Get("sessionId")
 			gotCallID = r.URL.Query().Get("callId")
+			gotToken = r.URL.Query().Get("token")
 			w.WriteHeader(http.StatusNoContent)
 		}),
 	)
-	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream?callId=call-ignored", "")
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream?callId=call-ignored&token=must-not-forward", "")
 	resp := httptest.NewRecorder()
 
 	api.StreamWorkspaceTranscriptSegments(resp, req)
@@ -214,18 +419,164 @@ func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
 	}
-	if gotPath != "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream" || gotSessionID != "session_1" || gotCallID != "" {
+	if gotPath != "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream" || gotSessionID != "session_1" || gotCallID != "" || gotToken != "" {
 		t.Fatalf("forwarded path=%q sessionId=%q callId=%q", gotPath, gotSessionID, gotCallID)
 	}
 }
 
+func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionRecording,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	analysis := &fakeMeetingAIAnalysisUseCases{
+		snapshot: &application.MeetingAIAnalysesSnapshot{
+			SessionID: "session_1",
+			Live: &domain.MeetingAIAnalysis{
+				SessionID: "session_1",
+				Type:      domain.MeetingAIAnalysisLive,
+				Status:    domain.MeetingAIAnalysisCompleted,
+				Version:   4,
+				Payload:   json.RawMessage(`{"summary":"進行中です"}`),
+				Model:     "gpt-4o-mini",
+				UpdatedAt: mustTime(t, "2026-06-27T00:00:02Z"),
+			},
+			LiveIntervalSeconds: 10,
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/ai-analyses", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceAIAnalyses(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if analysis.gotSessionID != "session_1" {
+		t.Fatalf("gotSessionID = %q", analysis.gotSessionID)
+	}
+	var body meetingAIAnalysesResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.SessionID != "session_1" || body.Live == nil || body.Live.Version != 4 || body.Live.Status != "completed" {
+		t.Fatalf("body = %+v", body)
+	}
+	if body.Final != nil {
+		t.Fatalf("body.Final = %+v, want nil", body.Final)
+	}
+	if !strings.Contains(string(body.Live.Payload), "進行中です") {
+		t.Fatalf("body.Live.Payload = %s", string(body.Live.Payload))
+	}
+	if body.LiveIntervalSeconds != 10 {
+		t.Fatalf("body.LiveIntervalSeconds = %d, want 10", body.LiveIntervalSeconds)
+	}
+}
+
+func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsNullsWhenNoAnalysisExists(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionRecording,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	analysis := &fakeMeetingAIAnalysisUseCases{snapshot: &application.MeetingAIAnalysesSnapshot{SessionID: "session_1"}}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/ai-analyses", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceAIAnalyses(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	var body meetingAIAnalysesResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Live != nil || body.Final != nil {
+		t.Fatalf("body = %+v, want nil live/final", body)
+	}
+}
+
+func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsServiceUnavailableWhenNotWired(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionRecording,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/ai-analyses", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceAIAnalyses(resp, req)
+
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsNotFoundForOtherWorkspace(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_other",
+			Status:      domain.MeetingSessionRecording,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	analysis := &fakeMeetingAIAnalysisUseCases{snapshot: &application.MeetingAIAnalysesSnapshot{SessionID: "session_1"}}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/ai-analyses", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceAIAnalyses(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+type fakeMeetingAIAnalysisUseCases struct {
+	snapshot     *application.MeetingAIAnalysesSnapshot
+	err          error
+	gotSessionID string
+}
+
+func (f *fakeMeetingAIAnalysisUseCases) GetMeetingAIAnalyses(_ context.Context, sessionID string) (*application.MeetingAIAnalysesSnapshot, error) {
+	f.gotSessionID = sessionID
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.snapshot, nil
+}
+
 type fakeMeetingSessionUseCases struct {
-	session     domain.MeetingSession
-	err         error
-	createInput application.MeetingSessionCreateInput
-	endInput    application.MeetingSessionEndInput
-	update      application.MeetingSessionStatusUpdateInput
-	reused      bool
+	session            domain.MeetingSession
+	err                error
+	createInput        application.MeetingSessionCreateInput
+	endInput           application.MeetingSessionEndInput
+	update             application.MeetingSessionStatusUpdateInput
+	reused             bool
+	heartbeatSessionID string
 }
 
 func (f *fakeMeetingSessionUseCases) CreateMeetingSession(_ context.Context, input application.MeetingSessionCreateInput) (*application.MeetingSessionCreateResult, error) {
@@ -302,6 +653,17 @@ func (f *fakeMeetingSessionUseCases) ListMeetingSessionDebug(_ context.Context, 
 		return nil, f.err
 	}
 	return []domain.MeetingSessionDebug{{MeetingSession: f.session}}, nil
+}
+
+func (f *fakeMeetingSessionUseCases) RecordMeetingSessionHeartbeat(_ context.Context, sessionID string) (*domain.MeetingSession, error) {
+	f.heartbeatSessionID = sessionID
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.session.ID == "" {
+		return nil, fmt.Errorf("%w: meeting session not found", domain.ErrNotFound)
+	}
+	return &f.session, nil
 }
 
 func requestWithSessionParam(method, target, body string) *http.Request {

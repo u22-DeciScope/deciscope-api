@@ -4,7 +4,10 @@ DeciScopeのローカルMVP向け、Go + `chi`製バックエンドです。
 
 会議API、WebSocketリアルタイム配信、PostgreSQL永続化、
 Azure EchoBot向け文字起こし取り込み、mock upload/job、Markdownレポート生成を
-提供します。外部STT、外部LLMには接続しません。
+提供します。Teams音声のSTTはVM上のTeams Botが担当し、このAPIはBotから送られる
+transcript segmentを受け取ります。Azure OpenAIを設定した場合は、会議中ライブ分析と
+会議終了時の最終要約も生成します。raw audioのMedia IngressやファイルSTT/ffmpeg処理は
+現在のプロダクト範囲には含めていません。
 
 ## Requirements
 
@@ -63,7 +66,6 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_INGEST_API_KEY`: transcript ingest用共有API key。32文字以上、必須
 - `DECISCOPE_TRANSCRIPT_STORE`: `postgres`（既定値。省略可）
 - `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は文字起こし取り込みAPIだけを起動
-- `DECISCOPE_WS_CLIENT_TOKEN`: transcript WebSocket/履歴GET用client token。未設定時は開発用に認証なし
 - `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketの許可Origin。カンマ区切り
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
@@ -78,6 +80,23 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
   詳細は [docs/firebase-auth.md](docs/firebase-auth.md) を参照してください
 
 完全な例は [.env.example](.env.example) を参照してください。`.env` はGit管理対象外です。
+
+### AI会議分析 (Azure OpenAI)
+
+- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`: Azure OpenAI接続情報。
+  いずれか1つでも未設定の場合、AI分析機能全体が自動的に無効化されます(起動時に警告ログを1行出力)。
+  transcript取り込みや会議終了処理はAI機能の有無に関係なく動作し続けます
+- `AZURE_OPENAI_API_VERSION`: Azure OpenAI REST APIのバージョン。既定値は `2024-10-21`
+- `AI_LIVE_ANALYSIS_ENABLED`: 会議中ライブAI分析を行うか。既定値は `true`
+- `AI_LIVE_ANALYSIS_INTERVAL_SECONDS`: ライブ分析の実行間隔。既定値は `10`、最小値は `5`
+- `AI_LIVE_ANALYSIS_MIN_CHARS`: ライブ分析を実行する最小の新規文字数。既定値は `80`
+- `AI_LIVE_ANALYSIS_MAX_INPUT_CHARS`: ライブ分析1回あたりに送る差分transcriptの最大文字数。既定値は `4000`
+- `AI_FINAL_SUMMARY_ENABLED`: 会議終了時のAI最終要約生成を行うか。既定値は `true`
+- `AI_FINAL_SUMMARY_MAX_INPUT_CHARS`: 最終要約に送るtranscriptの最大文字数(超過分は末尾優先で切り詰め)。既定値は `12000`
+- `AI_REQUEST_TIMEOUT_SECONDS`: ライブ分析のAzure OpenAI呼び出しtimeout。既定値は `20`
+- `AI_FINAL_SUMMARY_TIMEOUT_SECONDS`: 最終要約のAzure OpenAI呼び出しtimeout。既定値は `60`
+
+`DECISCOPE_TRANSCRIPT_ONLY=true` のtranscript-onlyモードでは、AI分析機能は組み込まれません。
 
 Teams会議名を Microsoft Graph の `/users/{id}/onlineMeetings` から取得する場合、
 `MEETING_TITLE_LOOKUP_USER_IDS` には会議作成者、または会議を参照できる対象ユーザーの
@@ -253,12 +272,11 @@ VM BotはWebSocketへ接続しません。従来どおり
 新規segmentだけを接続中のフロントエンドへbroadcastします。同一内容の再送
 `duplicate: true` は配信しません。
 
+ブラウザはSession Cookieとworkspace所属検査で保護された次のAPIだけを利用します。
+
 ```text
-WS  /api/v1/ws/transcript-segments
-WS  /api/v1/ws/transcript-segments?callId={call_id}
-WS  /api/v1/ws/transcript-segments?sessionId={session_id}
-GET /api/v1/transcript-segments?callId={call_id}&limit=100
-GET /api/v1/transcript-segments?sessionId={session_id}&limit=100
+WS  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream
+GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments
 ```
 
 WebSocket message:
@@ -299,9 +317,10 @@ WebSocket message:
 
 ## Teams Bot Meeting Sessions
 
-フロントエンドはVM Botを直接叩きません。Teams会議URLはGo APIの
-`POST /api/v1/meeting-sessions` へ送信し、Go APIがTailscale内のVM Bot制御APIへ
-参加命令を送ります。
+フロントエンドはVM Botを直接叩きません。通常のブラウザUIは認証済みの
+`POST /v1/workspaces/{workspace_code}/meeting-sessions` へTeams会議URLを送信し、
+Go APIがTailscale内のVM Bot制御APIへ参加命令を送ります。
+`/api/v1/meeting-sessions` はAPI-keyを使う互換/手動確認用の非workspaceルートです。
 
 VM Bot制御APIの設定:
 
@@ -351,6 +370,9 @@ Invoke-WebRequest `
 Invoke-RestMethod "http://localhost:9090/api/v1/meeting-sessions/<sessionId>"
 ```
 
+ブラウザUIと同じ経路を確認する場合は、Firebase loginで発行された
+`deciscope_session` Cookieを持つ状態で、workspace-scoped APIを使います。
+
 VM Botからの状態更新:
 
 ```powershell
@@ -369,34 +391,18 @@ Invoke-RestMethod `
   -Body $body
 ```
 
-`DECISCOPE_WS_CLIENT_TOKEN` を設定している場合、WebSocketと履歴GETには
-`?token=...` が必要です。この値はフロントエンド検証用の別tokenであり、
-`DECISCOPE_INGEST_API_KEY` をブラウザへ渡さないでください。
-
-```text
-ws://localhost:9090/api/v1/ws/transcript-segments?token=dev-ws-token
-ws://localhost:9090/api/v1/ws/transcript-segments?callId=09005080-cce6-4132-9404-1e823df47ff9&token=dev-ws-token
-http://localhost:9090/api/v1/transcript-segments?callId=09005080-cce6-4132-9404-1e823df47ff9&limit=100&token=dev-ws-token
-```
+レガシーの履歴GETと共有token WebSocketはルーターから削除されています。
+`DECISCOPE_INGEST_API_KEY` はBotからのPOST専用で、ブラウザへ渡さないでください。
 
 フロントエンドもDocker Composeで起動する場合、フロントエンドコンテナから
 Go APIへは `http://api:9090` で到達できます。ただしブラウザで実行される
 JavaScriptから `api:9090` は解決できないため、ブラウザのWebSocket URLは
 ホスト公開ポートかフロントエンド側proxyを使います。
 
-```text
-ブラウザから直接: ws://localhost:9090/api/v1/ws/transcript-segments
-Tailscale経由:    ws://100.70.221.61:9090/api/v1/ws/transcript-segments
-Compose内部proxy: http://api:9090/api/v1/ws/transcript-segments
-```
-
 手動確認の流れ:
 
 ```powershell
-# 1) WebSocket clientを接続
-# 例: ws://localhost:9090/api/v1/ws/transcript-segments?token=dev-ws-token
-
-# 2) 別shellから既存HTTP POSTでsegmentを送信
+# 認証済みフロントエンドを開き、別shellから既存HTTP POSTでsegmentを送信
 $apiKey = Read-Host "DeciScope ingest API key"
 $headers = @{ "X-DeciScope-Api-Key" = $apiKey }
 $body = @{
@@ -423,13 +429,17 @@ Invoke-RestMethod `
 - `GET /healthz`
 - `GET /readyz`
 - `POST /api/v1/transcript-segments`
-- `GET /api/v1/transcript-segments?callId={call_id}&limit=100`
-- `WS /api/v1/ws/transcript-segments?callId={call_id}`
-- `POST /api/v1/meeting-sessions`
-- `GET /api/v1/meeting-sessions/{session_id}`
+- `POST /api/v1/meeting-sessions` (互換/手動確認用。API key必須)
+- `GET /api/v1/meeting-sessions/{session_id}` (互換/手動確認用。API key必須)
 - `PATCH /api/v1/bot/meeting-sessions/{session_id}/status`
 - `GET /v1/workspaces/{workspace_code}/meetings`
 - `POST /v1/workspaces/{workspace_code}/meetings`
+- `GET /v1/workspaces/{workspace_code}/meeting-sessions`
+- `POST /v1/workspaces/{workspace_code}/meeting-sessions`
+- `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}`
+- `POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/end`
+- `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments`
+- `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream`
 - `GET /v1/meetings/{meeting_id}`
 - `GET /v1/meetings/{meeting_id}/events?after_seq=0`
 - `GET /v1/meetings/{meeting_id}/segments?after_seq=0`

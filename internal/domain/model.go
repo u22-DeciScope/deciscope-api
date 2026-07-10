@@ -22,11 +22,6 @@ const (
 	EventError               = "error"
 )
 
-// DemoWorkspaceID は開発用のシードデータ（デモ会議）を格納する固定ワークスペースの ID。
-// DECISCOPE_SEED_DEMO_DATA が有効なときだけ作成され、ログインしたユーザーはこのワークスペースへ
-// 自動参加してデモ会議を閲覧できる。本番環境では使用しない。
-const DemoWorkspaceID = "ws_demo_deciscope"
-
 type Meeting struct {
 	ID          string
 	WorkspaceID string
@@ -88,16 +83,18 @@ type TranscriptSegmentStoreResult struct {
 type MeetingSessionStatus string
 
 const (
-	MeetingSessionRequested   MeetingSessionStatus = "requested"
-	MeetingSessionPendingJoin MeetingSessionStatus = "pending_join"
-	MeetingSessionCommandSent MeetingSessionStatus = "command_sent"
-	MeetingSessionJoining     MeetingSessionStatus = "joining"
-	MeetingSessionJoined      MeetingSessionStatus = "joined"
-	MeetingSessionActive      MeetingSessionStatus = "active"
-	MeetingSessionRecording   MeetingSessionStatus = "recording"
-	MeetingSessionEnded       MeetingSessionStatus = "ended"
-	MeetingSessionFailed      MeetingSessionStatus = "failed"
-	MeetingSessionStale       MeetingSessionStatus = "stale"
+	MeetingSessionRequested       MeetingSessionStatus = "requested"
+	MeetingSessionPendingJoin     MeetingSessionStatus = "pending_join"
+	MeetingSessionCommandSent     MeetingSessionStatus = "command_sent"
+	MeetingSessionJoining         MeetingSessionStatus = "joining"
+	MeetingSessionJoined          MeetingSessionStatus = "joined"
+	MeetingSessionActive          MeetingSessionStatus = "active"
+	MeetingSessionRecording       MeetingSessionStatus = "recording"
+	MeetingSessionSpeechError     MeetingSessionStatus = "speech_error"
+	MeetingSessionSpeechThrottled MeetingSessionStatus = "speech_throttled"
+	MeetingSessionEnded           MeetingSessionStatus = "ended"
+	MeetingSessionFailed          MeetingSessionStatus = "failed"
+	MeetingSessionStale           MeetingSessionStatus = "stale"
 )
 
 type MeetingSession struct {
@@ -233,11 +230,12 @@ type User struct {
 }
 
 type Workspace struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Role        string `json:"role"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 type WorkspaceMember struct {
@@ -257,8 +255,19 @@ type WorkspaceInvitation struct {
 	Role            string `json:"role"`
 	Status          string `json:"status"`
 	InvitedBy       string `json:"invited_by"`
-	CreatedAt       string `json:"created_at"`
+	InvitedByName   string `json:"invited_by_name,omitempty"`
+	// TokenHash は招待リンクtokenのSHA-256。生tokenはDBにもレスポンスにも含めない。
+	TokenHash string `json:"-"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	CreatedAt string `json:"created_at"`
 }
+
+const (
+	WorkspaceInvitationStatusPending  = "pending"
+	WorkspaceInvitationStatusAccepted = "accepted"
+	WorkspaceInvitationStatusRevoked  = "revoked"
+	WorkspaceInvitationStatusExpired  = "expired"
+)
 
 type Session struct {
 	ID                 string
@@ -313,7 +322,8 @@ func ValidMeetingSessionStatus(status MeetingSessionStatus) bool {
 	switch status {
 	case MeetingSessionRequested, MeetingSessionPendingJoin, MeetingSessionCommandSent,
 		MeetingSessionJoining, MeetingSessionJoined, MeetingSessionActive,
-		MeetingSessionRecording, MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
+		MeetingSessionRecording, MeetingSessionSpeechError, MeetingSessionSpeechThrottled,
+		MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
 		return true
 	default:
 		return false
@@ -329,6 +339,8 @@ func ReusableMeetingSessionStatuses() []MeetingSessionStatus {
 		MeetingSessionJoined,
 		MeetingSessionActive,
 		MeetingSessionRecording,
+		MeetingSessionSpeechError,
+		MeetingSessionSpeechThrottled,
 	}
 }
 
@@ -397,4 +409,3 @@ func normalizedJoinURLString(parsed url.URL) string {
 	}
 	return parsed.String()
 }
-

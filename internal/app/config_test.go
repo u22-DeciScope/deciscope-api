@@ -43,6 +43,60 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnvSessionWatchdogDefaults(t *testing.T) {
+	t.Setenv("DECISCOPE_SESSION_WATCHDOG_ENABLED", "")
+	t.Setenv("DECISCOPE_SESSION_WATCHDOG_INTERVAL_SECONDS", "")
+	t.Setenv("DECISCOPE_SESSION_BOT_LOST_AFTER_SECONDS", "")
+	t.Setenv("DECISCOPE_SESSION_BOT_END_AFTER_SECONDS", "")
+	config := ConfigFromEnv()
+	if !config.SessionWatchdog.Enabled {
+		t.Fatalf("SessionWatchdog.Enabled = %v, want true by default", config.SessionWatchdog.Enabled)
+	}
+	if config.SessionWatchdog.Interval != 15*time.Second {
+		t.Fatalf("SessionWatchdog.Interval = %s, want 15s", config.SessionWatchdog.Interval)
+	}
+	if config.SessionWatchdog.LostAfter != 60*time.Second {
+		t.Fatalf("SessionWatchdog.LostAfter = %s, want 60s", config.SessionWatchdog.LostAfter)
+	}
+	if config.SessionWatchdog.EndAfter != 180*time.Second {
+		t.Fatalf("SessionWatchdog.EndAfter = %s, want 180s", config.SessionWatchdog.EndAfter)
+	}
+}
+
+func TestConfigFromEnvSessionWatchdogReadsOverrides(t *testing.T) {
+	t.Setenv("DECISCOPE_SESSION_WATCHDOG_ENABLED", "false")
+	t.Setenv("DECISCOPE_SESSION_WATCHDOG_INTERVAL_SECONDS", "20")
+	t.Setenv("DECISCOPE_SESSION_BOT_LOST_AFTER_SECONDS", "90")
+	t.Setenv("DECISCOPE_SESSION_BOT_END_AFTER_SECONDS", "240")
+	config := ConfigFromEnv()
+	if config.SessionWatchdog.Enabled {
+		t.Fatalf("SessionWatchdog.Enabled = %v, want false", config.SessionWatchdog.Enabled)
+	}
+	if config.SessionWatchdog.Interval != 20*time.Second {
+		t.Fatalf("SessionWatchdog.Interval = %s, want 20s", config.SessionWatchdog.Interval)
+	}
+	if config.SessionWatchdog.LostAfter != 90*time.Second {
+		t.Fatalf("SessionWatchdog.LostAfter = %s, want 90s", config.SessionWatchdog.LostAfter)
+	}
+	if config.SessionWatchdog.EndAfter != 240*time.Second {
+		t.Fatalf("SessionWatchdog.EndAfter = %s, want 240s", config.SessionWatchdog.EndAfter)
+	}
+}
+
+func TestConfigFromEnvSessionWatchdogCorrectsEndAfterBelowLostAfter(t *testing.T) {
+	t.Setenv("DECISCOPE_SESSION_WATCHDOG_ENABLED", "")
+	t.Setenv("DECISCOPE_SESSION_WATCHDOG_INTERVAL_SECONDS", "")
+	t.Setenv("DECISCOPE_SESSION_BOT_LOST_AFTER_SECONDS", "200")
+	t.Setenv("DECISCOPE_SESSION_BOT_END_AFTER_SECONDS", "50")
+	config := ConfigFromEnv()
+	if config.SessionWatchdog.LostAfter != 200*time.Second {
+		t.Fatalf("SessionWatchdog.LostAfter = %s, want 200s", config.SessionWatchdog.LostAfter)
+	}
+	if config.SessionWatchdog.EndAfter <= config.SessionWatchdog.LostAfter {
+		t.Fatalf("SessionWatchdog.EndAfter = %s, want strictly greater than LostAfter = %s", config.SessionWatchdog.EndAfter, config.SessionWatchdog.LostAfter)
+	}
+}
+
 func TestConfigFromEnvLeavesMissingDatabaseURLBlank(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
 	config := ConfigFromEnv()

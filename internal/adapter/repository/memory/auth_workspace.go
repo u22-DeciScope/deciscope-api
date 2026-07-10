@@ -46,41 +46,11 @@ func (r *AuthWorkspaceRepository) FindOrCreateUser(_ context.Context, identity a
 	return &user, nil
 }
 
-func (r *AuthWorkspaceRepository) AcceptInvitations(_ context.Context, userID, normalizedEmail string) error {
+func (r *AuthWorkspaceRepository) CreateWorkspace(_ context.Context, userID, name, description string) (*domain.Workspace, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for id, invitation := range r.invitations {
-		if invitation.Status == "pending" && invitation.NormalizedEmail == normalizedEmail {
-			if r.members[invitation.WorkspaceID] == nil {
-				r.members[invitation.WorkspaceID] = make(map[string]string)
-			}
-			role := domain.NormalizeWorkspaceRole(invitation.Role)
-			if role == "" {
-				role = domain.WorkspaceRoleViewer
-			}
-			r.members[invitation.WorkspaceID][userID] = role
-			invitation.Status = "accepted"
-			r.invitations[id] = invitation
-		}
-	}
-	return nil
-}
-
-func (r *AuthWorkspaceRepository) EnsureInitialWorkspace(_ context.Context, userID, displayName, email string) (*domain.Workspace, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for workspaceID, members := range r.members {
-		if members[userID] != "" {
-			workspace := r.workspaces[workspaceID]
-			workspace.Role = domain.NormalizeWorkspaceRole(members[userID])
-			return &workspace, nil
-		}
-	}
-	if displayName == "" {
-		displayName, _, _ = strings.Cut(email, "@")
-	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	workspace := domain.Workspace{ID: domain.NewUUID(), Name: displayName + "のワークスペース", Role: domain.WorkspaceRoleOwner, CreatedAt: now, UpdatedAt: now}
+	workspace := domain.Workspace{ID: domain.NewUUID(), Name: name, Description: description, Role: domain.WorkspaceRoleOwner, CreatedAt: now, UpdatedAt: now}
 	r.workspaces[workspace.ID] = workspace
 	r.members[workspace.ID] = map[string]string{userID: domain.WorkspaceRoleOwner}
 	return &workspace, nil
@@ -153,14 +123,24 @@ func (r *AuthWorkspaceRepository) GetWorkspace(_ context.Context, userID, worksp
 	return &workspace, nil
 }
 
-func (r *AuthWorkspaceRepository) UpdateWorkspaceName(_ context.Context, userID, workspaceID, name string) (*domain.Workspace, error) {
+func (r *AuthWorkspaceRepository) UpdateWorkspace(_ context.Context, userID, workspaceID string, name, description *string) (*domain.Workspace, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !domain.CanManageWorkspace(r.members[workspaceID][userID]) {
+	role := r.members[workspaceID][userID]
+	if role == "" {
+		return nil, domain.ErrNotFound
+	}
+	if !domain.CanManageWorkspace(role) {
 		return nil, domain.ErrForbidden
 	}
 	workspace := r.workspaces[workspaceID]
-	workspace.Name, workspace.UpdatedAt, workspace.Role = name, time.Now().UTC().Format(time.RFC3339), domain.WorkspaceRoleOwner
+	if name != nil {
+		workspace.Name = *name
+	}
+	if description != nil {
+		workspace.Description = *description
+	}
+	workspace.UpdatedAt, workspace.Role = time.Now().UTC().Format(time.RFC3339), domain.NormalizeWorkspaceRole(role)
 	r.workspaces[workspaceID] = workspace
 	return &workspace, nil
 }
@@ -179,7 +159,7 @@ func (r *AuthWorkspaceRepository) ListMembers(_ context.Context, userID, workspa
 	return result, nil
 }
 
-func (r *AuthWorkspaceRepository) CreateInvitation(_ context.Context, userID, workspaceID, email, role string) (*domain.WorkspaceInvitation, error) {
+func (r *AuthWorkspaceRepository) CreateInvitation(_ context.Context, userID, workspaceID, email, role, tokenHash, expiresAt string) (*domain.WorkspaceInvitation, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !domain.CanManageWorkspace(r.members[workspaceID][userID]) {
@@ -191,13 +171,79 @@ func (r *AuthWorkspaceRepository) CreateInvitation(_ context.Context, userID, wo
 	}
 	normalizedEmail := strings.ToLower(strings.TrimSpace(email))
 	for _, existing := range r.invitations {
-		if existing.WorkspaceID == workspaceID && existing.NormalizedEmail == normalizedEmail && existing.Status == "pending" {
+		if existing.WorkspaceID == workspaceID && existing.NormalizedEmail == normalizedEmail && existing.Status == domain.WorkspaceInvitationStatusPending {
 			return nil, domain.ErrConflict
 		}
 	}
-	invitation := domain.WorkspaceInvitation{ID: domain.NewUUID(), WorkspaceID: workspaceID, Email: strings.TrimSpace(email), NormalizedEmail: normalizedEmail, Role: role, Status: "pending", InvitedBy: userID, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+	invitation := domain.WorkspaceInvitation{
+		ID: domain.NewUUID(), WorkspaceID: workspaceID, Email: strings.TrimSpace(email),
+		NormalizedEmail: normalizedEmail, Role: role, Status: domain.WorkspaceInvitationStatusPending,
+		InvitedBy: userID, TokenHash: tokenHash, ExpiresAt: expiresAt,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
 	r.invitations[invitation.ID] = invitation
 	return &invitation, nil
+}
+
+func (r *AuthWorkspaceRepository) DeleteInvitation(_ context.Context, invitationID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.invitations, invitationID)
+	return nil
+}
+
+func (r *AuthWorkspaceRepository) InvitationByTokenHash(_ context.Context, tokenHash string) (*domain.WorkspaceInvitation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if strings.TrimSpace(tokenHash) == "" {
+		return nil, domain.ErrNotFound
+	}
+	for _, invitation := range r.invitations {
+		if invitation.TokenHash == tokenHash {
+			value := invitation
+			return &value, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (r *AuthWorkspaceRepository) AcceptInvitation(_ context.Context, invitationID, userID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	invitation, ok := r.invitations[invitationID]
+	if !ok || invitation.Status != domain.WorkspaceInvitationStatusPending {
+		return domain.ErrNotFound
+	}
+	if r.members[invitation.WorkspaceID] == nil {
+		r.members[invitation.WorkspaceID] = make(map[string]string)
+	}
+	if r.members[invitation.WorkspaceID][userID] == "" {
+		r.members[invitation.WorkspaceID][userID] = invitation.Role
+	}
+	invitation.Status = domain.WorkspaceInvitationStatusAccepted
+	r.invitations[invitationID] = invitation
+	return nil
+}
+
+func (r *AuthWorkspaceRepository) WorkspaceNameByID(_ context.Context, workspaceID string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	workspace, ok := r.workspaces[workspaceID]
+	if !ok {
+		return "", domain.ErrNotFound
+	}
+	return workspace.Name, nil
+}
+
+func (r *AuthWorkspaceRepository) MemberEmailExists(_ context.Context, workspaceID, normalizedEmail string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, user := range r.users {
+		if strings.ToLower(strings.TrimSpace(user.Email)) == normalizedEmail && r.members[workspaceID][id] != "" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *AuthWorkspaceRepository) RevokeInvitation(_ context.Context, userID, workspaceID, invitationID string) error {
@@ -249,7 +295,8 @@ func (r *AuthWorkspaceRepository) RemoveMember(_ context.Context, userID, worksp
 func (r *AuthWorkspaceRepository) UpdateMemberRole(_ context.Context, userID, workspaceID, memberID, role string) (*domain.WorkspaceMember, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !domain.CanManageWorkspace(r.members[workspaceID][userID]) {
+	// ロール変更は owner のみが実行できる。
+	if !domain.IsWorkspaceOwner(r.members[workspaceID][userID]) {
 		return nil, domain.ErrForbidden
 	}
 	role = domain.NormalizeWorkspaceRole(role)

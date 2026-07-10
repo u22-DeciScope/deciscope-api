@@ -3,6 +3,7 @@ package realtime
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -13,8 +14,11 @@ import (
 )
 
 const (
-	transcriptSegmentCreatedType    = "transcript_segment.created"
-	meetingSessionStatusChangedType = "meeting_session.status_changed"
+	transcriptSegmentCreatedType       = "transcript_segment.created"
+	meetingSessionStatusChangedType    = "meeting_session.status_changed"
+	meetingAIAnalysisUpdatedType       = "ai_analysis.updated"
+	meetingSessionBotHealthType        = "meeting_session.bot_health_changed"
+	meetingSessionTranscriptHealthType = "meeting_session.transcript_health_changed"
 )
 
 var defaultTranscriptAllowedOrigins = []string{
@@ -29,6 +33,9 @@ var defaultTranscriptAllowedOrigins = []string{
 type TranscriptWebSocketConfig struct {
 	ClientToken    string
 	AllowedOrigins string
+	// ResolveMember はworkspace経由の接続で認証済みユーザーを接続に紐づける。
+	// 設定されている場合、メンバー削除時に CloseWorkspaceMember で該当接続を切断できる。
+	ResolveMember func(r *http.Request) (workspaceID, userID string)
 }
 
 type TranscriptHub struct {
@@ -62,6 +69,24 @@ func (h *TranscriptHub) PublishTranscriptSegment(segment domain.TranscriptSegmen
 	}
 }
 
+func (h *TranscriptHub) PublishMeetingAIAnalysis(analysis domain.MeetingAIAnalysis) {
+	h.mu.RLock()
+	clients := make([]*transcriptClient, 0, len(h.clients))
+	totalSubscriberCount := len(h.clients)
+	for c := range h.clients {
+		if c.matchesAIAnalysis(analysis) {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	log.Printf("Meeting AI analysis broadcast. sessionId=%s analysisType=%s status=%s version=%d subscriberCount=%d totalSubscriberCount=%d",
+		analysis.SessionID, analysis.Type, analysis.Status, analysis.Version, len(clients), totalSubscriberCount)
+	for _, c := range clients {
+		c.enqueueAIAnalysis(analysis)
+	}
+}
+
 func (h *TranscriptHub) PublishMeetingSessionStatusChanged(session domain.MeetingSession) {
 	h.mu.RLock()
 	clients := make([]*transcriptClient, 0, len(h.clients))
@@ -76,6 +101,49 @@ func (h *TranscriptHub) PublishMeetingSessionStatusChanged(session domain.Meetin
 	log.Printf("Meeting session status broadcast. sessionId=%s status=%s botCallId=%s subscriberCount=%d totalSubscriberCount=%d", session.ID, session.Status, session.BotCallID, len(clients), totalSubscriberCount)
 	for _, c := range clients {
 		c.enqueueSession(session)
+	}
+}
+
+// PublishMeetingSessionBotHealth broadcasts a bot connectivity transition
+// (lost or recovered) to every client subscribed to session. It uses the same
+// client selection rule as PublishMeetingSessionStatusChanged (matchesSession)
+// so a client is only ever told about the sessions it is watching.
+func (h *TranscriptHub) PublishMeetingSessionBotHealth(session domain.MeetingSession, healthy bool) {
+	h.mu.RLock()
+	clients := make([]*transcriptClient, 0, len(h.clients))
+	totalSubscriberCount := len(h.clients)
+	for c := range h.clients {
+		if c.matchesSession(session) {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	log.Printf("Meeting session bot health broadcast. sessionId=%s healthy=%t subscriberCount=%d totalSubscriberCount=%d", session.ID, healthy, len(clients), totalSubscriberCount)
+	for _, c := range clients {
+		c.enqueueBotHealth(session, healthy)
+	}
+}
+
+// PublishMeetingSessionTranscriptHealth broadcasts a transcript health
+// transition (ok/delayed/stalled) to every client subscribed to session. It
+// uses the same client selection rule as PublishMeetingSessionStatusChanged
+// (matchesSession) so a client is only ever told about the sessions it is
+// watching.
+func (h *TranscriptHub) PublishMeetingSessionTranscriptHealth(session domain.MeetingSession, transcriptHealth string, secondsSinceLastTranscript int) {
+	h.mu.RLock()
+	clients := make([]*transcriptClient, 0, len(h.clients))
+	totalSubscriberCount := len(h.clients)
+	for c := range h.clients {
+		if c.matchesSession(session) {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	log.Printf("Meeting session transcript health broadcast. sessionId=%s transcriptHealth=%s secondsSinceLastTranscript=%d subscriberCount=%d totalSubscriberCount=%d", session.ID, transcriptHealth, secondsSinceLastTranscript, len(clients), totalSubscriberCount)
+	for _, c := range clients {
+		c.enqueueTranscriptHealth(session, transcriptHealth, secondsSinceLastTranscript)
 	}
 }
 
@@ -108,6 +176,9 @@ func (h *TranscriptHub) ServeTranscriptSegments(config TranscriptWebSocketConfig
 		log.Printf("Transcript websocket upgrade accepted. path=%s callId=%s sessionId=%s origin=%s", path, callID, sessionID, origin)
 
 		c := newTranscriptClient(callID, sessionID, conn, reader)
+		if config.ResolveMember != nil {
+			c.workspaceID, c.userID = config.ResolveMember(r)
+		}
 		h.subscribe(c)
 		defer h.unsubscribe(c)
 
@@ -122,6 +193,26 @@ func (h *TranscriptHub) subscribe(c *transcriptClient) {
 	count := len(h.clients)
 	h.mu.Unlock()
 	log.Printf("Transcript websocket subscriber added. callId=%s sessionId=%s subscriberCount=%d", c.callID, c.sessionID, count)
+}
+
+// CloseWorkspaceMember は、workspaceから削除されたメンバーの既存transcript購読を切断する。
+// 対象はworkspace経由 (ResolveMember設定あり) で接続したクライアントのみ。
+func (h *TranscriptHub) CloseWorkspaceMember(workspaceID, userID string) {
+	if workspaceID == "" || userID == "" {
+		return
+	}
+	h.mu.RLock()
+	var clients []*transcriptClient
+	for c := range h.clients {
+		if c.workspaceID == workspaceID && c.userID == userID {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+	for _, c := range clients {
+		log.Printf("Transcript websocket closed for removed workspace member. workspaceId=%s userId=%s sessionId=%s", workspaceID, userID, c.sessionID)
+		_ = c.conn.Close()
+	}
 }
 
 func (h *TranscriptHub) unsubscribe(c *transcriptClient) {
@@ -176,14 +267,16 @@ func transcriptAllowedOrigins(value string) []string {
 }
 
 type transcriptClient struct {
-	callID    string
-	sessionID string
-	conn      netConn
-	reader    frameReader
-	send      chan transcriptOutboundEvent
-	done      chan struct{}
-	writeMu   sync.Mutex
-	closeOnce sync.Once
+	callID      string
+	sessionID   string
+	workspaceID string
+	userID      string
+	conn        netConn
+	reader      frameReader
+	send        chan transcriptOutboundEvent
+	done        chan struct{}
+	writeMu     sync.Mutex
+	closeOnce   sync.Once
 }
 
 func newTranscriptClient(callID, sessionID string, conn netConn, reader frameReader) *transcriptClient {
@@ -203,6 +296,18 @@ func (c *transcriptClient) enqueueSegment(segment domain.TranscriptSegment) {
 
 func (c *transcriptClient) enqueueSession(session domain.MeetingSession) {
 	c.enqueue(transcriptOutboundEvent{session: &session})
+}
+
+func (c *transcriptClient) enqueueAIAnalysis(analysis domain.MeetingAIAnalysis) {
+	c.enqueue(transcriptOutboundEvent{aiAnalysis: &analysis})
+}
+
+func (c *transcriptClient) enqueueBotHealth(session domain.MeetingSession, healthy bool) {
+	c.enqueue(transcriptOutboundEvent{botHealth: &meetingSessionBotHealthEvent{session: session, healthy: healthy}})
+}
+
+func (c *transcriptClient) enqueueTranscriptHealth(session domain.MeetingSession, transcriptHealth string, seconds int) {
+	c.enqueue(transcriptOutboundEvent{transcriptHealth: &meetingSessionTranscriptHealthEvent{session: session, transcriptHealth: transcriptHealth, seconds: seconds}})
 }
 
 func (c *transcriptClient) enqueue(event transcriptOutboundEvent) {
@@ -287,6 +392,19 @@ func (c *transcriptClient) matchesSession(session domain.MeetingSession) bool {
 	return true
 }
 
+// matchesAIAnalysis is sessionId-based like matchesSession, but a client
+// subscribed only by callId never receives AI analysis events because
+// MeetingAIAnalysis has no callId to match against.
+func (c *transcriptClient) matchesAIAnalysis(analysis domain.MeetingAIAnalysis) bool {
+	if c.sessionID != "" {
+		return c.sessionID == analysis.SessionID
+	}
+	if c.callID != "" {
+		return false
+	}
+	return true
+}
+
 func (c *transcriptClient) writeEvent(h *TranscriptHub, event transcriptOutboundEvent) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -295,14 +413,34 @@ func (c *transcriptClient) writeEvent(h *TranscriptHub, event transcriptOutbound
 		return writeJSON(c.conn, transcriptSegmentProtocolMessage(*event.segment, h.now()))
 	case event.session != nil:
 		return writeJSON(c.conn, meetingSessionStatusProtocolMessage(*event.session, h.now()))
+	case event.aiAnalysis != nil:
+		return writeJSON(c.conn, meetingAIAnalysisProtocolMessage(*event.aiAnalysis, h.now()))
+	case event.botHealth != nil:
+		return writeJSON(c.conn, meetingSessionBotHealthProtocolMessage(event.botHealth.session, event.botHealth.healthy, h.now()))
+	case event.transcriptHealth != nil:
+		return writeJSON(c.conn, meetingSessionTranscriptHealthProtocolMessage(event.transcriptHealth.session, event.transcriptHealth.transcriptHealth, event.transcriptHealth.seconds, h.now()))
 	default:
 		return nil
 	}
 }
 
 type transcriptOutboundEvent struct {
-	segment *domain.TranscriptSegment
-	session *domain.MeetingSession
+	segment          *domain.TranscriptSegment
+	session          *domain.MeetingSession
+	aiAnalysis       *domain.MeetingAIAnalysis
+	botHealth        *meetingSessionBotHealthEvent
+	transcriptHealth *meetingSessionTranscriptHealthEvent
+}
+
+type meetingSessionBotHealthEvent struct {
+	session domain.MeetingSession
+	healthy bool
+}
+
+type meetingSessionTranscriptHealthEvent struct {
+	session          domain.MeetingSession
+	transcriptHealth string
+	seconds          int
 }
 
 type transcriptSegmentMessage struct {
@@ -409,6 +547,90 @@ func meetingSessionStatusProtocolMessage(session domain.MeetingSession, sentAt t
 			EndedAt:                     optionalProtocolTime(session.EndedAt),
 			EndReason:                   session.EndReason,
 			LastError:                   session.LastError,
+		},
+	}
+}
+
+type meetingSessionBotHealthMessage struct {
+	Type      string                      `json:"type"`
+	SentAtUTC string                      `json:"sentAtUtc"`
+	Data      meetingSessionBotHealthData `json:"data"`
+}
+
+type meetingSessionBotHealthData struct {
+	SessionID          string `json:"sessionId"`
+	Healthy            bool   `json:"healthy"`
+	LastBotStatusAtUTC string `json:"lastBotStatusAtUtc,omitempty"`
+}
+
+func meetingSessionBotHealthProtocolMessage(session domain.MeetingSession, healthy bool, sentAt time.Time) meetingSessionBotHealthMessage {
+	return meetingSessionBotHealthMessage{
+		Type:      meetingSessionBotHealthType,
+		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
+		Data: meetingSessionBotHealthData{
+			SessionID:          session.ID,
+			Healthy:            healthy,
+			LastBotStatusAtUTC: optionalProtocolTime(session.LastBotStatusAt),
+		},
+	}
+}
+
+type meetingSessionTranscriptHealthMessage struct {
+	Type      string                             `json:"type"`
+	SentAtUTC string                             `json:"sentAtUtc"`
+	Data      meetingSessionTranscriptHealthData `json:"data"`
+}
+
+type meetingSessionTranscriptHealthData struct {
+	SessionID                  string `json:"sessionId"`
+	TranscriptHealth           string `json:"transcriptHealth"`
+	SecondsSinceLastTranscript int    `json:"secondsSinceLastTranscript"`
+}
+
+func meetingSessionTranscriptHealthProtocolMessage(session domain.MeetingSession, transcriptHealth string, secondsSinceLastTranscript int, sentAt time.Time) meetingSessionTranscriptHealthMessage {
+	return meetingSessionTranscriptHealthMessage{
+		Type:      meetingSessionTranscriptHealthType,
+		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
+		Data: meetingSessionTranscriptHealthData{
+			SessionID:                  session.ID,
+			TranscriptHealth:           transcriptHealth,
+			SecondsSinceLastTranscript: secondsSinceLastTranscript,
+		},
+	}
+}
+
+type meetingAIAnalysisMessage struct {
+	Type      string                `json:"type"`
+	SentAtUTC string                `json:"sentAtUtc"`
+	Data      meetingAIAnalysisData `json:"data"`
+}
+
+type meetingAIAnalysisData struct {
+	SessionID       string          `json:"sessionId"`
+	AnalysisType    string          `json:"analysisType"`
+	Status          string          `json:"status"`
+	Version         int64           `json:"version"`
+	Payload         json.RawMessage `json:"payload"`
+	Model           string          `json:"model,omitempty"`
+	UpdatedAtUTC    string          `json:"updatedAtUtc"`
+	IntervalSeconds int             `json:"intervalSeconds,omitempty"`
+	Error           string          `json:"error,omitempty"`
+}
+
+func meetingAIAnalysisProtocolMessage(analysis domain.MeetingAIAnalysis, sentAt time.Time) meetingAIAnalysisMessage {
+	return meetingAIAnalysisMessage{
+		Type:      meetingAIAnalysisUpdatedType,
+		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
+		Data: meetingAIAnalysisData{
+			SessionID:       analysis.SessionID,
+			AnalysisType:    string(analysis.Type),
+			Status:          string(analysis.Status),
+			Version:         analysis.Version,
+			Payload:         analysis.Payload,
+			Model:           analysis.Model,
+			UpdatedAtUTC:    analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			IntervalSeconds: analysis.IntervalSeconds,
+			Error:           analysis.LastError,
 		},
 	}
 }
