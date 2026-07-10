@@ -11,19 +11,18 @@ import (
 )
 
 type RouterDependencies struct {
-	CoreAPI            *CoreAPI
-	AuthAPI            *AuthAPI
-	WorkspaceAPI       *WorkspaceAPI
-	TranscriptAPI      *TranscriptAPI
-	MeetingSessionAPI  *MeetingSessionAPI
-	AuthService        authmiddleware.SessionAuthenticator
-	Workspace          WorkspaceAccessUseCases
-	Access             ResourceAccessUseCases
-	Realtime           http.HandlerFunc
-	TranscriptRealtime http.HandlerFunc
-	Healthz            http.HandlerFunc
-	Readyz             http.HandlerFunc
-	CORS               CORSConfig
+	CoreAPI           *CoreAPI
+	AuthAPI           *AuthAPI
+	WorkspaceAPI      *WorkspaceAPI
+	TranscriptAPI     *TranscriptAPI
+	MeetingSessionAPI *MeetingSessionAPI
+	AuthService       authmiddleware.SessionAuthenticator
+	Workspace         WorkspaceAccessUseCases
+	Access            ResourceAccessUseCases
+	Realtime          http.HandlerFunc
+	Healthz           http.HandlerFunc
+	Readyz            http.HandlerFunc
+	CORS              CORSConfig
 }
 
 type CORSConfig struct {
@@ -44,8 +43,6 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	}
 	if deps.TranscriptAPI != nil {
 		r.Post("/api/v1/transcript-segments", deps.TranscriptAPI.Store)
-		r.Get("/api/v1/transcript-segments", deps.TranscriptAPI.List)
-		r.Get("/api/v1/meeting-sessions/{session_id}/transcript-segments", deps.TranscriptAPI.ListByMeetingSession)
 	}
 	if deps.MeetingSessionAPI != nil {
 		r.Get("/api/v1/debug/meeting-sessions", deps.MeetingSessionAPI.DebugList)
@@ -56,9 +53,6 @@ func NewRouter(deps RouterDependencies) http.Handler {
 		r.Patch("/api/v1/bot/meeting-sessions/{session_id}/metadata", deps.MeetingSessionAPI.UpdateBotMetadata)
 		r.Patch("/api/v1/bot/meeting-sessions/{session_id}/status", deps.MeetingSessionAPI.UpdateBotStatus)
 		r.Post("/api/v1/bot/meeting-sessions/{session_id}/heartbeat", deps.MeetingSessionAPI.RecordBotHeartbeat)
-	}
-	if deps.TranscriptRealtime != nil {
-		r.Get("/api/v1/ws/transcript-segments", deps.TranscriptRealtime)
 	}
 	if deps.CoreAPI == nil || deps.AuthAPI == nil || deps.WorkspaceAPI == nil ||
 		deps.AuthService == nil || deps.Workspace == nil || deps.Access == nil || deps.Realtime == nil {

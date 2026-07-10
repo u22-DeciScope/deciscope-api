@@ -62,10 +62,9 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		}
 		healthAPI := httpadapter.NewHealthAPI(transcriptRuntime.ready)
 		handler := httpadapter.NewRouter(httpadapter.RouterDependencies{
-			TranscriptAPI:      httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
-			TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
-			Healthz:            healthAPI.Healthz,
-			Readyz:             healthAPI.Readyz,
+			TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey),
+			Healthz:       healthAPI.Healthz,
+			Readyz:        healthAPI.Readyz,
 			CORS: httpadapter.CORSConfig{
 				FrontendURL: config.FrontendURL, AllowedOrigins: config.AllowedOrigins,
 			},
@@ -176,6 +175,8 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	// workspace経由のtranscript購読には認証済みユーザーを紐づけ、
 	// メンバー削除時に既存WebSocket接続を切断できるようにする。
 	workspaceTranscriptConfig := transcriptRealtimeConfig(config.TranscriptWebSocket)
+	// ブラウザ購読はSessionAuth + workspace所属検査を正とし、共有tokenを要求しない。
+	workspaceTranscriptConfig.ClientToken = ""
 	workspaceTranscriptConfig.ResolveMember = func(r *http.Request) (string, string) {
 		session, ok := authmiddleware.SessionFromContext(r.Context())
 		if !ok || session.User == nil {
@@ -188,7 +189,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		CoreAPI:       httpadapter.NewCoreAPI(service),
 		AuthAPI:       httpadapter.NewAuthAPI(authService, config.SessionCookieSecure, connectionCloser),
 		WorkspaceAPI:  httpadapter.NewWorkspaceAPI(workspaceService, connectionCloser),
-		TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey, config.TranscriptWebSocket.ClientToken),
+		TranscriptAPI: httpadapter.NewTranscriptAPI(transcriptRuntime.service, config.TranscriptIngest.APIKey),
 		MeetingSessionAPI: httpadapter.NewMeetingSessionAPI(
 			meetingSessionService,
 			config.TranscriptIngest.APIKey,
@@ -197,12 +198,11 @@ func NewServerRuntime() (*ServerRuntime, error) {
 			httpadapter.WithMeetingSessionAIAnalysisService(analysisService),
 			httpadapter.WithMeetingSessionBotMetricsStore(botMediaMetricsStore),
 		),
-		TranscriptRealtime: transcriptHub.ServeTranscriptSegments(transcriptRealtimeConfig(config.TranscriptWebSocket)),
-		AuthService:        authService,
-		Workspace:          workspaceService,
-		Access:             accessService,
-		Healthz:            healthAPI.Healthz,
-		Readyz:             healthAPI.Readyz,
+		AuthService: authService,
+		Workspace:   workspaceService,
+		Access:      accessService,
+		Healthz:     healthAPI.Healthz,
+		Readyz:      healthAPI.Readyz,
 		Realtime: hub.ServeWS(service, func(r *http.Request) (realtime.ClientIdentity, bool) {
 			session, ok := authmiddleware.SessionFromContext(r.Context())
 			if !ok || session.User == nil || session.Session == nil {

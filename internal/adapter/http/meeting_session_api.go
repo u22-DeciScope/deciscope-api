@@ -327,6 +327,7 @@ func (api *MeetingSessionAPI) StreamWorkspaceTranscriptSegments(w http.ResponseW
 	query := cloned.URL.Query()
 	query.Set("sessionId", session.ID)
 	query.Del("callId")
+	query.Del("token")
 	cloned.URL.RawQuery = query.Encode()
 	log.Printf("Workspace transcript websocket request forwarding. path=%s workspaceId=%s sessionId=%s origin=%s", cloned.URL.Path, session.WorkspaceID, session.ID, cloned.Header.Get("Origin"))
 	api.transcriptRealtime(w, cloned)

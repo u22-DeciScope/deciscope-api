@@ -66,7 +66,6 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_INGEST_API_KEY`: transcript ingest用共有API key。32文字以上、必須
 - `DECISCOPE_TRANSCRIPT_STORE`: `postgres`（既定値。省略可）
 - `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は文字起こし取り込みAPIだけを起動
-- `DECISCOPE_WS_CLIENT_TOKEN`: transcript WebSocket/履歴GET用client token。未設定時は開発用に認証なし
 - `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketの許可Origin。カンマ区切り
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
@@ -273,12 +272,11 @@ VM BotはWebSocketへ接続しません。従来どおり
 新規segmentだけを接続中のフロントエンドへbroadcastします。同一内容の再送
 `duplicate: true` は配信しません。
 
+ブラウザはSession Cookieとworkspace所属検査で保護された次のAPIだけを利用します。
+
 ```text
-WS  /api/v1/ws/transcript-segments
-WS  /api/v1/ws/transcript-segments?callId={call_id}
-WS  /api/v1/ws/transcript-segments?sessionId={session_id}
-GET /api/v1/transcript-segments?callId={call_id}&limit=100
-GET /api/v1/transcript-segments?sessionId={session_id}&limit=100
+WS  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream
+GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments
 ```
 
 WebSocket message:
@@ -393,34 +391,18 @@ Invoke-RestMethod `
   -Body $body
 ```
 
-`DECISCOPE_WS_CLIENT_TOKEN` を設定している場合、WebSocketと履歴GETには
-`?token=...` が必要です。この値はフロントエンド検証用の別tokenであり、
-`DECISCOPE_INGEST_API_KEY` をブラウザへ渡さないでください。
-
-```text
-ws://localhost:9090/api/v1/ws/transcript-segments?token=dev-ws-token
-ws://localhost:9090/api/v1/ws/transcript-segments?callId=09005080-cce6-4132-9404-1e823df47ff9&token=dev-ws-token
-http://localhost:9090/api/v1/transcript-segments?callId=09005080-cce6-4132-9404-1e823df47ff9&limit=100&token=dev-ws-token
-```
+レガシーの履歴GETと共有token WebSocketはルーターから削除されています。
+`DECISCOPE_INGEST_API_KEY` はBotからのPOST専用で、ブラウザへ渡さないでください。
 
 フロントエンドもDocker Composeで起動する場合、フロントエンドコンテナから
 Go APIへは `http://api:9090` で到達できます。ただしブラウザで実行される
 JavaScriptから `api:9090` は解決できないため、ブラウザのWebSocket URLは
 ホスト公開ポートかフロントエンド側proxyを使います。
 
-```text
-ブラウザから直接: ws://localhost:9090/api/v1/ws/transcript-segments
-Tailscale経由:    ws://100.70.221.61:9090/api/v1/ws/transcript-segments
-Compose内部proxy: http://api:9090/api/v1/ws/transcript-segments
-```
-
 手動確認の流れ:
 
 ```powershell
-# 1) WebSocket clientを接続
-# 例: ws://localhost:9090/api/v1/ws/transcript-segments?token=dev-ws-token
-
-# 2) 別shellから既存HTTP POSTでsegmentを送信
+# 認証済みフロントエンドを開き、別shellから既存HTTP POSTでsegmentを送信
 $apiKey = Read-Host "DeciScope ingest API key"
 $headers = @{ "X-DeciScope-Api-Key" = $apiKey }
 $body = @{
@@ -447,8 +429,6 @@ Invoke-RestMethod `
 - `GET /healthz`
 - `GET /readyz`
 - `POST /api/v1/transcript-segments`
-- `GET /api/v1/transcript-segments?callId={call_id}&limit=100`
-- `WS /api/v1/ws/transcript-segments?callId={call_id}`
 - `POST /api/v1/meeting-sessions` (互換/手動確認用。API key必須)
 - `GET /api/v1/meeting-sessions/{session_id}` (互換/手動確認用。API key必須)
 - `PATCH /api/v1/bot/meeting-sessions/{session_id}/status`
@@ -458,6 +438,7 @@ Invoke-RestMethod `
 - `POST /v1/workspaces/{workspace_code}/meeting-sessions`
 - `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}`
 - `POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/end`
+- `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments`
 - `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream`
 - `GET /v1/meetings/{meeting_id}`
 - `GET /v1/meetings/{meeting_id}/events?after_seq=0`

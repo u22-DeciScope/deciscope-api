@@ -353,6 +353,31 @@ func TestTranscriptAPIListRejectsInvalidLimit(t *testing.T) {
 	}
 }
 
+func TestRouterDoesNotExposeLegacyTranscriptReadRoutes(t *testing.T) {
+	api := NewTranscriptAPI(&fakeTranscriptIngestUseCases{}, testTranscriptAPIKey, "client-token")
+	router := NewRouter(RouterDependencies{TranscriptAPI: api})
+
+	for _, path := range []string{
+		"/api/v1/transcript-segments?token=client-token",
+		"/api/v1/meeting-sessions/session_1/transcript-segments?token=client-token",
+		"/api/v1/ws/transcript-segments?token=client-token",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound && response.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("GET %s status = %d, want 404 or 405", path, response.Code)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/transcript-segments", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("POST ingest status = %d, want 401 from API-key auth", response.Code)
+	}
+}
+
 func TestTranscriptAPIValidationErrors(t *testing.T) {
 	tests := []struct {
 		name        string

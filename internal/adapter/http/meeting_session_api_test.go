@@ -399,6 +399,7 @@ func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *
 	var gotPath string
 	var gotSessionID string
 	var gotCallID string
+	var gotToken string
 	api := NewMeetingSessionAPI(
 		service,
 		testTranscriptAPIKey,
@@ -406,10 +407,11 @@ func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *
 			gotPath = r.URL.Path
 			gotSessionID = r.URL.Query().Get("sessionId")
 			gotCallID = r.URL.Query().Get("callId")
+			gotToken = r.URL.Query().Get("token")
 			w.WriteHeader(http.StatusNoContent)
 		}),
 	)
-	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream?callId=call-ignored", "")
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream?callId=call-ignored&token=must-not-forward", "")
 	resp := httptest.NewRecorder()
 
 	api.StreamWorkspaceTranscriptSegments(resp, req)
@@ -417,7 +419,7 @@ func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
 	}
-	if gotPath != "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream" || gotSessionID != "session_1" || gotCallID != "" {
+	if gotPath != "/v1/workspaces/workspace_1/meeting-sessions/session_1/transcript-stream" || gotSessionID != "session_1" || gotCallID != "" || gotToken != "" {
 		t.Fatalf("forwarded path=%q sessionId=%q callId=%q", gotPath, gotSessionID, gotCallID)
 	}
 }

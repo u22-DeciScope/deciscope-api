@@ -29,8 +29,9 @@ PUT  /v1/session/current-workspace
 - 保護された `/v1` Routeは、`/v1/auth/login` が発行する
   `deciscope_session` Cookieで認証します。現在の実装にdev bearer fallbackはありません。
   ローカルでブラウザUIを使う場合もFirebase Admin設定を用意してください。
-- `/api/v1/transcript-segments`、`/api/v1/meeting-sessions` などのVM Bot/互換ルートは、
-  session Cookieではなく `X-DeciScope-Api-Key` やclient tokenで保護します。
+- `POST /api/v1/transcript-segments` と `/api/v1/meeting-sessions` などのVM Bot/互換ルートは、
+  session Cookieではなく `X-DeciScope-Api-Key` で保護します。ブラウザ向けのレガシー
+  transcript GET/WSルートは登録されません。
 
 `/health`、`/debug`、`/login`、`/register` は現在のRouterには
 登録されていません。
@@ -144,36 +145,10 @@ X-DeciScope-Api-Key: <shared secret>
 - 標準構成ではPostgreSQLの `transcript_segments` tableへ保存します。
 - body上限は64KiBです。
 
-履歴取得:
-
-```http
-GET /api/v1/transcript-segments?callId=<call_id>&sessionId=<session_id>&limit=100
-```
-
-- `callId` が指定された場合はそのcallだけを返します。未指定の場合は全callIdを返します。
-- `sessionId` が指定された場合はその会議セッションだけを返します。
-- `limit` の既定値は `100`、上限は `500` です。
-- `sequenceNo` 昇順で返します。
-- `DECISCOPE_WS_CLIENT_TOKEN` が設定されている場合は `?token=...` または
-  `Authorization: Bearer ...` が必要です。
-- `DECISCOPE_INGEST_API_KEY` は読み取りAPIやブラウザへ渡しません。
-
-文字起こしリアルタイム配信:
-
-```text
-WS /api/v1/ws/transcript-segments
-WS /api/v1/ws/transcript-segments?callId=<call_id>
-WS /api/v1/ws/transcript-segments?sessionId=<session_id>
-WS /api/v1/ws/transcript-segments?callId=<call_id>&sessionId=<session_id>&token=<client_token>
-```
-
-- DB保存に成功した新規segmentだけを `transcript_segment.created` として配信します。
-- 同一内容の再送は `duplicate: true` のHTTP応答になりますが、WebSocketへは配信しません。
-- `callId` 指定時は、そのcallIdのsegmentだけを受信します。未指定なら全callIdを受信します。
-- `sessionId` 指定時は、その会議セッションのsegmentとstatusだけを受信します。
-- 会議セッションの状態変化は `meeting_session.status_changed` として配信します。
-- `DECISCOPE_WS_CLIENT_TOKEN` が設定されている場合は `token` queryが必要です。
-- Originは `DECISCOPE_WS_ALLOWED_ORIGINS` で許可します。未設定時はlocal development originだけを許可します。
+レガシーの `GET /api/v1/transcript-segments`、
+`GET /api/v1/meeting-sessions/{session_id}/transcript-segments`、
+`WS /api/v1/ws/transcript-segments` は登録されません。履歴取得とリアルタイム配信は、
+後述のworkspace-scoped APIをSession Cookieで利用してください。
 
 WebSocket message:
 
@@ -464,7 +439,7 @@ GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
   （VM Botが既に停止しているなど）セッションは `ended` として終了します（best-effort）。
   Bot制御が未設定（`503 bot_control_not_configured`）の場合のみ終了に失敗します。
 - `transcript-segments` は保存済みSegmentの取得、`transcript-stream` はWebSocketでの
-  リアルタイム配信です。
+  リアルタイム配信です。どちらもSession Cookie認証とworkspace所属検査を通ります。
 - `ai-analyses` は最新のライブ分析・最終要約を返します。存在しない分析は `null` で、
   `404` にはなりません。AI機能が未設定の場合も `live`/`final` はともに `null` です
 
@@ -508,9 +483,6 @@ GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
 
 - `liveIntervalSeconds` はライブ分析のチェック間隔（秒）です。AI機能またはライブ分析が
   無効の場合は `0` になります
-- 非workspace版の `GET /api/v1/meeting-sessions/{session_id}/transcript-segments`
-  （認証なし、`{session_id}` のみで絞り込み）も引き続き利用できます。
-
 ## 会議
 
 ```http
