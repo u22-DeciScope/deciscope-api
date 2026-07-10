@@ -1,13 +1,76 @@
-### サーバー生存確認（GET）
-GET http://localhost:9090/health
+@baseUrl = http://localhost:9090
+@apiKey = change-me-change-me-change-me-1234
+@workspace_code = replace-with-workspace-id
+@meeting_id = replace-with-meeting-id
+@session_id = replace-with-session-id
+
+### process health
+GET {{baseUrl}}/healthz
+
+
+### readiness
+GET {{baseUrl}}/readyz
 
 
 ### DeciScope v1 health
-GET http://localhost:9090/v1/health
+GET {{baseUrl}}/v1/health
+
+
+### transcript ingest
+POST {{baseUrl}}/api/v1/transcript-segments
+Content-Type: application/json
+X-DeciScope-Api-Key: {{apiKey}}
+
+{
+  "sessionId": "{{session_id}}",
+  "eventId": "manual-test-call:1",
+  "callId": "manual-test-call",
+  "sequenceNo": 1,
+  "speakerId": "manual-speaker-001",
+  "speakerName": "手動テスト太郎",
+  "recognizedAtUtc": "2026-06-25T13:20:01.1234567+00:00",
+  "offsetTicks": 0,
+  "durationTicks": 10000000,
+  "text": "Go APIへの保存テストです。"
+}
+
+
+### Teams meeting session create
+POST {{baseUrl}}/api/v1/meeting-sessions
+Content-Type: application/json
+
+{
+  "joinUrl": "https://teams.microsoft.com/l/meetup-join/replace-with-real-meeting-url"
+}
+
+
+### Teams meeting session get
+GET {{baseUrl}}/api/v1/meeting-sessions/{{session_id}}
+
+
+### Bot meeting session status update
+PATCH {{baseUrl}}/api/v1/bot/meeting-sessions/{{session_id}}/status
+Content-Type: application/json
+X-DeciScope-Api-Key: {{apiKey}}
+
+{
+  "status": "joined",
+  "botCallId": "manual-test-call",
+  "message": "joined successfully"
+}
+
+
+### login with Firebase ID token
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{
+  "idToken": "replace-with-firebase-id-token"
+}
 
 
 ### 会議作成
-POST http://localhost:9090/v1/meetings
+POST {{baseUrl}}/v1/workspaces/{{workspace_code}}/meetings
 Content-Type: application/json
 
 {
@@ -16,52 +79,14 @@ Content-Type: application/json
 }
 
 
-### fixture一覧
-GET http://localhost:9090/v1/fixtures
-
-
-### fixture replay start
-POST http://localhost:9090/v1/meetings/{{meeting_id}}/replay/start
-Content-Type: application/json
-
-{
-  "fixture": "demo.jsonl"
-}
-
-
 ### durable events
-GET http://localhost:9090/v1/meetings/{{meeting_id}}/events?after_seq=0
+GET {{baseUrl}}/v1/meetings/{{meeting_id}}/events?after_seq=0
 
 
 ### transcript segments
-GET http://localhost:9090/v1/meetings/{{meeting_id}}/segments?after_seq=0
+GET {{baseUrl}}/v1/meetings/{{meeting_id}}/segments?after_seq=0
 
 
 ### markdown report
-GET http://localhost:9090/v1/meetings/{{meeting_id}}/report
+GET {{baseUrl}}/v1/meetings/{{meeting_id}}/report
 Accept: text/markdown
-
-
-### 会員登録フォーム（GET）
-GET http://localhost:9090/register-form
-
-
-### 会員登録API（POST）
-POST http://localhost:9090/register
-Content-Type: application/json
-
-{
-  "name": "test-user",
-  "email": "kokoko@example.com",
-  "password": "pass123"
-}
-
-
-### ログイン
-POST http://localhost:9090/login
-Content-Type: application/json
-
-{
-  "email": "test@example.com",
-  "password": "pass123"
-}

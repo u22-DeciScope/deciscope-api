@@ -2,9 +2,11 @@ package domain
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -50,6 +52,147 @@ type Segment struct {
 	CreatedAt    string
 }
 
+type TranscriptSegment struct {
+	SessionID       string
+	EventID         string
+	CallID          string
+	SequenceNo      int64
+	SpeakerID       string
+	SpeakerName     string
+	RecognizedAtUTC time.Time
+	OffsetTicks     int64
+	DurationTicks   int64
+	Text            string
+	ReceivedAtUTC   time.Time
+	IsFinal         bool
+}
+
+type TranscriptSegmentStoreStatus string
+
+const (
+	TranscriptSegmentCreated       TranscriptSegmentStoreStatus = "created"
+	TranscriptSegmentAlreadyExists TranscriptSegmentStoreStatus = "already_exists"
+	TranscriptSegmentPartialSent   TranscriptSegmentStoreStatus = "partial_sent"
+)
+
+type TranscriptSegmentStoreResult struct {
+	Status  TranscriptSegmentStoreStatus
+	EventID string
+}
+
+type MeetingSessionStatus string
+
+const (
+	MeetingSessionRequested       MeetingSessionStatus = "requested"
+	MeetingSessionPendingJoin     MeetingSessionStatus = "pending_join"
+	MeetingSessionCommandSent     MeetingSessionStatus = "command_sent"
+	MeetingSessionJoining         MeetingSessionStatus = "joining"
+	MeetingSessionJoined          MeetingSessionStatus = "joined"
+	MeetingSessionActive          MeetingSessionStatus = "active"
+	MeetingSessionRecording       MeetingSessionStatus = "recording"
+	MeetingSessionSpeechError     MeetingSessionStatus = "speech_error"
+	MeetingSessionSpeechThrottled MeetingSessionStatus = "speech_throttled"
+	MeetingSessionEnded           MeetingSessionStatus = "ended"
+	MeetingSessionFailed          MeetingSessionStatus = "failed"
+	MeetingSessionStale           MeetingSessionStatus = "stale"
+)
+
+type MeetingSession struct {
+	ID                          string
+	WorkspaceID                 string
+	CreatedByUserID             string
+	MeetingID                   string
+	JoinURL                     string
+	JoinURLHash                 string
+	Title                       string
+	TitleSource                 string
+	TitleUpdatedAt              time.Time
+	UserProvidedTitle           string
+	GraphTitle                  string
+	Provider                    string
+	ExternalMeetingID           string
+	JoinMeetingID               string
+	JoinWebURL                  string
+	CanonicalJoinWebURL         string
+	ThreadID                    string
+	OrganizerID                 string
+	OrganizerName               string
+	OrganizerEmail              string
+	ScheduledStartAt            time.Time
+	ScheduledEndAt              time.Time
+	TitleResolutionErrorCode    string
+	TitleResolutionErrorMessage string
+	TitleResolvedAt             time.Time
+	Purpose                     string
+	Context                     string
+	Agenda                      string
+	DecisionPoints              string
+	Concerns                    string
+	ExpectedOutput              string
+	CustomInstruction           string
+	Status                      MeetingSessionStatus
+	BotCallID                   string
+	RequestedAt                 time.Time
+	CommandSentAt               time.Time
+	JoinedAt                    time.Time
+	EndedAt                     time.Time
+	EndReason                   string
+	LastBotStatusAt             time.Time
+	LastError                   string
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+}
+
+type MeetingSessionDebug struct {
+	MeetingSession
+	LastTranscriptAt time.Time
+}
+
+type MeetingSessionStatusUpdate struct {
+	SessionID       string
+	Status          MeetingSessionStatus
+	BotCallID       string
+	Title           string
+	TitleSource     string
+	CommandSentAt   *time.Time
+	JoinedAt        *time.Time
+	EndedAt         *time.Time
+	EndReason       string
+	LastBotStatusAt *time.Time
+	LastError       string
+	UpdatedAt       time.Time
+}
+
+type MeetingSessionMetadataUpdate struct {
+	SessionID                   string
+	Title                       string
+	TitleSource                 string
+	UserProvidedTitle           string
+	GraphTitle                  string
+	Provider                    string
+	ExternalMeetingID           string
+	JoinMeetingID               string
+	JoinWebURL                  string
+	CanonicalJoinWebURL         string
+	ThreadID                    string
+	OrganizerID                 string
+	OrganizerName               string
+	OrganizerEmail              string
+	ScheduledStartAt            *time.Time
+	ScheduledEndAt              *time.Time
+	TitleResolutionErrorCode    string
+	TitleResolutionErrorMessage string
+	TitleResolvedAt             *time.Time
+	Purpose                     string
+	Context                     string
+	Agenda                      string
+	DecisionPoints              string
+	Concerns                    string
+	ExpectedOutput              string
+	CustomInstruction           string
+	UpdatedAt                   time.Time
+}
+
 type Job struct {
 	ID          string
 	WorkspaceID string
@@ -87,11 +230,12 @@ type User struct {
 }
 
 type Workspace struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Role        string `json:"role"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 type WorkspaceMember struct {
@@ -111,8 +255,19 @@ type WorkspaceInvitation struct {
 	Role            string `json:"role"`
 	Status          string `json:"status"`
 	InvitedBy       string `json:"invited_by"`
-	CreatedAt       string `json:"created_at"`
+	InvitedByName   string `json:"invited_by_name,omitempty"`
+	// TokenHash は招待リンクtokenのSHA-256。生tokenはDBにもレスポンスにも含めない。
+	TokenHash string `json:"-"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	CreatedAt string `json:"created_at"`
 }
+
+const (
+	WorkspaceInvitationStatusPending  = "pending"
+	WorkspaceInvitationStatusAccepted = "accepted"
+	WorkspaceInvitationStatusRevoked  = "revoked"
+	WorkspaceInvitationStatusExpired  = "expired"
+)
 
 type Session struct {
 	ID                 string
@@ -163,12 +318,94 @@ func NewUUID() string {
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]
 }
 
-func NormalizeFixtureName(name string) string {
-	name = strings.TrimSpace(name)
-	name = strings.ReplaceAll(name, "\\", "/")
-	name = strings.TrimPrefix(name, "/")
-	if name == "" {
-		return "demo.jsonl"
+func ValidMeetingSessionStatus(status MeetingSessionStatus) bool {
+	switch status {
+	case MeetingSessionRequested, MeetingSessionPendingJoin, MeetingSessionCommandSent,
+		MeetingSessionJoining, MeetingSessionJoined, MeetingSessionActive,
+		MeetingSessionRecording, MeetingSessionSpeechError, MeetingSessionSpeechThrottled,
+		MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
+		return true
+	default:
+		return false
 	}
-	return name
+}
+
+func ReusableMeetingSessionStatuses() []MeetingSessionStatus {
+	return []MeetingSessionStatus{
+		MeetingSessionRequested,
+		MeetingSessionPendingJoin,
+		MeetingSessionCommandSent,
+		MeetingSessionJoining,
+		MeetingSessionJoined,
+		MeetingSessionActive,
+		MeetingSessionRecording,
+		MeetingSessionSpeechError,
+		MeetingSessionSpeechThrottled,
+	}
+}
+
+func IsReusableMeetingSessionStatus(status MeetingSessionStatus) bool {
+	for _, candidate := range ReusableMeetingSessionStatuses() {
+		if status == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func NormalizeTeamsJoinURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%w: joinUrl is required", ErrInvalidArgument)
+	}
+	if strings.ContainsAny(value, " \t\r\n") {
+		return "", fmt.Errorf("%w: joinUrl must be a valid absolute URL", ErrInvalidArgument)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("%w: joinUrl must be a valid absolute URL", ErrInvalidArgument)
+	}
+	if strings.ToLower(parsed.Scheme) != "https" {
+		return "", fmt.Errorf("%w: joinUrl must use https", ErrInvalidArgument)
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if !isTeamsJoinHost(host) || !isTeamsJoinPath(parsed.EscapedPath()) {
+		return "", fmt.Errorf("%w: joinUrl must be a Teams meeting URL", ErrInvalidArgument)
+	}
+	return normalizedJoinURLString(*parsed), nil
+}
+
+func JoinURLHash(joinURL string) string {
+	sum := sha256.Sum256([]byte(joinURL))
+	return hex.EncodeToString(sum[:])
+}
+
+func isTeamsJoinHost(host string) bool {
+	return host == "teams.microsoft.com" ||
+		strings.HasSuffix(host, ".teams.microsoft.com") ||
+		host == "teams.live.com" ||
+		strings.HasSuffix(host, ".teams.live.com")
+}
+
+func isTeamsJoinPath(path string) bool {
+	path = strings.ToLower(path)
+	return strings.Contains(path, "meetup-join") ||
+		path == "/meet" ||
+		strings.HasPrefix(path, "/meet/")
+}
+
+func normalizedJoinURLString(parsed url.URL) string {
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if port := parsed.Port(); port != "" && port != "443" {
+		host = host + ":" + port
+	}
+	parsed.Host = host
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	if parsed.Path != "" && parsed.Path != "/" {
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
+		parsed.RawPath = strings.TrimRight(parsed.RawPath, "/")
+	}
+	return parsed.String()
 }

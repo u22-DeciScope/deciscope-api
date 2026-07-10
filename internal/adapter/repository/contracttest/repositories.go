@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"deciscope-core-api/internal/application"
 	appaccess "deciscope-core-api/internal/application/access"
@@ -245,30 +246,52 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatalf("FindOrCreateUser(member) error = %v", err)
 		}
-		workspace, err := repos.Auth.EnsureInitialWorkspace(ctx, owner.ID, owner.DisplayName, owner.Email)
+		workspace, err := repos.Auth.CreateWorkspace(ctx, owner.ID, "最初のワークスペース", "")
 		if err != nil {
-			t.Fatalf("EnsureInitialWorkspace() error = %v", err)
+			t.Fatalf("CreateWorkspace(initial) error = %v", err)
 		}
 
-		invitation, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, member.Email)
+		expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+		invitation, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, member.Email, domain.WorkspaceRoleAdmin, "hash_member_admin", expiresAt)
 		if err != nil {
 			t.Fatalf("CreateInvitation() error = %v", err)
 		}
 		if invitation.NormalizedEmail != "member@example.com" {
 			t.Fatalf("invitation normalized email = %q", invitation.NormalizedEmail)
 		}
-		if _, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, " MEMBER@example.com "); !errors.Is(err, domain.ErrConflict) {
+		if invitation.Status != domain.WorkspaceInvitationStatusPending {
+			t.Fatalf("invitation status = %q, want pending", invitation.Status)
+		}
+		if _, err := repos.Auth.CreateInvitation(ctx, owner.ID, workspace.ID, " MEMBER@example.com ", domain.WorkspaceRoleAdmin, "hash_other", expiresAt); !errors.Is(err, domain.ErrConflict) {
 			t.Fatalf("CreateInvitation(duplicate) error = %v, want ErrConflict", err)
 		}
-		if err := repos.Auth.AcceptInvitations(ctx, member.ID, "member@example.com"); err != nil {
-			t.Fatalf("AcceptInvitations() error = %v", err)
+		found, err := repos.Auth.InvitationByTokenHash(ctx, "hash_member_admin")
+		if err != nil || found.ID != invitation.ID {
+			t.Fatalf("InvitationByTokenHash() = %+v, %v; want created invitation", found, err)
+		}
+		if _, err := repos.Auth.InvitationByTokenHash(ctx, "missing_hash"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("InvitationByTokenHash(missing) error = %v, want ErrNotFound", err)
+		}
+		if err := repos.Auth.AcceptInvitation(ctx, invitation.ID, member.ID); err != nil {
+			t.Fatalf("AcceptInvitation() error = %v", err)
+		}
+		// accepted 済み招待は pending でなくなるため再承認できない。
+		if err := repos.Auth.AcceptInvitation(ctx, invitation.ID, member.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("AcceptInvitation(reuse) error = %v, want ErrNotFound", err)
 		}
 		members, err := repos.Auth.ListMembers(ctx, owner.ID, workspace.ID)
 		if err != nil {
 			t.Fatalf("ListMembers() error = %v", err)
 		}
-		if !hasMember(members, member.ID, "member") {
+		if !hasMember(members, member.ID, domain.WorkspaceRoleAdmin) {
 			t.Fatalf("members = %+v, want accepted member", members)
+		}
+		exists, err := repos.Auth.MemberEmailExists(ctx, workspace.ID, "member@example.com")
+		if err != nil || !exists {
+			t.Fatalf("MemberEmailExists() = %t, %v; want true", exists, err)
+		}
+		if name, err := repos.Auth.WorkspaceNameByID(ctx, workspace.ID); err != nil || name != workspace.Name {
+			t.Fatalf("WorkspaceNameByID() = %q, %v; want %q", name, err, workspace.Name)
 		}
 
 		if err := repos.Auth.RemoveMember(ctx, member.ID, workspace.ID, owner.ID); !errors.Is(err, domain.ErrForbidden) {
@@ -282,6 +305,93 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if err := repos.Auth.RemoveMember(ctx, owner.ID, workspace.ID, member.ID); err != nil {
 			t.Fatalf("RemoveMember(member) error = %v", err)
+		}
+
+		created, err := repos.Auth.CreateWorkspace(ctx, owner.ID, "契約テスト", "説明")
+		if err != nil {
+			t.Fatalf("CreateWorkspace() error = %v", err)
+		}
+		if created.Description != "説明" {
+			t.Fatalf("CreateWorkspace() description = %q, want %q", created.Description, "説明")
+		}
+		createdMembers, err := repos.Auth.ListMembers(ctx, owner.ID, created.ID)
+		if err != nil {
+			t.Fatalf("ListMembers(created workspace) error = %v", err)
+		}
+		if !hasMember(createdMembers, owner.ID, domain.WorkspaceRoleOwner) {
+			t.Fatalf("created workspace members = %+v, want creator as owner", createdMembers)
+		}
+		if _, err := repos.Auth.GetWorkspace(ctx, member.ID, created.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("GetWorkspace(non-member) error = %v, want ErrNotFound", err)
+		}
+
+		description := "更新後の説明"
+		updated, err := repos.Auth.UpdateWorkspace(ctx, owner.ID, created.ID, nil, &description)
+		if err != nil {
+			t.Fatalf("UpdateWorkspace(description) error = %v", err)
+		}
+		if updated.Name != "契約テスト" || updated.Description != description {
+			t.Fatalf("UpdateWorkspace() = %+v, want name kept and description updated", updated)
+		}
+
+		// 招待は必ず pending で作成され、承諾 (AcceptInvitation) で初めてメンバーになる。
+		second, err := repos.Auth.CreateInvitation(ctx, owner.ID, created.ID, member.Email, domain.WorkspaceRoleViewer, "hash_second_viewer", expiresAt)
+		if err != nil {
+			t.Fatalf("CreateInvitation(second workspace) error = %v", err)
+		}
+		if second.Status != domain.WorkspaceInvitationStatusPending {
+			t.Fatalf("CreateInvitation() status = %q, want pending", second.Status)
+		}
+		// 取り消した招待は pending でなくなるため承諾できない。
+		if err := repos.Auth.RevokeInvitation(ctx, owner.ID, created.ID, second.ID); err != nil {
+			t.Fatalf("RevokeInvitation() error = %v", err)
+		}
+		if err := repos.Auth.AcceptInvitation(ctx, second.ID, member.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("AcceptInvitation(revoked) error = %v, want ErrNotFound", err)
+		}
+		// DeleteInvitation はメール送信失敗時のロールバックに使う。
+		third, err := repos.Auth.CreateInvitation(ctx, owner.ID, created.ID, member.Email, domain.WorkspaceRoleViewer, "hash_third_viewer", expiresAt)
+		if err != nil {
+			t.Fatalf("CreateInvitation(third) error = %v", err)
+		}
+		if err := repos.Auth.DeleteInvitation(ctx, third.ID); err != nil {
+			t.Fatalf("DeleteInvitation() error = %v", err)
+		}
+		if _, err := repos.Auth.InvitationByTokenHash(ctx, "hash_third_viewer"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("InvitationByTokenHash(deleted) error = %v, want ErrNotFound", err)
+		}
+		// メンバー化は残りのテストで前提となるため、通常フローで参加させる。
+		fourth, err := repos.Auth.CreateInvitation(ctx, owner.ID, created.ID, member.Email, domain.WorkspaceRoleViewer, "hash_fourth_viewer", expiresAt)
+		if err != nil {
+			t.Fatalf("CreateInvitation(fourth) error = %v", err)
+		}
+		if err := repos.Auth.AcceptInvitation(ctx, fourth.ID, member.ID); err != nil {
+			t.Fatalf("AcceptInvitation(fourth) error = %v", err)
+		}
+		acceptedMembers, err := repos.Auth.ListMembers(ctx, owner.ID, created.ID)
+		if err != nil {
+			t.Fatalf("ListMembers(after accept) error = %v", err)
+		}
+		if !hasMember(acceptedMembers, member.ID, domain.WorkspaceRoleViewer) {
+			t.Fatalf("members = %+v, want accepted viewer", acceptedMembers)
+		}
+
+		// ロール変更は owner のみが実行できる。admin/viewer は拒否される。
+		if _, err := repos.Auth.UpdateMemberRole(ctx, member.ID, created.ID, member.ID, domain.WorkspaceRoleAdmin); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("UpdateMemberRole(by viewer) error = %v, want ErrForbidden", err)
+		}
+		changed, err := repos.Auth.UpdateMemberRole(ctx, owner.ID, created.ID, member.ID, domain.WorkspaceRoleAdmin)
+		if err != nil {
+			t.Fatalf("UpdateMemberRole(by owner) error = %v", err)
+		}
+		if changed.Role != domain.WorkspaceRoleAdmin {
+			t.Fatalf("UpdateMemberRole() role = %q, want admin", changed.Role)
+		}
+		if _, err := repos.Auth.UpdateMemberRole(ctx, member.ID, created.ID, member.ID, domain.WorkspaceRoleViewer); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("UpdateMemberRole(by admin) error = %v, want ErrForbidden", err)
+		}
+		if _, err := repos.Auth.UpdateMemberRole(ctx, owner.ID, created.ID, owner.ID, domain.WorkspaceRoleViewer); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("UpdateMemberRole(demote owner) error = %v, want ErrForbidden", err)
 		}
 	})
 }

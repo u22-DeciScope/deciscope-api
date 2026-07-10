@@ -3,7 +3,9 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"deciscope-core-api/internal/domain"
 )
@@ -11,20 +13,42 @@ import (
 type Repository interface {
 	ListWorkspaces(ctx context.Context, userID string) ([]domain.Workspace, error)
 	GetWorkspace(ctx context.Context, userID, workspaceID string) (*domain.Workspace, error)
-	UpdateWorkspaceName(ctx context.Context, userID, workspaceID, name string) (*domain.Workspace, error)
+	CreateWorkspace(ctx context.Context, userID, name, description string) (*domain.Workspace, error)
+	UpdateWorkspace(ctx context.Context, userID, workspaceID string, name, description *string) (*domain.Workspace, error)
 	ListMembers(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceMember, error)
-	CreateInvitation(ctx context.Context, userID, workspaceID, email string) (*domain.WorkspaceInvitation, error)
+	MemberEmailExists(ctx context.Context, workspaceID, normalizedEmail string) (bool, error)
+	CreateInvitation(ctx context.Context, userID, workspaceID, email, role, tokenHash, expiresAt string) (*domain.WorkspaceInvitation, error)
+	DeleteInvitation(ctx context.Context, invitationID string) error
+	InvitationByTokenHash(ctx context.Context, tokenHash string) (*domain.WorkspaceInvitation, error)
+	AcceptInvitation(ctx context.Context, invitationID, userID string) error
+	WorkspaceNameByID(ctx context.Context, workspaceID string) (string, error)
 	ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error)
 	RevokeInvitation(ctx context.Context, userID, workspaceID, invitationID string) error
 	RemoveMember(ctx context.Context, userID, workspaceID, memberID string) error
+	UpdateMemberRole(ctx context.Context, userID, workspaceID, memberID, role string) (*domain.WorkspaceMember, error)
+}
+
+// SampleMeetingCreator は、初回作成されたワークスペースへ初期サンプル会議を投入する outbound port。
+// 固定の workspace_id を前提とせず、必ず渡された workspace_id に紐づけて作成する。
+type SampleMeetingCreator interface {
+	CreateSampleMeeting(ctx context.Context, workspaceID, createdByUserID string) error
 }
 
 type Service struct {
-	repository Repository
+	repository      Repository
+	mailer          InvitationMailer
+	frontendBaseURL string
+	sampleMeetings  SampleMeetingCreator
 }
 
-func NewService(repository Repository) *Service {
-	return &Service{repository: repository}
+func NewService(repository Repository, mailer InvitationMailer, frontendBaseURL string) *Service {
+	return &Service{repository: repository, mailer: mailer, frontendBaseURL: frontendBaseURL}
+}
+
+// SetSampleMeetingCreator を設定すると、ユーザーが所属0件の状態で最初のワークスペースを
+// 作成したときだけサンプル会議を投入する。未設定なら何もしない。
+func (s *Service) SetSampleMeetingCreator(creator SampleMeetingCreator) {
+	s.sampleMeetings = creator
 }
 
 func (s *Service) ListWorkspaces(ctx context.Context, userID string) ([]domain.Workspace, error) {
@@ -35,38 +59,65 @@ func (s *Service) GetWorkspace(ctx context.Context, userID, workspaceID string) 
 	return s.repository.GetWorkspace(ctx, userID, workspaceID)
 }
 
-func (s *Service) UpdateWorkspaceName(ctx context.Context, userID, workspaceID, name string) (*domain.Workspace, error) {
+func (s *Service) CreateWorkspace(ctx context.Context, userID, name, description string) (*domain.Workspace, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, fmt.Errorf("%w: workspace name is required", domain.ErrInvalidArgument)
 	}
-	return s.repository.UpdateWorkspaceName(ctx, userID, workspaceID, name)
+	// サンプル会議は「所属0件のユーザーが最初のワークスペースを作成したとき」だけ投入するため、
+	// 作成前の所属数を確認しておく。
+	existing, err := s.repository.ListWorkspaces(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	workspace, err := s.repository.CreateWorkspace(ctx, userID, name, strings.TrimSpace(description))
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) == 0 && s.sampleMeetings != nil {
+		// サンプル会議の作成失敗で初回フローを止めない。失敗はログに残すだけにする。
+		if sampleErr := s.sampleMeetings.CreateSampleMeeting(ctx, workspace.ID, userID); sampleErr != nil {
+			log.Printf("sample meeting creation failed (workspace creation itself succeeded): workspace_id=%q user_id=%q error=%v", workspace.ID, userID, sampleErr)
+		} else {
+			log.Printf("sample meeting created for first workspace: workspace_id=%q user_id=%q", workspace.ID, userID)
+		}
+	}
+	return workspace, nil
+}
+
+// UpdateWorkspace は nil のフィールドを変更せず、指定されたフィールドだけ更新する。
+func (s *Service) UpdateWorkspace(ctx context.Context, userID, workspaceID string, name, description *string) (*domain.Workspace, error) {
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" {
+			return nil, fmt.Errorf("%w: workspace name is required", domain.ErrInvalidArgument)
+		}
+		name = &trimmed
+	}
+	if description != nil {
+		trimmed := strings.TrimSpace(*description)
+		description = &trimmed
+	}
+	if name == nil && description == nil {
+		return nil, fmt.Errorf("%w: nothing to update", domain.ErrInvalidArgument)
+	}
+	return s.repository.UpdateWorkspace(ctx, userID, workspaceID, name, description)
 }
 
 func (s *Service) ListMembers(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceMember, error) {
 	return s.repository.ListMembers(ctx, userID, workspaceID)
 }
 
-func (s *Service) CreateInvitation(ctx context.Context, userID, workspaceID, email string) (*domain.WorkspaceInvitation, error) {
-	email = strings.TrimSpace(email)
-	normalizedEmail := normalizeEmail(email)
-	if normalizedEmail == "" {
-		return nil, fmt.Errorf("%w: email is required", domain.ErrInvalidArgument)
-	}
+func (s *Service) ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error) {
 	invitations, err := s.repository.ListInvitations(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	for _, invitation := range invitations {
-		if invitation.NormalizedEmail == normalizedEmail {
-			return nil, fmt.Errorf("%w: invitation already exists", domain.ErrConflict)
-		}
+	now := time.Now().UTC()
+	for i := range invitations {
+		invitations[i].Status = effectiveInvitationStatus(invitations[i], now)
 	}
-	return s.repository.CreateInvitation(ctx, userID, workspaceID, email)
-}
-
-func (s *Service) ListInvitations(ctx context.Context, userID, workspaceID string) ([]domain.WorkspaceInvitation, error) {
-	return s.repository.ListInvitations(ctx, userID, workspaceID)
+	return invitations, nil
 }
 
 func (s *Service) RevokeInvitation(ctx context.Context, userID, workspaceID, invitationID string) error {
@@ -82,12 +133,33 @@ func (s *Service) RemoveMember(ctx context.Context, userID, workspaceID, memberI
 		if member.UserID != memberID {
 			continue
 		}
-		if member.Role == "owner" {
+		if domain.IsWorkspaceOwner(member.Role) {
 			return domain.ErrForbidden
 		}
 		return s.repository.RemoveMember(ctx, userID, workspaceID, memberID)
 	}
 	return domain.ErrNotFound
+}
+
+func (s *Service) UpdateMemberRole(ctx context.Context, userID, workspaceID, memberID, role string) (*domain.WorkspaceMember, error) {
+	role = domain.NormalizeWorkspaceRole(role)
+	if !domain.ValidWorkspaceInvitationRole(role) {
+		return nil, fmt.Errorf("%w: member role must be admin or viewer", domain.ErrInvalidArgument)
+	}
+	members, err := s.repository.ListMembers(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, member := range members {
+		if member.UserID != memberID {
+			continue
+		}
+		if domain.IsWorkspaceOwner(member.Role) {
+			return nil, domain.ErrForbidden
+		}
+		return s.repository.UpdateMemberRole(ctx, userID, workspaceID, memberID, role)
+	}
+	return nil, domain.ErrNotFound
 }
 
 func normalizeEmail(value string) string {

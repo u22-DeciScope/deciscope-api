@@ -5,9 +5,8 @@ DeciScope currently uses Firebase in two places.
 - Web: Firebase Web SDK opens the Microsoft sign-in flow and obtains a Firebase ID token.
 - Backend: Firebase Admin SDK verifies that ID token and returns the authenticated user.
 
-The local MVP `/v1` meeting APIs still work without Firebase. Firebase is used
-by `POST /v1/auth/login` and the protected `/v1/auth/me` and
-`/v1/auth/health` routes.
+Firebase is used by `POST /v1/auth/login` and the protected `/v1/auth/me`,
+workspace, meeting, and WebSocket routes.
 
 ## Firebase Console Setup
 
@@ -42,9 +41,15 @@ VITE_FIREBASE_MESSAGING_SENDER_ID=...
 Create or update `deciscope-api\.env`.
 
 ```env
+DECISCOPE_BACKEND_ADDR=100.70.221.61:9090
+DECISCOPE_TRANSCRIPT_ONLY=false
 PORT=9090
-DATABASE_URL=postgres://deciscope:deciscope@localhost:5432/deciscope?sslmode=disable
-FIXTURE_DIR=./fixtures/meetings
+DATABASE_URL=postgres://deciscope:change-me-change-me-change-me-1234@localhost:5432/deciscope?sslmode=disable
+DECISCOPE_TRANSCRIPT_STORE=postgres
+DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
+DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
+DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
+DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
 UPLOAD_DIR=./uploads
 ALLOWED_ORIGINS=http://localhost:5193
 
@@ -55,14 +60,28 @@ GOOGLE_APPLICATION_CREDENTIALS=<path-to-service-account-json>
 
 Use a path that matches your local checkout. You can also use `FIREBASE_CREDENTIALS_JSON` instead of `GOOGLE_APPLICATION_CREDENTIALS`, but keeping the service account in a separate ignored file is usually easier locally.
 
+When the backend runs in Docker Compose, the API container receives these
+Firebase environment variables from `.env`. If you use a service account file
+path, make sure that path exists inside the container, or use
+`FIREBASE_CREDENTIALS_JSON` for local Docker testing. The Firebase Web
+`VITE_FIREBASE_*` values alone are not enough for backend login because
+`POST /v1/auth/login` verifies the ID token with the Firebase Admin SDK.
+
 ## Local Flow
 
-1. Start the backend.
+1. Start the backend. The usual way is Docker Compose (it builds the API image
+   and starts PostgreSQL together):
 
 ```powershell
 cd <backend-repo>
-go run .
+docker compose up --build -d
 ```
+
+   `go run . migrate` / `go run . serve` also work, but only if a PostgreSQL
+   instance is reachable at the `DATABASE_URL` in `.env` — the default
+   `compose.yaml` `postgres` service does not publish its port to the host, so
+   running `go run .` against the Compose Postgres directly will fail to
+   connect unless you expose the port or run a separate local PostgreSQL.
 
 2. Start the web app.
 
@@ -82,7 +101,7 @@ npm run dev
 - The Firebase Web config is public client config. It is still better to keep it in `.env.local` per environment.
 - The service account JSON is secret. Never commit it.
 - If the backend logs that Firebase auth is disabled, the Admin SDK credential env is missing or invalid.
-- Only `/v1/auth/me` and `/v1/auth/health` require the authentication
-  middleware today. Meeting and replay routes are currently public.
+- `/v1/auth/me`, workspace routes, meeting routes, and WebSocket routes require
+  the authentication middleware.
 - PostgreSQL must be available when the backend starts. Authentication state is
   persisted in PostgreSQL.

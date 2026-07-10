@@ -1,8 +1,10 @@
 # Backend Architecture
 
 DeciScope API is a modular monolith using Clean Architecture boundaries. It
-runs with PostgreSQL. Database connection or migration failures stop API
-startup instead of silently falling back to in-memory persistence.
+runs with PostgreSQL. Database connection failures stop API startup instead of
+silently falling back to in-memory persistence. Migrations are run explicitly
+through the `migrate` command or the Docker Compose `migrate` service before API
+startup.
 
 ## Request flow
 
@@ -16,7 +18,7 @@ HTTP/WebSocket
 ```
 
 `internal/app/server.go` is the composition root. It creates concrete database,
-repository, storage, Firebase, realtime, fixture, and HTTP objects and injects
+repository, storage, Firebase, realtime, and HTTP objects and injects
 them into the application.
 
 ## Current package layout
@@ -29,7 +31,6 @@ internal/
   application/auth/    authentication use case and ports
   adapter/http/        router, handlers, DTOs, middleware
   adapter/realtime/    hub, WebSocket handler/client, protocol
-  adapter/fixture/     fixture loader and replay manager
   adapter/repository/  Memory/PostgreSQL repositories and contract tests
   infrastructure/      database, Firebase, local storage
   architecture/        automated dependency checks
@@ -45,7 +46,6 @@ interfaces. Application use cases depend on ports declared in
 - HTTP keeps request parsing, response DTOs, status codes, and routing.
 - Realtime separates room publishing, WebSocket handling, connection clients,
   and protocol messages.
-- Fixture separates fixture loading from replay state management.
 - Repository implementations are split by port responsibility and share one
   contract test suite.
 
@@ -55,8 +55,9 @@ Application use cases depend only on repository interfaces declared in
 `internal/application/ports.go`. PostgreSQL-specific SQL and transaction
 behavior are isolated under `internal/adapter/repository/postgres`.
 Connection creation and embedded PostgreSQL migrations live under
-`internal/infrastructure/database`. The Memory implementation remains available
-only as a test double.
+`internal/infrastructure/database`. The API container does not run migrations
+unconditionally during startup, which keeps the path safe for future replicated
+deployments. The Memory implementation remains available only as a test double.
 
 ## Runtime boundaries
 
@@ -70,10 +71,17 @@ only as a test double.
 
 ## Current limitations
 
-- Meeting, fixture, upload, and realtime routes are not protected by auth.
+- `/v1` meeting, upload, and realtime routes are protected by session cookie
+  auth plus workspace/resource access checks. The legacy `/api/v1` VM Bot and
+  transcript routes use API-key/client-token checks instead.
 - Firebase login persists users, workspaces, and sessions through PostgreSQL.
-- Upload storage is local filesystem only.
-- Queue/worker, external STT, and external LLM are not implemented.
+- Upload storage is local filesystem only. Upload processing is a mock job, and
+  file STT/ffmpeg processing is outside the current product scope.
+- Redis Streams, MinIO/Object Storage, raw-audio Media Ingress, and a separate
+  Python worker are not part of the current Docker-first product path.
+- Azure OpenAI-backed live/final meeting analysis is implemented when the
+  relevant environment variables are configured. A generic provider-agnostic LLM
+  adapter layer is not implemented.
 
 ## Verification
 
