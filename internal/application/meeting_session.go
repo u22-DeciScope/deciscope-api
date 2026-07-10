@@ -869,12 +869,10 @@ func meetingSessionCreateTitleSource(title string) string {
 	return "fallback"
 }
 
-func shouldApplyCreateTitleToReusedSession(session domain.MeetingSession, title string) bool {
-	if strings.TrimSpace(title) == "" {
-		return false
-	}
-	titleSource := strings.TrimSpace(session.TitleSource)
-	return titleSource == "" || titleSource == "fallback"
+// ユーザーが明示的にタイトルを入力して再入室した場合は、既存のタイトル
+// (Graph由来を含む)より入力値を優先する。空入力なら既存タイトルを維持する。
+func shouldApplyCreateTitleToReusedSession(_ domain.MeetingSession, title string) bool {
+	return strings.TrimSpace(title) != ""
 }
 
 type meetingSessionTitleUpdateDecision struct {
@@ -900,10 +898,10 @@ func decideMeetingSessionTitleUpdate(previous *domain.MeetingSession, incomingTi
 	}
 	if incomingRank >= oldRank {
 		switch incomingRank {
+		case 4:
+			return meetingSessionTitleUpdateDecision{ApplyTitle: true, Decision: "overwrite_with_user_input"}
 		case 3:
 			return meetingSessionTitleUpdateDecision{ApplyTitle: true, Decision: "overwrite_with_graph"}
-		case 2:
-			return meetingSessionTitleUpdateDecision{ApplyTitle: true, Decision: "overwrite_with_user_input"}
 		default:
 			if oldRank <= 1 {
 				return meetingSessionTitleUpdateDecision{ApplyTitle: true, Decision: "overwrite_with_fallback"}
@@ -913,24 +911,32 @@ func decideMeetingSessionTitleUpdate(previous *domain.MeetingSession, incomingTi
 	return meetingSessionTitleUpdateDecision{Decision: "keep_existing"}
 }
 
+// タイトルの優先順位。ユーザーが画面で入力したタイトル(user_input)を最優先とし、
+// Teams/Graph由来のタイトルでは上書きしない(Graph名は graph_title として別途保持し、
+// 一覧画面などで補助表示する)。
 func meetingSessionTitleSourceRank(source string) int {
-	source = strings.ToLower(strings.TrimSpace(source))
 	switch {
-	case source == "graph_online_meeting" ||
-		source == "graph_calendar_event" ||
-		source == "teams_metadata" ||
-		strings.HasPrefix(source, "graph_"):
+	case strings.EqualFold(strings.TrimSpace(source), "user_input"):
+		return 4
+	case isGraphMeetingTitleSource(source):
 		return 3
-	case source == "user_input":
-		return 2
-	case source == "fallback":
+	case strings.EqualFold(strings.TrimSpace(source), "fallback"):
 		return 1
 	default:
-		if source == "" {
+		if strings.TrimSpace(source) == "" {
 			return 0
 		}
 		return 1
 	}
+}
+
+// Teams/Graph 由来のタイトルソースかどうか(graph_title の保存判定にも使う)。
+func isGraphMeetingTitleSource(source string) bool {
+	source = strings.ToLower(strings.TrimSpace(source))
+	return source == "graph_online_meeting" ||
+		source == "graph_calendar_event" ||
+		source == "teams_metadata" ||
+		strings.HasPrefix(source, "graph_")
 }
 
 func metadataUserProvidedTitle(input MeetingSessionMetadataUpdateInput, titleSource string, title string) string {
@@ -947,7 +953,9 @@ func metadataGraphTitle(input MeetingSessionMetadataUpdateInput, titleSource str
 	if value := strings.TrimSpace(input.GraphTitle); value != "" {
 		return value
 	}
-	if meetingSessionTitleSourceRank(titleSource) >= 3 {
+	// タイトルとして採用されなかった場合(user_input優先)でも、Graph由来の
+	// タイトルは graph_title として保存する。
+	if isGraphMeetingTitleSource(titleSource) {
 		return strings.TrimSpace(title)
 	}
 	return ""

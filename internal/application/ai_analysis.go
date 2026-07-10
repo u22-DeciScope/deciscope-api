@@ -755,6 +755,7 @@ func (s *MeetingAnalysisService) getOptionalAnalysis(ctx context.Context, sessio
 type meetingSessionPreContext struct {
 	Title             string
 	Purpose           string
+	Context           string
 	Agenda            string
 	DecisionPoints    string
 	Concerns          string
@@ -763,8 +764,9 @@ type meetingSessionPreContext struct {
 }
 
 func (c *meetingSessionPreContext) isEmpty() bool {
-	return c.Title == "" && c.Purpose == "" && c.Agenda == "" && c.DecisionPoints == "" &&
-		c.Concerns == "" && c.ExpectedOutput == "" && c.CustomInstruction == ""
+	return c.Title == "" && c.Purpose == "" && c.Context == "" && c.Agenda == "" &&
+		c.DecisionPoints == "" && c.Concerns == "" && c.ExpectedOutput == "" &&
+		c.CustomInstruction == ""
 }
 
 func (c *meetingSessionPreContext) render() string {
@@ -774,6 +776,9 @@ func (c *meetingSessionPreContext) render() string {
 	}
 	if c.Purpose != "" {
 		lines = append(lines, "目的: "+c.Purpose)
+	}
+	if c.Context != "" {
+		lines = append(lines, "前提・背景: "+c.Context)
 	}
 	if c.Agenda != "" {
 		lines = append(lines, "アジェンダ: "+c.Agenda)
@@ -828,6 +833,7 @@ func (s *MeetingAnalysisService) fetchSessionPreContext(ctx context.Context, ses
 	preContext := &meetingSessionPreContext{
 		Title:             strings.TrimSpace(session.Title),
 		Purpose:           strings.TrimSpace(session.Purpose),
+		Context:           strings.TrimSpace(session.Context),
 		Agenda:            strings.TrimSpace(session.Agenda),
 		DecisionPoints:    strings.TrimSpace(session.DecisionPoints),
 		Concerns:          strings.TrimSpace(session.Concerns),

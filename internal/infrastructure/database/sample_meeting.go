@@ -66,24 +66,28 @@ func (s *SampleMeetingSeeder) CreateSampleMeeting(ctx context.Context, workspace
 		return fmt.Errorf("insert sample meeting: %w", err)
 	}
 
+	// 事前情報は入室フォームの現行構成(目的・ゴール / 前提・背景 / アジェンダ / AIへの補足指示)
+	// に合わせる。旧フィールド(decision_points / concerns / expected_output)は現行フォームでは
+	// 入力されないため空にする。graph_title は「ユーザー入力タイトルを優先しつつTeams側の
+	// 会議名を別途保持する」仕様のサンプルとして、title と異なる名前を入れる。
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO meeting_sessions (
 			id, workspace_id, created_by_user_id, meeting_id,
-			join_url, join_url_hash, title, title_source, title_updated_at, provider,
+			join_url, join_url_hash, title, title_source, title_updated_at,
+			user_provided_title, graph_title, provider,
 			organizer_name, organizer_email, scheduled_start_at, scheduled_end_at,
 			purpose, context, agenda, decision_points, concerns, expected_output, custom_instruction,
 			status, requested_at, joined_at, ended_at, end_reason,
 			created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4,
-			$5, $6, $7, 'user_input', $8, 'teams',
+			$5, $6, $7, 'user_input', $8,
+			$7, '価格改定検討MTG', 'teams',
 			'田中 PM', 'tanaka@deciscope.local', $9, $10,
-			'来期の価格改定方針を決める',
-			'昨年から原価が上昇しており、価格据え置きでは利益率が悪化している。',
+			'来期の価格改定方針を決める。値上げの対象顧客・値上げ率・適用開始時期を決定し、対象顧客リストの作成につなげる。',
+			'昨年から原価が上昇しており、価格据え置きでは利益率が悪化している。中小顧客は解約リスクが高い点が懸念。',
 			E'1. 値上げ対象顧客の範囲\n2. 値上げ率\n3. 適用タイミング',
-			'対象顧客・値上げ率・適用開始時期',
-			'中小顧客の解約リスク',
-			'値上げ方針の合意と対象顧客リストの作成',
+			'', '', '',
 			'財務影響は数値で示すこと',
 			'ended', $11, $9, $12, 'organizer_ended',
 			$11, $12

@@ -2122,13 +2122,20 @@ func TestLiveAnalysisBackoffCapsAtMaxBackoff(t *testing.T) {
 }
 
 func TestMeetingSessionPreContextRenderSkipsEmptyFields(t *testing.T) {
-	preContext := &meetingSessionPreContext{Purpose: "意思決定", Concerns: "期限が近い"}
+	preContext := &meetingSessionPreContext{
+		Purpose:  "意思決定",
+		Context:  "原価が上昇している",
+		Concerns: "期限が近い",
+	}
 	if preContext.isEmpty() {
 		t.Fatal("preContext should not be empty")
 	}
 	rendered := preContext.render()
 	if !strings.Contains(rendered, "目的: 意思決定") || !strings.Contains(rendered, "懸念点: 期限が近い") {
 		t.Fatalf("rendered = %q", rendered)
+	}
+	if !strings.Contains(rendered, "前提・背景: 原価が上昇している") {
+		t.Fatalf("rendered = %q, want context line", rendered)
 	}
 	if strings.Contains(rendered, "アジェンダ") {
 		t.Fatalf("rendered = %q, should not include empty agenda", rendered)
@@ -2137,6 +2144,11 @@ func TestMeetingSessionPreContextRenderSkipsEmptyFields(t *testing.T) {
 	empty := &meetingSessionPreContext{}
 	if !empty.isEmpty() {
 		t.Fatal("empty preContext should report isEmpty() == true")
+	}
+
+	contextOnly := &meetingSessionPreContext{Context: "背景のみ"}
+	if contextOnly.isEmpty() {
+		t.Fatal("context-only preContext should not report isEmpty()")
 	}
 }
 
