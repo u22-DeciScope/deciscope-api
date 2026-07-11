@@ -5,9 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strconv"
-	"strings"
 
 	"deciscope-core-api/internal/domain"
 )
@@ -60,13 +58,4 @@ func parseSeq(value string) int64 {
 		return 0
 	}
 	return seq
-}
-
-func sanitizeFilename(name string) string {
-	name = filepath.Base(strings.TrimSpace(name))
-	if name == "." || name == string(filepath.Separator) || name == "" {
-		return "upload.bin"
-	}
-	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
-	return replacer.Replace(name)
 }

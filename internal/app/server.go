@@ -24,7 +24,6 @@ import (
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/email"
 	"deciscope-core-api/internal/infrastructure/firebase"
-	"deciscope-core-api/internal/infrastructure/storage"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -159,7 +158,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	tokenVerifier := firebase.NewTokenVerifier(authClient)
 	service := application.NewService(
 		repositories.Meetings, repositories.Events, repositories.Reports,
-		repositories.Jobs, repositories.Uploads, hub, storage.NewLocal(config.UploadDir),
+		repositories.Jobs, hub,
 	)
 	authService := appauth.NewService(authRepository, tokenVerifier, 7*24*time.Hour)
 	workspaceService := appworkspace.NewService(authRepository, buildInvitationMailer(config), config.FrontendURL)
@@ -236,7 +235,6 @@ type repositorySet struct {
 	Events   application.EventRepository
 	Reports  application.ReportRepository
 	Jobs     application.JobRepository
-	Uploads  application.UploadRepository
 }
 
 type authWorkspaceRepository interface {
@@ -406,11 +404,10 @@ type repositoryStore interface {
 	application.EventRepository
 	application.ReportRepository
 	application.JobRepository
-	application.UploadRepository
 }
 
 func repositoriesFromStore(store repositoryStore) repositorySet {
 	return repositorySet{
-		Meetings: store, Events: store, Reports: store, Jobs: store, Uploads: store,
+		Meetings: store, Events: store, Reports: store, Jobs: store,
 	}
 }

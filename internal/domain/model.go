@@ -213,16 +213,6 @@ type Report struct {
 	CreatedAt  string
 }
 
-type Upload struct {
-	ID          string
-	WorkspaceID string
-	Filename    string
-	MediaType   string
-	Path        string
-	JobID       string
-	CreatedAt   string
-}
-
 type User struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`

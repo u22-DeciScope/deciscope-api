@@ -2,7 +2,6 @@ package application
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"deciscope-core-api/internal/domain"
@@ -31,10 +30,6 @@ type JobRepository interface {
 	CompleteJob(ctx context.Context, jobID string, result any) error
 	FailJob(ctx context.Context, jobID, message string) error
 	GetJob(ctx context.Context, jobID string) (*domain.Job, error)
-}
-
-type UploadRepository interface {
-	SaveUpload(ctx context.Context, workspaceID, filename, mediaType, path, jobID string) (*domain.Upload, error)
 }
 
 type TranscriptSegmentRepository interface {
@@ -169,8 +164,4 @@ type AIChatCompleter interface {
 
 type Publisher interface {
 	Publish(event domain.Event)
-}
-
-type ObjectStorage interface {
-	Save(ctx context.Context, key string, src io.Reader) (string, error)
 }

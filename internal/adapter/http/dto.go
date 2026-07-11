@@ -44,28 +44,6 @@ type reportResponse struct {
 	CreatedAt  string `json:"created_at"`
 }
 
-type jobResponse struct {
-	ID          string          `json:"id"`
-	WorkspaceID string          `json:"workspace_id"`
-	Type        string          `json:"type"`
-	Status      string          `json:"status"`
-	MeetingID   string          `json:"meeting_id,omitempty"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	CreatedAt   string          `json:"created_at"`
-	UpdatedAt   string          `json:"updated_at"`
-}
-
-type uploadResponse struct {
-	ID          string `json:"id"`
-	WorkspaceID string `json:"workspace_id"`
-	Filename    string `json:"filename"`
-	MediaType   string `json:"media_type"`
-	Path        string `json:"path"`
-	JobID       string `json:"job_id"`
-	CreatedAt   string `json:"created_at"`
-}
-
 func meetingDTO(v domain.Meeting) meetingResponse {
 	return meetingResponse(v)
 }
@@ -80,14 +58,6 @@ func segmentDTO(v domain.Segment) segmentResponse {
 
 func reportDTO(v domain.Report) reportResponse {
 	return reportResponse(v)
-}
-
-func jobDTO(v domain.Job) jobResponse {
-	return jobResponse(v)
-}
-
-func uploadDTO(v domain.Upload) uploadResponse {
-	return uploadResponse(v)
 }
 
 func meetingDTOs(values []domain.Meeting) []meetingResponse {

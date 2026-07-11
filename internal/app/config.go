@@ -59,7 +59,6 @@ type Config struct {
 	Firebase            firebase.Config
 	AI                  AIConfig
 	SessionWatchdog     MeetingSessionWatchdogConfig
-	UploadDir           string
 	FrontendURL         string
 	AllowedOrigins      string
 	SessionCookieSecure bool
@@ -185,7 +184,6 @@ func ConfigFromEnv() Config {
 		},
 		AI:                                  aiConfigFromEnv(),
 		SessionWatchdog:                     sessionWatchdogConfigFromEnv(),
-		UploadDir:                           os.Getenv("UPLOAD_DIR"),
 		FrontendURL:                         os.Getenv("FRONTEND_URL"),
 		AllowedOrigins:                      os.Getenv("ALLOWED_ORIGINS"),
 		SessionCookieSecure:                 strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),

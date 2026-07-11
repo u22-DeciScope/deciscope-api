@@ -426,23 +426,6 @@ func (r *AuthWorkspaceRepository) CanAccessMeeting(ctx context.Context, userID, 
 	return nil
 }
 
-func (r *AuthWorkspaceRepository) CanAccessJob(ctx context.Context, userID, jobID string) error {
-	var exists bool
-	err := r.db.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM jobs j JOIN workspace_members wm ON wm.workspace_id = j.workspace_id
-			WHERE j.id = $1 AND wm.user_id = $2
-		)
-	`, jobID, userID).Scan(&exists)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return domain.ErrNotFound
-	}
-	return nil
-}
-
 func (r *AuthWorkspaceRepository) requireWorkspaceManager(ctx context.Context, userID, workspaceID string) error {
 	return r.requireWorkspaceRole(ctx, userID, workspaceID, domain.CanManageWorkspace)
 }

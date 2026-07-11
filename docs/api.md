@@ -543,19 +543,6 @@ GET /v1/meetings/{meeting_id}/report
 を返します。`Accept: text/markdown` の場合はMarkdown本文を返します。保存済みの
 Reportがない場合は、現在のSegmentと分析Eventから生成して保存します。
 
-## アップロードとジョブ
-
-```http
-POST /v1/workspaces/{workspace_code}/uploads
-GET  /v1/jobs/{job_id}
-```
-
-`POST /v1/workspaces/{workspace_code}/uploads` は `multipart/form-data` の
-`file` fieldを受け取ります。現在はfileをlocalの `UPLOAD_DIR` に保存し、
-`file.extract_audio` のmock jobを完了状態にします。ファイルからの音声抽出、
-ffmpeg処理、ファイルSTTは現在のプロダクト範囲から外しています。Teams会議の文字起こしは
-VM上のTeams BotがAzure Speechで行い、Go APIはtranscript segmentを受け取ります。
-
 ## エラー形式
 
 `/v1` APIの多くは、エラー時に次のJSONを返します。

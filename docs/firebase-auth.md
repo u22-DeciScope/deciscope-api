@@ -50,7 +50,6 @@ DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
 DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
 DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
 DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
-UPLOAD_DIR=./uploads
 ALLOWED_ORIGINS=http://localhost:5193
 
 AUTH_PROVIDER=firebase

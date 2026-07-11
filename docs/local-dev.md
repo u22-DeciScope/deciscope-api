@@ -58,7 +58,6 @@ DECISCOPE_WS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://
 DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
 DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token
 DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
-UPLOAD_DIR=./uploads
 FRONTEND_URL=http://localhost:5193
 ALLOWED_ORIGINS=http://localhost:5193
 DECISCOPE_ENV=development
@@ -77,7 +76,6 @@ DECISCOPE_SMTP_FROM=
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います。
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません。
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御APIのHTTP timeout秒数。既定値は `10` です。
-- `UPLOAD_DIR`: mock uploadの保存先。
 - `FRONTEND_URL`: CORSの基準originであり、招待メール内の参加リンクのbase URLにも使います。
 - `ALLOWED_ORIGINS`: CORS許可originのカンマ区切り。
 - `DECISCOPE_ENV`: `development` (既定) / `production`。development でSMTP未設定の場合、

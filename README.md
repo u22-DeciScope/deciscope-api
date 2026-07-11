@@ -71,7 +71,6 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御API呼び出しtimeout。既定値は `10`
 - `MEETING_TITLE_LOOKUP_USER_IDS`: Teams会議名解決用。Microsoft Graph user object id を推奨。UPN/email も指定できますが、Bot 側で `/users/{upn}` により object id 解決してから使います
-- `UPLOAD_DIR`: local upload directory
 - `FRONTEND_URL`, `ALLOWED_ORIGINS`: CORS設定
 - `SESSION_COOKIE_SECURE`: `true` の場合、セッションCookieに `Secure` 属性を付与
 - `DECISCOPE_SEED_DEMO_DATA`: `true` の場合、起動時にデモ用workspaceをPostgreSQLへ投入
