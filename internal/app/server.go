@@ -331,7 +331,13 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 			FinalMaxInputChars:  config.FinalSummaryMaxInputChars,
 			FinalRequestTimeout: config.FinalSummaryTimeout,
 			Model:               config.AzureOpenAI.Deployment,
-			DebugDroppedNodes:   config.DebugDroppedNodes,
+			TaskModels: application.AITaskModels{
+				ContextPlanner:  config.TaskModels.ContextPlanner,
+				LiveExtraction:  config.TaskModels.LiveExtraction,
+				TreeReorganizer: config.TaskModels.TreeReorganizer,
+				FinalSummary:    config.TaskModels.FinalSummary,
+			},
+			DebugDroppedNodes: config.DebugDroppedNodes,
 		},
 		publisher,
 	)

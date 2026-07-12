@@ -2,7 +2,9 @@ package application_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -701,4 +703,140 @@ func (f *fakeAnalysisTranscriptRepository) SaveTranscriptSegment(context.Context
 
 func (f *fakeAnalysisTranscriptRepository) ListTranscriptSegments(context.Context, string, string, int) ([]domain.TranscriptSegment, error) {
 	return f.segments, nil
+}
+
+// TestMeetingSessionEndedPersistsDurableTreeSnapshot verifies Task F: at
+// meeting end, the last live tree goes through one reorganization pass and
+// is persisted as a durable "tree" analysis row (reason=meeting_ended,
+// final=true), independent of the live payload row.
+func TestMeetingSessionEndedPersistsDurableTreeSnapshot(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	livePayload := `{
+		"summary": "要約",
+		"currentTopic": "進捗確認",
+		"items": [{"id": "issue-a", "kind": "issue", "severity": "medium", "title": "課題A", "body": "", "status": "open"}],
+		"tree": {
+			"nodes": [
+				{"id": "root", "kind": "topic", "label": "会議"},
+				{"id": "topic-progress", "kind": "topic", "parentId": "root", "label": "進捗確認"},
+				{"id": "issue-a", "kind": "issue", "parentId": "topic-progress", "label": "課題A"}
+			],
+			"edges": [
+				{"source": "root", "target": "topic-progress"},
+				{"source": "topic-progress", "target": "issue-a"}
+			]
+		},
+		"treeVersion": 7
+	}`
+	repository.seed(domain.MeetingAIAnalysis{
+		SessionID: "session_1",
+		Type:      domain.MeetingAIAnalysisLive,
+		Status:    domain.MeetingAIAnalysisCompleted,
+		Version:   7,
+		Payload:   json.RawMessage(livePayload),
+	})
+	// 1回目=最終再編成(Task F)、2回目=最終要約。
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{
+		{Content: `{"basedOnTreeVersion": 7, "operations": [{"type":"rename_topic","topicId":"topic-progress","label":"進捗と課題"}]}`},
+		{Content: finalAnalysisResultJSON},
+	}}
+	transcriptRepo := &fakeAnalysisTranscriptRepository{segments: []domain.TranscriptSegment{
+		{SpeakerName: "田中さん", Text: "議論を始めましょう。"},
+	}}
+	config := testFinalOnlyConfig()
+	service := application.NewMeetingAnalysisService(repository, transcriptRepo, &fakeAnalysisSessionRepository{}, completer, config)
+
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+
+	waitUntil(t, 2*time.Second, func() bool {
+		last := repository.lastUpsert()
+		return last.Type == domain.MeetingAIAnalysisFinal && last.Status == domain.MeetingAIAnalysisCompleted
+	})
+
+	snapshot, err := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisTree)
+	if err != nil || snapshot == nil {
+		t.Fatalf("tree snapshot row missing: %v", err)
+	}
+	var envelope struct {
+		TreeVersion int64  `json:"treeVersion"`
+		Reason      string `json:"reason"`
+		Final       bool   `json:"final"`
+		Tree        struct {
+			Nodes []struct {
+				ID       string `json:"id"`
+				ParentID string `json:"parentId"`
+				Label    string `json:"label"`
+			} `json:"nodes"`
+		} `json:"tree"`
+	}
+	if err := json.Unmarshal(snapshot.Payload, &envelope); err != nil {
+		t.Fatalf("Unmarshal snapshot payload: %v", err)
+	}
+	if envelope.Reason != "meeting_ended" || !envelope.Final || envelope.TreeVersion != 7 {
+		t.Fatalf("snapshot envelope = %+v, want meeting_ended/final/treeVersion=7", envelope)
+	}
+	renamed := false
+	for _, node := range envelope.Tree.Nodes {
+		if node.ID == "topic-progress" && node.Label == "進捗と課題" {
+			renamed = true
+		}
+	}
+	if !renamed {
+		t.Fatalf("snapshot tree = %+v, want meeting-end reorganization applied", envelope.Tree.Nodes)
+	}
+}
+
+// TestLiveAndFinalTasksShareMeetingContext verifies that the extraction task
+// and the final-summary task see the same structured meeting context (same
+// stable agenda topic ids), even though they may run on different models.
+func TestLiveAndFinalTasksShareMeetingContext(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	// 1回目=ライブ抽出、2回目=会議終了時の最終再編成(Task F)、3回目=最終要約。
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{
+		{Content: liveAnalysisResultJSON},
+		{Content: `{"basedOnTreeVersion": 1, "operations": []}`},
+		{Content: finalAnalysisResultJSON},
+	}}
+	transcriptRepo := &fakeAnalysisTranscriptRepository{segments: []domain.TranscriptSegment{
+		{SpeakerName: "田中さん", Text: "議論を始めましょう。"},
+	}}
+	sessionRepo := &fakeAnalysisSessionRepository{session: &domain.MeetingSession{
+		ID:      "session_1",
+		Title:   "定例",
+		Purpose: "品質確認",
+		Agenda:  "1. 文字起こし精度\n2. AI分析の制御",
+	}}
+	config := testLiveOnlyConfig(10*time.Millisecond, 1)
+	config.FinalEnabled = true
+	config.FinalMaxInputChars = 12000
+	config.TaskModels = application.AITaskModels{FinalSummary: "gpt-final-strong"}
+	service := application.NewMeetingAnalysisService(repository, transcriptRepo, sessionRepo, completer, config)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	service.PublishTranscriptSegment(domain.TranscriptSegment{
+		SessionID: "session_1", IsFinal: true, SpeakerName: "田中さん", Text: "話者識別が不安定になります。",
+	})
+	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 1 })
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 3 })
+
+	requests := completer.requestSnapshot()
+	if len(requests) < 3 {
+		t.Fatalf("requests = %d, want live + reorganize + final", len(requests))
+	}
+	liveRequest, finalRequest := requests[0], requests[2]
+	for i, request := range []application.AIChatRequest{liveRequest, finalRequest} {
+		if !strings.Contains(request.User, "agenda-1") || !strings.Contains(request.User, "文字起こし精度") {
+			t.Fatalf("request[%d] does not include the shared agenda context:\n%s", i, request.User)
+		}
+	}
+	if liveRequest.Deployment != "" {
+		t.Fatalf("live request deployment = %q, want shared default", liveRequest.Deployment)
+	}
+	if finalRequest.Deployment != "gpt-final-strong" {
+		t.Fatalf("final request deployment = %q, want per-task override", finalRequest.Deployment)
+	}
 }

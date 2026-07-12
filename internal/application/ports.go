@@ -150,6 +150,9 @@ type AIChatRequest struct {
 	System    string
 	User      string
 	MaxTokens int
+	// Deployment optionally overrides the adapter's default deployment for
+	// this call (per-task model routing). Empty uses the default.
+	Deployment string
 }
 
 type AIChatResult struct {

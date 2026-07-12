@@ -106,9 +106,20 @@ type AIConfig struct {
 	FinalSummaryEnabled       bool
 	FinalSummaryMaxInputChars int
 	FinalSummaryTimeout       time.Duration
+	// TaskModels are optional per-task deployment names (AI_MODEL_*). Empty
+	// entries fall back to the shared AZURE_OPENAI_DEPLOYMENT.
+	TaskModels AITaskModelsConfig
 	// DebugDroppedNodes は破棄されたツリーノードの詳細(id/kind/title/reason)を
 	// 開発用にログ出力するか。既定: false。
 	DebugDroppedNodes bool
+}
+
+// AITaskModelsConfig holds per-task Azure OpenAI deployment overrides.
+type AITaskModelsConfig struct {
+	ContextPlanner  string
+	LiveExtraction  string
+	TreeReorganizer string
+	FinalSummary    string
 }
 
 // MissingAzureOpenAIVars returns the names of the required Azure OpenAI
@@ -237,7 +248,13 @@ func aiConfigFromEnv() AIConfig {
 		FinalSummaryEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_FINAL_SUMMARY_ENABLED")),
 		FinalSummaryMaxInputChars: positiveIntFromEnv(os.Getenv("AI_FINAL_SUMMARY_MAX_INPUT_CHARS"), defaultAIFinalSummaryMaxInputChars),
 		FinalSummaryTimeout:       secondsDurationFromEnv(os.Getenv("AI_FINAL_SUMMARY_TIMEOUT_SECONDS"), defaultAIFinalSummaryTimeoutSeconds, 1),
-		DebugDroppedNodes:         strings.EqualFold(strings.TrimSpace(os.Getenv("AI_ANALYSIS_DEBUG_DROPPED_NODES")), "true"),
+		TaskModels: AITaskModelsConfig{
+			ContextPlanner:  strings.TrimSpace(os.Getenv("AI_MODEL_CONTEXT_PLANNER")),
+			LiveExtraction:  strings.TrimSpace(os.Getenv("AI_MODEL_LIVE_EXTRACTION")),
+			TreeReorganizer: strings.TrimSpace(os.Getenv("AI_MODEL_TREE_REORGANIZER")),
+			FinalSummary:    strings.TrimSpace(os.Getenv("AI_MODEL_FINAL_SUMMARY")),
+		},
+		DebugDroppedNodes: strings.EqualFold(strings.TrimSpace(os.Getenv("AI_ANALYSIS_DEBUG_DROPPED_NODES")), "true"),
 	}
 }
 

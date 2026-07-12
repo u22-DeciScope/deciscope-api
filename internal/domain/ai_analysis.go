@@ -10,6 +10,14 @@ type MeetingAIAnalysisType string
 const (
 	MeetingAIAnalysisLive  MeetingAIAnalysisType = "live"
 	MeetingAIAnalysisFinal MeetingAIAnalysisType = "final"
+	// MeetingAIAnalysisContext is the structured pre-meeting context
+	// (purpose/background/agenda items/AI directives) normalized once at
+	// meeting start and shared by every AI task.
+	MeetingAIAnalysisContext MeetingAIAnalysisType = "context"
+	// MeetingAIAnalysisTree is the durable discussion tree snapshot written
+	// at meeting end (and on manual regeneration), so the history view never
+	// depends on the live payload alone.
+	MeetingAIAnalysisTree MeetingAIAnalysisType = "tree"
 )
 
 type MeetingAIAnalysisStatus string
@@ -45,7 +53,7 @@ type MeetingAIAnalysis struct {
 
 func ValidMeetingAIAnalysisType(analysisType MeetingAIAnalysisType) bool {
 	switch analysisType {
-	case MeetingAIAnalysisLive, MeetingAIAnalysisFinal:
+	case MeetingAIAnalysisLive, MeetingAIAnalysisFinal, MeetingAIAnalysisContext, MeetingAIAnalysisTree:
 		return true
 	default:
 		return false

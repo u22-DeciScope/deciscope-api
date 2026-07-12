@@ -911,9 +911,12 @@ func meetingSessionDebugResponsesFromDomain(sessions []domain.MeetingSessionDebu
 }
 
 type meetingAIAnalysesResponse struct {
-	SessionID           string                     `json:"sessionId"`
-	Live                *meetingAIAnalysisResponse `json:"live"`
-	Final               *meetingAIAnalysisResponse `json:"final"`
+	SessionID string                     `json:"sessionId"`
+	Live      *meetingAIAnalysisResponse `json:"live"`
+	Final     *meetingAIAnalysisResponse `json:"final"`
+	// Tree is the durable discussion tree snapshot persisted at meeting end.
+	// It is null while the meeting is still running.
+	Tree                *meetingAIAnalysisResponse `json:"tree"`
 	LiveIntervalSeconds int                        `json:"liveIntervalSeconds"`
 }
 
@@ -932,6 +935,7 @@ func meetingAIAnalysesResponseFromSnapshot(sessionID string, snapshot *applicati
 	if snapshot != nil {
 		response.Live = meetingAIAnalysisResponseFromDomain(snapshot.Live)
 		response.Final = meetingAIAnalysisResponseFromDomain(snapshot.Final)
+		response.Tree = meetingAIAnalysisResponseFromDomain(snapshot.Tree)
 		response.LiveIntervalSeconds = snapshot.LiveIntervalSeconds
 	}
 	return response
