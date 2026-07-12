@@ -3,7 +3,7 @@
 DeciScopeのローカルMVP向け、Go + `chi`製バックエンドです。
 
 会議API、WebSocketリアルタイム配信、PostgreSQL永続化、
-Azure EchoBot向け文字起こし取り込み、mock upload/job、Markdownレポート生成を
+Azure EchoBot向け文字起こし取り込み、Markdownレポート生成を
 提供します。Teams音声のSTTはVM上のTeams Botが担当し、このAPIはBotから送られる
 transcript segmentを受け取ります。Azure OpenAIを設定した場合は、会議中ライブ分析と
 会議終了時の最終要約も生成します。raw audioのMedia IngressやファイルSTT/ffmpeg処理は
