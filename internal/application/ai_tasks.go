@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 )
 
@@ -208,11 +209,34 @@ type treeReorganizerResult struct {
 
 func parseTreeReorganizerResult(content string) (*treeReorganizerResult, error) {
 	cleaned := stripJSONCodeFence(content)
-	var result treeReorganizerResult
-	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+	var wire struct {
+		BasedOnTreeVersion json.RawMessage `json:"basedOnTreeVersion"`
+		Operations         []treeOperation `json:"operations"`
+	}
+	if err := json.Unmarshal([]byte(cleaned), &wire); err != nil {
 		return nil, fmt.Errorf("parse tree reorganizer payload: %w", err)
 	}
-	return &result, nil
+	if len(wire.BasedOnTreeVersion) == 0 {
+		return nil, fmt.Errorf("parse tree reorganizer payload: basedOnTreeVersion is required")
+	}
+	var version int64
+	if wire.BasedOnTreeVersion[0] == '"' {
+		var value string
+		if err := json.Unmarshal(wire.BasedOnTreeVersion, &value); err != nil {
+			return nil, fmt.Errorf("parse tree reorganizer payload: basedOnTreeVersion: %w", err)
+		}
+		parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse tree reorganizer payload: basedOnTreeVersion must be an integer: %w", err)
+		}
+		version = parsed
+	} else if err := json.Unmarshal(wire.BasedOnTreeVersion, &version); err != nil {
+		return nil, fmt.Errorf("parse tree reorganizer payload: basedOnTreeVersion must be an integer: %w", err)
+	}
+	if version < 0 {
+		return nil, fmt.Errorf("parse tree reorganizer payload: basedOnTreeVersion must not be negative")
+	}
+	return &treeReorganizerResult{BasedOnTreeVersion: version, Operations: wire.Operations}, nil
 }
 
 // --- 共通呼び出しヘルパ -------------------------------------------------------

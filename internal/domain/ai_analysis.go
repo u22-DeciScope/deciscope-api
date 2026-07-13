@@ -18,6 +18,10 @@ const (
 	// at meeting end (and on manual regeneration), so the history view never
 	// depends on the live payload alone.
 	MeetingAIAnalysisTree MeetingAIAnalysisType = "tree"
+	// MeetingAIAnalysisFinalization records the durable progress and outcome
+	// of the meeting-end pipeline. It is exposed as an additive API field so a
+	// client can distinguish "bot stopped" from "final artifacts are ready".
+	MeetingAIAnalysisFinalization MeetingAIAnalysisType = "finalization"
 )
 
 type MeetingAIAnalysisStatus string
@@ -53,7 +57,7 @@ type MeetingAIAnalysis struct {
 
 func ValidMeetingAIAnalysisType(analysisType MeetingAIAnalysisType) bool {
 	switch analysisType {
-	case MeetingAIAnalysisLive, MeetingAIAnalysisFinal, MeetingAIAnalysisContext, MeetingAIAnalysisTree:
+	case MeetingAIAnalysisLive, MeetingAIAnalysisFinal, MeetingAIAnalysisContext, MeetingAIAnalysisTree, MeetingAIAnalysisFinalization:
 		return true
 	default:
 		return false

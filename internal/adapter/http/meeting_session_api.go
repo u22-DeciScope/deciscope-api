@@ -407,6 +407,10 @@ func (api *MeetingSessionAPI) UpdateBotStatus(w http.ResponseWriter, r *http.Req
 	if !decodeLimitedJSONAllowUnknown(w, r, meetingSessionBodyLimitBytes, &request) {
 		return
 	}
+	if request.LastFinalSequenceNo < 0 || request.LastFinalSequenceNoSnake < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "lastFinalSequenceNo must be 0 or greater")
+		return
+	}
 	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
 	previous, previousErr := api.service.GetMeetingSession(r.Context(), sessionID)
 	oldStatus := "unknown"
@@ -416,15 +420,17 @@ func (api *MeetingSessionAPI) UpdateBotStatus(w http.ResponseWriter, r *http.Req
 	log.Printf("Meeting session status PATCH received from bot. sessionId=%s oldStatus=%s requestedStatus=%s requestedBotCallId=%s reason=%s errorCode=%s source=%s previousReadError=%v",
 		sessionID, oldStatus, strings.TrimSpace(request.Status), request.botCallID(), request.reason(), request.errorCode(), request.source(), previousErr)
 	session, err := api.service.UpdateMeetingSessionStatus(r.Context(), application.MeetingSessionStatusUpdateInput{
-		SessionID:   sessionID,
-		Status:      domain.MeetingSessionStatus(request.Status),
-		BotCallID:   request.botCallID(),
-		Message:     request.Message,
-		Reason:      request.reason(),
-		ErrorCode:   request.errorCode(),
-		Source:      request.source(),
-		Title:       request.title(),
-		TitleSource: request.titleSource(),
+		SessionID:                     sessionID,
+		Status:                        domain.MeetingSessionStatus(request.Status),
+		BotCallID:                     request.botCallID(),
+		Message:                       request.Message,
+		Reason:                        request.reason(),
+		ErrorCode:                     request.errorCode(),
+		Source:                        request.source(),
+		Title:                         request.title(),
+		TitleSource:                   request.titleSource(),
+		BotLastForwardedFinalSequence: request.lastFinalSequenceNo(),
+		TranscriptQueueDrained:        request.TranscriptQueueDrained || request.TranscriptQueueDrainedSnake,
 	})
 	if err != nil {
 		writeMeetingSessionError(w, err)
@@ -681,21 +687,25 @@ type meetingSessionCreateResponse struct {
 }
 
 type meetingSessionStatusUpdateRequest struct {
-	Status            string `json:"status"`
-	BotCallID         string `json:"botCallId"`
-	BotCallIDSnake    string `json:"bot_call_id"`
-	Message           string `json:"message"`
-	FailedReason      string `json:"failedReason"`
-	FailedReasonSnake string `json:"failed_reason"`
-	EndReason         string `json:"endReason"`
-	EndReasonSnake    string `json:"end_reason"`
-	ErrorCode         string `json:"errorCode"`
-	ErrorCodeSnake    string `json:"error_code"`
-	Source            string `json:"source"`
-	Title             string `json:"title"`
-	TitleSnake        string `json:"meeting_title"`
-	TitleSource       string `json:"titleSource"`
-	TitleSourceSnake  string `json:"title_source"`
+	Status                      string `json:"status"`
+	BotCallID                   string `json:"botCallId"`
+	BotCallIDSnake              string `json:"bot_call_id"`
+	Message                     string `json:"message"`
+	FailedReason                string `json:"failedReason"`
+	FailedReasonSnake           string `json:"failed_reason"`
+	EndReason                   string `json:"endReason"`
+	EndReasonSnake              string `json:"end_reason"`
+	ErrorCode                   string `json:"errorCode"`
+	ErrorCodeSnake              string `json:"error_code"`
+	Source                      string `json:"source"`
+	Title                       string `json:"title"`
+	TitleSnake                  string `json:"meeting_title"`
+	TitleSource                 string `json:"titleSource"`
+	TitleSourceSnake            string `json:"title_source"`
+	LastFinalSequenceNo         int64  `json:"lastFinalSequenceNo"`
+	LastFinalSequenceNoSnake    int64  `json:"last_final_sequence_no"`
+	TranscriptQueueDrained      bool   `json:"transcriptQueueDrained"`
+	TranscriptQueueDrainedSnake bool   `json:"transcript_queue_drained"`
 }
 
 type meetingSessionEndRequest struct {
@@ -917,6 +927,7 @@ type meetingAIAnalysesResponse struct {
 	// Tree is the durable discussion tree snapshot persisted at meeting end.
 	// It is null while the meeting is still running.
 	Tree                *meetingAIAnalysisResponse `json:"tree"`
+	Finalization        *meetingAIAnalysisResponse `json:"finalization"`
 	LiveIntervalSeconds int                        `json:"liveIntervalSeconds"`
 }
 
@@ -936,6 +947,7 @@ func meetingAIAnalysesResponseFromSnapshot(sessionID string, snapshot *applicati
 		response.Live = meetingAIAnalysisResponseFromDomain(snapshot.Live)
 		response.Final = meetingAIAnalysisResponseFromDomain(snapshot.Final)
 		response.Tree = meetingAIAnalysisResponseFromDomain(snapshot.Tree)
+		response.Finalization = meetingAIAnalysisResponseFromDomain(snapshot.Finalization)
 		response.LiveIntervalSeconds = snapshot.LiveIntervalSeconds
 	}
 	return response
@@ -1038,6 +1050,13 @@ func (request meetingSessionStatusUpdateRequest) botCallID() string {
 		}
 	}
 	return ""
+}
+
+func (request meetingSessionStatusUpdateRequest) lastFinalSequenceNo() int64 {
+	if request.LastFinalSequenceNo > 0 {
+		return request.LastFinalSequenceNo
+	}
+	return request.LastFinalSequenceNoSnake
 }
 
 func (request meetingSessionEndRequest) reason() string {

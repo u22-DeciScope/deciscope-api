@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -253,10 +254,13 @@ func TestMeetingAnalysisServiceNotifyEndedGeneratesFinalSummary(t *testing.T) {
 	config := testFinalOnlyConfig()
 	service := application.NewMeetingAnalysisService(repository, transcriptRepo, sessionRepo, completer, config, publisher)
 
-	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
 
-	waitUntil(t, 2*time.Second, func() bool { return repository.upsertCount() >= 2 })
-	saved := repository.lastUpsert()
+	waitUntil(t, 2*time.Second, func() bool {
+		saved, err := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisFinal)
+		return err == nil && saved.Status == domain.MeetingAIAnalysisCompleted
+	})
+	saved, _ := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisFinal)
 	if saved.Status != domain.MeetingAIAnalysisCompleted || saved.Type != domain.MeetingAIAnalysisFinal || saved.Version != 1 {
 		t.Fatalf("saved final analysis = %+v", saved)
 	}
@@ -293,8 +297,8 @@ func TestMeetingAnalysisServiceNotifyEndedConcurrentCallsGenerateFinalSummaryOnc
 
 	// Simulate the two near-simultaneous MeetingSessionEnded notifications;
 	// each call launches its own generateFinalSummary goroutine.
-	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
-	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
 
 	// At this point, if the in-flight guard is missing, both goroutines could
 	// have reached the completer and be blocked there; if it is present, only
@@ -304,8 +308,8 @@ func TestMeetingAnalysisServiceNotifyEndedConcurrentCallsGenerateFinalSummaryOnc
 	completer.release()
 
 	waitUntil(t, 2*time.Second, func() bool {
-		last := repository.lastUpsert()
-		return last.Status == domain.MeetingAIAnalysisCompleted && last.Type == domain.MeetingAIAnalysisFinal
+		last, err := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisFinal)
+		return err == nil && last.Status == domain.MeetingAIAnalysisCompleted
 	})
 
 	// Give a (incorrectly) unguarded second goroutine time to reach the
@@ -340,7 +344,7 @@ func TestMeetingAnalysisServiceNotifyEndedSkipsWhenFinalAlreadyExists(t *testing
 	config := testFinalOnlyConfig()
 	service := application.NewMeetingAnalysisService(repository, transcriptRepo, &fakeAnalysisSessionRepository{}, completer, config)
 
-	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
 
 	time.Sleep(100 * time.Millisecond)
 	if got := completer.callCount(); got != 0 {
@@ -357,14 +361,14 @@ func TestMeetingAnalysisServiceNotifyEndedSkipsWhenTranscriptEmpty(t *testing.T)
 	config := testFinalOnlyConfig()
 	service := application.NewMeetingAnalysisService(repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, completer, config)
 
-	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
 
 	time.Sleep(100 * time.Millisecond)
 	if got := completer.callCount(); got != 0 {
 		t.Fatalf("callCount() = %d, want 0 (empty transcript)", got)
 	}
-	if got := repository.upsertCount(); got != 0 {
-		t.Fatalf("upsertCount() = %d, want 0", got)
+	if progress, err := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisFinalization); err != nil || progress.Status != domain.MeetingAIAnalysisCompleted {
+		t.Fatalf("finalization progress = %+v, err=%v, want completed", progress, err)
 	}
 }
 
@@ -381,7 +385,7 @@ func TestMeetingAnalysisServiceDisabledConfigIsNoOp(t *testing.T) {
 	defer service.Close()
 
 	service.PublishTranscriptSegment(domain.TranscriptSegment{SessionID: "session_1", Text: "十分に長い発言です。", IsFinal: true})
-	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
 
 	time.Sleep(100 * time.Millisecond)
 	if got := completer.callCount(); got != 0 {
@@ -439,10 +443,11 @@ func testLiveOnlyConfig(interval time.Duration, minChars int) application.Meetin
 
 func testFinalOnlyConfig() application.MeetingAnalysisConfig {
 	return application.MeetingAnalysisConfig{
-		Enabled:            true,
-		FinalEnabled:       true,
-		FinalMaxInputChars: 12000,
-		Model:              "test-deployment",
+		Enabled:                 true,
+		FinalEnabled:            true,
+		FinalMaxInputChars:      12000,
+		FinalizationQuietPeriod: time.Millisecond,
+		Model:                   "test-deployment",
 	}
 }
 
@@ -746,11 +751,11 @@ func TestMeetingSessionEndedPersistsDurableTreeSnapshot(t *testing.T) {
 	config := testFinalOnlyConfig()
 	service := application.NewMeetingAnalysisService(repository, transcriptRepo, &fakeAnalysisSessionRepository{}, completer, config)
 
-	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
 
 	waitUntil(t, 2*time.Second, func() bool {
-		last := repository.lastUpsert()
-		return last.Type == domain.MeetingAIAnalysisFinal && last.Status == domain.MeetingAIAnalysisCompleted
+		last, err := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisFinal)
+		return err == nil && last.Status == domain.MeetingAIAnalysisCompleted
 	})
 
 	snapshot, err := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisTree)
@@ -820,7 +825,7 @@ func TestLiveAndFinalTasksShareMeetingContext(t *testing.T) {
 		SessionID: "session_1", IsFinal: true, SpeakerName: "田中さん", Text: "話者識別が不安定になります。",
 	})
 	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 1 })
-	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"})
+	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
 	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 3 })
 
 	requests := completer.requestSnapshot()
@@ -839,4 +844,294 @@ func TestLiveAndFinalTasksShareMeetingContext(t *testing.T) {
 	if finalRequest.Deployment != "gpt-final-strong" {
 		t.Fatalf("final request deployment = %q, want per-task override", finalRequest.Deployment)
 	}
+}
+
+func TestMeetingFinalizationFlushesOnlyUnanalyzedTailAndAlignsCoverage(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	repository.seed(domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 9, Payload: coveredLivePayload(t, 24),
+	})
+	segments := finalSegmentsThrough(27)
+	transcriptRepo := &fakeAnalysisTranscriptRepository{segments: segments}
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{
+		{Content: liveAnalysisResultJSON},
+		{Content: `{"basedOnTreeVersion":"10","operations":[]}`},
+		{Content: finalAnalysisResultJSON},
+	}}
+	config := testLiveOnlyConfig(time.Hour, 1)
+	config.FinalEnabled = true
+	config.FinalMaxInputChars = 12000
+	config.FinalizationQuietPeriod = time.Millisecond
+	service := application.NewMeetingAnalysisService(repository, transcriptRepo, &fakeAnalysisSessionRepository{}, completer, config)
+
+	err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
+		BotLastForwardedFinalSequence: 27,
+		TranscriptQueueDrained:        true,
+	})
+	if err != nil {
+		t.Fatalf("FinalizeMeetingSession() error = %v", err)
+	}
+	requests := completer.requestSnapshot()
+	if len(requests) != 3 {
+		t.Fatalf("AI requests = %d, want final flush + reorganizer + summary", len(requests))
+	}
+	if !strings.Contains(requests[0].User, "seq-25") || !strings.Contains(requests[0].User, "seq-27") || strings.Contains(requests[0].User, "seq-24") {
+		t.Fatalf("final flush prompt has wrong range:\n%s", requests[0].User)
+	}
+
+	live, _ := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisLive)
+	var liveEnvelope struct {
+		CoveredThroughSequenceNo int `json:"coveredThroughSequenceNo"`
+		AnalyzedFinalSegments    []struct {
+			SequenceNo int `json:"sequenceNo"`
+		} `json:"analyzedFinalSegments"`
+	}
+	if err := json.Unmarshal(live.Payload, &liveEnvelope); err != nil {
+		t.Fatalf("unmarshal live coverage: %v", err)
+	}
+	if live.Version != 10 || liveEnvelope.CoveredThroughSequenceNo != 27 || len(liveEnvelope.AnalyzedFinalSegments) != 27 {
+		t.Fatalf("live version/coverage = %d/%+v, want version 10 through 27", live.Version, liveEnvelope)
+	}
+
+	for _, analysisType := range []domain.MeetingAIAnalysisType{domain.MeetingAIAnalysisTree, domain.MeetingAIAnalysisFinal} {
+		analysis, getErr := repository.GetMeetingAIAnalysis(context.Background(), "session_1", analysisType)
+		if getErr != nil {
+			t.Fatalf("get %s analysis: %v", analysisType, getErr)
+		}
+		var envelope struct {
+			CoveredThroughSequenceNo int `json:"coveredThroughSequenceNo"`
+			SegmentCount             int `json:"segmentCount"`
+		}
+		if err := json.Unmarshal(analysis.Payload, &envelope); err != nil {
+			t.Fatalf("unmarshal %s coverage: %v", analysisType, err)
+		}
+		if envelope.CoveredThroughSequenceNo != 27 || envelope.SegmentCount != 27 {
+			t.Fatalf("%s coverage = %+v, want through/count 27", analysisType, envelope)
+		}
+	}
+}
+
+func TestMeetingFinalizationWaitsForInFlightLiveAnalysis(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	transcriptRepo := &fakeAnalysisTranscriptRepository{segments: finalSegmentsThrough(2)}
+	block := make(chan struct{})
+	completer := &fakeAIChatCompleter{block: block, results: []application.AIChatResult{
+		{Content: liveAnalysisResultJSON},
+		{Content: liveAnalysisResultJSON},
+		{Content: `{"basedOnTreeVersion":2,"operations":[]}`},
+		{Content: finalAnalysisResultJSON},
+	}}
+	config := testLiveOnlyConfig(5*time.Millisecond, 1)
+	config.FinalEnabled = true
+	config.FinalMaxInputChars = 12000
+	config.FinalizationWaitTimeout = time.Second
+	service := application.NewMeetingAnalysisService(repository, transcriptRepo, &fakeAnalysisSessionRepository{}, completer, config)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+	service.PublishTranscriptSegment(finalSegmentsThrough(1)[0])
+	waitUntil(t, time.Second, func() bool { return completer.callCount() == 1 })
+
+	result := make(chan error, 1)
+	go func() {
+		result <- service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
+			BotLastForwardedFinalSequence: 2, TranscriptQueueDrained: true,
+		})
+	}()
+	time.Sleep(40 * time.Millisecond)
+	if got := completer.callCount(); got != 1 {
+		t.Fatalf("AI calls while live extraction blocked = %d, want 1", got)
+	}
+	close(block)
+	if err := <-result; err != nil {
+		t.Fatalf("FinalizeMeetingSession() error = %v", err)
+	}
+	if got := completer.callCount(); got != 4 {
+		t.Fatalf("AI calls = %d, want live + tail flush + reorganizer + summary", got)
+	}
+}
+
+func TestMeetingFinalizationWaitsForBotAnnouncedDelayedFinal(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	transcriptRepo := &delayedFinalTranscriptRepository{segments: finalSegmentsThrough(26), delayed: finalSegmentsThrough(27)[26]}
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{
+		{Content: liveAnalysisResultJSON},
+		{Content: `{"basedOnTreeVersion":1,"operations":[]}`},
+		{Content: finalAnalysisResultJSON},
+	}}
+	config := testLiveOnlyConfig(time.Hour, 1)
+	config.FinalEnabled = true
+	config.FinalMaxInputChars = 12000
+	config.FinalizationWaitTimeout = time.Second
+	service := application.NewMeetingAnalysisService(repository, transcriptRepo, &fakeAnalysisSessionRepository{}, completer, config)
+
+	err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
+		BotLastForwardedFinalSequence: 27, TranscriptQueueDrained: true,
+	})
+	if err != nil {
+		t.Fatalf("FinalizeMeetingSession() error = %v", err)
+	}
+	requests := completer.requestSnapshot()
+	if len(requests) < 1 || !strings.Contains(requests[0].User, "seq-27") {
+		t.Fatalf("final flush did not include delayed sequence 27: %+v", requests)
+	}
+	tree, _ := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisTree)
+	var envelope struct {
+		CoveredThroughSequenceNo int `json:"coveredThroughSequenceNo"`
+	}
+	if err := json.Unmarshal(tree.Payload, &envelope); err != nil || envelope.CoveredThroughSequenceNo != 27 {
+		t.Fatalf("tree coverage = %+v, err=%v, want 27", envelope, err)
+	}
+}
+
+func TestMeetingFinalizationLegacyBotWaitsForLateFinalBeforeQuietPeriod(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	transcriptRepo := &delayedFinalTranscriptRepository{segments: finalSegmentsThrough(26), delayed: finalSegmentsThrough(27)[26]}
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{
+		{Content: liveAnalysisResultJSON},
+		{Content: `{"basedOnTreeVersion":1,"operations":[]}`},
+		{Content: finalAnalysisResultJSON},
+	}}
+	config := testLiveOnlyConfig(time.Hour, 1)
+	config.FinalEnabled = true
+	config.FinalMaxInputChars = 12000
+	config.FinalizationQuietPeriod = 20 * time.Millisecond
+	config.FinalizationWaitTimeout = time.Second
+	service := application.NewMeetingAnalysisService(repository, transcriptRepo, &fakeAnalysisSessionRepository{}, completer, config)
+
+	if err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{}); err != nil {
+		t.Fatalf("FinalizeMeetingSession() error = %v", err)
+	}
+	tree, _ := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisTree)
+	var envelope struct {
+		CoveredThroughSequenceNo int `json:"coveredThroughSequenceNo"`
+	}
+	if err := json.Unmarshal(tree.Payload, &envelope); err != nil || envelope.CoveredThroughSequenceNo != 27 {
+		t.Fatalf("legacy fallback tree coverage = %+v, err=%v, want 27", envelope, err)
+	}
+}
+
+func TestMeetingFinalizationDoesNotAdvanceCoverageWhenFinalFlushFails(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	repository.seed(domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 9, Payload: coveredLivePayload(t, 24),
+	})
+	completer := &fakeAIChatCompleter{errs: []error{errors.New("flush failed 1"), errors.New("flush failed 2"), errors.New("flush failed 3")}}
+	config := testLiveOnlyConfig(time.Hour, 1)
+	config.FinalEnabled = true
+	config.FinalFlushMaxAttempts = 3
+	service := application.NewMeetingAnalysisService(repository, &fakeAnalysisTranscriptRepository{segments: finalSegmentsThrough(27)}, &fakeAnalysisSessionRepository{}, completer, config)
+
+	err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
+		BotLastForwardedFinalSequence: 27, TranscriptQueueDrained: true,
+	})
+	if err == nil {
+		t.Fatal("FinalizeMeetingSession() error = nil, want final flush failure")
+	}
+	live, _ := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisLive)
+	var coverage struct {
+		CoveredThroughSequenceNo int `json:"coveredThroughSequenceNo"`
+	}
+	if unmarshalErr := json.Unmarshal(live.Payload, &coverage); unmarshalErr != nil {
+		t.Fatalf("unmarshal live coverage: %v", unmarshalErr)
+	}
+	if coverage.CoveredThroughSequenceNo != 24 || live.Version != 9 {
+		t.Fatalf("coverage/version after failure = %d/%d, want 24/9", coverage.CoveredThroughSequenceNo, live.Version)
+	}
+	progress, _ := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisFinalization)
+	if progress.Status != domain.MeetingAIAnalysisFailed {
+		t.Fatalf("finalization status = %s, want failed", progress.Status)
+	}
+}
+
+func TestMeetingFinalizationSnapshotsFlushedTreeWhenReorganizerFails(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	repository.seed(domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 9, Payload: coveredLivePayload(t, 24),
+	})
+	completer := &fakeAIChatCompleter{
+		results: []application.AIChatResult{{Content: liveAnalysisResultJSON}, {}, {Content: finalAnalysisResultJSON}},
+		errs:    []error{nil, errors.New("reorganizer schema failure")},
+	}
+	config := testLiveOnlyConfig(time.Hour, 1)
+	config.FinalEnabled = true
+	config.FinalMaxInputChars = 12000
+	service := application.NewMeetingAnalysisService(repository, &fakeAnalysisTranscriptRepository{segments: finalSegmentsThrough(27)}, &fakeAnalysisSessionRepository{}, completer, config)
+
+	err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
+		BotLastForwardedFinalSequence: 27, TranscriptQueueDrained: true,
+	})
+	if err != nil {
+		t.Fatalf("FinalizeMeetingSession() error = %v", err)
+	}
+	tree, getErr := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisTree)
+	if getErr != nil || tree.Status != domain.MeetingAIAnalysisCompleted {
+		t.Fatalf("tree snapshot = %+v, err=%v", tree, getErr)
+	}
+	var envelope struct {
+		CoveredThroughSequenceNo int `json:"coveredThroughSequenceNo"`
+		Tree                     struct {
+			Nodes []any `json:"nodes"`
+		} `json:"tree"`
+	}
+	if unmarshalErr := json.Unmarshal(tree.Payload, &envelope); unmarshalErr != nil || envelope.CoveredThroughSequenceNo != 27 || len(envelope.Tree.Nodes) == 0 {
+		t.Fatalf("fallback tree envelope = %+v, err=%v", envelope, unmarshalErr)
+	}
+}
+
+func coveredLivePayload(t *testing.T, through int) json.RawMessage {
+	t.Helper()
+	refs := make([]map[string]any, 0, through)
+	for sequence := 1; sequence <= through; sequence++ {
+		refs = append(refs, map[string]any{"callId": "call-1", "sequenceNo": sequence})
+	}
+	payload := map[string]any{
+		"summary": "これまでの要約", "currentTopic": "進捗確認", "items": []any{}, "treeVersion": 9,
+		"analyzedFinalSegments": refs, "coveredThroughSequenceNo": through,
+		"tree": map[string]any{"nodes": []map[string]any{
+			{"id": "root", "kind": "topic", "label": "会議"},
+			{"id": "topic-progress", "kind": "topic", "parentId": "root", "label": "進捗確認"},
+		}, "edges": []map[string]any{{"source": "root", "target": "topic-progress"}}},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal covered live payload: %v", err)
+	}
+	return encoded
+}
+
+func finalSegmentsThrough(through int) []domain.TranscriptSegment {
+	segments := make([]domain.TranscriptSegment, 0, through)
+	for sequence := 1; sequence <= through; sequence++ {
+		segments = append(segments, domain.TranscriptSegment{
+			SessionID: "session_1", CallID: "call-1", SequenceNo: int64(sequence),
+			SpeakerName: "話者", Text: fmt.Sprintf("seq-%d", sequence), IsFinal: true,
+		})
+	}
+	return segments
+}
+
+type delayedFinalTranscriptRepository struct {
+	mu       sync.Mutex
+	segments []domain.TranscriptSegment
+	delayed  domain.TranscriptSegment
+	lists    int
+}
+
+func (r *delayedFinalTranscriptRepository) SaveTranscriptSegment(context.Context, domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
+	return domain.TranscriptSegmentStoreResult{}, errors.New("not implemented")
+}
+
+func (r *delayedFinalTranscriptRepository) ListTranscriptSegments(context.Context, string, string, int) ([]domain.TranscriptSegment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lists++
+	if r.lists == 2 && r.delayed.SequenceNo > 0 {
+		r.segments = append(r.segments, r.delayed)
+	}
+	return append([]domain.TranscriptSegment(nil), r.segments...), nil
 }

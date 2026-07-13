@@ -94,6 +94,9 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `AI_FINAL_SUMMARY_MAX_INPUT_CHARS`: 最終要約に送るtranscriptの最大文字数(超過分は末尾優先で切り詰め)。既定値は `12000`
 - `AI_REQUEST_TIMEOUT_SECONDS`: ライブ分析のAzure OpenAI呼び出しtimeout。既定値は `20`
 - `AI_FINAL_SUMMARY_TIMEOUT_SECONDS`: 最終要約のAzure OpenAI呼び出しtimeout。既定値は `60`
+- `AI_FINALIZATION_WAIT_TIMEOUT_SECONDS`: 実行中分析またはBot通知済み最終sequenceのDB到着を待つ上限。既定値は `10`
+- `AI_FINALIZATION_QUIET_PERIOD_MILLISECONDS`: drain情報を送らない旧Bot向けのDB静穏判定。既定値は `750`、最小値は `100`
+- `AI_FINAL_FLUSH_MAX_ATTEMPTS`: 終了時の未処理final抽出の最大試行回数。既定値は `3`
 
 `DECISCOPE_TRANSCRIPT_ONLY=true` のtranscript-onlyモードでは、AI分析機能は組み込まれません。
 

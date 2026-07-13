@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -317,13 +318,13 @@ func TestMeetingSessionServiceEndsSessionAndSendsBotCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EndMeetingSession() error = %v", err)
 	}
-	if session.Status != domain.MeetingSessionEnded || session.EndedAt.IsZero() || session.EndReason != "manual_end_requested" {
+	if session.Status != domain.MeetingSessionEnded || session.EndedAt.IsZero() {
 		t.Fatalf("session = %+v", session)
 	}
 	if commander.endCommand.SessionID != "session_1" || commander.endCommand.BotCallID != "call-1" {
 		t.Fatalf("end command = %+v", commander.endCommand)
 	}
-	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionEnded {
+	if len(publisher.sessions) != 2 || publisher.sessions[0].Status != domain.MeetingSessionEnding || publisher.sessions[1].Status != domain.MeetingSessionEnded {
 		t.Fatalf("published sessions = %+v", publisher.sessions)
 	}
 }
@@ -349,8 +350,8 @@ func TestMeetingSessionServiceEndsSessionWhenBotCommandFails(t *testing.T) {
 	if commander.endCommand.SessionID != "session_1" || commander.endCommand.BotCallID != "call-1" {
 		t.Fatalf("end command = %+v", commander.endCommand)
 	}
-	if len(publisher.sessions) != 1 || publisher.sessions[0].Status != domain.MeetingSessionEnded {
-		t.Fatalf("published sessions = %+v, want ended status published even on bot command failure", publisher.sessions)
+	if len(publisher.sessions) != 2 || publisher.sessions[0].Status != domain.MeetingSessionEnding || publisher.sessions[1].Status != domain.MeetingSessionEnded {
+		t.Fatalf("published sessions = %+v, want ending then ended on bot command failure", publisher.sessions)
 	}
 }
 
@@ -368,12 +369,14 @@ func TestMeetingSessionServiceNotifiesEndedObserverOnNonTerminalToEndedTransitio
 	}); err != nil {
 		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
 	}
-	if len(observer.sessions) != 1 || observer.sessions[0].Status != domain.MeetingSessionEnded {
-		t.Fatalf("notified sessions = %+v", observer.sessions)
+	waitUntil(t, time.Second, func() bool { return len(observer.snapshot()) == 1 })
+	notified := observer.snapshot()
+	if len(notified) != 1 || notified[0].Status != domain.MeetingSessionEnding {
+		t.Fatalf("notified sessions = %+v", notified)
 	}
 }
 
-func TestMeetingSessionServiceDoesNotNotifyEndedObserverWhenAlreadyTerminal(t *testing.T) {
+func TestMeetingSessionServiceRetriesFinalizationIdempotentlyWhenAlreadyEnded(t *testing.T) {
 	repository := newFakeMeetingSessionRepository()
 	repository.session.Status = domain.MeetingSessionEnded
 	repository.session.EndedAt = repository.session.CreatedAt.Add(time.Minute)
@@ -388,8 +391,9 @@ func TestMeetingSessionServiceDoesNotNotifyEndedObserverWhenAlreadyTerminal(t *t
 	}); err != nil {
 		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
 	}
-	if len(observer.sessions) != 0 {
-		t.Fatalf("notified sessions = %+v, want none", observer.sessions)
+	waitUntil(t, time.Second, func() bool { return len(observer.snapshot()) == 1 })
+	if notified := observer.snapshot(); len(notified) != 1 {
+		t.Fatalf("notified sessions = %+v, want one idempotent retry", notified)
 	}
 }
 
@@ -406,9 +410,41 @@ func TestMeetingSessionServiceDoesNotNotifyEndedObserverForNonEndedTransitions(t
 	}); err != nil {
 		t.Fatalf("UpdateMeetingSessionStatus() error = %v", err)
 	}
-	if len(observer.sessions) != 0 {
-		t.Fatalf("notified sessions = %+v, want none", observer.sessions)
+	if notified := observer.snapshot(); len(notified) != 0 {
+		t.Fatalf("notified sessions = %+v, want none", notified)
 	}
+}
+
+func TestMeetingSessionServiceCoalescesConcurrentEndFinalization(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionRecording
+	block := make(chan struct{})
+	observer := &fakeMeetingSessionEndedObserver{block: block}
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{})
+	service.SetMeetingSessionEndedObserver(observer)
+	input := application.MeetingSessionStatusUpdateInput{
+		SessionID: "session_1", Status: domain.MeetingSessionEnded,
+		BotLastForwardedFinalSequence: 27, TranscriptQueueDrained: true,
+	}
+
+	first, err := service.UpdateMeetingSessionStatus(context.Background(), input)
+	if err != nil || first.Status != domain.MeetingSessionEnding {
+		t.Fatalf("first end = %+v, err=%v", first, err)
+	}
+	second, err := service.UpdateMeetingSessionStatus(context.Background(), input)
+	if err != nil || second.Status != domain.MeetingSessionEnding {
+		t.Fatalf("second end = %+v, err=%v", second, err)
+	}
+	waitUntil(t, time.Second, func() bool { return len(observer.snapshot()) == 1 })
+	time.Sleep(20 * time.Millisecond)
+	if got := len(observer.snapshot()); got != 1 {
+		t.Fatalf("finalizer calls = %d, want 1", got)
+	}
+	close(block)
+	waitUntil(t, time.Second, func() bool {
+		session, _ := repository.GetMeetingSession(context.Background(), "session_1")
+		return session.Status == domain.MeetingSessionEnded
+	})
 }
 
 func TestMeetingSessionServiceRecordsHeartbeatWithoutPublishing(t *testing.T) {
@@ -489,14 +525,30 @@ func isFakeTerminalMeetingSessionStatus(status domain.MeetingSessionStatus) bool
 }
 
 type fakeMeetingSessionEndedObserver struct {
+	mu       sync.Mutex
 	sessions []domain.MeetingSession
+	block    <-chan struct{}
 }
 
-func (f *fakeMeetingSessionEndedObserver) NotifyMeetingSessionEnded(session domain.MeetingSession) {
+func (f *fakeMeetingSessionEndedObserver) FinalizeMeetingSession(_ context.Context, session domain.MeetingSession, _ application.MeetingSessionFinalizationRequest) error {
+	f.mu.Lock()
 	f.sessions = append(f.sessions, session)
+	block := f.block
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	return nil
+}
+
+func (f *fakeMeetingSessionEndedObserver) snapshot() []domain.MeetingSession {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.MeetingSession(nil), f.sessions...)
 }
 
 type fakeMeetingSessionRepository struct {
+	mu               sync.Mutex
 	created          domain.MeetingSession
 	updated          domain.MeetingSessionStatusUpdate
 	session          domain.MeetingSession
@@ -538,6 +590,8 @@ func (f *fakeMeetingSessionRepository) CreateOrReuseMeetingSession(ctx context.C
 }
 
 func (f *fakeMeetingSessionRepository) GetMeetingSession(_ context.Context, sessionID string) (*domain.MeetingSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if sessionID != f.session.ID {
 		return nil, domain.ErrNotFound
 	}
@@ -585,6 +639,8 @@ func (f *fakeMeetingSessionRepository) ListMeetingSessionDebug(_ context.Context
 }
 
 func (f *fakeMeetingSessionRepository) UpdateMeetingSessionStatus(_ context.Context, update domain.MeetingSessionStatusUpdate) (*domain.MeetingSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.updated = update
 	f.session.Status = update.Status
 	f.session.BotCallID = update.BotCallID

@@ -870,8 +870,8 @@ func TestReorganizeTreeDiscardsStaleTreeVersion(t *testing.T) {
 	tree := overcrowdedTreePayload("topic-busy", 8)
 
 	result, applied, err := service.reorganizeTree(context.Background(), "session-1", tree, nil, 12)
-	if err != nil {
-		t.Fatalf("reorganizeTree() error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("reorganizeTree() error = %v, want version mismatch", err)
 	}
 	if applied != 0 {
 		t.Fatalf("applied = %d, want stale response discarded", applied)
@@ -902,6 +902,25 @@ func TestReorganizeTreeAppliesMatchingTreeVersion(t *testing.T) {
 	moved := treeNodeByID(result, "issue-0")
 	if moved == nil || moved.ParentID != "topic-x" {
 		t.Fatalf("moved = %+v", moved)
+	}
+}
+
+func TestParseTreeReorganizerResultAcceptsNumericStringVersion(t *testing.T) {
+	result, err := parseTreeReorganizerResult(`{"basedOnTreeVersion":"12","operations":[]}`)
+	if err != nil || result.BasedOnTreeVersion != 12 {
+		t.Fatalf("parseTreeReorganizerResult() = %+v, %v, want version 12", result, err)
+	}
+}
+
+func TestParseTreeReorganizerResultRejectsInvalidVersions(t *testing.T) {
+	for _, payload := range []string{
+		`{"basedOnTreeVersion":"not-a-number","operations":[]}`,
+		`{"basedOnTreeVersion":-1,"operations":[]}`,
+		`{"operations":[]}`,
+	} {
+		if _, err := parseTreeReorganizerResult(payload); err == nil {
+			t.Fatalf("parseTreeReorganizerResult(%s) error = nil", payload)
+		}
 	}
 }
 

@@ -103,6 +103,9 @@ func TestTranscriptSegmentRepositoryListsByCallIDAndLimit(t *testing.T) {
 	if len(segments) != 2 || segments[0].EventID != first.EventID || segments[1].EventID != second.EventID {
 		t.Fatalf("segments = %+v", segments)
 	}
+	if !segments[0].IsFinal || !segments[1].IsFinal {
+		t.Fatalf("listed persisted segments must be final: %+v", segments)
+	}
 
 	sessionFiltered, err := repository.ListTranscriptSegments(ctx, "", first.SessionID, 10)
 	if err != nil {

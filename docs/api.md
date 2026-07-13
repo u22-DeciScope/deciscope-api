@@ -328,16 +328,22 @@ X-DeciScope-Api-Key: <shared secret>
 
 ```json
 {
-  "status": "joined",
+  "status": "ended",
   "botCallId": "09005080-cce6-4132-9404-1e823df47ff9",
-  "message": "joined successfully"
+  "message": "transcript queue drained",
+  "lastFinalSequenceNo": 27,
+  "transcriptQueueDrained": true
 }
 ```
 
 `status` は `pending_join`, `command_sent`, `joining`, `joined`, `recording`,
-`speech_throttled`, `speech_error`, `ended`, `failed` のいずれかです。
+`speech_throttled`, `speech_error`, `ending`, `ended`, `failed` のいずれかです。
 Speech認識の一時停止時は `speech_throttled` または `speech_error` として保存され、
 復帰時はBotが `recording` を再送します。失敗時やSpeech停止時の詳細は `lastError` に保存されます。
+終了時は、BotがSpeech認識を停止して転送queueをdrainした後、可能なら
+`lastFinalSequenceNo` と `transcriptQueueDrained: true` を付けて `ended` を通知します。
+APIは通知されたsequenceがDBへ到着するまで（既定最大10秒）待ち、未処理finalを抽出してから
+最終tree・summaryを保存します。これらの任意フィールドを送らない旧Botでは、DBの静穏判定へfallbackします。
 
 Botからのmetadata更新:
 
@@ -373,7 +379,7 @@ X-DeciScope-Api-Key: <shared secret>
 Bot接続死活監視（常駐watchdog）:
 
 - Go APIは常駐goroutineで、status が `joined` / `active` / `recording` / `speech_error` /
-  `speech_throttled` のいずれかで `last_bot_status_at` が記録済みのセッションを定期的に走査します。
+  `speech_throttled` / `ending` のいずれかで `last_bot_status_at` が記録済みのセッションを定期的に走査します。
 - `last_bot_status_at` からの経過が `DECISCOPE_SESSION_BOT_LOST_AFTER_SECONDS`
   （既定60秒）以上になった時点で、WebSocketで `meeting_session.bot_health_changed`
   （`healthy: false`）を1回だけ配信します（遷移時のみ）。ハートビートが再開して閾値を下回ると
@@ -435,13 +441,16 @@ GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
 ```
 
 - `POST`（作成）と `POST .../end`（終了）はworkspaceのadmin/ownerロールが必要です。
-- `POST .../end` はBotへの終了コマンド送信がタイムアウト・エラーになった場合でも
-  （VM Botが既に停止しているなど）セッションは `ended` として終了します（best-effort）。
+- `POST .../end` はまずセッションを `ending` にしてBotへ終了コマンドを送ります。Botのdrain通知後に
+  final flush → tree再編成/snapshot → summaryの順で処理し、完了後にだけ `ended` へ進みます。
+  Botへの終了コマンドがタイムアウト・エラーになった場合も、DB静穏判定を使ってfinalizationを開始し、
+  最終的には `ended` として終了します（不完全時は`lastError`と`finalization`分析に記録）。
   Bot制御が未設定（`503 bot_control_not_configured`）の場合のみ終了に失敗します。
 - `transcript-segments` は保存済みSegmentの取得、`transcript-stream` はWebSocketでの
   リアルタイム配信です。どちらもSession Cookie認証とworkspace所属検査を通ります。
-- `ai-analyses` は最新のライブ分析・最終要約を返します。存在しない分析は `null` で、
-  `404` にはなりません。AI機能が未設定の場合も `live`/`final` はともに `null` です
+- `ai-analyses` は最新のライブ分析・最終要約・durable tree・finalization進行状態を返します。
+  存在しない分析は `null` で、`404` にはなりません。`finalization.payload` にはtarget sequence、
+  tree/summaryのcoverage、timeout、retry回数、不完全終了の有無が入ります。
 
 ```json
 {

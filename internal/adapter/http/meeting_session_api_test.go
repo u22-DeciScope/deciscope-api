@@ -181,6 +181,44 @@ func TestMeetingSessionAPIUpdateBotStatusAcceptsFailureReasonFields(t *testing.T
 	}
 }
 
+func TestMeetingSessionAPIUpdateBotStatusAcceptsTranscriptDrainProof(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{session: domain.MeetingSession{
+		ID: "session_1", Status: domain.MeetingSessionEnding,
+		RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"), CreatedAt: mustTime(t, "2026-06-27T00:00:00Z"), UpdatedAt: mustTime(t, "2026-06-27T00:00:01Z"),
+	}}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPatch, "/api/v1/bot/meeting-sessions/session_1/status", `{
+		"status":"ended","lastFinalSequenceNo":27,"transcriptQueueDrained":true
+	}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.UpdateBotStatus(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.update.BotLastForwardedFinalSequence != 27 || !service.update.TranscriptQueueDrained {
+		t.Fatalf("update drain proof = %+v", service.update)
+	}
+}
+
+func TestMeetingSessionAPIUpdateBotStatusRejectsNegativeFinalSequence(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithSessionParam(http.MethodPatch, "/api/v1/bot/meeting-sessions/session_1/status", `{"status":"ended","lastFinalSequenceNo":-1}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.UpdateBotStatus(resp, req)
+
+	if resp.Code != http.StatusBadRequest || service.update.SessionID != "" {
+		t.Fatalf("response = %d %s, update=%+v", resp.Code, resp.Body.String(), service.update)
+	}
+}
+
 func TestMeetingSessionAPIEndsSession(t *testing.T) {
 	service := &fakeMeetingSessionUseCases{
 		session: domain.MeetingSession{
@@ -447,6 +485,12 @@ func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
 				Model:     "gpt-4o-mini",
 				UpdatedAt: mustTime(t, "2026-06-27T00:00:02Z"),
 			},
+			Finalization: &domain.MeetingAIAnalysis{
+				SessionID: "session_1", Type: domain.MeetingAIAnalysisFinalization,
+				Status: domain.MeetingAIAnalysisRunning, Version: 1,
+				Payload:   json.RawMessage(`{"stage":"final_analysis_running","finalizationTargetSequence":27}`),
+				UpdatedAt: mustTime(t, "2026-06-27T00:00:03Z"),
+			},
 			LiveIntervalSeconds: 10,
 		},
 	}
@@ -471,6 +515,9 @@ func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
 	}
 	if body.Final != nil {
 		t.Fatalf("body.Final = %+v, want nil", body.Final)
+	}
+	if body.Finalization == nil || body.Finalization.Status != "running" {
+		t.Fatalf("body.Finalization = %+v, want running", body.Finalization)
 	}
 	if !strings.Contains(string(body.Live.Payload), "進行中です") {
 		t.Fatalf("body.Live.Payload = %s", string(body.Live.Payload))

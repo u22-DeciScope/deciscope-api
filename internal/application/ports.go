@@ -127,12 +127,19 @@ type BotMediaMetricsReader interface {
 	Forget(sessionID string)
 }
 
-// MeetingSessionEndedObserver is notified when a meeting session transitions
-// into the Ended status. It is used to trigger the asynchronous AI final
-// summary without giving MeetingSessionService a direct dependency on the AI
-// analysis service.
+// MeetingSessionEndedObserver owns the synchronous finalization pipeline.
+// MeetingSessionService invokes it asynchronously while status=ending and
+// persists status=ended only after it returns.
 type MeetingSessionEndedObserver interface {
-	NotifyMeetingSessionEnded(session domain.MeetingSession)
+	FinalizeMeetingSession(ctx context.Context, session domain.MeetingSession, request MeetingSessionFinalizationRequest) error
+}
+
+// MeetingSessionFinalizationRequest carries optional drain proof from newer
+// bots. Zero values preserve compatibility with bots that only report
+// status=ended; the finalizer then uses a bounded DB quiet-period fallback.
+type MeetingSessionFinalizationRequest struct {
+	BotLastForwardedFinalSequence int64
+	TranscriptQueueDrained        bool
 }
 
 type MeetingAIAnalysisRepository interface {

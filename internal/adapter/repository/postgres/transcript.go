@@ -171,6 +171,7 @@ func (record transcriptSegmentRecord) toDomain() (domain.TranscriptSegment, erro
 		DurationTicks:   record.DurationTicks,
 		Text:            record.Text,
 		ReceivedAtUTC:   receivedAt.UTC(),
+		IsFinal:         true,
 	}, nil
 }
 

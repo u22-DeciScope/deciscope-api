@@ -92,6 +92,7 @@ const (
 	MeetingSessionRecording       MeetingSessionStatus = "recording"
 	MeetingSessionSpeechError     MeetingSessionStatus = "speech_error"
 	MeetingSessionSpeechThrottled MeetingSessionStatus = "speech_throttled"
+	MeetingSessionEnding          MeetingSessionStatus = "ending"
 	MeetingSessionEnded           MeetingSessionStatus = "ended"
 	MeetingSessionFailed          MeetingSessionStatus = "failed"
 	MeetingSessionStale           MeetingSessionStatus = "stale"
@@ -313,7 +314,7 @@ func ValidMeetingSessionStatus(status MeetingSessionStatus) bool {
 	case MeetingSessionRequested, MeetingSessionPendingJoin, MeetingSessionCommandSent,
 		MeetingSessionJoining, MeetingSessionJoined, MeetingSessionActive,
 		MeetingSessionRecording, MeetingSessionSpeechError, MeetingSessionSpeechThrottled,
-		MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
+		MeetingSessionEnding, MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
 		return true
 	default:
 		return false
