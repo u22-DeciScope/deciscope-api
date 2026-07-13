@@ -426,8 +426,10 @@ func TestMergeSendsUnknownParentToUnclassified(t *testing.T) {
 	if node == nil || node.ParentID != treeUnclassifiedTopicID {
 		t.Fatalf("node = %+v, want rescued into %s (not the latest topic)", node, treeUnclassifiedTopicID)
 	}
-	if node.Kind != "issue" {
-		t.Fatalf("todo item must synthesize an issue node, got %q", node.Kind)
+	// AIアシスタントカードの「TODO」と議論ツリーの種別表示を一致させるため、
+	// todo itemはツリーでもkind "todo" のまま合成される(issueへ変換しない)。
+	if node.Kind != "todo" {
+		t.Fatalf("todo item must synthesize a todo node, got %q", node.Kind)
 	}
 	assertTreeInvariants(t, merged.Tree)
 }

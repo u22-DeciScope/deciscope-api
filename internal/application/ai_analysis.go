@@ -551,8 +551,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		modelResolvedIDCount, stats.ResolvedItems, stats.TotalItems, stats.ResolvedNodes, stats.TotalNodes,
 		diffItemCount, diffTreeNodeCount, diffTreeEdgeCount,
 		treeStats.droppedNodes(), treeStats.droppedNodeReasons(), treeStats.SynthesizedNodes)
-	log.Printf("Live AI analysis tree metrics. sessionId=%s newNodeIds=%d updatedNodeIds=%d normalizedTodoNodes=%d synthesizedNodes=%d unclassifiedRescues=%d reparentedNodes=%d totalNodes=%d totalEdges=%d rootChildren=%d maxDepth=%d needsReorganization=%t",
-		sessionID, treeStats.DiffNewNodes, treeStats.DiffUpdatedNodes, treeStats.NormalizedTodoNodes,
+	log.Printf("Live AI analysis tree metrics. sessionId=%s newNodeIds=%d updatedNodeIds=%d synthesizedNodes=%d unclassifiedRescues=%d reparentedNodes=%d totalNodes=%d totalEdges=%d rootChildren=%d maxDepth=%d needsReorganization=%t",
+		sessionID, treeStats.DiffNewNodes, treeStats.DiffUpdatedNodes,
 		treeStats.SynthesizedNodes, treeStats.OrphanRescuedEdges, treeStats.ReparentedNodes,
 		stats.TotalNodes, treeStats.TotalEdges, treeStats.TopicChildCount, treeStats.MaxDepth, treeStats.FlatTreeDetected)
 	s.publishAnalysis(*saved)
@@ -1946,7 +1946,10 @@ func validLiveAnalysisItemKind(kind string) bool {
 
 func validLiveAnalysisTreeNodeKind(kind string) bool {
 	switch kind {
-	case "topic", "issue", "question", "risk", "decision":
+	// "todo" はitemsと同様にツリーでも正式なkind。以前はツリー側の語彙に無く
+	// "issue"へ変換していたため、AIアシスタントカードで「TODO」のitemが
+	// 議論ツリーでは「論点」と表示される不一致が起きていた。
+	case "topic", "issue", "question", "risk", "decision", "todo":
 		return true
 	default:
 		return false
@@ -2129,9 +2132,6 @@ type liveAnalysisTreeMergeStats struct {
 	// specific parent elsewhere in the tree. See pruneRedundantTopicFallbackEdges
 	// for what makes an edge a pruning candidate in the first place.
 	PrunedTopicEdges int
-	// NormalizedTodoNodes は、モデルが tree 側に出した kind "todo" のノードを
-	// "issue" に正規化して救済した件数。
-	NormalizedTodoNodes int
 	// DiffNewNodes / DiffUpdatedNodes は、モデルの差分ノードのうち、それぞれ
 	// 「既存に無いidで新規追加されたもの」「既存idを上書き更新したもの」の件数。
 	// (サーバが合成したノードや前回状態のノードは数えない。)
@@ -2195,29 +2195,14 @@ func (s *liveAnalysisTreeMergeStats) droppedNodeReasons() string {
 	return "[" + strings.Join(parts, " ") + "]"
 }
 
-// liveAnalysisItemKindToTreeNodeKindFallback maps liveAnalysisItem kinds that
-// are not valid tree node kinds (validLiveAnalysisTreeNodeKind) to the
-// closest valid tree node kind. It is used only when synthesizing a tree
-// node from an item that has no corresponding tree node (see
-// mergeLiveAnalysisTree). Every valid item kind except "todo" is already a
-// valid tree node kind; "todo" maps to "issue" because a to-do is
-// functionally an actionable issue in the discussion tree's vocabulary.
-var liveAnalysisItemKindToTreeNodeKindFallback = map[string]string{
-	"todo": "issue",
-}
-
 // liveAnalysisTreeNodeKindForItem returns the tree node kind to use when
-// synthesizing a node for an item: the item's own kind when it is already a
-// valid tree node kind, its mapped fallback from
-// liveAnalysisItemKindToTreeNodeKindFallback otherwise, and "issue" as a
-// last-resort default (defensive only: normalizeLiveAnalysisItems already
+// synthesizing a node for an item. Every valid item kind (including "todo")
+// is also a valid tree node kind, so the item's kind is used as-is; "issue"
+// remains only as a defensive default (normalizeLiveAnalysisItems already
 // restricts item.Kind to the known item vocabulary by the time this runs).
 func liveAnalysisTreeNodeKindForItem(itemKind string) string {
 	if validLiveAnalysisTreeNodeKind(itemKind) {
 		return itemKind
-	}
-	if mapped, ok := liveAnalysisItemKindToTreeNodeKindFallback[itemKind]; ok {
-		return mapped
 	}
 	return "issue"
 }
@@ -2448,12 +2433,6 @@ func convertLegacyTreeDiff(tree *liveAnalysisTree, items []liveAnalysisItem, new
 		if node.Kind == "topic" {
 			newTopics = append(newTopics, node)
 			continue
-		}
-		if node.Kind == "todo" {
-			node.Kind = "issue"
-			if stats != nil {
-				stats.NormalizedTodoNodes++
-			}
 		}
 		if !validLiveAnalysisTreeNodeKind(node.Kind) {
 			if stats != nil {
