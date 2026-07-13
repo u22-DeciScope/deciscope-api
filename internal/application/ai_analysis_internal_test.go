@@ -24,7 +24,14 @@ func mergeForTest(t *testing.T, diff string, previous json.RawMessage) liveAnaly
 
 func mergeForTestWithContext(t *testing.T, diff string, previous json.RawMessage, mc *meetingContext) liveAnalysisPayload {
 	t.Helper()
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, previous, mc, 1)
+	return mergeForTestAtRound(t, diff, previous, mc, 1)
+}
+
+// mergeForTestAtRound merges a model diff at a specific analysis round
+// (treeVersion). Round progression matters for emerging-topic promotion.
+func mergeForTestAtRound(t *testing.T, diff string, previous json.RawMessage, mc *meetingContext, round int64) liveAnalysisPayload {
+	t.Helper()
+	raw, err := parseAndMergeLiveAnalysisPayload(diff, previous, mc, round, nil, TreeClassificationConfig{})
 	if err != nil {
 		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
 	}
@@ -347,13 +354,13 @@ func TestParseAndMergeLiveAnalysisPayloadRemapsDuplicateTitleToExistingID(t *tes
 }
 
 func TestParseAndMergeLiveAnalysisPayloadRejectsEmptyPayload(t *testing.T) {
-	if _, err := parseAndMergeLiveAnalysisPayload(`{"summary":"","currentTopic":"","items":[]}`, nil, nil, 1); err == nil {
+	if _, err := parseAndMergeLiveAnalysisPayload(`{"summary":"","currentTopic":"","items":[]}`, nil, nil, 1, nil, TreeClassificationConfig{}); err == nil {
 		t.Fatalf("expected error for empty payload")
 	}
 }
 
 func TestParseAndMergeLiveAnalysisPayloadRejectsInvalidJSON(t *testing.T) {
-	if _, err := parseAndMergeLiveAnalysisPayload(`not json`, nil, nil, 1); err == nil {
+	if _, err := parseAndMergeLiveAnalysisPayload(`not json`, nil, nil, 1, nil, TreeClassificationConfig{}); err == nil {
 		t.Fatalf("expected error for invalid JSON")
 	}
 }
@@ -391,16 +398,38 @@ func TestMergeAssignsParentTopicFromAssignments(t *testing.T) {
 }
 
 func TestMergeReplacesOldParentOnReassignment(t *testing.T) {
+	// 既存topicへの再割当(十分なconfidence)は1ラウンドで移動し、旧親エッジが
+	// 残らないこと。前回payloadに分類confidenceが無い(legacy)場合、移動は
+	// confidence >= 閾値で許可される。
+	previous := `{
+		"summary": "前回の要約",
+		"currentTopic": "進捗確認",
+		"items": [
+			{"id": "issue-a", "kind": "issue", "severity": "medium", "title": "課題A", "body": "説明A", "status": "open"}
+		],
+		"tree": {
+			"nodes": [
+				{"id": "root", "kind": "topic", "label": "会議全体"},
+				{"id": "topic-progress", "kind": "topic", "parentId": "root", "label": "進捗確認"},
+				{"id": "topic-quality", "kind": "topic", "parentId": "root", "label": "品質"},
+				{"id": "issue-a", "kind": "issue", "parentId": "topic-progress", "label": "課題A"}
+			],
+			"edges": [
+				{"source": "root", "target": "topic-progress"},
+				{"source": "root", "target": "topic-quality"},
+				{"source": "topic-progress", "target": "issue-a"}
+			]
+		}
+	}`
 	diff := `{
 		"summary": "要約",
-		"currentTopic": "進捗確認",
+		"currentTopic": "品質",
 		"items": [],
-		"newTopics": [{"id": "topic-quality", "label": "品質"}],
 		"assignments": [
 			{"nodeId": "issue-a", "parentTopicId": "topic-quality", "confidence": 0.8, "reason": "品質の議論"}
 		]
 	}`
-	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	merged := mergeForTest(t, diff, json.RawMessage(previous))
 	node := treeNodeByID(merged.Tree, "issue-a")
 	if node == nil || node.ParentID != "topic-quality" {
 		t.Fatalf("node = %+v, want moved to topic-quality", node)
@@ -412,6 +441,37 @@ func TestMergeReplacesOldParentOnReassignment(t *testing.T) {
 		}
 	}
 	assertTreeInvariants(t, merged.Tree)
+}
+
+func TestMergeSendsNewTopicProposalToEmergingCandidate(t *testing.T) {
+	// 既にtopicがある会議では、newTopics提案は直ちにtopicにならず emerging
+	// 候補になる。提案先へ割り当てられたitemは追加論点にtentativeで置かれ、
+	// 候補の証拠として記録される。
+	diff := `{
+		"summary": "要約",
+		"currentTopic": "品質",
+		"items": [],
+		"newTopics": [{"id": "topic-quality", "label": "品質"}],
+		"assignments": [
+			{"nodeId": "issue-a", "parentTopicId": "topic-quality", "confidence": 0.8, "reason": "品質の議論"}
+		]
+	}`
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	assertTreeInvariants(t, merged.Tree)
+	if treeNodeByID(merged.Tree, "topic-quality") != nil {
+		t.Fatalf("proposed topic must not be created immediately: %+v", merged.Tree.Nodes)
+	}
+	if len(merged.EmergingTopics) != 1 || merged.EmergingTopics[0].ID != "topic-quality" {
+		t.Fatalf("emergingTopics = %+v, want candidate topic-quality", merged.EmergingTopics)
+	}
+	if got := merged.EmergingTopics[0].EvidenceItemIDs; len(got) != 1 || got[0] != "issue-a" {
+		t.Fatalf("evidence = %+v, want [issue-a]", got)
+	}
+	// 既にtopic-progressに配置済みのitemは、未昇格候補のために動かさない。
+	node := treeNodeByID(merged.Tree, "issue-a")
+	if node == nil || node.ParentID != "topic-progress" {
+		t.Fatalf("node = %+v, want kept under topic-progress until promotion", node)
+	}
 }
 
 func TestMergeSendsUnknownParentToUnclassified(t *testing.T) {
@@ -778,7 +838,7 @@ func TestApplyTreeOperationsSplitsOvercrowdedTopicLocally(t *testing.T) {
 		{Type: "move_node", NodeID: "issue-1", ToParentID: "topic-speech-quality"},
 		{Type: "rename_topic", TopicID: "topic-busy", Label: "分析ロジック"},
 	}
-	rebuilt, applied := applyTreeOperations(tree, nil, ops, nil)
+	rebuilt, applied := applyTreeOperations(tree, nil, ops, TreeClassificationConfig{}, nil)
 	if applied != 4 {
 		t.Fatalf("applied = %d, want 4", applied)
 	}
@@ -807,7 +867,7 @@ func TestApplyTreeOperationsSkipsInvalidOperations(t *testing.T) {
 		{Type: "merge_topic", FromTopicID: "agenda-1", IntoTopicID: "topic-busy"}, // アジェンダは統合不可
 		{Type: "unknown_op"},
 	}
-	rebuilt, applied := applyTreeOperations(tree, mc, ops, nil)
+	rebuilt, applied := applyTreeOperations(tree, mc, ops, TreeClassificationConfig{}, nil)
 	if applied != 0 {
 		t.Fatalf("applied = %d, want all invalid operations skipped", applied)
 	}
@@ -826,7 +886,7 @@ func TestApplyTreeOperationsMergeTopicMovesChildren(t *testing.T) {
 		liveAnalysisTreeEdge{Source: "topic-dup", Target: "issue-x"})
 	rebuilt, applied := applyTreeOperations(tree, nil, []treeOperation{
 		{Type: "merge_topic", FromTopicID: "topic-dup", IntoTopicID: "topic-busy"},
-	}, nil)
+	}, TreeClassificationConfig{}, nil)
 	if applied != 1 {
 		t.Fatalf("applied = %d, want 1", applied)
 	}
@@ -887,7 +947,8 @@ func TestReorganizeTreeAppliesMatchingTreeVersion(t *testing.T) {
 	completer := &scriptedCompleter{results: []AIChatResult{{
 		Content: `{"basedOnTreeVersion": 12, "operations": [
 			{"type":"create_topic","topicId":"topic-x","label":"分割"},
-			{"type":"move_node","nodeId":"issue-0","toParentId":"topic-x"}
+			{"type":"move_node","nodeId":"issue-0","toParentId":"topic-x"},
+			{"type":"move_node","nodeId":"issue-1","toParentId":"topic-x"}
 		]}`,
 	}}}
 	service := newInternalTestService(completer, MeetingAnalysisConfig{Enabled: true, LiveEnabled: true, Model: "gpt-test"})
@@ -897,8 +958,8 @@ func TestReorganizeTreeAppliesMatchingTreeVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reorganizeTree() error = %v", err)
 	}
-	if applied != 2 {
-		t.Fatalf("applied = %d, want 2", applied)
+	if applied != 3 {
+		t.Fatalf("applied = %d, want 3", applied)
 	}
 	assertTreeInvariants(t, result)
 	moved := treeNodeByID(result, "issue-0")
