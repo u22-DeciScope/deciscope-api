@@ -2,7 +2,6 @@ package application
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"deciscope-core-api/internal/domain"
@@ -31,10 +30,6 @@ type JobRepository interface {
 	CompleteJob(ctx context.Context, jobID string, result any) error
 	FailJob(ctx context.Context, jobID, message string) error
 	GetJob(ctx context.Context, jobID string) (*domain.Job, error)
-}
-
-type UploadRepository interface {
-	SaveUpload(ctx context.Context, workspaceID, filename, mediaType, path, jobID string) (*domain.Upload, error)
 }
 
 type TranscriptSegmentRepository interface {
@@ -132,12 +127,19 @@ type BotMediaMetricsReader interface {
 	Forget(sessionID string)
 }
 
-// MeetingSessionEndedObserver is notified when a meeting session transitions
-// into the Ended status. It is used to trigger the asynchronous AI final
-// summary without giving MeetingSessionService a direct dependency on the AI
-// analysis service.
+// MeetingSessionEndedObserver owns the synchronous finalization pipeline.
+// MeetingSessionService invokes it asynchronously while status=ending and
+// persists status=ended only after it returns.
 type MeetingSessionEndedObserver interface {
-	NotifyMeetingSessionEnded(session domain.MeetingSession)
+	FinalizeMeetingSession(ctx context.Context, session domain.MeetingSession, request MeetingSessionFinalizationRequest) error
+}
+
+// MeetingSessionFinalizationRequest carries optional drain proof from newer
+// bots. Zero values preserve compatibility with bots that only report
+// status=ended; the finalizer then uses a bounded DB quiet-period fallback.
+type MeetingSessionFinalizationRequest struct {
+	BotLastForwardedFinalSequence int64
+	TranscriptQueueDrained        bool
 }
 
 type MeetingAIAnalysisRepository interface {
@@ -155,6 +157,9 @@ type AIChatRequest struct {
 	System    string
 	User      string
 	MaxTokens int
+	// Deployment optionally overrides the adapter's default deployment for
+	// this call (per-task model routing). Empty uses the default.
+	Deployment string
 }
 
 type AIChatResult struct {
@@ -169,8 +174,4 @@ type AIChatCompleter interface {
 
 type Publisher interface {
 	Publish(event domain.Event)
-}
-
-type ObjectStorage interface {
-	Save(ctx context.Context, key string, src io.Reader) (string, error)
 }

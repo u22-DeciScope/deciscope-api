@@ -11,7 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"deciscope-core-api/internal/application"
@@ -63,9 +63,11 @@ const (
 type Client struct {
 	config Config
 	http   HTTPDoer
-	// paramMode is the parameter set accepted by the configured deployment,
-	// discovered at runtime via 400 "unsupported parameter" fallbacks.
-	paramMode atomic.Int32
+	// paramModes maps deployment name -> parameter set accepted by that
+	// deployment, discovered at runtime via 400 "unsupported parameter"
+	// fallbacks. Per-deployment because AIChatRequest.Deployment can route
+	// individual calls to different model generations.
+	paramModes sync.Map
 }
 
 func NewClient(config Config, httpClient ...HTTPDoer) *Client {
@@ -89,15 +91,23 @@ func (c *Client) Complete(ctx context.Context, request application.AIChatRequest
 		defer cancel()
 	}
 
-	mode := c.paramMode.Load()
+	deployment := strings.TrimSpace(request.Deployment)
+	if deployment == "" {
+		deployment = strings.TrimSpace(c.config.Deployment)
+	}
+
+	mode := paramModeReasoning
+	if stored, ok := c.paramModes.Load(deployment); ok {
+		mode = stored.(int32)
+	}
 	for {
-		result, err := c.completeOnce(ctx, request, mode)
+		result, err := c.completeOnce(ctx, request, deployment, mode)
 		nextMode, retry := fallbackParamMode(mode, err)
 		if !retry {
 			return result, err
 		}
 		mode = nextMode
-		c.paramMode.Store(mode)
+		c.paramModes.Store(deployment, mode)
 	}
 }
 
@@ -116,7 +126,7 @@ func fallbackParamMode(mode int32, err error) (int32, bool) {
 	return mode, false
 }
 
-func (c *Client) completeOnce(ctx context.Context, request application.AIChatRequest, mode int32) (application.AIChatResult, error) {
+func (c *Client) completeOnce(ctx context.Context, request application.AIChatRequest, deployment string, mode int32) (application.AIChatResult, error) {
 	body := chatCompletionRequest{
 		Messages: []chatMessage{
 			{Role: "system", Content: request.System},
@@ -143,7 +153,7 @@ func (c *Client) completeOnce(ctx context.Context, request application.AIChatReq
 		return application.AIChatResult{}, fmt.Errorf("marshal azure openai request: %w", err)
 	}
 
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, completionsURL(c.config), bytes.NewReader(requestBody))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, completionsURL(c.config, deployment), bytes.NewReader(requestBody))
 	if err != nil {
 		return application.AIChatResult{}, fmt.Errorf("build azure openai request: %w", err)
 	}
@@ -203,13 +213,16 @@ func isUnsupportedParam(err error, param string) bool {
 		strings.Contains(lower, "invalid")
 }
 
-func completionsURL(config Config) string {
+func completionsURL(config Config, deployment string) string {
 	endpoint := strings.TrimRight(strings.TrimSpace(config.Endpoint), "/")
 	version := strings.TrimSpace(config.APIVersion)
 	if version == "" {
 		version = defaultAPIVersion
 	}
-	return fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", endpoint, config.Deployment, version)
+	if strings.TrimSpace(deployment) == "" {
+		deployment = config.Deployment
+	}
+	return fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", endpoint, deployment, version)
 }
 
 func errorSnippet(body []byte) string {

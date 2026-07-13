@@ -418,7 +418,7 @@ func (r *MeetingSessionRepository) ListMeetingSessionsForBotWatchdog(ctx context
 			COALESCE(bot_call_id, ''), requested_at, command_sent_at, joined_at, ended_at,
 			COALESCE(end_reason, ''), last_bot_status_at, COALESCE(last_error, ''), created_at, updated_at
 		FROM meeting_sessions
-		WHERE status IN ('joined', 'active', 'recording', 'speech_error', 'speech_throttled')
+		WHERE status IN ('joined', 'active', 'recording', 'speech_error', 'speech_throttled', 'ending')
 			AND last_bot_status_at IS NOT NULL
 	`)
 	if err != nil {

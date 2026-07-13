@@ -64,19 +64,17 @@ deployments. The Memory implementation remains available only as a test double.
 - HTTP response DTOs live in `internal/adapter/http`; Domain Entity does not own
   HTTP JSON tags.
 - WebSocket messages use protocol DTOs in `internal/adapter/realtime`.
-- Application receives individual Repository/Publisher/ObjectStorage ports.
+- Application receives individual Repository/Publisher ports.
 - PostgreSQL keeps durable event sequence allocation and related writes inside its
   transaction boundary.
 - Environment files and variables are read in `internal/app`.
 
 ## Current limitations
 
-- `/v1` meeting, upload, and realtime routes are protected by session cookie
+- `/v1` meeting and realtime routes are protected by session cookie
   auth plus workspace/resource access checks. The legacy `/api/v1` VM Bot and
   transcript routes use API-key/client-token checks instead.
 - Firebase login persists users, workspaces, and sessions through PostgreSQL.
-- Upload storage is local filesystem only. Upload processing is a mock job, and
-  file STT/ffmpeg processing is outside the current product scope.
 - Redis Streams, MinIO/Object Storage, raw-audio Media Ingress, and a separate
   Python worker are not part of the current Docker-first product path.
 - Azure OpenAI-backed live/final meeting analysis is implemented when the

@@ -17,7 +17,6 @@ type WorkspaceAccessUseCases interface {
 
 type ResourceAccessUseCases interface {
 	CanAccessMeeting(ctx context.Context, userID, meetingID string) error
-	CanAccessJob(ctx context.Context, userID, jobID string) error
 }
 
 func requireWorkspaceAccess(service WorkspaceAccessUseCases) func(http.Handler) http.Handler {
@@ -57,12 +56,6 @@ func requireMeetingAccess(service ResourceAccessUseCases) func(http.Handler) htt
 func requireRealtimeAccess(service ResourceAccessUseCases) func(http.Handler) http.Handler {
 	return requireAccess(func(r *http.Request, session *appauth.SessionResult) error {
 		return service.CanAccessMeeting(r.Context(), session.User.ID, r.URL.Query().Get("meeting_id"))
-	})
-}
-
-func requireJobAccess(service ResourceAccessUseCases) func(http.Handler) http.Handler {
-	return requireAccess(func(r *http.Request, session *appauth.SessionResult) error {
-		return service.CanAccessJob(r.Context(), session.User.ID, chi.URLParam(r, "job_id"))
 	})
 }
 

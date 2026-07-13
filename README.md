@@ -3,7 +3,7 @@
 DeciScopeのローカルMVP向け、Go + `chi`製バックエンドです。
 
 会議API、WebSocketリアルタイム配信、PostgreSQL永続化、
-Azure EchoBot向け文字起こし取り込み、mock upload/job、Markdownレポート生成を
+Azure EchoBot向け文字起こし取り込み、Markdownレポート生成を
 提供します。Teams音声のSTTはVM上のTeams Botが担当し、このAPIはBotから送られる
 transcript segmentを受け取ります。Azure OpenAIを設定した場合は、会議中ライブ分析と
 会議終了時の最終要約も生成します。raw audioのMedia IngressやファイルSTT/ffmpeg処理は
@@ -71,7 +71,6 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御API呼び出しtimeout。既定値は `10`
 - `MEETING_TITLE_LOOKUP_USER_IDS`: Teams会議名解決用。Microsoft Graph user object id を推奨。UPN/email も指定できますが、Bot 側で `/users/{upn}` により object id 解決してから使います
-- `UPLOAD_DIR`: local upload directory
 - `FRONTEND_URL`, `ALLOWED_ORIGINS`: CORS設定
 - `SESSION_COOKIE_SECURE`: `true` の場合、セッションCookieに `Secure` 属性を付与
 - `DECISCOPE_SEED_DEMO_DATA`: `true` の場合、起動時にデモ用workspaceをPostgreSQLへ投入
@@ -95,6 +94,9 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `AI_FINAL_SUMMARY_MAX_INPUT_CHARS`: 最終要約に送るtranscriptの最大文字数(超過分は末尾優先で切り詰め)。既定値は `12000`
 - `AI_REQUEST_TIMEOUT_SECONDS`: ライブ分析のAzure OpenAI呼び出しtimeout。既定値は `20`
 - `AI_FINAL_SUMMARY_TIMEOUT_SECONDS`: 最終要約のAzure OpenAI呼び出しtimeout。既定値は `60`
+- `AI_FINALIZATION_WAIT_TIMEOUT_SECONDS`: 実行中分析またはBot通知済み最終sequenceのDB到着を待つ上限。既定値は `10`
+- `AI_FINALIZATION_QUIET_PERIOD_MILLISECONDS`: drain情報を送らない旧Bot向けのDB静穏判定。既定値は `750`、最小値は `100`
+- `AI_FINAL_FLUSH_MAX_ATTEMPTS`: 終了時の未処理final抽出の最大試行回数。既定値は `3`
 
 `DECISCOPE_TRANSCRIPT_ONLY=true` のtranscript-onlyモードでは、AI分析機能は組み込まれません。
 

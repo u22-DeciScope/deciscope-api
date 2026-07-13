@@ -1,10 +1,8 @@
 package application_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +14,7 @@ import (
 func TestServiceCoreUseCasesWithFakePorts(t *testing.T) {
 	ctx := context.Background()
 	ports := newFakePorts()
-	service := application.NewService(ports, ports, ports, ports, ports, ports, ports)
+	service := application.NewService(ports, ports, ports, ports, ports)
 
 	meeting, err := service.CreateMeeting(ctx, "w_test", "Service use cases", "fixture_replay")
 	if err != nil {
@@ -41,31 +39,18 @@ func TestServiceCoreUseCasesWithFakePorts(t *testing.T) {
 	if report.MeetingID != meeting.ID || !strings.Contains(report.Content, "# Service use cases") {
 		t.Fatalf("report = %+v", report)
 	}
-
-	result, err := service.UploadFile(ctx, "w_test", "notes.txt", "", strings.NewReader("hello"))
-	if err != nil {
-		t.Fatalf("UploadFile() error = %v", err)
-	}
-	if result.Job.Status != "completed" || result.Upload.MediaType != "application/octet-stream" {
-		t.Fatalf("upload result = %+v", result)
-	}
-	if got := ports.savedObjects[result.Job.ID+"_notes.txt"]; !bytes.Equal(got, []byte("hello")) {
-		t.Fatalf("uploaded content = %q, want hello", got)
-	}
 }
 
 type fakePorts struct {
-	meeting      *domain.Meeting
-	events       []domain.Event
-	reports      []domain.Report
-	jobs         map[string]domain.Job
-	uploads      []domain.Upload
-	published    []domain.Event
-	savedObjects map[string][]byte
+	meeting   *domain.Meeting
+	events    []domain.Event
+	reports   []domain.Report
+	jobs      map[string]domain.Job
+	published []domain.Event
 }
 
 func newFakePorts() *fakePorts {
-	return &fakePorts{jobs: make(map[string]domain.Job), savedObjects: make(map[string][]byte)}
+	return &fakePorts{jobs: make(map[string]domain.Job)}
 }
 
 func (f *fakePorts) CreateMeeting(_ context.Context, workspaceID, title, source string) (*domain.Meeting, error) {
@@ -177,21 +162,6 @@ func (f *fakePorts) GetJob(_ context.Context, jobID string) (*domain.Job, error)
 	return &job, nil
 }
 
-func (f *fakePorts) SaveUpload(_ context.Context, workspaceID, filename, mediaType, path, jobID string) (*domain.Upload, error) {
-	upload := domain.Upload{ID: "upl_test", WorkspaceID: workspaceID, Filename: filename, MediaType: mediaType, Path: path, JobID: jobID}
-	f.uploads = append(f.uploads, upload)
-	return &upload, nil
-}
-
 func (f *fakePorts) Publish(event domain.Event) {
 	f.published = append(f.published, event)
-}
-
-func (f *fakePorts) Save(_ context.Context, key string, src io.Reader) (string, error) {
-	content, err := io.ReadAll(src)
-	if err != nil {
-		return "", err
-	}
-	f.savedObjects[key] = content
-	return "/fake/" + key, nil
 }

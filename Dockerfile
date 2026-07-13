@@ -15,11 +15,10 @@ RUN apk add --no-cache ca-certificates \
 WORKDIR /app
 COPY --from=build /out/deciscope-api /app/deciscope-api
 
-RUN mkdir -p /app/uploads && chown -R deciscope:deciscope /app
+RUN chown -R deciscope:deciscope /app
 
 USER deciscope
 ENV PORT=9090
-ENV UPLOAD_DIR=/app/uploads
 EXPOSE 9090
 
 CMD ["/app/deciscope-api", "serve"]

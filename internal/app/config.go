@@ -31,6 +31,9 @@ const (
 	defaultAILiveAnalysisMinChars        = 80
 	defaultAILiveAnalysisMaxInputChars   = 4000
 	defaultAIFinalSummaryMaxInputChars   = 12000
+	defaultAIFinalizationWaitSeconds     = 10
+	defaultAIFinalizationQuietMillis     = 750
+	defaultAIFinalFlushMaxAttempts       = 3
 )
 
 const (
@@ -59,7 +62,6 @@ type Config struct {
 	Firebase            firebase.Config
 	AI                  AIConfig
 	SessionWatchdog     MeetingSessionWatchdogConfig
-	UploadDir           string
 	FrontendURL         string
 	AllowedOrigins      string
 	SessionCookieSecure bool
@@ -107,9 +109,23 @@ type AIConfig struct {
 	FinalSummaryEnabled       bool
 	FinalSummaryMaxInputChars int
 	FinalSummaryTimeout       time.Duration
+	FinalizationWaitTimeout   time.Duration
+	FinalizationQuietPeriod   time.Duration
+	FinalFlushMaxAttempts     int
+	// TaskModels are optional per-task deployment names (AI_MODEL_*). Empty
+	// entries fall back to the shared AZURE_OPENAI_DEPLOYMENT.
+	TaskModels AITaskModelsConfig
 	// DebugDroppedNodes は破棄されたツリーノードの詳細(id/kind/title/reason)を
 	// 開発用にログ出力するか。既定: false。
 	DebugDroppedNodes bool
+}
+
+// AITaskModelsConfig holds per-task Azure OpenAI deployment overrides.
+type AITaskModelsConfig struct {
+	ContextPlanner  string
+	LiveExtraction  string
+	TreeReorganizer string
+	FinalSummary    string
 }
 
 // MissingAzureOpenAIVars returns the names of the required Azure OpenAI
@@ -185,7 +201,6 @@ func ConfigFromEnv() Config {
 		},
 		AI:                                  aiConfigFromEnv(),
 		SessionWatchdog:                     sessionWatchdogConfigFromEnv(),
-		UploadDir:                           os.Getenv("UPLOAD_DIR"),
 		FrontendURL:                         os.Getenv("FRONTEND_URL"),
 		AllowedOrigins:                      os.Getenv("ALLOWED_ORIGINS"),
 		SessionCookieSecure:                 strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
@@ -239,7 +254,16 @@ func aiConfigFromEnv() AIConfig {
 		FinalSummaryEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_FINAL_SUMMARY_ENABLED")),
 		FinalSummaryMaxInputChars: positiveIntFromEnv(os.Getenv("AI_FINAL_SUMMARY_MAX_INPUT_CHARS"), defaultAIFinalSummaryMaxInputChars),
 		FinalSummaryTimeout:       secondsDurationFromEnv(os.Getenv("AI_FINAL_SUMMARY_TIMEOUT_SECONDS"), defaultAIFinalSummaryTimeoutSeconds, 1),
-		DebugDroppedNodes:         strings.EqualFold(strings.TrimSpace(os.Getenv("AI_ANALYSIS_DEBUG_DROPPED_NODES")), "true"),
+		FinalizationWaitTimeout:   secondsDurationFromEnv(os.Getenv("AI_FINALIZATION_WAIT_TIMEOUT_SECONDS"), defaultAIFinalizationWaitSeconds, 1),
+		FinalizationQuietPeriod:   millisecondsDurationFromEnv(os.Getenv("AI_FINALIZATION_QUIET_PERIOD_MILLISECONDS"), defaultAIFinalizationQuietMillis, 100),
+		FinalFlushMaxAttempts:     positiveIntFromEnv(os.Getenv("AI_FINAL_FLUSH_MAX_ATTEMPTS"), defaultAIFinalFlushMaxAttempts),
+		TaskModels: AITaskModelsConfig{
+			ContextPlanner:  strings.TrimSpace(os.Getenv("AI_MODEL_CONTEXT_PLANNER")),
+			LiveExtraction:  strings.TrimSpace(os.Getenv("AI_MODEL_LIVE_EXTRACTION")),
+			TreeReorganizer: strings.TrimSpace(os.Getenv("AI_MODEL_TREE_REORGANIZER")),
+			FinalSummary:    strings.TrimSpace(os.Getenv("AI_MODEL_FINAL_SUMMARY")),
+		},
+		DebugDroppedNodes: strings.EqualFold(strings.TrimSpace(os.Getenv("AI_ANALYSIS_DEBUG_DROPPED_NODES")), "true"),
 	}
 }
 
@@ -290,6 +314,17 @@ func secondsDurationFromEnv(value string, defaultSeconds, minSeconds int) time.D
 		seconds = minSeconds
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func millisecondsDurationFromEnv(value string, defaultMilliseconds, minMilliseconds int) time.Duration {
+	milliseconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || milliseconds <= 0 {
+		milliseconds = defaultMilliseconds
+	}
+	if milliseconds < minMilliseconds {
+		milliseconds = minMilliseconds
+	}
+	return time.Duration(milliseconds) * time.Millisecond
 }
 
 func positiveIntFromEnv(value string, defaultValue int) int {
