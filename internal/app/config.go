@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"deciscope-core-api/internal/application"
 	"deciscope-core-api/internal/infrastructure/azureopenai"
 	"deciscope-core-api/internal/infrastructure/botcontrol"
 	"deciscope-core-api/internal/infrastructure/database"
@@ -115,6 +116,9 @@ type AIConfig struct {
 	// TaskModels are optional per-task deployment names (AI_MODEL_*). Empty
 	// entries fall back to the shared AZURE_OPENAI_DEPLOYMENT.
 	TaskModels AITaskModelsConfig
+	// TreeClassification は議論ツリーの意味分類ポリシー(AI_TREE_*)。ゼロ値の
+	// 項目は application 側の既定値が使われる。
+	TreeClassification application.TreeClassificationConfig
 	// DebugDroppedNodes は破棄されたツリーノードの詳細(id/kind/title/reason)を
 	// 開発用にログ出力するか。既定: false。
 	DebugDroppedNodes bool
@@ -263,8 +267,36 @@ func aiConfigFromEnv() AIConfig {
 			TreeReorganizer: strings.TrimSpace(os.Getenv("AI_MODEL_TREE_REORGANIZER")),
 			FinalSummary:    strings.TrimSpace(os.Getenv("AI_MODEL_FINAL_SUMMARY")),
 		},
+		// ゼロ値(未設定・不正値)は application 側の既定値に正規化されるため、
+		// 既定値をここで二重管理しない。
+		TreeClassification: application.TreeClassificationConfig{
+			AgendaAssignmentThreshold: floatFromEnv(os.Getenv("AI_TREE_AGENDA_ASSIGNMENT_THRESHOLD")),
+			PromotionMinItems:         intFromEnvOrZero(os.Getenv("AI_TREE_TOPIC_PROMOTION_MIN_ITEMS")),
+			PromotionMinRounds:        intFromEnvOrZero(os.Getenv("AI_TREE_TOPIC_PROMOTION_MIN_ROUNDS")),
+			MaxDynamicTopics:          intFromEnvOrZero(os.Getenv("AI_TREE_MAX_DYNAMIC_TOPICS")),
+		},
 		DebugDroppedNodes: strings.EqualFold(strings.TrimSpace(os.Getenv("AI_ANALYSIS_DEBUG_DROPPED_NODES")), "true"),
 	}
+}
+
+// floatFromEnv parses a float environment value; invalid or missing values
+// yield 0 (= use the application-side default).
+func floatFromEnv(value string) float64 {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+// intFromEnvOrZero parses an int environment value; invalid or missing values
+// yield 0 (= use the application-side default).
+func intFromEnvOrZero(value string) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 // sessionWatchdogConfigFromEnv reads DECISCOPE_SESSION_WATCHDOG_* /

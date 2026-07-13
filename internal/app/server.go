@@ -340,7 +340,8 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 				TreeReorganizer: config.TaskModels.TreeReorganizer,
 				FinalSummary:    config.TaskModels.FinalSummary,
 			},
-			DebugDroppedNodes: config.DebugDroppedNodes,
+			TreeClassification: config.TreeClassification,
+			DebugDroppedNodes:  config.DebugDroppedNodes,
 		},
 		publisher,
 	)

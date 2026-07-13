@@ -52,8 +52,9 @@ const liveAnalysisSystemPrompt = "あなたは日本語の会議分析アシス�
 
 // liveAnalysisPromptVersion identifies the live extraction prompt/schema
 // generation for logs and offline comparison. v3 = proposal-based output
-// (items + newTopics + assignments; no free edges).
-const liveAnalysisPromptVersion = "v3"
+// (items + newTopics + assignments; no free edges). v4 = confidence必須化と
+// emerging topic候補(newTopicsの段階的昇格)の明示。
+const liveAnalysisPromptVersion = "v4"
 
 const liveAnalysisSchemaDescription = `{
   "summary": "議論全体のこれまでの要約(毎回全文を出力、400字程度まで)",
@@ -86,9 +87,10 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - 解決済みのitemは削除せず、statusを"resolved"として残してください。再度議論が始まった場合は既存idのままstatusを"updated"に戻してください。
 - ツリーのノードとエッジはサーバーがitemsとassignmentsから構築します。tree/nodes/edgesを出力してはいけません。
 - assignmentsには、このラウンドで出力した各itemについて、最も内容が近いtopicのid(親)を1つだけ指定してください。既存itemの分類を変えるべき場合も同様にassignmentsで指定できます。
+- assignmentsのconfidenceには、そのtopicに属する確信度を0.0〜1.0で正直に入れてください。迷う場合は0.5未満にしてください。確信の低い割当はサーバーが暫定扱いにして後で再評価するので、無理に既存アジェンダへ割り当てる必要はありません。
 - parentTopicIdには「topic一覧」に示されたid、またはこのラウンドのnewTopicsのidだけを使ってください。どのtopicにも当てはまらない場合は "topic-unclassified" を指定してください。存在しないidを作らないでください。
 - 発言が会議前のアジェンダに対応する場合は、必ずそのアジェンダtopic(agenda-…)へ分類してください。アジェンダに無い重要な議論だけを、newTopicsまたは "topic-unclassified" へ分類してください。
-- newTopicsは、既存のどのtopicにも属さない大きな話題が新しく議論されたときだけ、1ラウンドに最大2件まで作成してください。既存topicと同じ・近い意味の大分類を別idで作ってはいけません。
+- newTopicsは、既存のどのtopicにも属さない大きな話題が新しく議論されたときだけ、1ラウンドに最大2件まで作成してください。既存topicと同じ・近い意味の大分類を別idで作ってはいけません。提案した大分類はすぐにはツリーへ追加されず、複数ラウンドで根拠が集まるとサーバーがtopicへ昇格します。同じ新分類には毎回同じid(「topic一覧」の未昇格候補に示されたid)を使い続けてください。
 - 事前情報の「前提・背景」に書かれている既知の内容は、会議中に新しく議論された場合を除き、新規itemとして出力しないでください。
 - 目的・ゴールの文自体をitemやtopicにしないでください。それは各発言が本題か脱線かを判断する基準として使ってください。
 - severityは影響度で判断してください(会議の結論を左右するものはhigh)。`
@@ -193,6 +195,10 @@ type MeetingAnalysisConfig struct {
 	// ReorganizeMinInterval is the minimum time between two tree
 	// reorganization passes for the same session. Zero uses the default.
 	ReorganizeMinInterval time.Duration
+
+	// TreeClassification は意味分類ポリシー(confidence閾値・topic昇格条件)。
+	// ゼロ値は既定値として扱われる(ai_tree_classification.go)。
+	TreeClassification TreeClassificationConfig
 
 	// DebugDroppedNodes は破棄ノード詳細ログを出すか。
 	DebugDroppedNodes bool
@@ -511,7 +517,13 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	}
 	treeStats := &liveAnalysisTreeMergeStats{}
 	newVersion := previousVersion + 1
-	payload, parseErr := parseAndMergeLiveAnalysisPayload(result.Content, previousPayload, meetingCtx, newVersion, treeStats)
+	roundSeqNos := make([]int64, 0, len(segments))
+	for _, segment := range segments {
+		if segment.SequenceNo > 0 {
+			roundSeqNos = append(roundSeqNos, segment.SequenceNo)
+		}
+	}
+	payload, parseErr := parseAndMergeLiveAnalysisPayload(result.Content, previousPayload, meetingCtx, newVersion, roundSeqNos, s.config.TreeClassification, treeStats)
 	logTaskSchemaResult(aiTaskLiveExtraction, sessionID, parseErr)
 	if parseErr != nil {
 		s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
@@ -551,10 +563,15 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		modelResolvedIDCount, stats.ResolvedItems, stats.TotalItems, stats.ResolvedNodes, stats.TotalNodes,
 		diffItemCount, diffTreeNodeCount, diffTreeEdgeCount,
 		treeStats.droppedNodes(), treeStats.droppedNodeReasons(), treeStats.SynthesizedNodes)
-	log.Printf("Live AI analysis tree metrics. sessionId=%s newNodeIds=%d updatedNodeIds=%d synthesizedNodes=%d unclassifiedRescues=%d reparentedNodes=%d totalNodes=%d totalEdges=%d rootChildren=%d maxDepth=%d needsReorganization=%t",
+	// 旧ラベル rootChildren= は実際にはtopic総数を出しており誤読を招いたため
+	// topics= に改める。分類の集計値(assigned/tentative/unclassified等)も
+	// ここへ足し、項目単位の判定は下で1件ずつ出す。
+	log.Printf("Live AI analysis tree metrics. sessionId=%s newNodeIds=%d updatedNodeIds=%d synthesizedNodes=%d unclassifiedRescues=%d reparentedNodes=%d totalNodes=%d totalEdges=%d topics=%d maxDepth=%d needsReorganization=%t assignedItems=%d tentativeItems=%d unclassifiedItems=%d emergingCandidates=%d dynamicTopicsPromoted=%d",
 		sessionID, treeStats.DiffNewNodes, treeStats.DiffUpdatedNodes,
 		treeStats.SynthesizedNodes, treeStats.OrphanRescuedEdges, treeStats.ReparentedNodes,
-		stats.TotalNodes, treeStats.TotalEdges, treeStats.TopicChildCount, treeStats.MaxDepth, treeStats.FlatTreeDetected)
+		stats.TotalNodes, treeStats.TotalEdges, treeStats.TopicChildCount, treeStats.MaxDepth, treeStats.FlatTreeDetected,
+		stats.AssignedItems, stats.TentativeItems, stats.UnclassifiedItems, stats.EmergingCandidates, treeStats.DynamicTopicsPromoted)
+	logClassificationDecisions(sessionID, treeStats)
 	s.publishAnalysis(*saved)
 
 	// Task E: 全topic対象の過密検知に基づくライブ再編成。running=true のまま
@@ -573,6 +590,23 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	state.nextAttemptAt = time.Time{}
 	s.mu.Unlock()
 	return true
+}
+
+// logClassificationDecisions writes one log line per item-level assignment
+// decision and per emerging-topic decision. IDと数値のみで、発言本文・理由文は
+// 出力しない(本文はpayloadに保持され人手確認できる)。
+func logClassificationDecisions(sessionID string, stats *liveAnalysisTreeMergeStats) {
+	if stats == nil {
+		return
+	}
+	for _, d := range stats.AssignmentDecisions {
+		log.Printf("Agenda assignment evaluated. sessionId=%s itemId=%s requestedParentId=%s selectedParentId=%s confidence=%.2f source=%s decision=%s classificationStatus=%s candidateTopicId=%s",
+			sessionID, d.ItemID, d.RequestedParentID, d.SelectedParentID, d.Confidence, d.Source, d.Decision, d.Status, d.CandidateTopicID)
+	}
+	for _, d := range stats.EmergingDecisions {
+		log.Printf("Emerging topic evaluated. sessionId=%s candidateId=%s evidenceItemCount=%d evidenceRoundCount=%d decision=%s newTopicId=%s",
+			sessionID, d.CandidateID, d.EvidenceItemCount, d.RoundCount, d.Decision, d.TopicID)
+	}
 }
 
 func finishLiveRunLocked(state *liveAnalysisSessionState) {
@@ -621,6 +655,8 @@ func (s *MeetingAnalysisService) maybeReorganizeLiveTree(ctx context.Context, se
 		return payload, version
 	}
 
+	// 再編成で親が変わったitemの分類メタデータを追従させる(source=reorganizer)。
+	syncItemsWithReorganizedTree(current.Items, current.Tree, reorganized)
 	current.Tree = reorganized
 	newVersion := version + 1
 	current.TreeVersion = newVersion
@@ -1294,8 +1330,8 @@ func (s *MeetingAnalysisService) reorganizeTree(ctx context.Context, sessionID s
 		return tree, 0, fmt.Errorf("tree reorganizer basedOnTreeVersion mismatch: got %d want %d", parsed.BasedOnTreeVersion, treeVersion)
 	}
 	stats := &liveAnalysisTreeMergeStats{}
-	reorganized, applied := applyTreeOperations(tree, mc, parsed.Operations, stats)
-	log.Printf("Tree reorganization applied. sessionId=%s operations=%d applied=%d reparented=%d treeVersion=%d", sessionID, len(parsed.Operations), applied, stats.ReparentedNodes, treeVersion)
+	reorganized, applied := applyTreeOperations(tree, mc, parsed.Operations, s.config.TreeClassification, stats)
+	log.Printf("Tree reorganization applied. sessionId=%s operations=%d applied=%d reparented=%d treeVersion=%d rejections=%v", sessionID, len(parsed.Operations), applied, stats.ReparentedNodes, treeVersion, stats.ReorganizeRejections)
 	return reorganized, applied, nil
 }
 
@@ -1567,7 +1603,7 @@ func buildLiveAnalysisUserPrompt(previousPayload json.RawMessage, mc *meetingCon
 	}
 
 	b.WriteString(fmt.Sprintf("[topic一覧(分類先, tree version %d)]\n", treeVersion))
-	b.WriteString(renderLiveAnalysisTopics(previous.Tree, mc))
+	b.WriteString(renderLiveAnalysisTopics(previous.Tree, mc, previous.EmergingTopics))
 	b.WriteString("\n\n")
 
 	if len(previous.Items) > 0 {
@@ -1608,10 +1644,10 @@ func buildLiveAnalysisUserPrompt(previousPayload json.RawMessage, mc *meetingCon
 }
 
 // renderLiveAnalysisTopics lists every valid classification target: the
-// stable agenda topics, dynamic topics from previous rounds, and the
-// unclassified topic. Topic ids shown here are the only ids assignments may
-// reference.
-func renderLiveAnalysisTopics(tree *liveAnalysisTree, mc *meetingContext) string {
+// stable agenda topics, dynamic topics from previous rounds, the unpromoted
+// emerging-topic candidates, and the unclassified topic. Topic ids shown here
+// are the only ids assignments may reference.
+func renderLiveAnalysisTopics(tree *liveAnalysisTree, mc *meetingContext, candidates []emergingTopicCandidate) string {
 	var b strings.Builder
 	listed := make(map[string]struct{})
 	if tree != nil {
@@ -1631,6 +1667,14 @@ func renderLiveAnalysisTopics(tree *liveAnalysisTree, mc *meetingContext) string
 			listed[item.ID] = struct{}{}
 			b.WriteString(item.ID + ": " + item.Title + "(会議前アジェンダ)\n")
 		}
+	}
+	// 未昇格候補: 同じ新話題に毎回同じidを使わせるため分類先として提示する。
+	for _, candidate := range candidates {
+		if _, ok := listed[candidate.ID]; ok {
+			continue
+		}
+		listed[candidate.ID] = struct{}{}
+		b.WriteString(candidate.ID + ": " + candidate.Label + "(新topic候補・未昇格)\n")
 	}
 	if len(listed) == 0 {
 		b.WriteString("(まだtopicがありません。newTopicsで大分類を作成してください)\n")
@@ -1805,6 +1849,10 @@ type liveAnalysisPayload struct {
 	// (schema v2) and is converted to proposals when present.
 	NewTopics   []liveAnalysisTreeNode `json:"newTopics,omitempty"`
 	Assignments []treeAssignment       `json:"assignments,omitempty"`
+	// EmergingTopics is the server-tracked list of 未昇格の新topic候補。ラウンドを
+	// またいで証拠を蓄積し、昇格条件を満たしたものだけが dynamic topic になる。
+	// モデル出力には含まれない(サーバー専有フィールド)。
+	EmergingTopics []emergingTopicCandidate `json:"emergingTopics,omitempty"`
 	// TreeVersion is the analysis version whose merge produced Tree. It is
 	// informational for clients and offline comparison.
 	TreeVersion int64 `json:"treeVersion,omitempty"`
@@ -1894,6 +1942,16 @@ type liveAnalysisItem struct {
 	Title    string `json:"title"`
 	Body     string `json:"body"`
 	Status   string `json:"status"`
+
+	// 以下はサーバーが決める分類メタデータ(ai_tree_classification.go)。モデル
+	// 出力に同名フィールドがあっても normalizeLiveAnalysisItems が消去する。
+	// 旧payloadには存在しない(omitempty)ため後方互換。
+	ClassificationStatus string  `json:"classificationStatus,omitempty"` // assigned | tentative | unclassified
+	CandidateTopicID     string  `json:"candidateTopicId,omitempty"`     // tentative時の候補親 / hysteresis保留中の移動候補
+	AssignmentConfidence float64 `json:"assignmentConfidence,omitempty"`
+	AssignmentSource     string  `json:"assignmentSource,omitempty"` // model | rule | reorganizer | fallback
+	AssignmentReason     string  `json:"assignmentReason,omitempty"` // AIの分類理由(人手確認用に短縮保持)
+	EvidenceSequenceNos  []int64 `json:"evidenceSequenceNos,omitempty"`
 }
 
 type liveAnalysisTree struct {
@@ -1917,6 +1975,9 @@ type liveAnalysisTreeNode struct {
 	Status         string   `json:"status,omitempty"`
 	Description    string   `json:"description,omitempty"`
 	RelatedItemIDs []string `json:"relatedItemIds,omitempty"`
+	// Origin はtopicノードの由来(agenda | dynamic | system)。詳細ノードでは
+	// 空。旧payloadでは空のままでもサーバーが再構築時にバックフィルする。
+	Origin string `json:"origin,omitempty"`
 }
 
 type liveAnalysisTreeEdge struct {
@@ -2002,6 +2063,14 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, resolvedIDs map[string
 		item.Title = strings.TrimSpace(item.Title)
 		item.Body = strings.TrimSpace(item.Body)
 		item.Status = strings.ToLower(strings.TrimSpace(item.Status))
+		// 分類メタデータはサーバー専有。モデルがitemに直接埋め込んできても
+		// 採用しない(assignmentsチャネル経由の提案だけを検証して反映する)。
+		item.ClassificationStatus = ""
+		item.CandidateTopicID = ""
+		item.AssignmentConfidence = 0
+		item.AssignmentSource = ""
+		item.AssignmentReason = ""
+		item.EvidenceSequenceNos = nil
 		if item.Status == "resolved" && item.ID != "" {
 			resolvedIDs[item.ID] = struct{}{}
 		}
@@ -2055,6 +2124,15 @@ func mergeLiveAnalysisItems(previous, diff []liveAnalysisItem, resolvedIDs map[s
 				if item.Status != "resolved" {
 					item.Status = "updated"
 				}
+				// 分類メタデータはサーバー管理のため、モデル差分での上書きから
+				// 引き継ぐ(normalizeが差分側を消しているので前回値を保持)。
+				previousItem := merged[at]
+				item.ClassificationStatus = previousItem.ClassificationStatus
+				item.CandidateTopicID = previousItem.CandidateTopicID
+				item.AssignmentConfidence = previousItem.AssignmentConfidence
+				item.AssignmentSource = previousItem.AssignmentSource
+				item.AssignmentReason = previousItem.AssignmentReason
+				item.EvidenceSequenceNos = previousItem.EvidenceSequenceNos
 				merged[at] = item
 				continue
 			}
@@ -2156,6 +2234,15 @@ type liveAnalysisTreeMergeStats struct {
 	ReparentedNodes int
 	// DroppedNodeDetails は破棄された各ノードの詳細(開発用フラグ有効時のみログ出力)。
 	DroppedNodeDetails []liveAnalysisDroppedNodeDetail
+	// AssignmentDecisions / EmergingDecisions は項目単位の分類判定の記録
+	// (本文を含まない)。runLiveAnalysis が1件ずつログ出力する。
+	AssignmentDecisions []assignmentDecision
+	EmergingDecisions   []emergingDecision
+	// DynamicTopicsPromoted はこのラウンドで emerging 候補から昇格した
+	// dynamic topic の件数。
+	DynamicTopicsPromoted int
+	// ReorganizeRejections は再編成操作が分類ポリシーで拒否された理由別件数。
+	ReorganizeRejections map[string]int
 }
 
 // liveAnalysisDroppedNodeDetail は addNode が破棄した個々のノードの内訳。
@@ -2347,9 +2434,13 @@ func previousLiveAnalysisState(previousPayload json.RawMessage) liveAnalysisPayl
 // converted into proposals: its topic nodes become newTopics, its detail
 // nodes become items, and its edges become parent assignments.
 //
+// roundSeqNos is the sequence numbers of the transcript segments analyzed in
+// this round; they are recorded as evidence on the items the model
+// created/updated so classifications can be re-evaluated later.
+//
 // The optional trailing stats argument receives tree-merge diagnostics for
 // observability logging. Pass no argument, or nil, to skip collection.
-func parseAndMergeLiveAnalysisPayload(content string, previousPayload json.RawMessage, mc *meetingContext, treeVersion int64, stats ...*liveAnalysisTreeMergeStats) (json.RawMessage, error) {
+func parseAndMergeLiveAnalysisPayload(content string, previousPayload json.RawMessage, mc *meetingContext, treeVersion int64, roundSeqNos []int64, cfg TreeClassificationConfig, stats ...*liveAnalysisTreeMergeStats) (json.RawMessage, error) {
 	var treeStats *liveAnalysisTreeMergeStats
 	if len(stats) > 0 {
 		treeStats = stats[0]
@@ -2393,7 +2484,10 @@ func parseAndMergeLiveAnalysisPayload(content string, previousPayload json.RawMe
 		CoveredThroughSequenceNo: previous.CoveredThroughSequenceNo,
 	}
 	merged.Items = mergeLiveAnalysisItems(previous.Items, diffItems, resolvedIDs)
-	merged.Tree = rebuildDiscussionTree(previous.Tree, mc, merged.Items, newTopics, assignments, resolvedIDs, treeStats)
+	appendItemEvidenceSequenceNos(merged.Items, diffItems, roundSeqNos)
+	merged.Tree, merged.Items, merged.EmergingTopics = rebuildDiscussionTree(
+		previous.Tree, mc, merged.Items, newTopics, assignments, resolvedIDs,
+		previous.EmergingTopics, treeVersion, cfg, treeStats)
 	merged.TreeVersion = treeVersion
 	if merged.isEmpty() {
 		return nil, fmt.Errorf("live analysis payload is empty")
@@ -2406,6 +2500,43 @@ func parseAndMergeLiveAnalysisPayload(content string, previousPayload json.RawMe
 		return nil, fmt.Errorf("marshal normalized live analysis payload: %w", err)
 	}
 	return normalized, nil
+}
+
+// appendItemEvidenceSequenceNos records this round's transcript sequence
+// numbers on the items the model created/updated this round (diffItems), so
+// each item keeps a bounded trail of the utterances that produced it.
+func appendItemEvidenceSequenceNos(items, diffItems []liveAnalysisItem, roundSeqNos []int64) {
+	if len(roundSeqNos) == 0 || len(diffItems) == 0 {
+		return
+	}
+	diffIDs := make(map[string]struct{}, len(diffItems))
+	for _, item := range diffItems {
+		if item.ID != "" {
+			diffIDs[item.ID] = struct{}{}
+		}
+	}
+	for i := range items {
+		if _, ok := diffIDs[items[i].ID]; !ok {
+			continue
+		}
+		seen := make(map[int64]struct{}, len(items[i].EvidenceSequenceNos)+len(roundSeqNos))
+		for _, sequenceNo := range items[i].EvidenceSequenceNos {
+			seen[sequenceNo] = struct{}{}
+		}
+		for _, sequenceNo := range roundSeqNos {
+			if sequenceNo <= 0 {
+				continue
+			}
+			if _, dup := seen[sequenceNo]; dup {
+				continue
+			}
+			seen[sequenceNo] = struct{}{}
+			items[i].EvidenceSequenceNos = append(items[i].EvidenceSequenceNos, sequenceNo)
+		}
+		if len(items[i].EvidenceSequenceNos) > itemEvidenceMaxSequenceNos {
+			items[i].EvidenceSequenceNos = items[i].EvidenceSequenceNos[len(items[i].EvidenceSequenceNos)-itemEvidenceMaxSequenceNos:]
+		}
+	}
 }
 
 // convertLegacyTreeDiff converts a schema-v2 "tree" diff into v3 proposals:
@@ -2512,6 +2643,11 @@ type liveAnalysisPayloadStats struct {
 	ResolvedItems int
 	TotalNodes    int
 	ResolvedNodes int
+	// 分類状態別のitem数と未昇格候補数(集計ログ用)。
+	AssignedItems      int
+	TentativeItems     int
+	UnclassifiedItems  int
+	EmergingCandidates int
 }
 
 // countLiveAnalysisPayloadStats re-parses an already-merged payload to count
@@ -2532,7 +2668,16 @@ func countLiveAnalysisPayloadStats(payload json.RawMessage) liveAnalysisPayloadS
 		if item.Status == "resolved" {
 			stats.ResolvedItems++
 		}
+		switch item.ClassificationStatus {
+		case classificationAssigned:
+			stats.AssignedItems++
+		case classificationTentative:
+			stats.TentativeItems++
+		case classificationUnclassified:
+			stats.UnclassifiedItems++
+		}
 	}
+	stats.EmergingCandidates = len(parsed.EmergingTopics)
 	if parsed.Tree != nil {
 		stats.TotalNodes = len(parsed.Tree.Nodes)
 		for _, node := range parsed.Tree.Nodes {
