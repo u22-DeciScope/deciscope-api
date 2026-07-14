@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	liveAnalysisResultJSON  = `{"summary":"要約です","currentTopic":"進捗確認","items":[{"id":"issue-progress","kind":"issue","severity":"medium","title":"進捗遅れ","body":"タスクAが1週間遅延している。","status":"open"}],"tree":{"nodes":[{"id":"topic-progress","kind":"topic","label":"進捗確認"},{"id":"issue-progress","kind":"issue","label":"進捗遅れ"}],"edges":[{"source":"topic-progress","target":"issue-progress"}]}}`
-	finalAnalysisResultJSON = `{"suggestedTitle":"週次定例","overview":"概要です","decisions":[],"actionItems":[],"openIssues":[],"keyPoints":[],"nextMeetingTopics":[]}`
+	liveAnalysisResultJSON   = `{"summary":"要約です","currentTopic":"進捗確認","items":[{"id":"issue-progress","kind":"issue","severity":"medium","title":"進捗遅れ","body":"タスクAが1週間遅延している。","status":"open"}],"tree":{"nodes":[{"id":"topic-progress","kind":"topic","label":"進捗確認"},{"id":"issue-progress","kind":"issue","label":"進捗遅れ"}],"edges":[{"source":"topic-progress","target":"issue-progress"}]}}`
+	finalAnalysisResultJSON  = `{"suggestedTitle":"週次定例","overview":"概要です","decisions":[],"actionItems":[],"openIssues":[],"keyPoints":[],"nextMeetingTopics":[]}`
+	contextPlannerResultJSON = `{"purpose":"品質確認","agendaItems":[{"title":"文字起こし精度","order":1,"role":"primary"},{"title":"AI分析の制御","order":2,"role":"primary"},{"title":"進行中作業の横断一覧","order":3,"role":"action_summary"}],"aiDirectives":[]}`
 )
 
 func TestMeetingAnalysisServiceIgnoresPartialAndEmptySegments(t *testing.T) {
@@ -82,7 +83,10 @@ func TestMeetingAnalysisServiceRunsLiveAnalysisAndPublishes(t *testing.T) {
 	service.PublishTranscriptSegment(domain.TranscriptSegment{SessionID: "session_1", SpeakerName: "田中さん", Text: "本日の議題は価格改定です。", IsFinal: true})
 
 	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 1 })
-	waitUntil(t, 2*time.Second, func() bool { return repository.upsertCount() >= 1 })
+	waitUntil(t, 2*time.Second, func() bool {
+		_, err := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisLive)
+		return err == nil
+	})
 
 	saved := repository.lastUpsert()
 	if saved.Status != domain.MeetingAIAnalysisCompleted || saved.Version != 1 || saved.Type != domain.MeetingAIAnalysisLive {
@@ -111,8 +115,25 @@ func TestMeetingAnalysisServiceRunsLiveAnalysisAndPublishes(t *testing.T) {
 	if len(completer.requestSnapshot()) == 0 {
 		t.Fatal("completer should have received a request")
 	}
-	if completer.requestSnapshot()[0].System == "" {
+	var request *application.AIChatRequest
+	requests := completer.requestSnapshot()
+	for i := range requests {
+		if requests[i].ResponseSchema != nil && requests[i].ResponseSchema.Name == "live_analysis_diff" {
+			request = &requests[i]
+			break
+		}
+	}
+	if request == nil {
+		t.Fatalf("requests = %+v, want strict live_analysis_diff request", requests)
+	}
+	if request.System == "" {
 		t.Fatal("system prompt should not be empty")
+	}
+	if !request.ResponseSchema.Strict {
+		t.Fatalf("response schema = %+v, want strict live_analysis_diff", request.ResponseSchema)
+	}
+	if !strings.Contains(string(request.ResponseSchema.Schema), `"evidenceSequenceNos"`) || !strings.Contains(string(request.ResponseSchema.Schema), `"type": "integer"`) {
+		t.Fatalf("response schema does not constrain evidenceSequenceNos to integers: %s", request.ResponseSchema.Schema)
 	}
 }
 
@@ -242,6 +263,32 @@ func TestMeetingAnalysisServiceBackoffAndPendingRestoreOnFailure(t *testing.T) {
 	}
 }
 
+func TestMeetingAnalysisServiceDoesNotRetrySchemaFailureWithoutNewTranscript(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{{Content: `not json`}}}
+	config := testLiveOnlyConfig(15*time.Millisecond, 1)
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	service.PublishTranscriptSegment(domain.TranscriptSegment{SessionID: "session_1", SequenceNo: 1, Text: "schema不一致になる発言", IsFinal: true})
+	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 1 })
+	waitUntil(t, time.Second, func() bool { return repository.lastUpsert().Status == domain.MeetingAIAnalysisFailed })
+	time.Sleep(100 * time.Millisecond)
+	if got := completer.callCount(); got != 1 {
+		t.Fatalf("callCount() after deterministic schema failure = %d, want 1", got)
+	}
+
+	// New information changes the prompt and deliberately unblocks one new
+	// attempt; the original pending segment remains included.
+	service.PublishTranscriptSegment(domain.TranscriptSegment{SessionID: "session_1", SequenceNo: 2, Text: "新しい発言", IsFinal: true})
+	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 2 })
+}
+
 func TestMeetingAnalysisServiceNotifyEndedGeneratesFinalSummary(t *testing.T) {
 	repository := newFakeAIAnalysisRepository()
 	publisher := &fakeAIAnalysisPublisher{}
@@ -270,8 +317,8 @@ func TestMeetingAnalysisServiceNotifyEndedGeneratesFinalSummary(t *testing.T) {
 		t.Fatalf("first upsert = %+v, want running status persisted before the AI call", upserts[0])
 	}
 
-	if len(completer.requestSnapshot()) != 1 {
-		t.Fatalf("completer calls = %d, want 1", len(completer.requestSnapshot()))
+	if len(completer.requestSnapshot()) != 2 {
+		t.Fatalf("completer calls = %d, want context planner + final summary", len(completer.requestSnapshot()))
 	}
 }
 
@@ -796,8 +843,10 @@ func TestMeetingSessionEndedPersistsDurableTreeSnapshot(t *testing.T) {
 // stable agenda topic ids), even though they may run on different models.
 func TestLiveAndFinalTasksShareMeetingContext(t *testing.T) {
 	repository := newFakeAIAnalysisRepository()
-	// 1回目=ライブ抽出、2回目=会議終了時の最終再編成(Task F)、3回目=最終要約。
+	// 1回目=コンテキスト設計、2回目=ライブ抽出、3回目=会議終了時の
+	// 最終再編成(Task F)、4回目=最終要約。
 	completer := &fakeAIChatCompleter{results: []application.AIChatResult{
+		{Content: contextPlannerResultJSON},
 		{Content: liveAnalysisResultJSON},
 		{Content: `{"basedOnTreeVersion": 1, "operations": []}`},
 		{Content: finalAnalysisResultJSON},
@@ -809,7 +858,7 @@ func TestLiveAndFinalTasksShareMeetingContext(t *testing.T) {
 		ID:      "session_1",
 		Title:   "定例",
 		Purpose: "品質確認",
-		Agenda:  "1. 文字起こし精度\n2. AI分析の制御",
+		Agenda:  "1. 文字起こし精度\n2. AI分析の制御\n3. 進行中作業の横断一覧",
 	}}
 	config := testLiveOnlyConfig(10*time.Millisecond, 1)
 	config.FinalEnabled = true
@@ -824,15 +873,18 @@ func TestLiveAndFinalTasksShareMeetingContext(t *testing.T) {
 	service.PublishTranscriptSegment(domain.TranscriptSegment{
 		SessionID: "session_1", IsFinal: true, SpeakerName: "田中さん", Text: "話者識別が不安定になります。",
 	})
-	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 1 })
+	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 2 })
 	service.NotifyMeetingSessionEnded(domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
-	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 3 })
+	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 4 })
 
 	requests := completer.requestSnapshot()
-	if len(requests) < 3 {
-		t.Fatalf("requests = %d, want live + reorganize + final", len(requests))
+	if len(requests) < 4 {
+		t.Fatalf("requests = %d, want context + live + reorganize + final", len(requests))
 	}
-	liveRequest, finalRequest := requests[0], requests[2]
+	contextRequest, liveRequest, finalRequest := requests[0], requests[1], requests[3]
+	if contextRequest.Deployment != "" {
+		t.Fatalf("context request deployment = %q, want shared default", contextRequest.Deployment)
+	}
 	for i, request := range []application.AIChatRequest{liveRequest, finalRequest} {
 		if !strings.Contains(request.User, "agenda-1") || !strings.Contains(request.User, "文字起こし精度") {
 			t.Fatalf("request[%d] does not include the shared agenda context:\n%s", i, request.User)
@@ -840,6 +892,13 @@ func TestLiveAndFinalTasksShareMeetingContext(t *testing.T) {
 	}
 	if liveRequest.Deployment != "" {
 		t.Fatalf("live request deployment = %q, want shared default", liveRequest.Deployment)
+	}
+	storedContext, err := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisContext)
+	if err != nil {
+		t.Fatalf("stored context error = %v", err)
+	}
+	if !strings.Contains(string(storedContext.Payload), `"role":"action_summary"`) {
+		t.Fatalf("stored context = %s, want semantic action_summary role", storedContext.Payload)
 	}
 	if finalRequest.Deployment != "gpt-final-strong" {
 		t.Fatalf("final request deployment = %q, want per-task override", finalRequest.Deployment)
@@ -1044,6 +1103,33 @@ func TestMeetingFinalizationDoesNotAdvanceCoverageWhenFinalFlushFails(t *testing
 	progress, _ := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisFinalization)
 	if progress.Status != domain.MeetingAIAnalysisFailed {
 		t.Fatalf("finalization status = %s, want failed", progress.Status)
+	}
+}
+
+func TestMeetingFinalizationDoesNotRetryFinalFlushSchemaFailure(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	repository.seed(domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 9, Payload: coveredLivePayload(t, 24),
+	})
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{{Content: `not json`}}}
+	config := testLiveOnlyConfig(time.Hour, 1)
+	config.FinalEnabled = true
+	config.FinalFlushMaxAttempts = 3
+	service := application.NewMeetingAnalysisService(repository, &fakeAnalysisTranscriptRepository{segments: finalSegmentsThrough(27)}, &fakeAnalysisSessionRepository{}, completer, config)
+
+	err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
+		BotLastForwardedFinalSequence: 27, TranscriptQueueDrained: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "non-retryable schema failure") {
+		t.Fatalf("FinalizeMeetingSession() error = %v, want non-retryable schema failure", err)
+	}
+	if got := completer.callCount(); got != 1 {
+		t.Fatalf("final flush calls = %d, want 1 for deterministic schema failure", got)
+	}
+	live, _ := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisLive)
+	if live.Version != 9 {
+		t.Fatalf("live version = %d, want last good version 9", live.Version)
 	}
 }
 

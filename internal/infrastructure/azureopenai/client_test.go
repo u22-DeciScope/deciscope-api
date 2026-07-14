@@ -84,6 +84,80 @@ func TestClientCompleteBuildsURLAndSendsAPIKeyHeader(t *testing.T) {
 	}
 }
 
+func TestClientCompleteSendsStrictJSONSchema(t *testing.T) {
+	var gotBody chatCompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"value\":1}"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(Config{Endpoint: server.URL, APIKey: "key", Deployment: "gpt-5-nano", APIVersion: "2024-10-21"})
+	_, err := client.Complete(context.Background(), application.AIChatRequest{
+		System: "JSON", User: "u", MaxTokens: 50,
+		ResponseSchema: &application.AIResponseSchema{
+			Name: "integer_result", Description: "test schema", Strict: true,
+			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"value":{"type":"integer"}},"required":["value"]}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if gotBody.ResponseFormat == nil || gotBody.ResponseFormat.Type != "json_schema" || gotBody.ResponseFormat.JSONSchema == nil {
+		t.Fatalf("response format = %+v, want json_schema", gotBody.ResponseFormat)
+	}
+	if !gotBody.ResponseFormat.JSONSchema.Strict || gotBody.ResponseFormat.JSONSchema.Name != "integer_result" {
+		t.Fatalf("json schema metadata = %+v", gotBody.ResponseFormat.JSONSchema)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(gotBody.ResponseFormat.JSONSchema.Schema, &schema); err != nil || schema["type"] != "object" {
+		t.Fatalf("schema = %s, err=%v", gotBody.ResponseFormat.JSONSchema.Schema, err)
+	}
+}
+
+func TestClientCompleteFallsBackAndCachesWhenStrictJSONSchemaUnsupported(t *testing.T) {
+	var formats []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		formats = append(formats, body.ResponseFormat.Type)
+		w.Header().Set("Content-Type", "application/json")
+		if body.ResponseFormat.Type == "json_schema" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"response_format json_schema is not supported by this deployment"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"value\":1}"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(Config{Endpoint: server.URL, APIKey: "key", Deployment: "legacy"})
+	request := application.AIChatRequest{
+		System: "JSON", User: "u", MaxTokens: 50,
+		ResponseSchema: &application.AIResponseSchema{Name: "result", Strict: true, Schema: json.RawMessage(`{"type":"object"}`)},
+	}
+	if _, err := client.Complete(context.Background(), request); err != nil {
+		t.Fatalf("first Complete() error = %v", err)
+	}
+	if _, err := client.Complete(context.Background(), request); err != nil {
+		t.Fatalf("second Complete() error = %v", err)
+	}
+	want := []string{"json_schema", "json_object", "json_object"}
+	if len(formats) != len(want) {
+		t.Fatalf("formats = %v, want %v", formats, want)
+	}
+	for i := range want {
+		if formats[i] != want[i] {
+			t.Fatalf("formats = %v, want %v", formats, want)
+		}
+	}
+}
+
 func TestClientCompleteFallsBackToStandardModeWhenReasoningEffortUnsupported(t *testing.T) {
 	var bodies []chatCompletionRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

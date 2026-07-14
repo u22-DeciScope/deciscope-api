@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -372,6 +373,84 @@ func TestParseAndMergeLiveAnalysisPayloadToleratesInvalidPreviousPayload(t *test
 		t.Fatalf("items = %+v, want merge to degrade to empty previous state", merged.Items)
 	}
 	assertTreeInvariants(t, merged.Tree)
+}
+
+func TestParseAndMergeLiveAnalysisPayloadNormalizesEvidenceSequenceNos(t *testing.T) {
+	tests := []struct {
+		name          string
+		evidenceField string
+		want          []int64
+	}{
+		{name: "numbers", evidenceField: `"evidenceSequenceNos":[1,2]`, want: []int64{1, 2}},
+		{name: "numeric strings", evidenceField: `"evidenceSequenceNos":["1","2"]`, want: []int64{1, 2}},
+		{name: "mixed numbers and strings", evidenceField: `"evidenceSequenceNos":[1,"2"]`, want: []int64{1, 2}},
+		{name: "null uses legacy round fallback", evidenceField: `"evidenceSequenceNos":null`, want: []int64{1, 2}},
+		{name: "omitted uses legacy round fallback", evidenceField: ``, want: []int64{1, 2}},
+		{name: "invalid string isolated", evidenceField: `"evidenceSequenceNos":["invalid",2]`, want: []int64{2}},
+		{name: "fraction isolated", evidenceField: `"evidenceSequenceNos":[1.5,2]`, want: []int64{2}},
+		{name: "out of current round isolated", evidenceField: `"evidenceSequenceNos":[99,1]`, want: []int64{1}},
+		{name: "int64 overflow isolated", evidenceField: `"evidenceSequenceNos":[9223372036854775808,2]`, want: []int64{2}},
+		{name: "all invalid does not invent fallback evidence", evidenceField: `"evidenceSequenceNos":["invalid",1.5]`, want: []int64{}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			separator := ""
+			if test.evidenceField != "" {
+				separator = ","
+			}
+			diff := fmt.Sprintf(`{
+				"summary":"要約","currentTopic":"話題",
+				"items":[{"id":"issue-evidence","kind":"issue","severity":"low","title":"根拠","body":"本文","status":"open"%s%s}]
+			}`, separator, test.evidenceField)
+			raw, err := parseAndMergeLiveAnalysisPayload(diff, nil, nil, 1, []int64{1, 2}, TreeClassificationConfig{})
+			if err != nil {
+				t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
+			}
+			state := previousLiveAnalysisState(raw)
+			if len(state.Items) != 1 {
+				t.Fatalf("items = %+v, want one valid item", state.Items)
+			}
+			got := state.Items[0].EvidenceSequenceNos
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("evidenceSequenceNos = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestParseAndMergeLiveAnalysisPayloadQuarantinesOnlyMalformedItem(t *testing.T) {
+	diff := `{
+		"summary":"要約","currentTopic":"話題",
+		"items":[
+			{"id":"issue-valid","kind":"issue","severity":"low","title":"有効","body":"本文","status":"open","evidenceSequenceNos":[1]},
+			{"id":"issue-invalid","kind":123,"severity":"low","title":"不正","body":"本文","status":"open"},
+			"not-an-object"
+		]
+	}`
+	stats := &liveAnalysisTreeMergeStats{}
+	raw, err := parseAndMergeLiveAnalysisPayload(diff, nil, nil, 1, []int64{1}, TreeClassificationConfig{}, stats)
+	if err != nil {
+		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
+	}
+	state := previousLiveAnalysisState(raw)
+	if len(state.Items) != 1 || state.Items[0].ID != "issue-valid" {
+		t.Fatalf("items = %+v, want only valid item", state.Items)
+	}
+	if stats.EvidenceItemsQuarantined != 2 {
+		t.Fatalf("quarantined items = %d, want 2", stats.EvidenceItemsQuarantined)
+	}
+}
+
+func TestParseAndMergeLiveAnalysisPayloadReportsEvidenceNormalization(t *testing.T) {
+	diff := `{"summary":"要約","currentTopic":"話題","items":[{"id":"issue-evidence","kind":"issue","severity":"low","title":"根拠","body":"本文","status":"open","evidenceSequenceNos":["1","bad",99]}]}`
+	stats := &liveAnalysisTreeMergeStats{}
+	if _, err := parseAndMergeLiveAnalysisPayload(diff, nil, nil, 1, []int64{1}, TreeClassificationConfig{}, stats); err != nil {
+		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
+	}
+	if stats.EvidenceNumericStringsNormalized != 1 || stats.EvidenceValuesRejected != 1 || stats.EvidenceValuesOutOfRound != 1 {
+		t.Fatalf("evidence stats = %+v", stats)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,6 +1135,8 @@ func TestBuildLiveAnalysisUserPromptSeparatesRoles(t *testing.T) {
 		"id=issue-a",
 		"[新しい発言(差分)]",
 		"[更新ルール]",
+		`"evidenceSequenceNos": [123]`,
+		"JSON整数(number、引用符なし)",
 		"補足指示",
 		"技術的リスクを優先して抽出する",
 	} {

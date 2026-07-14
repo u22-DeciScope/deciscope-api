@@ -117,6 +117,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		transcriptHub,
 	)
 	meetingSessionService.SetMeetingSessionEndedObserver(analysisService)
+	meetingSessionService.SetMeetingSessionPreparingObserver(analysisService)
 	analysisCtx, cancelAnalysis := context.WithCancel(context.Background())
 	analysisService.Start(analysisCtx)
 	closers = append(closers, func() error {
@@ -327,6 +328,7 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 			LiveMinChars:            config.LiveAnalysisMinChars,
 			LiveMaxInputChars:       config.LiveAnalysisMaxInputChars,
 			LiveRequestTimeout:      config.AzureOpenAI.Timeout,
+			ContextRequestTimeout:   config.AzureOpenAI.Timeout,
 			FinalEnabled:            config.FinalSummaryEnabled,
 			FinalMaxInputChars:      config.FinalSummaryMaxInputChars,
 			FinalRequestTimeout:     config.FinalSummaryTimeout,

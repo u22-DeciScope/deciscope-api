@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"deciscope-core-api/internal/domain"
@@ -134,6 +135,13 @@ type MeetingSessionEndedObserver interface {
 	FinalizeMeetingSession(ctx context.Context, session domain.MeetingSession, request MeetingSessionFinalizationRequest) error
 }
 
+// MeetingSessionPreparingObserver is notified after create/reuse metadata is
+// durable and before the bot join command is sent. Implementations must
+// return quickly; expensive preparation belongs in their own goroutine.
+type MeetingSessionPreparingObserver interface {
+	PrepareMeetingSession(session domain.MeetingSession)
+}
+
 // MeetingSessionFinalizationRequest carries optional drain proof from newer
 // bots. Zero values preserve compatibility with bots that only report
 // status=ended; the finalizer then uses a bounded DB quiet-period fallback.
@@ -157,9 +165,21 @@ type AIChatRequest struct {
 	System    string
 	User      string
 	MaxTokens int
+	// ResponseSchema requests provider-enforced structured output. Adapters
+	// that support it translate this provider-neutral description to their
+	// wire format and may fall back to JSON mode when a deployment does not
+	// support strict schemas.
+	ResponseSchema *AIResponseSchema
 	// Deployment optionally overrides the adapter's default deployment for
 	// this call (per-task model routing). Empty uses the default.
 	Deployment string
+}
+
+type AIResponseSchema struct {
+	Name        string
+	Description string
+	Strict      bool
+	Schema      json.RawMessage
 }
 
 type AIChatResult struct {

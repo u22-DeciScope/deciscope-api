@@ -242,19 +242,27 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
 - ライブ分析の生成開始時には、`status: "running"` のイベントを1回配信します（version/payloadは
   現在値のまま）。これはWebSocket配信のみのephemeralな通知で、DBには保存されないため
   `GET .../ai-analyses` には現れません
-- live分析の内部動作: モデルは各ラウンドで差分（新規・変化したitem、追加・変化したtreeノード、
-  新規edge、解消済みidの `resolvedIds`）のみを申告し、サーバーが前回状態へ決定論的にマージします。
+- live分析の内部動作: モデルは各ラウンドで差分（新規・変化したitem、親topicの提案、
+  解消済みidの `resolvedIds`）のみを申告し、サーバーが前回状態へ決定論的にマージします。
   保存・配信されるpayloadは常にマージ後の完全な状態なので、クライアントは差分を意識する必要はありません
-- live payloadの `items[].kind` は `issue | question | risk | decision | todo`、
+- live payloadの `items[].kind` は `issue | open_issue | question | risk | fact | decision | todo`、
   `severity` は `low | medium | high`、`status` は `open`（新規）| `updated`（更新）|
   `resolved`（解決済）です。
   未解決（`status` が `resolved` 以外）のitemと解決済み（`status: "resolved"`）のitemは
   それぞれ独立に最大50件までで、超過時は各区分ごとに最も古いitemから除去されます
   （解決済みitemが未解決itemの流入で追い出されること、およびその逆はありません）
+- `items[].evidenceSequenceNos` は、そのitemを直接裏付けた発言のsequence番号をJSON整数で保持します。
+  モデル互換のため受信時はnumeric stringも整数へ正規化しますが、不正文字列・小数・当該ラウンドに
+  実在しないsequenceは値単位で除外し、保存・配信時は整数だけになります
 - 解消・回答・完了した論点は、モデルが `resolvedIds`（解消済みitemのid配列）で申告します。
   `resolvedIds` はモデル→サーバー間の指示用フィールドで、サーバーが該当itemと同じidのtreeノードを
   `status: "resolved"` にした後にクリアするため、保存・配信されるpayloadには現れません
-- `tree` は現在の議論構造で、ノードの `kind`（`topic | issue | question | risk | decision`）は
+- `tree` は現在の議論構造です。通常は最大深さ4の
+  `root → topic(agenda/dynamic) → group → subgroup → detail item` を使います。
+  3件以上の直接detailという強い根拠がある場合だけ深さ5を許可し、絶対に深さ5を超えません。
+  深くできるのはgroupだけで、detail同士の親子化は禁止です。groupを作る根拠が2件未満なら
+  detail itemをtopic/group直下に置きます。ノードの `kind`
+  （`topic | group | issue | open_issue | question | risk | fact | decision | todo`）は
   `tree.update` イベント（[events.md](./events.md)）と同じ語彙です。topicノードと未解決
   （`status` が `resolved` 以外）の非topicノードは合わせて最大36個で、超過時はtopicノードを
   残して最も古い非topicノードから除去されます。解決済み（`status: "resolved"`）の非topicノードは
@@ -268,6 +276,13 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
   重複idはサーバー側で除外されます。既存互換のため、ノードidがitem idと一致する場合は
   `relatedItemIds` が空でも関連カードとして扱えます。`tree.nodes[].status` は任意で、
   `resolved` の場合もノードは削除されず、解決済みとして残ります
+- `items[].relatedAgendaIds` は横断agendaへの副次的な参照です。canonicalな親は
+  `tree.nodes[].parentId` の1つだけで、`relatedAgendaIds` から複数親edgeは作りません。
+  `agendaRole: "action_summary"` のagenda nodeは、activeなTODO・未解決itemを
+  `relatedItemIds` でも参照できるため、内容別topicの所属を失わず横断表示できます
+- `treeVersion` はtreeを生成したlive analysis versionです。`treeChanges` はそのversionで
+  サーバーが算出した構造差分で、`newNodeIds` / `updatedNodeIds` / `reparentedNodeIds` /
+  `resolvedNodeIds` / `promotedNodeIds` を必要なものだけ含みます。旧payloadでは省略されます
 
 ## Teams Bot会議セッション
 

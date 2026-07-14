@@ -86,6 +86,8 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
   いずれか1つでも未設定の場合、AI分析機能全体が自動的に無効化されます(起動時に警告ログを1行出力)。
   transcript取り込みや会議終了処理はAI機能の有無に関係なく動作し続けます
 - `AZURE_OPENAI_API_VERSION`: Azure OpenAI REST APIのバージョン。既定値は `2024-10-21`
+- ライブ抽出は対応deploymentでAzure Structured Outputs（`json_schema`, `strict: true`）を使います。
+  deploymentがこの形式を明示的に拒否した場合は、同一プロセス中は従来の`json_object`へフォールバックします
 - `AI_LIVE_ANALYSIS_ENABLED`: 会議中ライブAI分析を行うか。既定値は `true`
 - `AI_LIVE_ANALYSIS_INTERVAL_SECONDS`: ライブ分析の実行間隔。既定値は `10`、最小値は `5`
 - `AI_LIVE_ANALYSIS_MIN_CHARS`: ライブ分析を実行する最小の新規文字数。既定値は `80`

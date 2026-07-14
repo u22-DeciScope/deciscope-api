@@ -33,6 +33,9 @@ const (
 
 	meetingContextMaxAgendaItems = 10
 	meetingContextMaxDirectives  = 10
+
+	agendaRolePrimary       = "primary"
+	agendaRoleActionSummary = "action_summary"
 )
 
 // meetingContext is the structured, role-separated form of the pre-meeting
@@ -58,6 +61,32 @@ type agendaItem struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	Order int    `json:"order"`
+	// Role separates a normal content agenda from a cross-cutting action
+	// summary. It is optional for old context payloads; an empty role is
+	// treated as primary everywhere.
+	Role string `json:"role,omitempty"`
+}
+
+func normalizeAgendaRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case agendaRoleActionSummary:
+		return agendaRoleActionSummary
+	default:
+		return agendaRolePrimary
+	}
+}
+
+func (c *meetingContext) actionSummaryAgendaIDs() map[string]struct{} {
+	ids := make(map[string]struct{})
+	if c == nil {
+		return ids
+	}
+	for _, item := range c.Agenda {
+		if normalizeAgendaRole(item.Role) == agendaRoleActionSummary {
+			ids[item.ID] = struct{}{}
+		}
+	}
+	return ids
 }
 
 func (c *meetingContext) isEmpty() bool {
@@ -215,7 +244,12 @@ func renderAgendaTopics(c *meetingContext) string {
 	}
 	var b strings.Builder
 	for _, item := range c.Agenda {
-		b.WriteString(item.ID + ": " + item.Title + "\n")
+		role := normalizeAgendaRole(item.Role)
+		b.WriteString(item.ID + ": " + item.Title)
+		if role == agendaRoleActionSummary {
+			b.WriteString(" [role=action_summary, 横断参照専用・primary parentにしない]")
+		}
+		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -260,6 +294,7 @@ func unmarshalMeetingContext(payload json.RawMessage) *meetingContext {
 		if strings.TrimSpace(c.Agenda[i].ID) == "" {
 			c.Agenda[i].ID = fmt.Sprintf("%s%d", agendaTopicIDPrefix, i+1)
 		}
+		c.Agenda[i].Role = normalizeAgendaRole(c.Agenda[i].Role)
 	}
 	if c.isEmpty() {
 		return nil

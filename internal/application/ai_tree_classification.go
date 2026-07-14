@@ -237,6 +237,7 @@ const (
 	assignmentDeferredEmerging     = "deferred_emerging"       // 未昇格候補への割当→tentative
 	assignmentRejectedUnknown      = "rejected_unknown_parent" // 存在しない親→未分類へ
 	assignmentRejectedUnknownItem  = "rejected_unknown_item"   // 存在しないitemへの割当
+	assignmentRelatedActionSummary = "related_action_summary"  // 横断agendaは副次関係のみ
 )
 
 // emergingDecision は新topic候補に対するサーバー判定(ログ専用)。

@@ -1,6 +1,8 @@
 package application
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,9 +15,9 @@ import (
 //     導出されるビューであり、和集合で蓄積しない。
 //   - AIは「ノード候補」と「親topicの割当(assignment)」だけを提案し、実際の
 //     親エッジは必ずこのファイルの enforce 処理を通ってから保存される。
-//   - 構造は root(1つ) → topic(親はrootのみ) → 詳細ノード(issue/question/
-//     risk/decision、親はtopicのみ) に固定する。この形は構成上循環・型逆転・
-//     複数親が発生し得ない。
+//   - 構造は root(1つ) → topic(親はrootのみ) → group(入れ子可) → 詳細
+//     ノードに制御する。通常は深さ4以内、十分な根拠と過密がある場合だけ
+//     深さ5を許可する。詳細ノードを親にはできない。
 //   - 分類できない詳細ノードは「最新topic」ではなく専用の未分類topic
 //     (topic-unclassified)へ接続する。
 
@@ -40,12 +42,22 @@ func (a treeAssignment) nodeID() string {
 // root-only flatness flag with checks over every topic.
 type treeHealth struct {
 	TopicCount           int
+	GroupCount           int
 	DetailCount          int
 	UnclassifiedChildren int
 	MaxTopicChildren     int
 	MaxTopicID           string
 	// MaxConcentration is MaxTopicChildren / DetailCount (0 when no details).
-	MaxConcentration float64
+	MaxConcentration       float64
+	MaxChildren            int
+	MaxChildrenParentID    string
+	MaxGroupChildren       int
+	MaxGroupID             string
+	FlatTopicCount         int
+	SingleChildGroupCount  int
+	NestedGroupCount       int
+	AverageDepth           float64
+	AverageBranchingFactor float64
 }
 
 const (
@@ -53,6 +65,14 @@ const (
 	treeReorganizeConcentrationMin     = 0.5
 	treeReorganizeConcentrationDetails = 6
 	treeReorganizeUnclassifiedMin      = 5
+	// A normal discussion should fit root→topic→group→subgroup→detail.
+	// One additional group level is reserved for an already-overcrowded
+	// subgroup with at least three evidence items; depth can never exceed 5.
+	treeSoftMaxDepth                    = 4
+	treeHardMaxDepth                    = 5
+	treeMaxChildrenBeforeGrouping       = 4
+	treeHardDepthMinEvidence            = 3
+	groupFlattenGraceVersions     int64 = 2
 )
 
 // needsReorganization reports whether the tree shape warrants a local
@@ -62,6 +82,9 @@ func (h treeHealth) needsReorganization() bool {
 	if h.MaxTopicChildren >= treeReorganizeMaxTopicChildren {
 		return true
 	}
+	if h.MaxGroupChildren >= treeMaxChildrenBeforeGrouping {
+		return true
+	}
 	if h.DetailCount >= treeReorganizeConcentrationDetails && h.MaxConcentration >= treeReorganizeConcentrationMin {
 		return true
 	}
@@ -69,8 +92,8 @@ func (h treeHealth) needsReorganization() bool {
 }
 
 func (h treeHealth) String() string {
-	return fmt.Sprintf("topics=%d details=%d unclassified=%d maxTopicChildren=%d maxTopicId=%s maxConcentration=%.2f",
-		h.TopicCount, h.DetailCount, h.UnclassifiedChildren, h.MaxTopicChildren, h.MaxTopicID, h.MaxConcentration)
+	return fmt.Sprintf("topics=%d groups=%d nestedGroups=%d details=%d unclassified=%d maxTopicChildren=%d maxTopicId=%s maxGroupChildren=%d maxGroupId=%s maxChildren=%d maxChildrenParentId=%s maxConcentration=%.2f flatTopics=%d singleChildGroups=%d averageDepth=%.2f averageBranchingFactor=%.2f",
+		h.TopicCount, h.GroupCount, h.NestedGroupCount, h.DetailCount, h.UnclassifiedChildren, h.MaxTopicChildren, h.MaxTopicID, h.MaxGroupChildren, h.MaxGroupID, h.MaxChildren, h.MaxChildrenParentID, h.MaxConcentration, h.FlatTopicCount, h.SingleChildGroupCount, h.AverageDepth, h.AverageBranchingFactor)
 }
 
 // treeStateFromPayloadTree decomposes a stored tree into topics, detail
@@ -189,6 +212,8 @@ func rebuildDiscussionTree(
 	// below so it is skipped here.
 	topicOrder := make([]string, 0)
 	topics := make(map[string]liveAnalysisTreeNode)
+	groupOrder := make([]string, 0)
+	groups := make(map[string]liveAnalysisTreeNode)
 	detailOrder := make([]string, 0)
 	details := make(map[string]liveAnalysisTreeNode)
 	addTopic := func(node liveAnalysisTreeNode) {
@@ -203,12 +228,20 @@ func rebuildDiscussionTree(
 		}
 		details[node.ID] = node
 	}
+	addGroup := func(node liveAnalysisTreeNode) {
+		if _, exists := groups[node.ID]; !exists {
+			groupOrder = append(groupOrder, node.ID)
+		}
+		groups[node.ID] = node
+	}
 	for _, node := range prevNodes {
 		if node.ID == treeRootNodeID {
 			continue
 		}
 		if node.Kind == "topic" {
 			addTopic(node)
+		} else if node.Kind == "group" {
+			addGroup(node)
 		} else {
 			addDetail(node)
 		}
@@ -230,7 +263,7 @@ func rebuildDiscussionTree(
 			if _, exists := topics[item.ID]; exists {
 				continue
 			}
-			addTopic(liveAnalysisTreeNode{ID: item.ID, Kind: "topic", Label: item.Title, Origin: topicOriginAgenda})
+			addTopic(liveAnalysisTreeNode{ID: item.ID, Kind: "topic", Label: item.Title, Origin: topicOriginAgenda, AgendaRole: normalizeAgendaRole(item.Role)})
 		}
 	}
 	// origin未設定の既存topic(旧payload)へ由来をバックフィルする。
@@ -242,6 +275,15 @@ func rebuildDiscussionTree(
 		}
 		if topic.Origin == topicOriginDynamic {
 			dynamicTopicCount++
+		}
+		if _, isAgenda := agendaIDs[id]; isAgenda && topic.AgendaRole == "" && mc != nil {
+			for _, item := range mc.Agenda {
+				if item.ID == id {
+					topic.AgendaRole = normalizeAgendaRole(item.Role)
+					topics[id] = topic
+					break
+				}
+			}
 		}
 	}
 
@@ -456,8 +498,9 @@ func rebuildDiscussionTree(
 	}
 	detailNodes = capLiveAnalysisTreeNodes(detailNodes, liveAnalysisTreeMaxNodes, liveAnalysisTreeMaxResolvedNodes)
 
-	tree := assembleTree(mc, topics, topicOrder, detailNodes, parents, previousParents, relations, stats)
+	tree := assembleTree(mc, topics, topicOrder, groups, groupOrder, detailNodes, parents, previousParents, relations, round, stats)
 	syncItemClassificationWithTree(items, tree)
+	syncRelatedAgendaIDs(items, mc, tree)
 	return tree, items, candidates
 }
 
@@ -613,16 +656,29 @@ func applyAssignments(ac assignmentContext) {
 			record(assignmentDecision{ItemID: nodeID, RequestedParentID: requested, SelectedParentID: treeUnclassifiedTopicID, Confidence: confidence, Source: assignmentSourceModel, Decision: assignmentAcceptedUnclassified, Status: classificationUnclassified})
 			continue
 		}
+		if topic := ac.topics[requested]; topic.AgendaRole == agendaRoleActionSummary {
+			selected := current
+			status := classificationAssigned
+			if selected == "" {
+				selected = treeUnclassifiedTopicID
+				ac.parents[nodeID] = selected
+				status = classificationUnclassified
+			}
+			setMeta(item, status, assignmentSourceRule, "", confidence, reason)
+			record(assignmentDecision{ItemID: nodeID, RequestedParentID: requested, SelectedParentID: selected, Confidence: confidence, Source: assignmentSourceRule, Decision: assignmentRelatedActionSummary, Status: status})
+			continue
+		}
 
 		target := requested
 		lowConfidence := confidence > 0 && confidence < ac.cfg.AgendaAssignmentThreshold
 		repeat := item != nil && item.CandidateTopicID != "" && item.CandidateTopicID == target
 
+		currentTopic := climbToTopic(current)
 		switch {
-		case current == target:
+		case current == target || currentTopic == target:
 			// 同じ親の再主張: confidence/理由だけ更新する。
 			setMeta(item, classificationAssigned, assignmentSourceModel, "", confidence, reason)
-			record(assignmentDecision{ItemID: nodeID, RequestedParentID: target, SelectedParentID: target, Confidence: confidence, Source: assignmentSourceModel, Decision: assignmentAccepted, Status: classificationAssigned})
+			record(assignmentDecision{ItemID: nodeID, RequestedParentID: target, SelectedParentID: current, Confidence: confidence, Source: assignmentSourceModel, Decision: assignmentAccepted, Status: classificationAssigned})
 		case current == "" || current == treeUnclassifiedTopicID:
 			// 新規または追加論点からの引き上げ(緩め)。
 			if lowConfidence && !repeat {
@@ -845,6 +901,73 @@ func syncItemClassificationWithTree(items []liveAnalysisItem, tree *liveAnalysis
 	}
 }
 
+// syncRelatedAgendaIDs computes the cross-cutting agenda view without adding
+// parent edges or duplicating canonical items. Only active TODOs and active
+// unresolved issue/question/risk items are referenced by action-summary
+// agendas; decisions, facts and resolved items stay solely in their content
+// tree.
+func syncRelatedAgendaIDs(items []liveAnalysisItem, mc *meetingContext, tree *liveAnalysisTree) {
+	actionSummaryIDs := mc.actionSummaryAgendaIDs()
+	if len(actionSummaryIDs) == 0 || tree == nil {
+		for i := range items {
+			items[i].RelatedAgendaIDs = nil
+		}
+		return
+	}
+	for i := range tree.Nodes {
+		if _, isActionSummary := actionSummaryIDs[tree.Nodes[i].ID]; isActionSummary {
+			tree.Nodes[i].RelatedItemIDs = nil
+		}
+	}
+	parents := make(map[string]string)
+	kinds := make(map[string]string)
+	if tree != nil {
+		for _, node := range tree.Nodes {
+			parents[node.ID] = node.ParentID
+			kinds[node.ID] = node.Kind
+		}
+	}
+	primaryTopic := func(itemID string) string {
+		seen := make(map[string]struct{})
+		current := parents[itemID]
+		for current != "" {
+			if _, loop := seen[current]; loop {
+				return ""
+			}
+			seen[current] = struct{}{}
+			if kinds[current] == "topic" {
+				return current
+			}
+			current = parents[current]
+		}
+		return ""
+	}
+	for i := range items {
+		items[i].RelatedAgendaIDs = nil
+		if items[i].Status == "resolved" {
+			continue
+		}
+		switch items[i].Kind {
+		case "todo", "issue", "open_issue", "question", "risk":
+		default:
+			continue
+		}
+		primary := primaryTopic(items[i].ID)
+		for _, agenda := range mc.Agenda {
+			if _, isActionSummary := actionSummaryIDs[agenda.ID]; !isActionSummary || agenda.ID == primary {
+				continue
+			}
+			items[i].RelatedAgendaIDs = append(items[i].RelatedAgendaIDs, agenda.ID)
+			for nodeAt := range tree.Nodes {
+				if tree.Nodes[nodeAt].ID == agenda.ID {
+					tree.Nodes[nodeAt].RelatedItemIDs = append(tree.Nodes[nodeAt].RelatedItemIDs, items[i].ID)
+					break
+				}
+			}
+		}
+	}
+}
+
 // assembleTree runs the invariant pass and produces the final payload tree:
 // root first, topics next (agenda order preserved), detail nodes last, and
 // edges derived from the enforced single parents.
@@ -852,13 +975,16 @@ func assembleTree(
 	mc *meetingContext,
 	topics map[string]liveAnalysisTreeNode,
 	topicOrder []string,
+	groups map[string]liveAnalysisTreeNode,
+	groupOrder []string,
 	detailNodes []liveAnalysisTreeNode,
 	parents map[string]string,
 	previousParents map[string]string,
 	relations []liveAnalysisTreeRelation,
+	treeVersion int64,
 	stats *liveAnalysisTreeMergeStats,
 ) *liveAnalysisTree {
-	if len(topics) == 0 && len(detailNodes) == 0 {
+	if len(topics) == 0 && len(groups) == 0 && len(detailNodes) == 0 {
 		return nil
 	}
 
@@ -875,13 +1001,61 @@ func assembleTree(
 		topicIDs[id] = struct{}{}
 	}
 
-	// climbToTopic resolves a proposed parent to a valid topic: a topic id is
-	// returned as-is; a detail id climbs its parent chain (cycle-guarded)
-	// until a topic is found. "" means no valid topic was reachable.
-	climbToTopic := func(fromID string) string {
+	// Groups may nest, but only through other groups. Depth is resolved from
+	// the typed parent chain; cycles, detail parents, unknown parents, and a
+	// group depth that would force detail nodes beyond the hard limit are
+	// discarded. root=0/topic=1, so the deepest valid group is depth 4.
+	validGroups := make(map[string]liveAnalysisTreeNode, len(groups))
+	groupParents := make(map[string]string, len(groups))
+	groupDepths := make(map[string]int, len(groups))
+	resolvingGroups := make(map[string]bool, len(groups))
+	var resolveGroupDepth func(string) (int, bool)
+	resolveGroupDepth = func(id string) (int, bool) {
+		if depth, cached := groupDepths[id]; cached {
+			return depth, true
+		}
+		group, exists := groups[id]
+		if !exists || strings.TrimSpace(group.Label) == "" || resolvingGroups[id] {
+			return 0, false
+		}
+		resolvingGroups[id] = true
+		defer delete(resolvingGroups, id)
+		parent := strings.TrimSpace(parents[id])
+		depth := 0
+		if _, isTopic := topicIDs[parent]; isTopic && parent != treeRootNodeID {
+			depth = 2
+		} else if _, isGroup := groups[parent]; isGroup {
+			parentDepth, valid := resolveGroupDepth(parent)
+			if !valid {
+				return 0, false
+			}
+			depth = parentDepth + 1
+		} else {
+			return 0, false
+		}
+		if depth >= treeHardMaxDepth {
+			return 0, false
+		}
+		group.Kind = "group"
+		groupDepths[id] = depth
+		groupParents[id] = parent
+		validGroups[id] = group
+		return depth, true
+	}
+	for id := range groups {
+		_, _ = resolveGroupDepth(id)
+	}
+
+	// climbToContainer resolves a proposed parent to a valid group or topic.
+	// Detail nodes found in a legacy detail→detail chain climb through it, but
+	// the resulting persisted parent is always a typed container.
+	climbToContainer := func(fromID string) string {
 		seen := make(map[string]struct{})
 		current := fromID
 		for current != "" {
+			if _, isGroup := validGroups[current]; isGroup {
+				return current
+			}
 			if _, isTopic := topicIDs[current]; isTopic {
 				return current
 			}
@@ -895,11 +1069,14 @@ func assembleTree(
 	}
 
 	needsUnclassified := false
-	enforcedParents := make(map[string]string, len(detailNodes)+len(topics))
+	enforcedParents := make(map[string]string, len(detailNodes)+len(topics)+len(validGroups))
 
 	// topicの親は常にroot(型逆転・topic循環をここで遮断)。
 	for id := range topics {
 		enforcedParents[id] = treeRootNodeID
+	}
+	for id, parent := range groupParents {
+		enforcedParents[id] = parent
 	}
 
 	for _, node := range detailNodes {
@@ -909,7 +1086,7 @@ func assembleTree(
 		case proposed == "" || proposed == node.ID || proposed == treeRootNodeID:
 			// 親なし・自己参照・root直下は許可しない → topic配下へ。
 		default:
-			parent = climbToTopic(proposed)
+			parent = climbToContainer(proposed)
 		}
 		if parent == "" || parent == treeRootNodeID {
 			parent = treeUnclassifiedTopicID
@@ -923,6 +1100,78 @@ func assembleTree(
 			if parent == treeUnclassifiedTopicID && proposed != treeUnclassifiedTopicID {
 				stats.OrphanRescuedEdges++
 			}
+		}
+	}
+
+	// Count descendant details, not merely direct children: a nested group is
+	// meaningful when its subtree contains at least two details. Empty groups
+	// are removed immediately. A one-detail group is retained for two tree
+	// versions before flattening, preventing create/delete churn during live
+	// dedup and recap updates.
+	directDetailCounts := make(map[string]int, len(validGroups))
+	for _, node := range detailNodes {
+		if _, isGroup := validGroups[enforcedParents[node.ID]]; isGroup {
+			directDetailCounts[enforcedParents[node.ID]]++
+		}
+	}
+	groupChildren := make(map[string][]string, len(validGroups))
+	for id, parent := range groupParents {
+		if _, nested := validGroups[parent]; nested {
+			groupChildren[parent] = append(groupChildren[parent], id)
+		}
+	}
+	descendantMemo := make(map[string]int, len(validGroups))
+	var descendantDetails func(string) int
+	descendantDetails = func(id string) int {
+		if count, cached := descendantMemo[id]; cached {
+			return count
+		}
+		count := directDetailCounts[id]
+		for _, childID := range groupChildren[id] {
+			count += descendantDetails(childID)
+		}
+		descendantMemo[id] = count
+		return count
+	}
+	groupIDsByDepth := append([]string(nil), groupOrder...)
+	sort.SliceStable(groupIDsByDepth, func(i, j int) bool { return groupDepths[groupIDsByDepth[i]] > groupDepths[groupIDsByDepth[j]] })
+	for _, id := range groupIDsByDepth {
+		group, exists := validGroups[id]
+		if !exists {
+			continue
+		}
+		count := descendantDetails(id)
+		flatten := count == 0
+		if count == 1 {
+			if group.UnderfilledSinceVersion == 0 {
+				group.UnderfilledSinceVersion = treeVersion
+				validGroups[id] = group
+			} else if treeVersion > 0 && treeVersion-group.UnderfilledSinceVersion >= groupFlattenGraceVersions {
+				flatten = true
+			}
+		} else {
+			group.UnderfilledSinceVersion = 0
+			validGroups[id] = group
+		}
+		if !flatten {
+			continue
+		}
+		parent := groupParents[id]
+		for _, node := range detailNodes {
+			if enforcedParents[node.ID] == id {
+				enforcedParents[node.ID] = parent
+			}
+		}
+		for childID, childParent := range groupParents {
+			if childParent == id {
+				groupParents[childID] = parent
+				enforcedParents[childID] = parent
+			}
+		}
+		delete(validGroups, id)
+		delete(enforcedParents, id)
+		if stats != nil {
+			stats.GroupsFlattened++
 		}
 	}
 
@@ -956,8 +1205,9 @@ func assembleTree(
 		}
 	}
 
-	// Assemble node list: root, topics (in stable order), details.
-	nodes := make([]liveAnalysisTreeNode, 0, 1+len(topics)+len(detailNodes))
+	// Assemble node list: root, topics (agenda order), groups (stable creation
+	// order), then canonical detail items.
+	nodes := make([]liveAnalysisTreeNode, 0, 1+len(topics)+len(validGroups)+len(detailNodes))
 	nodes = append(nodes, root)
 	for _, id := range topicOrder {
 		topic, ok := topics[id]
@@ -966,6 +1216,18 @@ func assembleTree(
 		}
 		topic.ParentID = treeRootNodeID
 		nodes = append(nodes, topic)
+	}
+	orderedGroups := append([]string(nil), groupOrder...)
+	sort.SliceStable(orderedGroups, func(i, j int) bool {
+		return groupDepths[orderedGroups[i]] < groupDepths[orderedGroups[j]]
+	})
+	for _, id := range orderedGroups {
+		group, ok := validGroups[id]
+		if !ok {
+			continue
+		}
+		group.ParentID = enforcedParents[id]
+		nodes = append(nodes, group)
 	}
 	for _, node := range detailNodes {
 		node.ParentID = enforcedParents[node.ID]
@@ -1033,13 +1295,66 @@ func computeTreeHealth(tree *liveAnalysisTree) treeHealth {
 	if tree == nil {
 		return health
 	}
+	byID := make(map[string]liveAnalysisTreeNode, len(tree.Nodes))
+	for _, node := range tree.Nodes {
+		byID[node.ID] = node
+	}
 	children := make(map[string]int)
+	activeDetailChildren := make(map[string]int)
+	groupsByTopic := make(map[string]int)
+	detailDepthTotal := 0
+	topicAncestor := func(id string) string {
+		seen := make(map[string]struct{})
+		current := id
+		for current != "" {
+			node, ok := byID[current]
+			if !ok {
+				return ""
+			}
+			if node.Kind == "topic" {
+				return node.ID
+			}
+			if _, looped := seen[current]; looped {
+				return ""
+			}
+			seen[current] = struct{}{}
+			current = node.ParentID
+		}
+		return ""
+	}
+	nodeDepth := func(id string) int {
+		depth := 0
+		seen := make(map[string]struct{})
+		current := id
+		for current != "" && current != treeRootNodeID {
+			node, ok := byID[current]
+			if !ok {
+				break
+			}
+			if _, looped := seen[current]; looped {
+				break
+			}
+			seen[current] = struct{}{}
+			depth++
+			current = node.ParentID
+		}
+		return depth
+	}
 	for _, node := range tree.Nodes {
 		if node.ID == treeRootNodeID {
 			continue
 		}
-		if node.Kind == "topic" {
+		children[node.ParentID]++
+		switch node.Kind {
+		case "topic":
 			health.TopicCount++
+			continue
+		case "group":
+			health.GroupCount++
+			if byID[node.ParentID].Kind == "group" {
+				health.NestedGroupCount++
+			}
+			groupsByTopic[topicAncestor(node.ID)]++
 			continue
 		}
 		if node.Status == "resolved" {
@@ -1047,9 +1362,27 @@ func computeTreeHealth(tree *liveAnalysisTree) treeHealth {
 			continue
 		}
 		health.DetailCount++
-		children[node.ParentID]++
+		detailDepthTotal += nodeDepth(node.ID)
+		activeDetailChildren[node.ParentID]++
 	}
-	for topicID, count := range children {
+	for parentID, count := range children {
+		if count > health.MaxChildren {
+			health.MaxChildren = count
+			health.MaxChildrenParentID = parentID
+		}
+	}
+	for topicID, count := range activeDetailChildren {
+		parentKind := nodeKindByID(tree, topicID)
+		if parentKind == "group" {
+			if count > health.MaxGroupChildren {
+				health.MaxGroupChildren = count
+				health.MaxGroupID = topicID
+			}
+			continue
+		}
+		if parentKind != "topic" {
+			continue
+		}
 		if topicID == treeUnclassifiedTopicID {
 			health.UnclassifiedChildren = count
 		}
@@ -1057,16 +1390,50 @@ func computeTreeHealth(tree *liveAnalysisTree) treeHealth {
 			health.MaxTopicChildren = count
 			health.MaxTopicID = topicID
 		}
+		if count >= treeReorganizeConcentrationDetails && groupsByTopic[topicID] == 0 {
+			health.FlatTopicCount++
+		}
+	}
+	for _, node := range tree.Nodes {
+		if node.Kind == "group" && children[node.ID] == 1 {
+			health.SingleChildGroupCount++
+		}
 	}
 	if health.DetailCount > 0 {
 		health.MaxConcentration = float64(health.MaxTopicChildren) / float64(health.DetailCount)
 	}
+	branchParents := 0
+	totalChildren := 0
+	for _, count := range children {
+		if count > 0 {
+			branchParents++
+			totalChildren += count
+		}
+	}
+	if branchParents > 0 {
+		health.AverageBranchingFactor = float64(totalChildren) / float64(branchParents)
+	}
+	if health.DetailCount > 0 {
+		health.AverageDepth = float64(detailDepthTotal) / float64(health.DetailCount)
+	}
 	return health
 }
 
+func nodeKindByID(tree *liveAnalysisTree, id string) string {
+	if tree == nil {
+		return ""
+	}
+	for _, node := range tree.Nodes {
+		if node.ID == id {
+			return node.Kind
+		}
+	}
+	return ""
+}
+
 // treeDepthOf returns the max depth of the enforced tree (root = 0). With
-// the fixed root→topic→detail shape this is at most 2; it is computed rather
-// than hard-coded so the metric stays honest if the shape ever changes.
+// the controlled group-only nesting shape this is at most treeHardMaxDepth;
+// it is computed rather than hard-coded so metrics also expose legacy input.
 func treeDepthOf(tree *liveAnalysisTree) int {
 	if tree == nil {
 		return 0
@@ -1098,16 +1465,39 @@ func treeDepthOf(tree *liveAnalysisTree) int {
 // reorganizer model. Unknown types and invalid references are skipped
 // individually; a bad operation can never corrupt the tree.
 type treeOperation struct {
-	Type        string `json:"type"`
-	TopicID     string `json:"topicId"`
-	NodeID      string `json:"nodeId"`
-	Label       string `json:"label"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	ToParentID  string `json:"toParentId"`
-	FromTopicID string `json:"fromTopicId"`
-	IntoTopicID string `json:"intoTopicId"`
+	Type            string   `json:"type"`
+	TopicID         string   `json:"topicId"`
+	GroupID         string   `json:"groupId"`
+	NodeID          string   `json:"nodeId"`
+	NodeIDs         []string `json:"nodeIds"`
+	EvidenceItemIDs []string `json:"evidenceItemIds"`
+	Label           string   `json:"label"`
+	Title           string   `json:"title"`
+	Description     string   `json:"description"`
+	ToParentID      string   `json:"toParentId"`
+	ParentTopicID   string   `json:"parentTopicId"`
+	ParentID        string   `json:"parentId"`
+	FromTopicID     string   `json:"fromTopicId"`
+	IntoTopicID     string   `json:"intoTopicId"`
 }
+
+type treeOperationEvaluation struct {
+	Index             int
+	Type              string
+	TargetIDs         []string
+	RequestedParentID string
+	Result            string
+	Reason            string
+}
+
+const (
+	treeOperationApplied  = "applied"
+	treeOperationNoop     = "noop"
+	treeOperationRejected = "rejected"
+	treeOperationInvalid  = "invalid"
+	maxGroupsPerTopic     = 6
+	maxGroupsPerMeeting   = 24
+)
 
 const treeReorganizeMaxOperations = 24
 
@@ -1120,30 +1510,37 @@ const treeReorganizeMaxOperations = 24
 //     そのtopicへ移される場合だけ有効(1ノードのための新topicを作らせない)。
 //   - dynamic topic数はMaxDynamicTopicsを超えない。
 //   - agenda topicはrename・merge元にできない(stable IDとユーザー入力の保護)。
-func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations []treeOperation, cfg TreeClassificationConfig, stats *liveAnalysisTreeMergeStats) (*liveAnalysisTree, int) {
+//
+// applyTreeOperations is the v4 reorganizer write path. Every proposed
+// operation receives exactly one applied/noop/rejected/invalid evaluation;
+// there are no silent continue branches. create_group is atomic: the backend
+// generates its stable ID and moves at least two validated evidence items in
+// the same operation.
+func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations []treeOperation, cfg TreeClassificationConfig, stats *liveAnalysisTreeMergeStats, versions ...int64) (*liveAnalysisTree, int) {
 	if tree == nil {
 		return nil, 0
 	}
 	cfg = cfg.normalized()
+	treeVersion := int64(1)
+	if len(versions) > 0 && versions[0] > 0 {
+		treeVersion = versions[0]
+	}
 	nodes, parents, relations := treeStateFromPayloadTree(tree)
-
-	topicOrder := make([]string, 0)
+	topicOrder, groupOrder, detailOrder := []string{}, []string{}, []string{}
 	topics := make(map[string]liveAnalysisTreeNode)
-	detailOrder := make([]string, 0)
+	groups := make(map[string]liveAnalysisTreeNode)
 	details := make(map[string]liveAnalysisTreeNode)
 	for _, node := range nodes {
-		if node.ID == treeRootNodeID {
-			continue
-		}
-		if node.Kind == "topic" {
-			if _, exists := topics[node.ID]; !exists {
-				topicOrder = append(topicOrder, node.ID)
-			}
+		switch {
+		case node.ID == treeRootNodeID:
+		case node.Kind == "topic":
+			topicOrder = appendIfMissing(topicOrder, node.ID)
 			topics[node.ID] = node
-		} else {
-			if _, exists := details[node.ID]; !exists {
-				detailOrder = append(detailOrder, node.ID)
-			}
+		case node.Kind == "group":
+			groupOrder = appendIfMissing(groupOrder, node.ID)
+			groups[node.ID] = node
+		default:
+			detailOrder = appendIfMissing(detailOrder, node.ID)
 			details[node.ID] = node
 		}
 	}
@@ -1159,140 +1556,398 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 		}
 	}
 	isAgendaTopic := func(id string) bool {
-		if _, ok := agendaIDs[id]; ok {
-			return true
-		}
-		// mcが無い呼び出しでもagenda IDの形は保護する(agenda-N はサーバー採番)。
-		return strings.HasPrefix(id, agendaTopicIDPrefix)
+		_, ok := agendaIDs[id]
+		return ok || strings.HasPrefix(id, agendaTopicIDPrefix)
 	}
 	dynamicTopicCount := 0
 	for id, topic := range topics {
-		origin := topic.Origin
-		if origin == "" {
-			origin = deriveTopicOrigin(id, agendaIDs)
+		if topic.Origin == "" {
+			topic.Origin = deriveTopicOrigin(id, agendaIDs)
 			if isAgendaTopic(id) {
-				origin = topicOriginAgenda
+				topic.Origin = topicOriginAgenda
 			}
-			topic.Origin = origin
 			topics[id] = topic
 		}
-		if origin == topicOriginDynamic {
+		if topic.Origin == topicOriginDynamic {
 			dynamicTopicCount++
 		}
 	}
-	reject := func(reason string) {
+
+	record := func(index int, op treeOperation, result, reason string) {
 		if stats == nil {
 			return
 		}
-		if stats.ReorganizeRejections == nil {
-			stats.ReorganizeRejections = make(map[string]int)
+		evaluation := treeOperationEvaluation{
+			Index:             index,
+			Type:              strings.ToLower(strings.TrimSpace(op.Type)),
+			TargetIDs:         operationTargetIDs(op),
+			RequestedParentID: firstNonEmptyTrimmed(op.ParentID, op.ParentTopicID, op.ToParentID, op.IntoTopicID),
+			Result:            result,
+			Reason:            reason,
 		}
-		stats.ReorganizeRejections[reason]++
+		stats.ReorganizeOperations = append(stats.ReorganizeOperations, evaluation)
+		switch result {
+		case treeOperationApplied:
+			stats.ReorganizeApplied++
+		case treeOperationNoop:
+			stats.ReorganizeNoop++
+		case treeOperationRejected:
+			stats.ReorganizeRejected++
+		case treeOperationInvalid:
+			stats.ReorganizeInvalid++
+		}
+		if result == treeOperationRejected || result == treeOperationInvalid {
+			if stats.ReorganizeRejections == nil {
+				stats.ReorganizeRejections = make(map[string]int)
+			}
+			stats.ReorganizeRejections[reason]++
+		}
+	}
+	if stats != nil {
+		stats.ReorganizeProposed = len(operations)
+	}
+
+	originalOperations := operations
+	if len(operations) > treeReorganizeMaxOperations {
+		operations = operations[:treeReorganizeMaxOperations]
+		for index := treeReorganizeMaxOperations; index < len(originalOperations); index++ {
+			record(index, originalOperations[index], treeOperationInvalid, "operation_limit_exceeded")
+		}
+	}
+
+	topicAncestor := func(id string) string {
+		seen := make(map[string]struct{})
+		current := id
+		for current != "" {
+			if _, isTopic := topics[current]; isTopic {
+				return current
+			}
+			if _, loop := seen[current]; loop {
+				return ""
+			}
+			seen[current] = struct{}{}
+			current = parents[current]
+		}
+		return ""
+	}
+	nodeDepth := func(id string) int {
+		depth := 0
+		seen := make(map[string]struct{})
+		current := id
+		for current != "" && current != treeRootNodeID {
+			if _, looped := seen[current]; looped {
+				return treeHardMaxDepth + 1
+			}
+			seen[current] = struct{}{}
+			depth++
+			current = parents[current]
+		}
+		return depth
+	}
+	groupCountForTopic := func(topicID string) int {
+		count := 0
+		for id := range groups {
+			if topicAncestor(id) == topicID {
+				count++
+			}
+		}
+		return count
+	}
+	directChildCount := func(parentID string) int {
+		count := 0
+		for _, parent := range parents {
+			if parent == parentID {
+				count++
+			}
+		}
+		return count
+	}
+
+	// Legacy create_topic evidence is still derived from companion moves.
+	movesInto := make(map[string]int)
+	for _, op := range operations {
+		typeName := strings.ToLower(strings.TrimSpace(op.Type))
+		if typeName != "move_node" && typeName != "move_nodes" {
+			continue
+		}
+		for _, id := range operationTargetIDs(op) {
+			if _, ok := details[id]; ok {
+				movesInto[strings.TrimSpace(op.ToParentID)]++
+			}
+		}
 	}
 
 	applied := 0
-	if len(operations) > treeReorganizeMaxOperations {
-		operations = operations[:treeReorganizeMaxOperations]
-	}
-	// create_topicの証拠条件: 同一バッチでそのtopicへ移されるノード数を先に数える。
-	movesInto := make(map[string]int)
-	for _, op := range operations {
-		if strings.TrimSpace(strings.ToLower(op.Type)) != "move_node" {
-			continue
-		}
-		nodeID := strings.TrimSpace(op.NodeID)
-		if _, isDetail := details[nodeID]; !isDetail {
-			continue
-		}
-		movesInto[strings.TrimSpace(op.ToParentID)]++
-	}
-	for _, op := range operations {
-		switch strings.TrimSpace(strings.ToLower(op.Type)) {
+	for index, op := range operations {
+		typeName := strings.ToLower(strings.TrimSpace(op.Type))
+		switch typeName {
+		case "create_group":
+			label := truncateRunes(strings.TrimSpace(firstNonEmptyTrimmed(op.Label, op.Title)), liveAnalysisTopicLabelMaxRunes)
+			parentID := strings.TrimSpace(firstNonEmptyTrimmed(op.ParentID, op.ParentTopicID, op.ToParentID))
+			targetIDs := uniqueNonEmptyIDs(firstNonEmptyIDs(op.EvidenceItemIDs, op.NodeIDs))
+			if label == "" {
+				record(index, op, treeOperationInvalid, "missing_group_label")
+				continue
+			}
+			if genericGroupLabel(label) {
+				record(index, op, treeOperationRejected, "generic_group_label")
+				continue
+			}
+			parentTopic, parentIsTopic := topics[parentID]
+			_, parentIsGroup := groups[parentID]
+			if (!parentIsTopic && !parentIsGroup) || parentID == treeRootNodeID || (parentIsTopic && parentTopic.AgendaRole == agendaRoleActionSummary) {
+				record(index, op, treeOperationInvalid, "unknown_or_invalid_group_parent")
+				continue
+			}
+			if len(targetIDs) < cfg.PromotionMinItems {
+				record(index, op, treeOperationRejected, "insufficient_evidence")
+				continue
+			}
+			parentTopicID := parentID
+			if parentIsGroup {
+				parentTopicID = topicAncestor(parentID)
+				if directChildCount(parentID) < treeMaxChildrenBeforeGrouping {
+					record(index, op, treeOperationRejected, "parent_group_not_overcrowded")
+					continue
+				}
+				if directChildCount(parentID)-len(targetIDs) < 1 {
+					record(index, op, treeOperationRejected, "parent_would_be_single_group_chain")
+					continue
+				}
+			}
+			resultingDetailDepth := nodeDepth(parentID) + 2
+			if resultingDetailDepth > treeHardMaxDepth {
+				record(index, op, treeOperationRejected, "hard_depth_limit")
+				continue
+			}
+			if resultingDetailDepth > treeSoftMaxDepth && len(targetIDs) < treeHardDepthMinEvidence {
+				record(index, op, treeOperationRejected, "hard_depth_insufficient_evidence")
+				continue
+			}
+			valid := true
+			for _, id := range targetIDs {
+				if _, exists := details[id]; !exists {
+					record(index, op, treeOperationInvalid, "unknown_node_id")
+					valid = false
+					break
+				}
+				if topicAncestor(id) != parentTopicID || parents[id] != parentID {
+					record(index, op, treeOperationRejected, "cross_topic_group_evidence")
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				continue
+			}
+			duplicate := ""
+			for id, group := range groups {
+				if parents[id] == parentID && normalizeForMatch(group.Label) == normalizeForMatch(label) {
+					duplicate = id
+					break
+				}
+			}
+			if duplicate != "" {
+				record(index, op, treeOperationNoop, "equivalent_group_exists")
+				continue
+			}
+			if len(groups) >= maxGroupsPerMeeting || groupCountForTopic(parentTopicID) >= maxGroupsPerTopic {
+				record(index, op, treeOperationRejected, "group_cap")
+				continue
+			}
+			id := stableGroupID(parentID, label)
+			if _, collision := topics[id]; collision {
+				record(index, op, treeOperationInvalid, "group_id_collision")
+				continue
+			}
+			if _, collision := details[id]; collision {
+				record(index, op, treeOperationInvalid, "group_id_collision")
+				continue
+			}
+			if _, exists := groups[id]; exists {
+				record(index, op, treeOperationNoop, "group_already_exists")
+				continue
+			}
+			groups[id] = liveAnalysisTreeNode{ID: id, Kind: "group", Label: label, Description: truncateRunes(strings.TrimSpace(op.Description), liveAnalysisTreeDescriptionMaxRunes), Origin: assignmentSourceReorganizer, RelatedItemIDs: append([]string(nil), targetIDs...), CreatedAtVersion: treeVersion, UpdatedAtVersion: treeVersion}
+			groupOrder = append(groupOrder, id)
+			parents[id] = parentID
+			for _, nodeID := range targetIDs {
+				parents[nodeID] = id
+			}
+			applied++
+			if stats != nil {
+				stats.GroupsCreated++
+			}
+			record(index, op, treeOperationApplied, "")
+
+		case "move_node", "move_nodes":
+			targetIDs := uniqueNonEmptyIDs(operationTargetIDs(op))
+			toParent := strings.TrimSpace(op.ToParentID)
+			if len(targetIDs) == 0 {
+				record(index, op, treeOperationInvalid, "missing_node_id")
+				continue
+			}
+			_, isTopic := topics[toParent]
+			_, isGroup := groups[toParent]
+			if !isTopic && !isGroup {
+				record(index, op, treeOperationInvalid, "unknown_parent_id")
+				continue
+			}
+			if topic, ok := topics[toParent]; ok && topic.AgendaRole == agendaRoleActionSummary {
+				record(index, op, treeOperationRejected, "action_summary_parent")
+				continue
+			}
+			invalid := false
+			for _, nodeID := range targetIDs {
+				if _, exists := details[nodeID]; !exists {
+					record(index, op, treeOperationInvalid, "unknown_node_id")
+					invalid = true
+					break
+				}
+				if isGroup && topicAncestor(nodeID) != topicAncestor(toParent) {
+					record(index, op, treeOperationRejected, "cross_topic_group_move")
+					invalid = true
+					break
+				}
+			}
+			if invalid {
+				continue
+			}
+			moved := 0
+			for _, nodeID := range targetIDs {
+				if parents[nodeID] == toParent {
+					continue
+				}
+				parents[nodeID] = toParent
+				moved++
+			}
+			if moved == 0 {
+				record(index, op, treeOperationNoop, "already_under_requested_parent")
+				continue
+			}
+			applied++
+			record(index, op, treeOperationApplied, "")
+
+		case "rename_group":
+			id := strings.TrimSpace(firstNonEmptyTrimmed(op.GroupID, op.TopicID))
+			label := truncateRunes(strings.TrimSpace(firstNonEmptyTrimmed(op.Label, op.Title)), liveAnalysisTopicLabelMaxRunes)
+			group, exists := groups[id]
+			if !exists {
+				record(index, op, treeOperationInvalid, "unknown_group_id")
+				continue
+			}
+			if label == "" {
+				record(index, op, treeOperationInvalid, "missing_group_label")
+				continue
+			}
+			if normalizeForMatch(group.Label) == normalizeForMatch(label) {
+				record(index, op, treeOperationNoop, "label_unchanged")
+				continue
+			}
+			group.Label = label
+			group.UpdatedAtVersion = treeVersion
+			groups[id] = group
+			applied++
+			record(index, op, treeOperationApplied, "")
+
+		case "delete_empty_group":
+			id := strings.TrimSpace(firstNonEmptyTrimmed(op.GroupID, op.TopicID))
+			if _, exists := groups[id]; !exists {
+				record(index, op, treeOperationInvalid, "unknown_group_id")
+				continue
+			}
+			hasChild := false
+			for _, parent := range parents {
+				if parent == id {
+					hasChild = true
+					break
+				}
+			}
+			if hasChild {
+				record(index, op, treeOperationRejected, "group_not_empty")
+				continue
+			}
+			delete(groups, id)
+			delete(parents, id)
+			applied++
+			record(index, op, treeOperationApplied, "")
+
 		case "create_topic":
 			label := truncateRunes(strings.TrimSpace(firstNonEmptyTrimmed(op.Label, op.Title)), liveAnalysisTopicLabelMaxRunes)
-			id := strings.TrimSpace(op.TopicID)
-			if label == "" {
+			id := normalizeProposedTopicID(op.TopicID, label)
+			if label == "" || id == "" {
+				record(index, op, treeOperationInvalid, "missing_topic_identity")
 				continue
-			}
-			if id == "" || id == treeRootNodeID {
-				id = "topic-" + normalizeForMatch(label)
-			}
-			if !strings.HasPrefix(id, "topic-") && !strings.HasPrefix(id, agendaTopicIDPrefix) {
-				id = "topic-" + id
 			}
 			if _, exists := topics[id]; exists {
+				record(index, op, treeOperationNoop, "topic_already_exists")
 				continue
 			}
-			if _, isDetail := details[id]; isDetail {
+			if _, collision := details[id]; collision {
+				record(index, op, treeOperationInvalid, "topic_id_collision")
 				continue
 			}
 			duplicate := false
 			for _, topic := range topics {
-				if normalizeForMatch(topic.Label) == normalizeForMatch(label) {
-					duplicate = true
-					break
-				}
+				duplicate = duplicate || normalizeForMatch(topic.Label) == normalizeForMatch(label)
 			}
 			if duplicate {
+				record(index, op, treeOperationNoop, "equivalent_topic_exists")
 				continue
 			}
-			// 証拠条件: 移すノードが足りない新topicは作らない(単一ノードの
-			// ためのtopic生成が実会議でゴミtopicを残した実績への対策)。
 			if movesInto[id] < cfg.PromotionMinItems {
-				reject("create_topic_insufficient_moves")
+				record(index, op, treeOperationRejected, "create_topic_insufficient_moves")
 				continue
 			}
 			if dynamicTopicCount >= cfg.MaxDynamicTopics {
-				reject("create_topic_dynamic_cap")
+				record(index, op, treeOperationRejected, "create_topic_dynamic_cap")
 				continue
 			}
 			topics[id] = liveAnalysisTreeNode{ID: id, Kind: "topic", Label: label, Description: truncateRunes(strings.TrimSpace(op.Description), liveAnalysisTreeDescriptionMaxRunes), Origin: topicOriginDynamic}
 			topicOrder = append(topicOrder, id)
+			parents[id] = treeRootNodeID
 			dynamicTopicCount++
 			applied++
-		case "move_node":
-			nodeID := strings.TrimSpace(op.NodeID)
-			toParent := strings.TrimSpace(op.ToParentID)
-			if _, isDetail := details[nodeID]; !isDetail {
-				continue
-			}
-			if _, isTopic := topics[toParent]; !isTopic {
-				continue
-			}
-			if parents[nodeID] == toParent {
-				continue
-			}
-			parents[nodeID] = toParent
-			applied++
+			record(index, op, treeOperationApplied, "")
+
 		case "rename_topic":
-			topicID := strings.TrimSpace(op.TopicID)
+			id := strings.TrimSpace(op.TopicID)
 			label := truncateRunes(strings.TrimSpace(firstNonEmptyTrimmed(op.Label, op.Title)), liveAnalysisTopicLabelMaxRunes)
-			topic, exists := topics[topicID]
-			if !exists || label == "" || topicID == treeUnclassifiedTopicID {
+			topic, exists := topics[id]
+			if !exists || label == "" {
+				record(index, op, treeOperationInvalid, "unknown_topic_or_missing_label")
 				continue
 			}
-			// アジェンダtopicのラベルはユーザー入力なので書き換えさせない。
-			if isAgendaTopic(topicID) {
-				reject("rename_agenda_topic")
+			if isAgendaTopic(id) || id == treeUnclassifiedTopicID {
+				record(index, op, treeOperationRejected, "rename_agenda_topic")
+				continue
+			}
+			if normalizeForMatch(topic.Label) == normalizeForMatch(label) {
+				record(index, op, treeOperationNoop, "label_unchanged")
 				continue
 			}
 			topic.Label = label
-			topics[topicID] = topic
+			topics[id] = topic
 			applied++
+			record(index, op, treeOperationApplied, "")
+
 		case "merge_topic":
 			fromID := strings.TrimSpace(firstNonEmptyTrimmed(op.FromTopicID, op.TopicID))
 			intoID := strings.TrimSpace(op.IntoTopicID)
 			if fromID == intoID {
+				record(index, op, treeOperationNoop, "same_topic")
 				continue
 			}
-			if _, exists := topics[fromID]; !exists {
+			if _, fromExists := topics[fromID]; !fromExists {
+				record(index, op, treeOperationInvalid, "unknown_source_topic")
 				continue
 			}
-			if _, exists := topics[intoID]; !exists {
+			if _, intoExists := topics[intoID]; !intoExists {
+				record(index, op, treeOperationInvalid, "unknown_target_topic")
 				continue
 			}
-			// アジェンダtopicと未分類topicはstable IDを守るため削除しない。
 			if isAgendaTopic(fromID) || fromID == treeUnclassifiedTopicID {
+				record(index, op, treeOperationRejected, "merge_protected_topic")
 				continue
 			}
 			for nodeID, parent := range parents {
@@ -1302,16 +1957,75 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 			}
 			delete(topics, fromID)
 			applied++
+			record(index, op, treeOperationApplied, "")
+
+		default:
+			record(index, op, treeOperationInvalid, "unknown_operation_type")
 		}
 	}
 	if applied == 0 {
 		return tree, 0
 	}
-
 	detailNodes := make([]liveAnalysisTreeNode, 0, len(detailOrder))
 	for _, id := range detailOrder {
 		detailNodes = append(detailNodes, details[id])
 	}
-	rebuilt := assembleTree(mc, topics, topicOrder, detailNodes, parents, previousParents, relations, stats)
+	rebuilt := assembleTree(mc, topics, topicOrder, groups, groupOrder, detailNodes, parents, previousParents, relations, treeVersion, stats)
 	return rebuilt, applied
+}
+
+func stableGroupID(parentID, label string) string {
+	sum := sha256.Sum256([]byte(parentID + "\x00" + normalizeForMatch(label)))
+	return "group-" + hex.EncodeToString(sum[:6])
+}
+
+func genericGroupLabel(label string) bool {
+	switch normalizeForMatch(label) {
+	case "その他", "詳細", "関連事項", "項目", "other", "others", "detail", "details", "related":
+		return true
+	default:
+		return false
+	}
+}
+
+func appendIfMissing(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func firstNonEmptyIDs(values ...[]string) []string {
+	for _, candidate := range values {
+		if len(candidate) > 0 {
+			return candidate
+		}
+	}
+	return nil
+}
+
+func uniqueNonEmptyIDs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func operationTargetIDs(op treeOperation) []string {
+	if ids := firstNonEmptyIDs(op.EvidenceItemIDs, op.NodeIDs); len(ids) > 0 {
+		return uniqueNonEmptyIDs(ids)
+	}
+	return uniqueNonEmptyIDs([]string{op.NodeID, op.GroupID, op.TopicID, op.FromTopicID})
 }
