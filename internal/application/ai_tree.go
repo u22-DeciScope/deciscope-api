@@ -63,12 +63,23 @@ type treeHealth struct {
 }
 
 type groupCandidateDecision struct {
-	ParentID               string
-	CandidateLabelHash     string
-	CandidateItemCount     int
-	ValidEvidenceItemCount int
-	Result                 string
-	Reason                 string
+	ParentID                 string
+	CandidateLabelHash       string
+	CandidateItemCount       int
+	ValidEvidenceItemCount   int
+	TotalDetailItems         int
+	EligibleDetailItems      int
+	ExcludedDetailItems      int
+	ExcludedByKind           int
+	ExcludedByClassification int
+	ExcludedByEvidence       int
+	ExcludedByParent         int
+	ExcludedByResolution     int
+	SemanticClusterCount     int
+	GroupCandidates          int
+	GroupsCreated            int
+	Result                   string
+	Reason                   string
 }
 
 const (
@@ -408,6 +419,11 @@ func rebuildDiscussionTree(
 	}
 	candidates := append([]emergingTopicCandidate(nil), priorCandidates...)
 	candidateAlias := make(map[string]string)
+	initialCandidateIDs := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		initialCandidateIDs[candidate.ID] = struct{}{}
+	}
+	proposedCandidateIDs := make(map[string]struct{})
 	candidateIndexByID := func(id string) int {
 		if alias, ok := candidateAlias[id]; ok {
 			id = alias
@@ -427,6 +443,30 @@ func rebuildDiscussionTree(
 			}
 		}
 		return -1
+	}
+	candidateIndexBySemantic := func(label, description string) int {
+		bestAt, bestScore := -1, 0.0
+		value := strings.TrimSpace(label + " " + description)
+		core := emergingTopicCore(label)
+		for i := range candidates {
+			score := semanticItemSimilarity(value, candidates[i].Label+" "+candidates[i].Description)
+			candidateCore := emergingTopicCore(candidates[i].Label)
+			coreScore := semanticItemSimilarity(core, candidateCore)
+			if len([]rune(core)) >= 3 && len([]rune(candidateCore)) >= 3 &&
+				(strings.Contains(core, candidateCore) || strings.Contains(candidateCore, core)) && score < 0.75 {
+				score = 0.75
+			}
+			if coreScore < 0.30 {
+				continue
+			}
+			if score > bestScore {
+				bestAt, bestScore = i, score
+			}
+		}
+		if bestScore < 0.30 {
+			return -1
+		}
+		return bestAt
 	}
 	recordEmerging := func(d emergingDecision) {
 		if stats != nil {
@@ -487,16 +527,23 @@ func rebuildDiscussionTree(
 			if description := truncateRunes(strings.TrimSpace(proposed.Description), liveAnalysisTreeDescriptionMaxRunes); description != "" {
 				candidates[at].Description = description
 			}
-			candidates[at].addEvidence("", round)
-			recordEmerging(emergingDecision{CandidateID: candidates[at].ID, EvidenceItemCount: len(candidates[at].EvidenceItemIDs), RoundCount: candidates[at].RoundCount, Decision: emergingUpdated})
+			proposedCandidateIDs[candidates[at].ID] = struct{}{}
 			continue
 		}
 		if at := candidateIndexByLabel(label); at >= 0 {
 			// 同じ意味の候補を別idで数えない。以降の割当が新idで来ても届くよう
 			// aliasを張る。
 			candidateAlias[id] = candidates[at].ID
-			candidates[at].addEvidence("", round)
-			recordEmerging(emergingDecision{CandidateID: candidates[at].ID, EvidenceItemCount: len(candidates[at].EvidenceItemIDs), RoundCount: candidates[at].RoundCount, Decision: emergingUpdated})
+			proposedCandidateIDs[candidates[at].ID] = struct{}{}
+			continue
+		}
+		description := truncateRunes(strings.TrimSpace(proposed.Description), liveAnalysisTreeDescriptionMaxRunes)
+		if at := candidateIndexBySemantic(label, description); at >= 0 {
+			candidateAlias[id] = candidates[at].ID
+			proposedCandidateIDs[candidates[at].ID] = struct{}{}
+			if candidates[at].Description == "" {
+				candidates[at].Description = description
+			}
 			continue
 		}
 		if newCandidatesThisRound >= maxEmergingCandidatesPerRound {
@@ -506,13 +553,11 @@ func rebuildDiscussionTree(
 		candidates = append(candidates, emergingTopicCandidate{
 			ID:          id,
 			Label:       label,
-			Description: truncateRunes(strings.TrimSpace(proposed.Description), liveAnalysisTreeDescriptionMaxRunes),
+			Description: description,
 			FirstRound:  round,
-			LastRound:   round,
-			RoundCount:  1,
 		})
+		proposedCandidateIDs[id] = struct{}{}
 		newCandidatesThisRound++
-		recordEmerging(emergingDecision{CandidateID: id, RoundCount: 1, Decision: emergingCreated})
 	}
 
 	// Parent assignments from the model: confidenceとhysteresisを検証してから
@@ -531,6 +576,52 @@ func rebuildDiscussionTree(
 		cfg:            cfg,
 		stats:          stats,
 	})
+	reconcileCandidateCompanions(items, parents, candidates, round, stats)
+
+	// A candidate becomes durable only together with at least one canonical
+	// evidence item. Empty model proposals (including legacy zero-evidence
+	// candidates) are removed before promotion and persistence.
+	validDetailIDs := make(map[string]struct{}, len(details))
+	for id := range details {
+		validDetailIDs[id] = struct{}{}
+	}
+	keptCandidates := make([]emergingTopicCandidate, 0, len(candidates))
+	rejectedCandidateIDs := make(map[string]struct{})
+	for i := range candidates {
+		candidate := &candidates[i]
+		pruneCandidateEvidence(candidate, validDetailIDs)
+		if len(candidate.EvidenceItemIDs) == 0 {
+			rejectedCandidateIDs[candidate.ID] = struct{}{}
+			if _, proposed := proposedCandidateIDs[candidate.ID]; proposed {
+				recordEmerging(emergingDecision{CandidateID: candidate.ID, Decision: emergingRejectedNoEvidence, Reason: "no_canonical_evidence"})
+				if stats != nil {
+					stats.CandidateCreationRejectedNoEvidence++
+				}
+			}
+			continue
+		}
+		decision := emergingUpdated
+		if _, existed := initialCandidateIDs[candidate.ID]; !existed {
+			decision = emergingCreated
+			if stats != nil {
+				stats.CandidateCreated++
+			}
+		}
+		recordEmerging(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: decision})
+		keptCandidates = append(keptCandidates, *candidate)
+	}
+	candidates = keptCandidates
+	if len(rejectedCandidateIDs) > 0 {
+		for i := range items {
+			if _, rejected := rejectedCandidateIDs[items[i].CandidateTopicID]; !rejected {
+				continue
+			}
+			items[i].ClassificationStatus = classificationUnclassified
+			items[i].CandidateTopicID = ""
+			items[i].CandidateInactive = false
+			parents[items[i].ID] = treeUnclassifiedTopicID
+		}
+	}
 
 	// Reconciliation-created question/open_issue items and low-confidence
 	// model items can arrive without a usable parent proposal. Inherit the
@@ -621,7 +712,15 @@ func semanticPrimaryTopic(item *liveAnalysisItem, topics map[string]liveAnalysis
 
 func semanticTopicCore(value string) string {
 	core := normalizeForMatch(value)
-	for _, generic := range []string{"の", "作成", "計画", "実施方法", "実施", "追加", "検討", "新規", "論点", "課題", "調査"} {
+	for _, generic := range []string{"について", "できる", "すること", "の", "作成", "計画", "実施方法", "実施", "追加", "検討", "新規", "論点", "課題", "調査", "測定", "確認", "決定", "判断", "必要", "対応", "予定", "方法", "内容", "ため", "よう", "こと", "する"} {
+		core = strings.ReplaceAll(core, generic, "")
+	}
+	return core
+}
+
+func emergingTopicCore(value string) string {
+	core := semanticTopicCore(value)
+	for _, generic := range []string{"話題", "論点", "観点", "確認", "関連"} {
 		core = strings.ReplaceAll(core, generic, "")
 	}
 	return core
@@ -758,6 +857,13 @@ func applyAssignments(ac assignmentContext) {
 		item := ac.itemAt(nodeID)
 		current := ac.parents[nodeID]
 		if assignment.ServerSource == assignmentSourceActiveSpan {
+			// A model-backed emerging assignment is explicit evidence for an
+			// agenda-external subject. The synthetic active-span assignment must
+			// not erase that tentative metadata later in the same round.
+			if item != nil && item.ClassificationStatus == classificationTentative && candidateAt(item.CandidateTopicID) != nil {
+				record(assignmentDecision{ModelItemID: modelNodeID, ItemID: nodeID, RequestedParentID: originalRequested, SelectedParentID: current, Confidence: confidence, Source: assignmentSourceActiveSpan, Decision: assignmentDeferredEmerging, Status: classificationTentative, CandidateTopicID: item.CandidateTopicID})
+				continue
+			}
 			if topic, exists := ac.topics[requested]; exists && requested != treeUnclassifiedTopicID && topic.Origin == topicOriginAgenda && topic.AgendaRole != agendaRoleActionSummary {
 				ac.parents[nodeID] = requested
 				setMeta(item, classificationAssigned, assignmentSourceActiveSpan, "", confidence, reason)
@@ -780,7 +886,15 @@ func applyAssignments(ac assignmentContext) {
 		// overlap (for example "調査") can pull an agenda-external subject into
 		// an unrelated fixed agenda and prevent promotion entirely.
 		if candidate := candidateAt(requested); candidate != nil {
+			beforeEvidence := len(candidate.EvidenceItemIDs)
 			candidate.addEvidence(nodeID, ac.round)
+			if ac.stats != nil {
+				if len(candidate.EvidenceItemIDs) > beforeEvidence {
+					ac.stats.CandidateEvidenceAdded++
+				} else {
+					ac.stats.CandidateEvidenceDeduplicated++
+				}
+			}
 			status := classificationTentative
 			selected := current
 			if current == "" || current == treeUnclassifiedTopicID {
@@ -909,6 +1023,90 @@ func applyAssignments(ac assignmentContext) {
 	}
 }
 
+// reconcileCandidateCompanions keeps cross-kind items from the same
+// agenda-external subject together. It only extends a candidate that already
+// has explicit canonical evidence; it never invents a zero-evidence candidate.
+func reconcileCandidateCompanions(items []liveAnalysisItem, parents map[string]string, candidates []emergingTopicCandidate, round int64, stats *liveAnalysisTreeMergeStats) {
+	itemAt := make(map[string]*liveAnalysisItem, len(items))
+	for i := range items {
+		itemAt[items[i].ID] = &items[i]
+	}
+	for candidateAt := range candidates {
+		candidate := &candidates[candidateAt]
+		if len(candidate.EvidenceItemIDs) == 0 {
+			continue
+		}
+		anchors := append([]string(nil), candidate.EvidenceItemIDs...)
+		for i := range items {
+			item := &items[i]
+			alreadyEvidence := false
+			for _, id := range candidate.EvidenceItemIDs {
+				if id == item.ID {
+					alreadyEvidence = true
+					break
+				}
+			}
+			if alreadyEvidence || item.Status == "dismissed" {
+				continue
+			}
+			if current := parents[item.ID]; current != "" && current != treeUnclassifiedTopicID && item.ClassificationStatus == classificationAssigned {
+				continue
+			}
+			candidateScore := semanticItemSimilarity(candidate.Label+" "+candidate.Description, item.Title+" "+item.Body)
+			if !sharesSemanticTopicBigram(candidate.Label+" "+candidate.Description, item.Title+" "+item.Body) {
+				continue
+			}
+			related := false
+			for _, anchorID := range anchors {
+				anchor := itemAt[anchorID]
+				if anchor == nil {
+					continue
+				}
+				companionScore := semanticCompanionScore(*anchor, *item)
+				nearEvidence := itemEvidenceWithin(*anchor, *item, 2)
+				if companionScore >= 0.55 || (companionScore >= 0.18 && nearEvidence) || (candidateScore >= 0.12 && companionScore >= 0.10 && nearEvidence) {
+					related = true
+					break
+				}
+			}
+			if !related {
+				continue
+			}
+			beforeEvidence := len(candidate.EvidenceItemIDs)
+			candidate.addEvidence(item.ID, round)
+			if len(candidate.EvidenceItemIDs) == beforeEvidence {
+				if stats != nil {
+					stats.CandidateEvidenceDeduplicated++
+				}
+				continue
+			}
+			parents[item.ID] = treeUnclassifiedTopicID
+			item.ClassificationStatus = classificationTentative
+			item.AssignmentSource = assignmentSourceRule
+			item.CandidateTopicID = candidate.ID
+			item.CandidateInactive = false
+			if stats != nil {
+				stats.CandidateEvidenceAdded++
+				stats.CompanionCandidateInherited++
+				if anchor := itemAt[anchors[0]]; anchor != nil && anchor.Kind != item.Kind {
+					stats.CrossKindClustered++
+				}
+			}
+		}
+	}
+}
+
+func sharesSemanticTopicBigram(a, b string) bool {
+	aGrams := runeBigrams(emergingTopicCore(a))
+	bGrams := runeBigrams(emergingTopicCore(b))
+	for gram := range aGrams {
+		if _, shared := bGrams[gram]; shared {
+			return true
+		}
+	}
+	return false
+}
+
 // reconcileSemanticItemParents keeps cross-kind discussion companions as
 // separate canonical items while assigning them to one primary topic. Only
 // items currently staged under topic-unclassified are considered; existing
@@ -941,6 +1139,9 @@ func reconcileSemanticItemParents(items []liveAnalysisItem, parents map[string]s
 	}
 	for i := range items {
 		item := &items[i]
+		if item.ClassificationStatus == classificationTentative && item.CandidateTopicID != "" {
+			continue
+		}
 		if parents[item.ID] != "" && parents[item.ID] != treeUnclassifiedTopicID {
 			continue
 		}
@@ -1002,11 +1203,10 @@ func semanticCompanionScore(a, b liveAnalysisItem) float64 {
 	return score
 }
 
-// createSemanticDiscussionGroups is a conservative server-side fallback for
-// the one structure the extraction task can establish with high confidence:
-// a question, its open state, and a concrete TODO under the same primary
-// topic. It runs after item/reference/state correction, creates a stable group
-// once, and never deletes or renames it in later live rounds.
+// createSemanticDiscussionGroups deterministically clusters evidence-bearing
+// canonical detail items below the same primary topic. It does not require a
+// fixed combination of kinds: issue/risk, question, open state, fact,
+// decision, and TODO are different records in one discussion lifecycle.
 func createSemanticDiscussionGroups(items []liveAnalysisItem, topics map[string]liveAnalysisTreeNode, groups map[string]liveAnalysisTreeNode, groupOrder []string, details map[string]liveAnalysisTreeNode, parents map[string]string, round int64, stats *liveAnalysisTreeMergeStats) []string {
 	// One completed prior version is the minimum hysteresis. This prevents a
 	// single noisy extraction from immediately introducing hierarchy.
@@ -1021,7 +1221,6 @@ func createSemanticDiscussionGroups(items []liveAnalysisItem, topics map[string]
 		if stats == nil {
 			return
 		}
-		stats.GroupCandidates++
 		stats.GroupDecisions = append(stats.GroupDecisions, d)
 		if d.Result == "skipped" {
 			stats.GroupsSkipped++
@@ -1053,37 +1252,119 @@ func createSemanticDiscussionGroups(items []liveAnalysisItem, topics map[string]
 		}
 	}
 	sort.Strings(topicIDs)
+	belongsToTopic := func(detailID, topicID string) (bool, bool) {
+		parentID := parents[detailID]
+		if parentID == topicID {
+			return true, true
+		}
+		seen := make(map[string]struct{})
+		for parentID != "" {
+			if _, loop := seen[parentID]; loop {
+				return false, false
+			}
+			seen[parentID] = struct{}{}
+			if parentID == topicID {
+				return true, false
+			}
+			if _, isGroup := groups[parentID]; !isGroup {
+				return false, false
+			}
+			parentID = parents[parentID]
+		}
+		return false, false
+	}
 	for _, topicID := range topicIDs {
 		direct := make([]liveAnalysisItem, 0)
+		decisionBase := groupCandidateDecision{ParentID: topicID}
 		for id := range details {
-			if parents[id] == topicID {
-				if item, ok := itemByID[id]; ok {
-					direct = append(direct, item)
+			belongs, isDirect := belongsToTopic(id, topicID)
+			if !belongs {
+				continue
+			}
+			decisionBase.TotalDetailItems++
+			if !isDirect {
+				decisionBase.ExcludedByParent++
+				continue
+			}
+			if item, ok := itemByID[id]; ok {
+				switch item.Kind {
+				case "question", "open_issue", "issue", "risk", "todo", "decision", "fact":
+				default:
+					decisionBase.ExcludedByKind++
+					continue
 				}
+				if item.ClassificationStatus == classificationTentative || item.ClassificationStatus == classificationUnclassified || item.CandidateInactive {
+					decisionBase.ExcludedByClassification++
+					continue
+				}
+				if len(item.EvidenceSequenceNos) == 0 {
+					decisionBase.ExcludedByEvidence++
+					continue
+				}
+				direct = append(direct, item)
+			} else {
+				decisionBase.ExcludedByParent++
 			}
 		}
+		decisionBase.EligibleDetailItems = len(direct)
+		decisionBase.ExcludedDetailItems = decisionBase.TotalDetailItems - decisionBase.EligibleDetailItems
 		sort.Slice(direct, func(i, j int) bool { return direct[i].ID < direct[j].ID })
-		created := false
-		for _, anchor := range direct {
-			if anchor.Kind != "open_issue" && anchor.Kind != "question" {
+		if len(direct) < 3 {
+			decision := decisionBase
+			decision.Result, decision.Reason = "skipped", "insufficient_related_items"
+			record(decision)
+			continue
+		}
+
+		// Connected components keep clustering deterministic while allowing
+		// cross-kind discussion companions. Weak evidence proximity is accepted
+		// only when the texts also share a meaningful semantic core.
+		visited := make([]bool, len(direct))
+		clusters := make([][]liveAnalysisItem, 0)
+		for start := range direct {
+			if visited[start] {
 				continue
 			}
+			queue := []int{start}
+			visited[start] = true
 			cluster := make([]liveAnalysisItem, 0)
-			kinds := make(map[string]bool)
-			for _, candidate := range direct {
-				if candidate.Kind != "question" && candidate.Kind != "open_issue" && candidate.Kind != "todo" {
-					continue
+			for len(queue) > 0 {
+				at := queue[0]
+				queue = queue[1:]
+				cluster = append(cluster, direct[at])
+				for next := range direct {
+					if visited[next] || next == at {
+						continue
+					}
+					if !sharesSemanticTopicBigram(direct[at].Title+" "+direct[at].Body, direct[next].Title+" "+direct[next].Body) {
+						continue
+					}
+					score := semanticCompanionScore(direct[at], direct[next])
+					if score < 0.18 && !(score >= 0.08 && evidenceRelated(direct[at], direct[next])) {
+						continue
+					}
+					visited[next] = true
+					queue = append(queue, next)
 				}
-				score := semanticItemSimilarity(anchor.Title+" "+anchor.Body, candidate.Title+" "+candidate.Body)
-				if candidate.ID != anchor.ID && score < 0.16 && !evidenceRelated(anchor, candidate) {
-					continue
-				}
-				cluster = append(cluster, candidate)
-				kinds[candidate.Kind] = true
 			}
-			if len(cluster) < 3 || !kinds["question"] || !kinds["open_issue"] || !kinds["todo"] {
-				continue
+			if len(cluster) >= 3 {
+				clusters = append(clusters, cluster)
 			}
+		}
+		decisionBase.SemanticClusterCount = len(clusters)
+		decisionBase.GroupCandidates = len(clusters)
+		if stats != nil {
+			stats.GroupCandidates += len(clusters)
+		}
+		if len(clusters) == 0 {
+			decision := decisionBase
+			decision.Result, decision.Reason = "skipped", "insufficient_related_items"
+			record(decision)
+			continue
+		}
+
+		created := false
+		for _, cluster := range clusters {
 			validEvidence := 0
 			targetIDs := make([]string, 0, len(cluster))
 			for _, candidate := range cluster {
@@ -1092,9 +1373,13 @@ func createSemanticDiscussionGroups(items []liveAnalysisItem, topics map[string]
 					validEvidence++
 				}
 			}
+			anchor := semanticGroupAnchor(cluster)
 			label := semanticGroupLabel(anchor.Title)
 			hash := sha256.Sum256([]byte(normalizeForMatch(label)))
-			decision := groupCandidateDecision{ParentID: topicID, CandidateLabelHash: hex.EncodeToString(hash[:6]), CandidateItemCount: len(targetIDs), ValidEvidenceItemCount: validEvidence}
+			decision := decisionBase
+			decision.CandidateLabelHash = hex.EncodeToString(hash[:6])
+			decision.CandidateItemCount = len(targetIDs)
+			decision.ValidEvidenceItemCount = validEvidence
 			if label == "" || genericGroupLabel(label) {
 				decision.Result, decision.Reason = "skipped", "generic_group_label"
 				record(decision)
@@ -1110,7 +1395,7 @@ func createSemanticDiscussionGroups(items []liveAnalysisItem, topics map[string]
 				decision.Result, decision.Reason = "skipped", "equivalent_group_exists"
 				record(decision)
 				created = true
-				break
+				continue
 			}
 			if len(groups) >= maxGroupsPerMeeting {
 				decision.Result, decision.Reason = "skipped", "group_cap"
@@ -1126,21 +1411,45 @@ func createSemanticDiscussionGroups(items []liveAnalysisItem, topics map[string]
 			if stats != nil {
 				stats.GroupsCreated++
 			}
+			decision.GroupsCreated = 1
 			decision.Result = "created"
 			record(decision)
 			created = true
-			break
 		}
 		if !created {
-			record(groupCandidateDecision{ParentID: topicID, Result: "skipped", Reason: "insufficient_related_items"})
+			decision := decisionBase
+			decision.Result, decision.Reason = "skipped", "no_group_created"
+			record(decision)
 		}
 	}
 	return groupOrder
 }
 
+func semanticGroupAnchor(items []liveAnalysisItem) liveAnalysisItem {
+	if len(items) == 0 {
+		return liveAnalysisItem{}
+	}
+	priority := map[string]int{"issue": 0, "risk": 1, "open_issue": 2, "question": 3, "decision": 4, "todo": 5, "fact": 6}
+	best := items[0]
+	for _, item := range items[1:] {
+		bestPriority, ok := priority[best.Kind]
+		if !ok {
+			bestPriority = 100
+		}
+		itemPriority, ok := priority[item.Kind]
+		if !ok {
+			itemPriority = 100
+		}
+		if itemPriority < bestPriority || (itemPriority == bestPriority && len([]rune(item.Title)) < len([]rune(best.Title))) {
+			best = item
+		}
+	}
+	return best
+}
+
 func semanticGroupLabel(value string) string {
 	label := strings.Trim(strings.TrimSpace(value), "、。？！? ")
-	for _, suffix := range []string{"が未確定", "は未確定", "未確定", "が未解決", "は未解決", "未解決", "が決まっていない", "は決まっていない", "を何m/sにするか", "は何m/sか"} {
+	for _, suffix := range []string{"の未決定", "が未決定", "は未決定", "未決定", "が未確定", "は未確定", "未確定", "が未解決", "は未解決", "未解決", "が決まっていない", "は決まっていない", "を何m/sにするか", "は何m/sか"} {
 		label = strings.TrimSpace(strings.TrimSuffix(label, suffix))
 	}
 	if label == "" {
@@ -1209,6 +1518,7 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			}
 			if pc.stats != nil {
 				pc.stats.PromotedItemsReparented++
+				pc.stats.PromotedItemIDs = append(pc.stats.PromotedItemIDs, itemID)
 			}
 		}
 	}
@@ -1249,19 +1559,27 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 		if existingID := semanticExistingTopic(*candidate); existingID != "" {
 			reparentEvidence(*candidate, existingID)
 			removed[candidate.ID] = struct{}{}
+			if pc.stats != nil {
+				pc.stats.CandidateFoldedIntoAgenda++
+			}
 			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingFoldedIntoExisting, TopicID: existingID})
 			continue
 		}
-		stableLongEnough := candidate.RoundCount >= pc.cfg.PromotionMinRounds ||
-			(pc.round-candidate.FirstRound >= int64(pc.cfg.PromotionMinRounds))
+		stableLongEnough := candidate.RoundCount >= pc.cfg.PromotionMinRounds
 		if len(candidate.EvidenceItemIDs) < pc.cfg.PromotionMinItems || !stableLongEnough {
-			if pc.round-candidate.LastRound >= 4 && len(candidate.EvidenceItemIDs) < pc.cfg.PromotionMinItems {
+			if candidate.LastRound > 0 && pc.round-candidate.LastRound >= 4 &&
+				(len(candidate.EvidenceItemIDs) < pc.cfg.PromotionMinItems || !stableLongEnough) {
+				wasInactive := candidate.Inactive
 				candidate.Inactive = true
 				if candidate.InactiveSinceRound == 0 {
 					candidate.InactiveSinceRound = pc.round
 				}
-				if pc.stats != nil {
+				if pc.stats != nil && !wasInactive {
 					pc.stats.StaleCandidatesHidden++
+					pc.stats.CandidateInactive++
+				}
+				if !wasInactive {
+					record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingWaitingEvidence, Reason: "inactive_stale_no_evidence_growth"})
 				}
 			}
 			continue
@@ -1269,6 +1587,9 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 		if existingID, dup := pc.labelIndex[normalizeForMatch(candidate.Label)]; dup {
 			reparentEvidence(*candidate, existingID)
 			removed[candidate.ID] = struct{}{}
+			if pc.stats != nil {
+				pc.stats.CandidateFoldedIntoAgenda++
+			}
 			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingFoldedIntoExisting, TopicID: existingID})
 			continue
 		}
@@ -1296,6 +1617,7 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			stats := pc.stats
 			stats.DiffNewNodes++
 			stats.DynamicTopicsPromoted++
+			stats.CandidatePromoted++
 		}
 		record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingPromoted, TopicID: candidate.ID})
 	}

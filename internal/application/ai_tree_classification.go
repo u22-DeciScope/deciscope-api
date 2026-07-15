@@ -264,6 +264,7 @@ type emergingDecision struct {
 	RoundCount        int
 	Decision          string
 	TopicID           string
+	Reason            string
 }
 
 const (
@@ -275,4 +276,5 @@ const (
 	emergingRejectedTopicCap   = "rejected_topic_cap"
 	emergingDeferredPromoteCap = "deferred_promotion_cap"
 	emergingWaitingEvidence    = "waiting_evidence"
+	emergingRejectedNoEvidence = "rejected_no_evidence"
 )

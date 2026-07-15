@@ -93,9 +93,202 @@ const (
 )
 
 var (
-	resolutionClosurePattern = regexp.MustCompile(`(?:解決済み?|解消(?:した|済み)?|対応(?:できる|可能|済み|完了)|結論が出た|回答(?:した|済み|確定)|決定(?:した|事項|済み)?|確定(?:した|済み)?|採用(?:した)?|とすることに(?:する|します)|方針に(?:する|します)|完了(?:した|済み)?|実施済み|終え(?:た|ました))`)
-	resolutionOpenPattern    = regexp.MustCompile(`(?:未解決|未決定|未確定|まだ(?:決まって|決定して|確定して)い(?:ない|ません)|決まってい(?:ない|ません)|決定しない|次回(?:の会議で)?検討|再検討|持ち越し|今後も検討|判断を保留)`)
+	resolutionClosurePattern     = regexp.MustCompile(`(?:解決済み?|解消(?:した|済み)?|対応(?:できる|可能|済み|完了)|結論が出た|回答(?:した|済み|確定)|決定(?:した|事項|済み)?|確定(?:した|済み)?|採用(?:した)?|とすることに(?:する|します)|方針に(?:する|します)|完了(?:した|済み)?|実施済み|終え(?:た|ました))`)
+	resolutionOpenPattern        = regexp.MustCompile(`(?:未解決|未決定|未確定|まだ(?:決まって|決定して|確定して)い(?:ない|ません)|決まってい(?:ない|ません)|決定しない|次回(?:の会議で)?検討|再検討|持ち越し|今後も検討|判断を保留)`)
+	serverExplicitClosurePattern = regexp.MustCompile(`(?:解決済み|解決した|解消した|問題.{0,24}対応できる|対応できると判断|結論が出た|方針が確定した|この論点は閉じる)`)
+	closureProblemSubjectPattern = regexp.MustCompile(`(?:問題|懸念|課題|不足|未確認|未確定|未決定)`)
 )
+
+// synthesizeExplicitClosureUpdates is a conservative server-side fallback for
+// rounds where the model omitted resolutionUpdates. It only scans final
+// transcript rows from the current round and either finds one unambiguous
+// resolvable subject or creates an issue when the closure sentence itself
+// explicitly names the problem. Generic "この論点" language never resolves an
+// unrelated item without an immediately preceding target in the same round.
+func synthesizeExplicitClosureUpdates(previous, diff []liveAnalysisItem, scope liveEvidenceScope, stats *liveAnalysisTreeMergeStats) ([]liveAnalysisItem, []resolutionUpdate) {
+	sequenceNos := make([]int64, 0, len(scope.CurrentRound))
+	for sequenceNo := range scope.CurrentRound {
+		sequenceNos = append(sequenceNos, sequenceNo)
+	}
+	sort.Slice(sequenceNos, func(i, j int) bool { return sequenceNos[i] < sequenceNos[j] })
+	items := append(append([]liveAnalysisItem(nil), previous...), diff...)
+	itemIndex := make(map[string]int, len(items))
+	for i := range items {
+		itemIndex[items[i].ID] = i
+	}
+	updatesByID := make(map[string]resolutionUpdate)
+	updateOrder := make([]string, 0)
+	recentTarget := ""
+	recentSequence := int64(0)
+
+	addUpdate := func(itemID string, evidence ...int64) {
+		update, exists := updatesByID[itemID]
+		if !exists {
+			update = resolutionUpdate{ItemID: itemID, Status: "resolved", Reason: "server explicit closure"}
+			updateOrder = append(updateOrder, itemID)
+		}
+		for _, sequenceNo := range evidence {
+			update.EvidenceSequenceNos = appendUniqueSequence(update.EvidenceSequenceNos, sequenceNo)
+		}
+		updatesByID[itemID] = update
+	}
+
+	for _, sequenceNo := range sequenceNos {
+		text := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+		if text == "" || !serverExplicitClosurePattern.MatchString(text) || resolutionOpenPattern.MatchString(text) {
+			continue
+		}
+		if stats != nil {
+			stats.ExplicitClosureCandidates++
+		}
+		generic := strings.Contains(text, "この論点") && !closureProblemSubjectPattern.MatchString(strings.ReplaceAll(text, "この論点", ""))
+		target := ""
+		if generic && recentTarget != "" && sequenceNo-recentSequence <= 2 {
+			target = recentTarget
+		} else {
+			target = bestExplicitClosureTarget(items, text, sequenceNo, false)
+		}
+		if target == "" && !generic {
+			title := explicitClosureIssueTitle(text)
+			if title != "" && closureProblemSubjectPattern.MatchString(title) {
+				item := liveAnalysisItem{
+					Kind: "issue", Severity: "high", Title: title, Body: text, Status: "open",
+					EvidenceSequenceNos: []int64{sequenceNo}, evidenceSpecified: true,
+				}
+				item.ID = serverGeneratedItemID(item)
+				if at, exists := itemIndex[item.ID]; exists {
+					target = items[at].ID
+				} else {
+					diff = append(diff, item)
+					items = append(items, item)
+					itemIndex[item.ID] = len(items) - 1
+					target = item.ID
+				}
+			}
+		}
+		if target == "" && !generic {
+			target = bestExplicitClosureTarget(items, text, sequenceNo, true)
+		}
+		if target == "" {
+			if stats != nil {
+				stats.ClosureTargetsNotFound++
+			}
+			recordResolution(stats, resolutionEvaluation{
+				Requested:       true,
+				RequestedStatus: "resolved",
+				Result:          resolutionRejected,
+				Reason:          "no_target",
+			})
+			continue
+		}
+		if stats != nil {
+			stats.ClosureTargetsFound++
+		}
+		evidence := []int64{sequenceNo}
+		if generic && recentSequence > 0 {
+			evidence = append([]int64{recentSequence}, evidence...)
+		}
+		addUpdate(target, evidence...)
+		recentTarget, recentSequence = target, sequenceNo
+	}
+
+	updates := make([]resolutionUpdate, 0, len(updateOrder))
+	for _, id := range updateOrder {
+		updates = append(updates, updatesByID[id])
+	}
+	return diff, updates
+}
+
+func bestExplicitClosureTarget(items []liveAnalysisItem, text string, sequenceNo int64, allowTodo bool) string {
+	type scoredTarget struct {
+		id       string
+		priority int
+		score    float64
+	}
+	scored := make([]scoredTarget, 0)
+	priority := map[string]int{"question": 0, "open_issue": 0, "issue": 0, "risk": 0}
+	if allowTodo {
+		priority["todo"] = 1
+	}
+	for _, item := range items {
+		kindPriority, eligible := priority[item.Kind]
+		if !eligible || item.Status == "dismissed" {
+			continue
+		}
+		score := semanticItemSimilarity(item.Title+" "+item.Body, text)
+		near := false
+		for _, evidenceSequence := range item.EvidenceSequenceNos {
+			delta := sequenceNo - evidenceSequence
+			if delta >= 0 && delta <= 4 {
+				near = true
+				break
+			}
+		}
+		if near {
+			score += 0.05
+		}
+		if score < 0.08 {
+			continue
+		}
+		scored = append(scored, scoredTarget{id: item.ID, priority: kindPriority, score: score})
+	}
+	if len(scored) == 0 {
+		return ""
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].priority != scored[j].priority {
+			return scored[i].priority < scored[j].priority
+		}
+		return scored[i].score > scored[j].score
+	})
+	if len(scored) > 1 && scored[0].priority == scored[1].priority && scored[0].score-scored[1].score < 0.03 {
+		return ""
+	}
+	return scored[0].id
+}
+
+func explicitClosureIssueTitle(text string) string {
+	text = strings.Trim(strings.TrimSpace(text), "、。 ")
+	for _, prefix := range []string{"したがって、", "したがって", "そのため、", "そのため"} {
+		text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
+	}
+	for _, marker := range []string{"という問題は", "という問題", "については", "について"} {
+		if at := strings.Index(text, marker); at > 0 {
+			text = strings.Trim(strings.TrimSpace(text[:at]), "、。 ")
+			break
+		}
+	}
+	if text == "" || strings.Contains(text, "この論点") {
+		return ""
+	}
+	return truncateRunes(text, 40)
+}
+
+func mergeExplicitClosureUpdates(requested, fallback []resolutionUpdate, resolver *canonicalReferenceResolver) []resolutionUpdate {
+	merged := append([]resolutionUpdate(nil), requested...)
+	for _, candidate := range fallback {
+		candidateID, _, candidateOK := resolver.resolve(candidate.ItemID)
+		matched := false
+		for i := range merged {
+			if normalizeResolutionStatus(merged[i].Status) != "resolved" {
+				continue
+			}
+			existingID, _, existingOK := resolver.resolve(merged[i].ItemID)
+			if !candidateOK || !existingOK || candidateID != existingID {
+				continue
+			}
+			for _, sequenceNo := range candidate.EvidenceSequenceNos {
+				merged[i].EvidenceSequenceNos = appendUniqueSequence(merged[i].EvidenceSequenceNos, sequenceNo)
+			}
+			matched = true
+			break
+		}
+		if !matched {
+			merged = append(merged, candidate)
+		}
+	}
+	return merged
+}
 
 func recordResolution(stats *liveAnalysisTreeMergeStats, evaluation resolutionEvaluation) {
 	if stats == nil {
@@ -348,16 +541,26 @@ func applyResolutionUpdate(item *liveAnalysisItem, update validatedResolutionUpd
 		return
 	}
 	if update.Status == "resolved" {
+		wasResolved := item.Status == "resolved"
 		item.Status = "resolved"
-		item.ResolvedAtVersion = update.Version
-		item.ResolutionEvidenceSequenceNos = append([]int64(nil), update.EvidenceSequenceNos...)
-		item.ResolutionReason = update.Reason
+		if !wasResolved || item.ResolvedAtVersion == 0 {
+			item.ResolvedAtVersion = update.Version
+		}
+		for _, sequenceNo := range update.EvidenceSequenceNos {
+			item.ResolutionEvidenceSequenceNos = appendUniqueSequence(item.ResolutionEvidenceSequenceNos, sequenceNo)
+		}
+		if strings.TrimSpace(update.Reason) != "" {
+			item.ResolutionReason = update.Reason
+		}
 		return
 	}
+	wasResolved := item.Status == "resolved"
 	item.Status = "open"
-	item.ReopenedAtVersion = update.Version
-	item.ReopenEvidenceSequenceNos = append([]int64(nil), update.EvidenceSequenceNos...)
-	item.ReopenReason = update.Reason
+	if wasResolved {
+		item.ReopenedAtVersion = update.Version
+		item.ReopenEvidenceSequenceNos = append([]int64(nil), update.EvidenceSequenceNos...)
+		item.ReopenReason = update.Reason
+	}
 }
 
 func repairNonResolvableStatus(item *liveAnalysisItem) {

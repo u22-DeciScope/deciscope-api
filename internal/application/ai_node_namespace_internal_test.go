@@ -250,7 +250,7 @@ func TestSession91f9cfe6aad64b7bDeterministicReplay(t *testing.T) {
 	if stats.SourceActionSummaryAgendaCount != 2 || stats.LogicalActionSummaryCount != 1 || stats.RenderedActionItems > stats.ActionSummaryCandidates {
 		t.Fatalf("action stats=%+v", stats)
 	}
-	if parentOf(state.Tree, "open-wind") != "agenda-2" || parentOf(state.Tree, "decision-web") != "agenda-3" || parentOf(state.Tree, "todo-wetland") != "topic-wetland" {
+	if itemTopicID(state.Tree, "open-wind") != "agenda-2" || itemTopicID(state.Tree, "decision-web") != "agenda-3" || itemTopicID(state.Tree, "todo-wetland") != "topic-wetland" {
 		t.Fatalf("parents wind=%s web=%s wetland=%s assignments=%+v transitions=%+v", parentOf(state.Tree, "open-wind"), parentOf(state.Tree, "decision-web"), parentOf(state.Tree, "todo-wetland"), stats.AssignmentDecisions, stats.AgendaTransitions)
 	}
 	resolved := findItemByID(state.Items, "risk-bird-sites")

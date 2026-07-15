@@ -779,15 +779,17 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, issueAudit.QuestionCandidates, issueAudit.OpenIssueCandidates, issueAudit.QuestionsAccepted, issueAudit.OpenIssuesAccepted, issueAudit.ExistingMerged)
 	log.Printf("Live action summary projection. sessionId=%s version=%d sourceActionSummaryAgendaCount=%d actionSummaryAgendaIds=%v logicalActionSummaryCount=%d actionSummaryCandidates=%d deduplicatedActionItems=%d renderedActionItems=%d renderedActionTabs=1 renderedReferenceNodes=0 activeTodoReferences=%d activeOpenIssueFallbacks=%d completedItemsExcluded=%d resolvedItemsExcluded=%d clusteredReferences=%d",
 		sessionID, newVersion, treeStats.SourceActionSummaryAgendaCount, actionSummaryAgendaIDs, treeStats.LogicalActionSummaryCount, treeStats.ActionSummaryCandidates, treeStats.DeduplicatedActionItems, treeStats.RenderedActionItems, treeStats.ActiveTodoReferences, treeStats.ActiveOpenIssueFallbacks, treeStats.CompletedTodoExcluded, treeStats.ResolvedItemsExcluded, treeStats.ClusteredReferences)
-	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d tentativeItemsHidden=%d companionParentInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d",
-		sessionID, newVersion, treeStats.TrueUnclassifiedItems, stats.TentativeItems, treeStats.TentativeItemsHidden, treeStats.CompanionParentInherited, treeStats.SemanticParentCorrected, treeStats.PromotedItemsReparented, treeStats.StaleCandidatesHidden)
+	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d tentativeItemsHidden=%d companionParentInherited=%d companionCandidateInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d tentativeMetadataLost=%d",
+		sessionID, newVersion, treeStats.TrueUnclassifiedItems, stats.TentativeItems, treeStats.TentativeItemsHidden, treeStats.CompanionParentInherited, treeStats.CompanionCandidateInherited, treeStats.SemanticParentCorrected, treeStats.PromotedItemsReparented, treeStats.StaleCandidatesHidden, treeStats.TentativeMetadataLost)
+	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d",
+		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited)
 	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d recapMerged=%d",
 		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.RecapMerged)
 	log.Printf("Live evidence normalization. sessionId=%s version=%d numericStringsNormalized=%d rejectedValues=%d outOfRoundValues=%d quarantinedItems=%d currentRoundEvidenceAccepted=%d historicalEvidenceAccepted=%d futureEvidenceRejected=%d missingEvidenceRejected=%d existingEvidencePreserved=%d",
 		sessionID, newVersion, treeStats.EvidenceNumericStringsNormalized, treeStats.EvidenceValuesRejected, treeStats.EvidenceValuesOutOfRound, treeStats.EvidenceItemsQuarantined, treeStats.CurrentRoundEvidenceAccepted, treeStats.HistoricalEvidenceAccepted, treeStats.FutureEvidenceRejected, treeStats.MissingEvidenceRejected, treeStats.ExistingEvidencePreserved)
 	resolutionAudit := summarizeResolutionEvaluations(treeStats.ResolutionDecisions)
-	log.Printf("Live resolution lifecycle. sessionId=%s version=%d resolutionUpdatesRequested=%d resolutionUpdatesApplied=%d resolutionUpdatesRejected=%d resolutionRejectedNoEvidence=%d resolutionRejectedSemanticMismatch=%d resolutionRejectedContradicted=%d resolutionReopened=%d",
-		sessionID, newVersion, resolutionAudit.Requested, resolutionAudit.Applied, resolutionAudit.Rejected, resolutionAudit.RejectedNoEvidence, resolutionAudit.RejectedSemanticMismatch, resolutionAudit.RejectedContradicted, resolutionAudit.Reopened)
+	log.Printf("Live resolution lifecycle. sessionId=%s version=%d explicitClosureCandidates=%d closureTargetsFound=%d closureTargetsNotFound=%d resolutionUpdatesRequested=%d resolutionRequestedOpen=%d resolutionRequestedResolved=%d resolutionUpdatesApplied=%d resolutionAppliedOpen=%d resolutionAppliedResolved=%d resolutionAppliedReopen=%d resolutionAppliedNoop=%d resolutionUpdatesRejected=%d resolutionRejectedNoTarget=%d resolutionRejectedNoEvidence=%d resolutionRejectedSemanticMismatch=%d resolutionRejectedNoExplicitClosure=%d resolutionRejectedContradicted=%d",
+		sessionID, newVersion, treeStats.ExplicitClosureCandidates, treeStats.ClosureTargetsFound, treeStats.ClosureTargetsNotFound, resolutionAudit.Requested, resolutionAudit.RequestedOpen, resolutionAudit.RequestedResolved, resolutionAudit.Applied, resolutionAudit.AppliedOpen, resolutionAudit.AppliedResolved, resolutionAudit.AppliedReopen, resolutionAudit.AppliedNoop, resolutionAudit.Rejected, resolutionAudit.RejectedNoTarget, resolutionAudit.RejectedNoEvidence, resolutionAudit.RejectedSemanticMismatch, resolutionAudit.RejectedNoExplicitClosure, resolutionAudit.RejectedContradicted)
 	log.Printf("Live agenda context. sessionId=%s version=%d activeAgendaSpanCount=%d agendaTransitionDetected=%t agendaTransitionCount=%d",
 		sessionID, newVersion, treeStats.ActiveAgendaSpanCount, len(treeStats.AgendaTransitions) > 0, len(treeStats.AgendaTransitions))
 	log.Printf("Live item lifecycle counts. sessionId=%s version=%d questionCount=%d openQuestionCount=%d resolvedQuestionCount=%d openIssueCount=%d openOpenIssueCount=%d resolvedOpenIssueCount=%d todoCount=%d activeTodoCount=%d completedTodoCount=%d decisionCount=%d factCount=%d riskCount=%d openRiskCount=%d resolvedRiskCount=%d",
@@ -890,8 +892,8 @@ func logClassificationDecisions(sessionID string, stats *liveAnalysisTreeMergeSt
 			sessionID, d.ModelItemID, d.ItemID, d.RequestedParentID, d.SelectedParentID, d.Confidence, d.Source, d.Decision, d.Status, d.CandidateTopicID)
 	}
 	for _, d := range stats.ItemLifecycles {
-		log.Printf("Item lifecycle evaluated. sessionId=%s modelItemId=%s canonicalItemId=%s oldKind=%s newKind=%s mergeTargetId=%s assignmentRequestedParentId=%s assignmentSelectedParentId=%s resolvedRequested=%t resolvedApplied=%t",
-			sessionID, d.ModelItemID, d.CanonicalItemID, d.OldKind, d.NewKind, d.MergeTargetID, d.AssignmentRequestedParent, d.AssignmentSelectedParent, d.ResolvedRequested, d.ResolvedApplied)
+		log.Printf("Item lifecycle evaluated. sessionId=%s modelItemId=%s canonicalItemId=%s oldKind=%s newKind=%s mergeTargetId=%s assignmentRequestedParentId=%s assignmentSelectedParentId=%s classificationStatusBefore=%s classificationStatusAfter=%s candidateTopicIdBefore=%s candidateTopicIdAfter=%s candidateEvidenceRegistered=%t resolvedRequested=%t resolvedApplied=%t",
+			sessionID, d.ModelItemID, d.CanonicalItemID, d.OldKind, d.NewKind, d.MergeTargetID, d.AssignmentRequestedParent, d.AssignmentSelectedParent, d.ClassificationStatusBefore, d.ClassificationStatusAfter, d.CandidateTopicIDBefore, d.CandidateTopicIDAfter, d.CandidateEvidenceRegistered, d.ResolvedRequested, d.ResolvedApplied)
 	}
 	for _, d := range stats.ItemIdentityDecisions {
 		log.Printf("Item identity evaluated. sessionId=%s modelItemId=%s canonicalItemId=%s nodeType=%s collisionWithNodeType=%s remapped=%t quarantined=%t reason=%s",
@@ -906,12 +908,12 @@ func logClassificationDecisions(sessionID string, stats *liveAnalysisTreeMergeSt
 			sessionID, transition.SequenceNo, transition.AgendaID, transition.Confidence)
 	}
 	for _, d := range stats.EmergingDecisions {
-		log.Printf("Emerging topic evaluated. sessionId=%s candidateId=%s evidenceItemCount=%d evidenceRoundCount=%d decision=%s newTopicId=%s",
-			sessionID, d.CandidateID, d.EvidenceItemCount, d.RoundCount, d.Decision, d.TopicID)
+		log.Printf("Emerging topic evaluated. sessionId=%s candidateId=%s evidenceItemCount=%d evidenceRoundCount=%d decision=%s newTopicId=%s reason=%s",
+			sessionID, d.CandidateID, d.EvidenceItemCount, d.RoundCount, d.Decision, d.TopicID, d.Reason)
 	}
 	for _, d := range stats.GroupDecisions {
-		log.Printf("Group candidate evaluated. sessionId=%s parentId=%s candidateLabelHash=%s candidateItemCount=%d validEvidenceItemCount=%d result=%s reason=%s",
-			sessionID, d.ParentID, d.CandidateLabelHash, d.CandidateItemCount, d.ValidEvidenceItemCount, d.Result, d.Reason)
+		log.Printf("Group candidate evaluated. sessionId=%s parentId=%s totalDetailItems=%d eligibleDetailItems=%d excludedDetailItems=%d excludedByKind=%d excludedByClassification=%d excludedByEvidence=%d excludedByParent=%d excludedByResolution=%d semanticClusterCount=%d groupCandidates=%d groupsCreated=%d candidateLabelHash=%s candidateItemCount=%d validEvidenceItemCount=%d result=%s reason=%s",
+			sessionID, d.ParentID, d.TotalDetailItems, d.EligibleDetailItems, d.ExcludedDetailItems, d.ExcludedByKind, d.ExcludedByClassification, d.ExcludedByEvidence, d.ExcludedByParent, d.ExcludedByResolution, d.SemanticClusterCount, d.GroupCandidates, d.GroupsCreated, d.CandidateLabelHash, d.CandidateItemCount, d.ValidEvidenceItemCount, d.Result, d.Reason)
 	}
 }
 
@@ -3074,44 +3076,63 @@ type liveAnalysisTreeMergeStats struct {
 	RecapMerged                     int
 	// Classification/projection diagnostics make the computed action summary
 	// and tentative staging observable without creating extra tree nodes.
-	ActionSummaryCandidates  int
-	ActiveTodoReferences     int
-	ActiveOpenIssueFallbacks int
-	CompletedTodoExcluded    int
-	ResolvedItemsExcluded    int
-	ClusteredReferences      int
-	TrueUnclassifiedItems    int
-	TentativeItemsHidden     int
-	CompanionParentInherited int
-	SemanticParentCorrected  int
-	PromotedItemsReparented  int
-	StaleCandidatesHidden    int
-	ActiveAgendaSpanCount    int
-	AgendaTransitions        []agendaTransitionEvaluation
-	ReorganizeOperations     []treeOperationEvaluation
-	ReorganizeProposed       int
-	ReorganizeApplied        int
-	ReorganizeNoop           int
-	ReorganizeRejected       int
-	ReorganizeInvalid        int
-	GroupsCreated            int
-	GroupsFlattened          int
-	GroupCandidates          int
-	GroupsSkipped            int
-	GroupSkipReasons         map[string]int
-	GroupDecisions           []groupCandidateDecision
+	ActionSummaryCandidates             int
+	ActiveTodoReferences                int
+	ActiveOpenIssueFallbacks            int
+	CompletedTodoExcluded               int
+	ResolvedItemsExcluded               int
+	ClusteredReferences                 int
+	TrueUnclassifiedItems               int
+	TentativeItemsHidden                int
+	CompanionParentInherited            int
+	SemanticParentCorrected             int
+	PromotedItemsReparented             int
+	PromotedItemIDs                     []string
+	StaleCandidatesHidden               int
+	CandidateCreated                    int
+	CandidateCreationRejectedNoEvidence int
+	CandidateEvidenceAdded              int
+	CandidateEvidenceDeduplicated       int
+	CandidateEvidenceRemapped           int
+	CandidatePromoted                   int
+	CandidateFoldedIntoAgenda           int
+	CandidateInactive                   int
+	TentativeMetadataLost               int
+	CompanionCandidateInherited         int
+	ExplicitClosureCandidates           int
+	ClosureTargetsFound                 int
+	ClosureTargetsNotFound              int
+	ActiveAgendaSpanCount               int
+	AgendaTransitions                   []agendaTransitionEvaluation
+	ReorganizeOperations                []treeOperationEvaluation
+	ReorganizeProposed                  int
+	ReorganizeApplied                   int
+	ReorganizeNoop                      int
+	ReorganizeRejected                  int
+	ReorganizeInvalid                   int
+	GroupsCreated                       int
+	GroupsFlattened                     int
+	GroupCandidates                     int
+	GroupsSkipped                       int
+	GroupSkipReasons                    map[string]int
+	GroupDecisions                      []groupCandidateDecision
 }
 
 type itemLifecycleEvaluation struct {
-	ModelItemID               string
-	CanonicalItemID           string
-	OldKind                   string
-	NewKind                   string
-	MergeTargetID             string
-	AssignmentRequestedParent string
-	AssignmentSelectedParent  string
-	ResolvedRequested         bool
-	ResolvedApplied           bool
+	ModelItemID                 string
+	CanonicalItemID             string
+	OldKind                     string
+	NewKind                     string
+	MergeTargetID               string
+	AssignmentRequestedParent   string
+	AssignmentSelectedParent    string
+	ResolvedRequested           bool
+	ResolvedApplied             bool
+	ClassificationStatusBefore  string
+	ClassificationStatusAfter   string
+	CandidateTopicIDBefore      string
+	CandidateTopicIDAfter       string
+	CandidateEvidenceRegistered bool
 }
 
 // liveAnalysisDroppedNodeDetail は addNode が破棄した個々のノードの内訳。
@@ -3394,6 +3415,12 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 			resolver.redirect(alias, canonical)
 		}
 	}
+	var closureUpdates []resolutionUpdate
+	diffItems, closureUpdates = synthesizeExplicitClosureUpdates(previous.Items, diffItems, evidenceScope, treeStats)
+	for _, item := range diffItems {
+		resolver.add(item.ID, item.ID)
+	}
+	requestedResolutionUpdates = mergeExplicitClosureUpdates(requestedResolutionUpdates, closureUpdates, resolver)
 	for i := range assignments {
 		requestedID := assignments[i].nodeID()
 		assignments[i].ModelNodeID = requestedID
@@ -3417,8 +3444,11 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	for i := range previous.EmergingTopics {
 		kept := previous.EmergingTopics[i].EvidenceItemIDs[:0]
 		for _, id := range previous.EmergingTopics[i].EvidenceItemIDs {
-			if canonical, _, ok := resolver.resolve(id); ok {
+			if canonical, aliased, ok := resolver.resolve(id); ok {
 				kept = append(kept, canonical)
+				if treeStats != nil && aliased {
+					treeStats.CandidateEvidenceRemapped++
+				}
 			} else if treeStats != nil {
 				treeStats.UnknownEmergingEvidenceIDs++
 			}
@@ -3446,9 +3476,19 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 		merged.DegradedReason = "tree_integrity_rejected"
 		merged.TreeIntegrity = &integrity
 	}
-	recordItemLifecycleEvaluations(modelItems, previous.Items, diffItems, requestedResolvedIDs, resolvedIDs, resolver, treeStats)
+	recordItemLifecycleEvaluations(modelItems, previous.Items, diffItems, merged.Items, requestedResolvedIDs, resolvedIDs, resolver, treeStats)
 	merged.TreeVersion = treeVersion
 	merged.TreeChanges = diffLiveAnalysisTrees(previous.Tree, merged.Tree, treeVersion)
+	if treeStats != nil && len(treeStats.PromotedItemIDs) > 0 {
+		if merged.TreeChanges == nil {
+			merged.TreeChanges = &liveAnalysisTreeChanges{TreeVersion: treeVersion}
+		}
+		merged.TreeChanges.ReparentedNodeIDs = uniqueNonEmptyIDs(append(
+			merged.TreeChanges.ReparentedNodeIDs,
+			treeStats.PromotedItemIDs...,
+		))
+		sort.Strings(merged.TreeChanges.ReparentedNodeIDs)
+	}
 	if merged.isEmpty() {
 		return nil, newLiveAnalysisSchemaError("live analysis payload is empty", nil)
 	}
@@ -3462,17 +3502,42 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	return normalized, nil
 }
 
-func recordItemLifecycleEvaluations(modelItems, previousItems, diffItems []liveAnalysisItem, requestedResolvedIDs, appliedResolvedIDs map[string]struct{}, resolver *canonicalReferenceResolver, stats *liveAnalysisTreeMergeStats) {
+func recordItemLifecycleEvaluations(modelItems, previousItems, diffItems, currentItems []liveAnalysisItem, requestedResolvedIDs, appliedResolvedIDs map[string]struct{}, resolver *canonicalReferenceResolver, stats *liveAnalysisTreeMergeStats) {
 	if stats == nil {
 		return
 	}
 	previousKinds := make(map[string]string, len(previousItems))
+	previousByID := make(map[string]liveAnalysisItem, len(previousItems))
 	for _, item := range previousItems {
 		previousKinds[item.ID] = item.Kind
+		previousByID[item.ID] = item
 	}
 	diffKinds := make(map[string]string, len(diffItems))
 	for _, item := range diffItems {
 		diffKinds[item.ID] = item.Kind
+	}
+	currentByID := make(map[string]liveAnalysisItem, len(currentItems))
+	for _, item := range currentItems {
+		currentByID[item.ID] = item
+	}
+	candidateEvidenceIDs := make(map[string]struct{}, len(stats.PromotedItemIDs)+len(stats.AssignmentDecisions))
+	promotedItemIDs := make(map[string]struct{}, len(stats.PromotedItemIDs))
+	rejectedCandidateIDs := make(map[string]struct{})
+	for _, decision := range stats.EmergingDecisions {
+		if decision.Decision == emergingRejectedNoEvidence {
+			rejectedCandidateIDs[decision.CandidateID] = struct{}{}
+		}
+	}
+	for _, id := range stats.PromotedItemIDs {
+		candidateEvidenceIDs[id] = struct{}{}
+		promotedItemIDs[id] = struct{}{}
+	}
+	for _, assignment := range stats.AssignmentDecisions {
+		if assignment.Status == classificationTentative && assignment.CandidateTopicID != "" {
+			if _, rejected := rejectedCandidateIDs[assignment.CandidateTopicID]; !rejected {
+				candidateEvidenceIDs[assignment.ItemID] = struct{}{}
+			}
+		}
 	}
 	requested := func(modelID, canonicalID string) bool {
 		modelKey := canonicalReferenceKey(modelID)
@@ -3498,6 +3563,22 @@ func recordItemLifecycleEvaluations(modelItems, previousItems, diffItems []liveA
 			NewKind:           diffKinds[canonicalID],
 			MergeTargetID:     canonicalID,
 			ResolvedRequested: requested(modelReference, canonicalID),
+		}
+		if previousItem, exists := previousByID[canonicalID]; exists {
+			evaluation.ClassificationStatusBefore = previousItem.ClassificationStatus
+			evaluation.CandidateTopicIDBefore = previousItem.CandidateTopicID
+		}
+		if currentItem, exists := currentByID[canonicalID]; exists {
+			evaluation.ClassificationStatusAfter = currentItem.ClassificationStatus
+			evaluation.CandidateTopicIDAfter = currentItem.CandidateTopicID
+			_, registered := candidateEvidenceIDs[canonicalID]
+			evaluation.CandidateEvidenceRegistered = currentItem.CandidateTopicID != "" || registered
+			if registered && currentItem.ClassificationStatus != classificationTentative && currentItem.CandidateTopicID == "" {
+				_, promoted := promotedItemIDs[canonicalID]
+				if !promoted {
+					stats.TentativeMetadataLost++
+				}
+			}
 		}
 		_, evaluation.ResolvedApplied = appliedResolvedIDs[canonicalID]
 		for _, assignment := range stats.AssignmentDecisions {
@@ -4137,13 +4218,21 @@ func countModelResolvedIDs(content string) int {
 }
 
 type resolutionAuditCounts struct {
-	Requested                int
-	Applied                  int
-	Rejected                 int
-	RejectedNoEvidence       int
-	RejectedSemanticMismatch int
-	RejectedContradicted     int
-	Reopened                 int
+	Requested                 int
+	RequestedOpen             int
+	RequestedResolved         int
+	Applied                   int
+	AppliedOpen               int
+	AppliedResolved           int
+	AppliedReopen             int
+	AppliedNoop               int
+	Rejected                  int
+	RejectedNoTarget          int
+	RejectedNoEvidence        int
+	RejectedSemanticMismatch  int
+	RejectedNoExplicitClosure int
+	RejectedContradicted      int
+	Reopened                  int
 }
 
 func summarizeResolutionEvaluations(evaluations []resolutionEvaluation) resolutionAuditCounts {
@@ -4151,20 +4240,36 @@ func summarizeResolutionEvaluations(evaluations []resolutionEvaluation) resoluti
 	for _, evaluation := range evaluations {
 		if evaluation.Requested {
 			counts.Requested++
+			if evaluation.RequestedStatus == "resolved" {
+				counts.RequestedResolved++
+			} else if evaluation.RequestedStatus == "open" {
+				counts.RequestedOpen++
+			}
 		}
 		if evaluation.Applied {
 			counts.Applied++
-			if evaluation.Reopened {
+			if evaluation.OldStatus == evaluation.RequestedStatus {
+				counts.AppliedNoop++
+			} else if evaluation.Reopened {
 				counts.Reopened++
+				counts.AppliedReopen++
+			} else if evaluation.RequestedStatus == "resolved" {
+				counts.AppliedResolved++
+			} else if evaluation.RequestedStatus == "open" {
+				counts.AppliedOpen++
 			}
 		} else if evaluation.Result == resolutionRejected {
 			counts.Rejected++
 		}
 		switch evaluation.Reason {
+		case "no_target", "unknown_item_id":
+			counts.RejectedNoTarget++
 		case "no_valid_evidence", "no_evidence_text":
 			counts.RejectedNoEvidence++
 		case "semantic_mismatch":
 			counts.RejectedSemanticMismatch++
+		case "no_explicit_closure":
+			counts.RejectedNoExplicitClosure++
 		case "contradicted_by_later_evidence", "contradicted_by_latest_evidence":
 			counts.RejectedContradicted++
 		}

@@ -458,24 +458,20 @@ func TestTentativeCandidatePromotesAtomicallyAfterStableVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for version := int64(2); version <= 3; version++ {
-		stats := &liveAnalysisTreeMergeStats{}
-		raw, err = parseAndMergeLiveAnalysisPayload(`{"summary":"","currentTopic":"","resolvedIds":[],"items":[],"newTopics":[],"assignments":[]}`, raw, mc, version, nil, TreeClassificationConfig{PromotionMinItems: 2, PromotionMinRounds: 2}, stats)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if version == 2 && treeNodeByID(previousLiveAnalysisState(raw).Tree, "topic-plant") != nil {
-			t.Fatal("candidate promoted before the staging interval elapsed")
-		}
-		if version == 3 {
-			state := previousLiveAnalysisState(raw)
-			if len(state.EmergingTopics) != 0 || parentOf(state.Tree, "todo-plant") != "topic-plant" || parentOf(state.Tree, "question-plant") != "topic-plant" {
-				t.Fatalf("state=%+v", state)
-			}
-			if stats.PromotedItemsReparented != 2 || state.TreeChanges == nil || len(state.TreeChanges.ReparentedNodeIDs) != 2 {
-				t.Fatalf("stats=%+v changes=%+v", stats, state.TreeChanges)
-			}
-		}
+	stats := &liveAnalysisTreeMergeStats{}
+	second := `{"summary":"","currentTopic":"","resolvedIds":[],"items":[
+		{"id":"todo-plant","kind":"todo","severity":"medium","title":"植物の予備調査","body":"専門家に依頼する","status":"updated","evidenceSequenceNos":[2]}
+	],"newTopics":[],"assignments":[{"nodeId":"todo-plant","parentTopicId":"topic-plant","confidence":0.8}]}`
+	raw, err = parseAndMergeLiveAnalysisPayload(second, raw, mc, 2, []int64{2}, TreeClassificationConfig{PromotionMinItems: 2, PromotionMinRounds: 2}, stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := previousLiveAnalysisState(raw)
+	if len(state.EmergingTopics) != 0 || parentOf(state.Tree, "todo-plant") != "topic-plant" || parentOf(state.Tree, "question-plant") != "topic-plant" {
+		t.Fatalf("state=%+v", state)
+	}
+	if stats.PromotedItemsReparented != 2 || state.TreeChanges == nil || len(state.TreeChanges.ReparentedNodeIDs) != 2 {
+		t.Fatalf("stats=%+v changes=%+v", stats, state.TreeChanges)
 	}
 }
 
