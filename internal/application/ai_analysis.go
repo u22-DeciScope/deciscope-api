@@ -783,6 +783,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.TrueUnclassifiedItems, stats.TentativeItems, treeStats.TentativeItemsHidden, treeStats.CompanionParentInherited, treeStats.CompanionCandidateInherited, treeStats.SemanticParentCorrected, treeStats.PromotedItemsReparented, treeStats.StaleCandidatesHidden, treeStats.TentativeMetadataLost)
 	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d",
 		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited)
+	log.Printf("Live no-agenda candidate lifecycle. sessionId=%s version=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v staleAgendaFallbackRejected=%d fixedAgendaAssignmentRejectedByNoAgendaSpan=%d candidateSubjectKey=%v candidateIdsMerged=%d companionCandidateInherited=%d crossKindCandidateInherited=%d dynamicTopicPromoted=%d promotedItemIds=%v promotedItemsRemainingOutsideTopic=%d",
+		sessionID, newVersion, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.StaleAgendaFallbackRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, uniqueNonEmptyIDs(treeStats.CandidateSubjectKeys), treeStats.CandidateIDsMerged, treeStats.CompanionCandidateInherited, treeStats.CrossKindCandidateInherited, treeStats.DynamicTopicsPromoted, uniqueNonEmptyIDs(treeStats.PromotedItemIDs), treeStats.PromotedItemsRemainingOutsideTopic)
 	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d recapMerged=%d",
 		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.RecapMerged)
 	log.Printf("Live evidence normalization. sessionId=%s version=%d numericStringsNormalized=%d rejectedValues=%d outOfRoundValues=%d quarantinedItems=%d currentRoundEvidenceAccepted=%d historicalEvidenceAccepted=%d futureEvidenceRejected=%d missingEvidenceRejected=%d existingEvidencePreserved=%d",
@@ -790,8 +792,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	resolutionAudit := summarizeResolutionEvaluations(treeStats.ResolutionDecisions)
 	log.Printf("Live resolution lifecycle. sessionId=%s version=%d explicitClosureCandidates=%d closureTargetsFound=%d closureTargetsNotFound=%d resolutionUpdatesRequested=%d resolutionRequestedOpen=%d resolutionRequestedResolved=%d resolutionUpdatesApplied=%d resolutionAppliedOpen=%d resolutionAppliedResolved=%d resolutionAppliedReopen=%d resolutionAppliedNoop=%d resolutionUpdatesRejected=%d resolutionRejectedNoTarget=%d resolutionRejectedNoEvidence=%d resolutionRejectedSemanticMismatch=%d resolutionRejectedNoExplicitClosure=%d resolutionRejectedContradicted=%d",
 		sessionID, newVersion, treeStats.ExplicitClosureCandidates, treeStats.ClosureTargetsFound, treeStats.ClosureTargetsNotFound, resolutionAudit.Requested, resolutionAudit.RequestedOpen, resolutionAudit.RequestedResolved, resolutionAudit.Applied, resolutionAudit.AppliedOpen, resolutionAudit.AppliedResolved, resolutionAudit.AppliedReopen, resolutionAudit.AppliedNoop, resolutionAudit.Rejected, resolutionAudit.RejectedNoTarget, resolutionAudit.RejectedNoEvidence, resolutionAudit.RejectedSemanticMismatch, resolutionAudit.RejectedNoExplicitClosure, resolutionAudit.RejectedContradicted)
-	log.Printf("Live agenda context. sessionId=%s version=%d activeAgendaSpanCount=%d agendaTransitionDetected=%t agendaTransitionCount=%d",
-		sessionID, newVersion, treeStats.ActiveAgendaSpanCount, len(treeStats.AgendaTransitions) > 0, len(treeStats.AgendaTransitions))
+	log.Printf("Live agenda context. sessionId=%s version=%d activeAgendaSpanCount=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v staleAgendaFallbackRejected=%d agendaTransitionDetected=%t agendaTransitionCount=%d",
+		sessionID, newVersion, treeStats.ActiveAgendaSpanCount, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.StaleAgendaFallbackRejected, len(treeStats.AgendaTransitions) > 0, len(treeStats.AgendaTransitions))
 	log.Printf("Live item lifecycle counts. sessionId=%s version=%d questionCount=%d openQuestionCount=%d resolvedQuestionCount=%d openIssueCount=%d openOpenIssueCount=%d resolvedOpenIssueCount=%d todoCount=%d activeTodoCount=%d completedTodoCount=%d decisionCount=%d factCount=%d riskCount=%d openRiskCount=%d resolvedRiskCount=%d",
 		sessionID, newVersion,
 		stats.KindCounts["question"], stats.KindCounts["question"]-stats.ResolvedKindCounts["question"], stats.ResolvedKindCounts["question"],
@@ -888,8 +890,8 @@ func logClassificationDecisions(sessionID string, stats *liveAnalysisTreeMergeSt
 		return
 	}
 	for _, d := range stats.AssignmentDecisions {
-		log.Printf("Agenda assignment evaluated. sessionId=%s modelItemId=%s canonicalItemId=%s requestedParentId=%s selectedParentId=%s confidence=%.2f source=%s decision=%s classificationStatus=%s candidateTopicId=%s",
-			sessionID, d.ModelItemID, d.ItemID, d.RequestedParentID, d.SelectedParentID, d.Confidence, d.Source, d.Decision, d.Status, d.CandidateTopicID)
+		log.Printf("Agenda assignment evaluated. sessionId=%s modelItemId=%s canonicalItemId=%s evidenceSequenceNos=%v resolvedAgendaSpanMode=%s requestedParentId=%s selectedParentId=%s confidence=%.2f source=%s decision=%s classificationStatus=%s candidateTopicId=%s assignmentReason=%s",
+			sessionID, d.ModelItemID, d.ItemID, d.EvidenceSequenceNos, d.ResolvedAgendaSpanMode, d.RequestedParentID, d.SelectedParentID, d.Confidence, d.Source, d.Decision, d.Status, d.CandidateTopicID, d.AssignmentReason)
 	}
 	for _, d := range stats.ItemLifecycles {
 		log.Printf("Item lifecycle evaluated. sessionId=%s modelItemId=%s canonicalItemId=%s oldKind=%s newKind=%s mergeTargetId=%s assignmentRequestedParentId=%s assignmentSelectedParentId=%s classificationStatusBefore=%s classificationStatusAfter=%s candidateTopicIdBefore=%s candidateTopicIdAfter=%s candidateEvidenceRegistered=%t resolvedRequested=%t resolvedApplied=%t",
@@ -904,12 +906,12 @@ func logClassificationDecisions(sessionID string, stats *liveAnalysisTreeMergeSt
 			sessionID, d.ItemID, d.Kind, d.OldStatus, d.RequestedStatus, d.NewStatus, d.EvidenceSequenceNos, d.LatestContradictingSequence, d.Applied, d.Reopened, d.Legacy, d.AliasResolved, d.Result, d.Reason)
 	}
 	for _, transition := range stats.AgendaTransitions {
-		log.Printf("Agenda transition detected. sessionId=%s agendaTransitionSequenceNo=%d selectedAgendaId=%s confidence=%.2f selectedBy=active_span",
-			sessionID, transition.SequenceNo, transition.AgendaID, transition.Confidence)
+		log.Printf("Agenda transition detected. sessionId=%s agendaTransitionSequenceNo=%d resolvedAgendaSpanMode=%s selectedAgendaId=%s confidence=%.2f selectedBy=active_span",
+			sessionID, transition.SequenceNo, transition.Mode, transition.AgendaID, transition.Confidence)
 	}
 	for _, d := range stats.EmergingDecisions {
-		log.Printf("Emerging topic evaluated. sessionId=%s candidateId=%s evidenceItemCount=%d evidenceRoundCount=%d decision=%s newTopicId=%s reason=%s",
-			sessionID, d.CandidateID, d.EvidenceItemCount, d.RoundCount, d.Decision, d.TopicID, d.Reason)
+		log.Printf("Emerging topic evaluated. sessionId=%s candidateId=%s candidateSubjectKey=%s candidateIdsMerged=%v evidenceItemCount=%d evidenceRoundCount=%d decision=%s newTopicId=%s reason=%s",
+			sessionID, d.CandidateID, d.SubjectKey, d.MergedCandidateIDs, d.EvidenceItemCount, d.RoundCount, d.Decision, d.TopicID, d.Reason)
 	}
 	for _, d := range stats.GroupDecisions {
 		log.Printf("Group candidate evaluated. sessionId=%s parentId=%s totalDetailItems=%d eligibleDetailItems=%d excludedDetailItems=%d excludedByKind=%d excludedByClassification=%d excludedByEvidence=%d excludedByParent=%d excludedByResolution=%d semanticClusterCount=%d groupCandidates=%d groupsCreated=%d candidateLabelHash=%s candidateItemCount=%d validEvidenceItemCount=%d result=%s reason=%s",
@@ -2320,7 +2322,10 @@ func buildFinalAnalysisUserPrompt(livePayload json.RawMessage, mc *meetingContex
 	return b.String()
 }
 
-// buildAnalysisTranscript formats final segments as "話者名: テキスト" lines
+// buildAnalysisTranscript formats final segments with their canonical sequence
+// number. Evidence references in the model response are global transcript
+// sequence numbers, so omitting this value makes an otherwise valid local line
+// number point at an unrelated historical utterance.
 // and drops the oldest lines first when the joined text exceeds maxChars.
 func buildAnalysisTranscript(segments []domain.TranscriptSegment, maxChars int) (string, int) {
 	text, chars, _ := buildAnalysisTranscriptTruncated(segments, maxChars)
@@ -2338,7 +2343,11 @@ func buildAnalysisTranscriptTruncated(segments []domain.TranscriptSegment, maxCh
 		if speaker == "" {
 			speaker = "話者不明"
 		}
-		lines = append(lines, speaker+": "+text)
+		if segment.SequenceNo > 0 {
+			lines = append(lines, fmt.Sprintf("[sequenceNo=%d] %s: %s", segment.SequenceNo, speaker, text))
+		} else {
+			lines = append(lines, speaker+": "+text)
+		}
 	}
 	originalChars := totalLineChars(lines)
 	joined, chars := truncateLinesFromOldest(lines, maxChars)
@@ -2731,6 +2740,9 @@ type liveAnalysisTreeNode struct {
 	Status         string   `json:"status,omitempty"`
 	Description    string   `json:"description,omitempty"`
 	RelatedItemIDs []string `json:"relatedItemIds,omitempty"`
+	// ModelTopicIDs are compatibility aliases for a server-canonical dynamic
+	// topic ID. They are never used as node IDs.
+	ModelTopicIDs []string `json:"modelTopicIds,omitempty"`
 	// Origin はtopicノードの由来(agenda | dynamic | system)。詳細ノードでは
 	// 空。旧payloadでは空のままでもサーバーが再構築時にバックフィルする。
 	Origin string `json:"origin,omitempty"`
@@ -3076,46 +3088,54 @@ type liveAnalysisTreeMergeStats struct {
 	RecapMerged                     int
 	// Classification/projection diagnostics make the computed action summary
 	// and tentative staging observable without creating extra tree nodes.
-	ActionSummaryCandidates             int
-	ActiveTodoReferences                int
-	ActiveOpenIssueFallbacks            int
-	CompletedTodoExcluded               int
-	ResolvedItemsExcluded               int
-	ClusteredReferences                 int
-	TrueUnclassifiedItems               int
-	TentativeItemsHidden                int
-	CompanionParentInherited            int
-	SemanticParentCorrected             int
-	PromotedItemsReparented             int
-	PromotedItemIDs                     []string
-	StaleCandidatesHidden               int
-	CandidateCreated                    int
-	CandidateCreationRejectedNoEvidence int
-	CandidateEvidenceAdded              int
-	CandidateEvidenceDeduplicated       int
-	CandidateEvidenceRemapped           int
-	CandidatePromoted                   int
-	CandidateFoldedIntoAgenda           int
-	CandidateInactive                   int
-	TentativeMetadataLost               int
-	CompanionCandidateInherited         int
-	ExplicitClosureCandidates           int
-	ClosureTargetsFound                 int
-	ClosureTargetsNotFound              int
-	ActiveAgendaSpanCount               int
-	AgendaTransitions                   []agendaTransitionEvaluation
-	ReorganizeOperations                []treeOperationEvaluation
-	ReorganizeProposed                  int
-	ReorganizeApplied                   int
-	ReorganizeNoop                      int
-	ReorganizeRejected                  int
-	ReorganizeInvalid                   int
-	GroupsCreated                       int
-	GroupsFlattened                     int
-	GroupCandidates                     int
-	GroupsSkipped                       int
-	GroupSkipReasons                    map[string]int
-	GroupDecisions                      []groupCandidateDecision
+	ActionSummaryCandidates                     int
+	ActiveTodoReferences                        int
+	ActiveOpenIssueFallbacks                    int
+	CompletedTodoExcluded                       int
+	ResolvedItemsExcluded                       int
+	ClusteredReferences                         int
+	TrueUnclassifiedItems                       int
+	TentativeItemsHidden                        int
+	CompanionParentInherited                    int
+	SemanticParentCorrected                     int
+	PromotedItemsReparented                     int
+	PromotedItemIDs                             []string
+	StaleCandidatesHidden                       int
+	CandidateCreated                            int
+	CandidateCreationRejectedNoEvidence         int
+	CandidateEvidenceAdded                      int
+	CandidateEvidenceDeduplicated               int
+	CandidateEvidenceRemapped                   int
+	CandidatePromoted                           int
+	CandidateFoldedIntoAgenda                   int
+	CandidateInactive                           int
+	TentativeMetadataLost                       int
+	CompanionCandidateInherited                 int
+	CrossKindCandidateInherited                 int
+	NoAgendaSpanCount                           int
+	NoAgendaSpanStartSequences                  []int64
+	StaleAgendaFallbackRejected                 int
+	FixedAgendaAssignmentRejectedByNoAgendaSpan int
+	CandidateIDsMerged                          int
+	CandidateSubjectKeys                        []string
+	PromotedItemsRemainingOutsideTopic          int
+	ExplicitClosureCandidates                   int
+	ClosureTargetsFound                         int
+	ClosureTargetsNotFound                      int
+	ActiveAgendaSpanCount                       int
+	AgendaTransitions                           []agendaTransitionEvaluation
+	ReorganizeOperations                        []treeOperationEvaluation
+	ReorganizeProposed                          int
+	ReorganizeApplied                           int
+	ReorganizeNoop                              int
+	ReorganizeRejected                          int
+	ReorganizeInvalid                           int
+	GroupsCreated                               int
+	GroupsFlattened                             int
+	GroupCandidates                             int
+	GroupsSkipped                               int
+	GroupSkipReasons                            map[string]int
+	GroupDecisions                              []groupCandidateDecision
 }
 
 type itemLifecycleEvaluation struct {
@@ -3465,10 +3485,23 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	merged.Items = mergeLiveAnalysisItems(previous.Items, diffItems, resolutionUpdates)
 	appendItemEvidenceSequenceNos(merged.Items, diffItems, roundSeqNos, treeStats)
 	agendaSpans := detectAgendaContextSpans(evidenceScope, mc, treeStats)
-	assignments = applyAgendaContextAssignments(assignments, previous.Tree, merged.Items, diffItems, agendaSpans)
+	assignments, newTopics = applyAgendaContextAssignments(assignments, newTopics, previous.Tree, merged.Items, diffItems, previous.EmergingTopics, agendaSpans, treeStats)
 	merged.Tree, merged.Items, merged.EmergingTopics = rebuildDiscussionTree(
 		previous.Tree, mc, merged.Items, newTopics, assignments, resolvedIDs,
 		previous.EmergingTopics, treeVersion, cfg, treeStats)
+	if treeStats != nil && len(treeStats.PromotedItemIDs) > 0 {
+		topicOrigins := make(map[string]string)
+		for _, node := range merged.Tree.Nodes {
+			if node.Kind == "topic" {
+				topicOrigins[node.ID] = node.Origin
+			}
+		}
+		for _, itemID := range uniqueNonEmptyIDs(treeStats.PromotedItemIDs) {
+			if topicOrigins[treeItemTopic(merged.Tree, itemID)] != topicOriginDynamic {
+				treeStats.PromotedItemsRemainingOutsideTopic++
+			}
+		}
+	}
 	selectedTree, integrity, degraded := preserveTreeOnIntegrityFailure(merged.Tree, previous.Tree, merged.Items, previous.Items, mc, treeStats)
 	merged.Tree = selectedTree
 	if degraded {

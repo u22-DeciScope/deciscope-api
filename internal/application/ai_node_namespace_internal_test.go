@@ -250,7 +250,8 @@ func TestSession91f9cfe6aad64b7bDeterministicReplay(t *testing.T) {
 	if stats.SourceActionSummaryAgendaCount != 2 || stats.LogicalActionSummaryCount != 1 || stats.RenderedActionItems > stats.ActionSummaryCandidates {
 		t.Fatalf("action stats=%+v", stats)
 	}
-	if itemTopicID(state.Tree, "open-wind") != "agenda-2" || itemTopicID(state.Tree, "decision-web") != "agenda-3" || itemTopicID(state.Tree, "todo-wetland") != "topic-wetland" {
+	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "アジェンダ外の調査課題")
+	if itemTopicID(state.Tree, "open-wind") != "agenda-2" || itemTopicID(state.Tree, "decision-web") != "agenda-3" || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
 		t.Fatalf("parents wind=%s web=%s wetland=%s assignments=%+v transitions=%+v", parentOf(state.Tree, "open-wind"), parentOf(state.Tree, "decision-web"), parentOf(state.Tree, "todo-wetland"), stats.AssignmentDecisions, stats.AgendaTransitions)
 	}
 	resolved := findItemByID(state.Items, "risk-bird-sites")

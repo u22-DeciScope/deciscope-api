@@ -26,11 +26,12 @@ const (
 	classificationUnclassified = "unclassified"
 
 	// assignmentSource: この分類を最後に決めた主体。
-	assignmentSourceModel       = "model"       // AI提案をそのまま受理
-	assignmentSourceRule        = "rule"        // サーバー規則(昇格・repeat等)
-	assignmentSourceReorganizer = "reorganizer" // 再編成タスクのmove_node
-	assignmentSourceFallback    = "fallback"    // 不正・欠落時の救済
-	assignmentSourceActiveSpan  = "active_span" // 発話区間の明示的な議題転換
+	assignmentSourceModel        = "model"          // AI提案をそのまま受理
+	assignmentSourceRule         = "rule"           // サーバー規則(昇格・repeat等)
+	assignmentSourceReorganizer  = "reorganizer"    // 再編成タスクのmove_node
+	assignmentSourceFallback     = "fallback"       // 不正・欠落時の救済
+	assignmentSourceActiveSpan   = "active_span"    // 発話区間の明示的な議題転換
+	assignmentSourceNoAgendaSpan = "no_agenda_span" // 明示的なアジェンダ外区間
 
 	// topic.origin: topicノードの由来。
 	topicOriginAgenda  = "agenda"  // 会議前アジェンダ(stable ID, 削除・統合不可)
@@ -120,6 +121,9 @@ type emergingTopicCandidate struct {
 	ID          string `json:"id"`
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty"`
+	// ModelTopicIDs are non-authoritative aliases retained only so later model
+	// rounds can refer to their original proposal after ID canonicalization.
+	ModelTopicIDs []string `json:"modelTopicIds,omitempty"`
 	// EvidenceItemIDs はこの候補への割当が提案されたitem(重複なし・上限あり)。
 	EvidenceItemIDs []string `json:"evidenceItemIds,omitempty"`
 	// FirstRound / LastRound / RoundCount は証拠が集まった分析ラウンド
@@ -231,15 +235,18 @@ func deriveTopicOrigin(topicID string, agendaIDs map[string]struct{}) string {
 // assignmentDecision は1つの割当提案に対するサーバー判定。ログ専用で、本文
 // (title/body/理由文)は含めない。
 type assignmentDecision struct {
-	ModelItemID       string
-	ItemID            string
-	RequestedParentID string
-	SelectedParentID  string
-	Confidence        float64
-	Source            string
-	Decision          string
-	Status            string
-	CandidateTopicID  string
+	ModelItemID            string
+	ItemID                 string
+	RequestedParentID      string
+	SelectedParentID       string
+	Confidence             float64
+	Source                 string
+	Decision               string
+	Status                 string
+	CandidateTopicID       string
+	EvidenceSequenceNos    []int64
+	ResolvedAgendaSpanMode string
+	AssignmentReason       string
 }
 
 // assignmentDecision.Decision の語彙。
@@ -255,16 +262,19 @@ const (
 	assignmentRelatedActionSummary = "related_action_summary"    // 横断agendaは副次関係のみ
 	assignmentCorrectedSemantic    = "corrected_semantic_parent" // 内容一致するprimary agendaへ補正
 	assignmentAcceptedActiveSpan   = "accepted_active_span"      // 明示的な議題区間を優先
+	assignmentAcceptedNoAgendaSpan = "accepted_no_agenda_span"   // 明示的な議題外区間を候補へ集約
 )
 
 // emergingDecision は新topic候補に対するサーバー判定(ログ専用)。
 type emergingDecision struct {
-	CandidateID       string
-	EvidenceItemCount int
-	RoundCount        int
-	Decision          string
-	TopicID           string
-	Reason            string
+	CandidateID        string
+	EvidenceItemCount  int
+	RoundCount         int
+	Decision           string
+	TopicID            string
+	Reason             string
+	SubjectKey         string
+	MergedCandidateIDs []string
 }
 
 const (

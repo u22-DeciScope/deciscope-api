@@ -167,7 +167,8 @@ func TestHistoricalEvidenceSupportsEmergingTopicPromotionAcrossRounds(t *testing
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(secondRaw)
-	if len(state.EmergingTopics) != 0 || parentOf(state.Tree, "todo-wetland-1") != "topic-wetland" || parentOf(state.Tree, "todo-wetland-2") != "topic-wetland" || stats.HistoricalEvidenceAccepted != 1 {
+	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
+	if len(state.EmergingTopics) != 0 || itemTopicID(state.Tree, "todo-wetland-1") != dynamicID || itemTopicID(state.Tree, "todo-wetland-2") != dynamicID || stats.HistoricalEvidenceAccepted != 1 {
 		t.Fatalf("state=%+v stats=%+v", state, stats)
 	}
 }
@@ -289,7 +290,8 @@ func TestActionSummaryAssignmentSelectsSemanticPrimaryAgenda(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if parentOf(state.Tree, "todo-meeting-date") != "agenda-3" || parentOf(state.Tree, "todo-wind") != "agenda-2" || parentOf(state.Tree, "todo-wetland") != "topic-wetland" {
+	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
+	if itemTopicID(state.Tree, "todo-meeting-date") != "agenda-3" || itemTopicID(state.Tree, "todo-wind") != "agenda-2" || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
 		t.Fatalf("parents: meeting=%s wind=%s wetland=%s", parentOf(state.Tree, "todo-meeting-date"), parentOf(state.Tree, "todo-wind"), parentOf(state.Tree, "todo-wetland"))
 	}
 	for _, id := range []string{"todo-meeting-date", "todo-wind", "todo-wetland"} {
@@ -467,7 +469,8 @@ func TestTentativeCandidatePromotesAtomicallyAfterStableVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.EmergingTopics) != 0 || parentOf(state.Tree, "todo-plant") != "topic-plant" || parentOf(state.Tree, "question-plant") != "topic-plant" {
+	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
+	if len(state.EmergingTopics) != 0 || itemTopicID(state.Tree, "todo-plant") != dynamicID || itemTopicID(state.Tree, "question-plant") != dynamicID {
 		t.Fatalf("state=%+v", state)
 	}
 	if stats.PromotedItemsReparented != 2 || state.TreeChanges == nil || len(state.TreeChanges.ReparentedNodeIDs) != 2 {
@@ -558,7 +561,8 @@ func TestSession04e9dec1aaa164b3ReplayAcceptance(t *testing.T) {
 		}
 	}
 	residentID := "todo-residents-doc-publicity-01"
-	if parentOf(state.Tree, residentID) != "agenda-3" || parentOf(state.Tree, "todo-meeting-date") != "agenda-3" || parentOf(state.Tree, "todo-wetland") != "topic-wetland" {
+	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
+	if itemTopicID(state.Tree, residentID) != "agenda-3" || itemTopicID(state.Tree, "todo-meeting-date") != "agenda-3" || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
 		t.Fatalf("parents resident=%s meeting=%s wetland=%s", parentOf(state.Tree, residentID), parentOf(state.Tree, "todo-meeting-date"), parentOf(state.Tree, "todo-wetland"))
 	}
 	health := computeTreeHealth(state.Tree)

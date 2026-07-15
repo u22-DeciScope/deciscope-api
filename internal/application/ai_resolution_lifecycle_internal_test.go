@@ -304,7 +304,7 @@ func TestSession0f1ade26ee8babedDeterministicReplay(t *testing.T) {
 		t.Fatalf("action summary rows=%d items=%+v", actionRows, state.Items)
 	}
 	resolutionAudit := summarizeResolutionEvaluations(stats.ResolutionDecisions)
-	if resolutionAudit.Rejected < 3 || stats.ActiveAgendaSpanCount != 3 || state.CoveredThroughSequenceNo != 37 {
+	if resolutionAudit.Rejected < 3 || stats.ActiveAgendaSpanCount != 4 || stats.NoAgendaSpanCount != 1 || state.CoveredThroughSequenceNo != 37 {
 		t.Fatalf("resolutionAudit=%+v agendaSpans=%d coverage=%d", resolutionAudit, stats.ActiveAgendaSpanCount, state.CoveredThroughSequenceNo)
 	}
 	kindCounts := make(map[string]int)

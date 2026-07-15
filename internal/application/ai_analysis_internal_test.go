@@ -547,8 +547,9 @@ func TestMergeSendsNewTopicProposalToEmergingCandidate(t *testing.T) {
 	if treeNodeByID(merged.Tree, "topic-quality") != nil {
 		t.Fatalf("proposed topic must not be created immediately: %+v", merged.Tree.Nodes)
 	}
-	if len(merged.EmergingTopics) != 1 || merged.EmergingTopics[0].ID != "topic-quality" {
-		t.Fatalf("emergingTopics = %+v, want candidate topic-quality", merged.EmergingTopics)
+	candidateID, _ := canonicalCandidateID("品質", "")
+	if len(merged.EmergingTopics) != 1 || merged.EmergingTopics[0].ID != candidateID {
+		t.Fatalf("emergingTopics = %+v, want server candidate %s", merged.EmergingTopics, candidateID)
 	}
 	if got := merged.EmergingTopics[0].EvidenceItemIDs; len(got) != 1 || got[0] != "issue-a" {
 		t.Fatalf("evidence = %+v, want [issue-a]", got)

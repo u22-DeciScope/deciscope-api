@@ -23,13 +23,15 @@ import (
 
 // treeAssignment is a model-proposed parent assignment for one node.
 type treeAssignment struct {
-	NodeID        string  `json:"nodeId"`
-	ItemID        string  `json:"itemId"` // alias: some models answer itemId
-	ParentTopicID string  `json:"parentTopicId"`
-	Confidence    float64 `json:"confidence"`
-	Reason        string  `json:"reason"`
-	ModelNodeID   string  `json:"-"`
-	ServerSource  string  `json:"-"`
+	NodeID                 string  `json:"nodeId"`
+	ItemID                 string  `json:"itemId"` // alias: some models answer itemId
+	ParentTopicID          string  `json:"parentTopicId"`
+	Confidence             float64 `json:"confidence"`
+	Reason                 string  `json:"reason"`
+	ModelNodeID            string  `json:"-"`
+	ServerSource           string  `json:"-"`
+	EvidenceSequenceNos    []int64 `json:"-"`
+	ResolvedAgendaSpanMode string  `json:"-"`
 }
 
 func (a treeAssignment) nodeID() string {
@@ -37,6 +39,15 @@ func (a treeAssignment) nodeID() string {
 		return id
 	}
 	return strings.TrimSpace(a.ItemID)
+}
+
+func containsExactString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // treeHealth summarizes the shape of the finished tree. It drives the
@@ -413,6 +424,13 @@ func rebuildDiscussionTree(
 	// (bootstrap時を除く)。candidateAlias maps a re-proposed id onto the
 	// tracked candidate so assignments keep working.
 	topicAlias := make(map[string]string)
+	for id, topic := range topics {
+		for _, alias := range topic.ModelTopicIDs {
+			if alias != "" && alias != id {
+				topicAlias[alias] = id
+			}
+		}
+	}
 	labelIndex := make(map[string]string, len(topics))
 	for id, topic := range topics {
 		labelIndex[normalizeForMatch(topic.Label)] = id
@@ -429,11 +447,18 @@ func rebuildDiscussionTree(
 			id = alias
 		}
 		for i := range candidates {
-			if candidates[i].ID == id {
+			if candidates[i].ID == id || containsExactString(candidates[i].ModelTopicIDs, id) {
 				return i
 			}
 		}
 		return -1
+	}
+	addModelTopicID := func(candidate *emergingTopicCandidate, id string) {
+		if candidate == nil || id == "" || id == candidate.ID || containsExactString(candidate.ModelTopicIDs, id) {
+			return
+		}
+		candidate.ModelTopicIDs = append(candidate.ModelTopicIDs, id)
+		sort.Strings(candidate.ModelTopicIDs)
 	}
 	candidateIndexByLabel := func(label string) int {
 		key := normalizeForMatch(label)
@@ -470,6 +495,14 @@ func rebuildDiscussionTree(
 	}
 	recordEmerging := func(d emergingDecision) {
 		if stats != nil {
+			if d.SubjectKey == "" {
+				for _, candidate := range candidates {
+					if candidate.ID == d.CandidateID {
+						_, d.SubjectKey = canonicalCandidateID(candidate.Label, candidate.Description)
+						break
+					}
+				}
+			}
 			stats.EmergingDecisions = append(stats.EmergingDecisions, d)
 		}
 	}
@@ -479,42 +512,42 @@ func rebuildDiscussionTree(
 		if label == "" {
 			continue
 		}
-		id := normalizeProposedTopicID(proposed.ID, label)
-		if id == "" {
+		proposedID := normalizeProposedTopicID(proposed.ID, label)
+		if proposedID == "" {
 			continue
 		}
 		// 実在しないagenda IDを新topicとして名乗らせない(stable IDの保護)。
-		if strings.HasPrefix(id, agendaTopicIDPrefix) {
-			if _, isAgenda := agendaIDs[id]; !isAgenda {
-				id = "topic-" + normalizeForMatch(label)
+		if strings.HasPrefix(proposedID, agendaTopicIDPrefix) {
+			if _, isAgenda := agendaIDs[proposedID]; !isAgenda {
+				proposedID = "topic-" + normalizeForMatch(label)
 			}
 		}
-		if _, isDetail := details[id]; isDetail {
+		if _, isDetail := details[proposedID]; isDetail {
 			// 既存詳細ノードのidをtopicとして再利用させない(型の安定性)。
 			continue
 		}
 		if existingID, dup := labelIndex[normalizeForMatch(label)]; dup {
-			if existingID != id {
-				topicAlias[id] = existingID
+			if existingID != proposedID {
+				topicAlias[proposedID] = existingID
 			}
 			continue
 		}
-		if _, exists := topics[id]; exists {
+		if _, exists := topics[proposedID]; exists {
 			continue
 		}
 		if bootstrap {
 			if newCandidatesThisRound >= maxEmergingCandidatesPerRound {
-				recordEmerging(emergingDecision{CandidateID: id, Decision: emergingRejectedRoundCap})
+				recordEmerging(emergingDecision{CandidateID: proposedID, Decision: emergingRejectedRoundCap})
 				continue
 			}
 			addTopic(liveAnalysisTreeNode{
-				ID:          id,
+				ID:          proposedID,
 				Kind:        "topic",
 				Label:       label,
 				Description: truncateRunes(strings.TrimSpace(proposed.Description), liveAnalysisTreeDescriptionMaxRunes),
 				Origin:      topicOriginDynamic,
 			})
-			labelIndex[normalizeForMatch(label)] = id
+			labelIndex[normalizeForMatch(label)] = proposedID
 			dynamicTopicCount++
 			newCandidatesThisRound++
 			if stats != nil {
@@ -522,9 +555,30 @@ func rebuildDiscussionTree(
 			}
 			continue
 		}
-		if at := candidateIndexByID(id); at >= 0 {
+		description := truncateRunes(strings.TrimSpace(proposed.Description), liveAnalysisTreeDescriptionMaxRunes)
+		if at := candidateIndexByID(proposedID); at >= 0 {
+			addModelTopicID(&candidates[at], proposedID)
+			if candidates[at].Description == "" && description != "" {
+				candidates[at].Description = description
+			}
+			proposedCandidateIDs[candidates[at].ID] = struct{}{}
+			continue
+		}
+		candidateID, subjectKey := canonicalCandidateID(label, description)
+		if candidateID == "" {
+			continue
+		}
+		candidateAlias[proposedID] = candidateID
+		if stats != nil {
+			stats.CandidateSubjectKeys = append(stats.CandidateSubjectKeys, subjectKey)
+			if proposedID != candidateID {
+				stats.CandidateIDsMerged++
+			}
+		}
+		if at := candidateIndexByID(candidateID); at >= 0 {
+			addModelTopicID(&candidates[at], proposedID)
 			candidates[at].Label = label
-			if description := truncateRunes(strings.TrimSpace(proposed.Description), liveAnalysisTreeDescriptionMaxRunes); description != "" {
+			if description != "" {
 				candidates[at].Description = description
 			}
 			proposedCandidateIDs[candidates[at].ID] = struct{}{}
@@ -533,30 +587,43 @@ func rebuildDiscussionTree(
 		if at := candidateIndexByLabel(label); at >= 0 {
 			// 同じ意味の候補を別idで数えない。以降の割当が新idで来ても届くよう
 			// aliasを張る。
-			candidateAlias[id] = candidates[at].ID
+			candidateAlias[proposedID] = candidates[at].ID
+			addModelTopicID(&candidates[at], proposedID)
 			proposedCandidateIDs[candidates[at].ID] = struct{}{}
+			if stats != nil && proposedID != candidates[at].ID {
+				stats.CandidateIDsMerged++
+			}
 			continue
 		}
-		description := truncateRunes(strings.TrimSpace(proposed.Description), liveAnalysisTreeDescriptionMaxRunes)
 		if at := candidateIndexBySemantic(label, description); at >= 0 {
-			candidateAlias[id] = candidates[at].ID
+			candidateAlias[proposedID] = candidates[at].ID
+			addModelTopicID(&candidates[at], proposedID)
 			proposedCandidateIDs[candidates[at].ID] = struct{}{}
+			if stats != nil && proposedID != candidates[at].ID {
+				stats.CandidateIDsMerged++
+			}
 			if candidates[at].Description == "" {
 				candidates[at].Description = description
 			}
 			continue
 		}
 		if newCandidatesThisRound >= maxEmergingCandidatesPerRound {
-			recordEmerging(emergingDecision{CandidateID: id, Decision: emergingRejectedRoundCap})
+			recordEmerging(emergingDecision{CandidateID: candidateID, Decision: emergingRejectedRoundCap, SubjectKey: subjectKey})
 			continue
 		}
 		candidates = append(candidates, emergingTopicCandidate{
-			ID:          id,
+			ID:          candidateID,
 			Label:       label,
 			Description: description,
-			FirstRound:  round,
+			ModelTopicIDs: func() []string {
+				if proposedID == candidateID {
+					return nil
+				}
+				return []string{proposedID}
+			}(),
+			FirstRound: round,
 		})
-		proposedCandidateIDs[id] = struct{}{}
+		proposedCandidateIDs[candidateID] = struct{}{}
 		newCandidatesThisRound++
 	}
 
@@ -726,6 +793,18 @@ func emergingTopicCore(value string) string {
 	return core
 }
 
+func canonicalCandidateID(label, description string) (string, string) {
+	subjectKey := emergingTopicCore(label)
+	if subjectKey == "" {
+		subjectKey = emergingTopicCore(description)
+	}
+	if subjectKey == "" {
+		return "", ""
+	}
+	sum := sha256.Sum256([]byte(subjectKey))
+	return "candidate-" + hex.EncodeToString(sum[:6]), subjectKey
+}
+
 // applyAssignments applies the model's parent proposals under the
 // classification policy:
 //   - 明示的に低いconfidence(0<c<閾値)の割当は tentative として追加論点へ。
@@ -739,6 +818,17 @@ func emergingTopicCore(value string) string {
 func applyAssignments(ac assignmentContext) {
 	record := func(d assignmentDecision) {
 		if ac.stats != nil {
+			if len(d.EvidenceSequenceNos) == 0 {
+				if item := ac.itemAt(d.ItemID); item != nil {
+					d.EvidenceSequenceNos = append([]int64(nil), item.EvidenceSequenceNos...)
+				}
+			}
+			if d.ResolvedAgendaSpanMode == "" && d.Source == assignmentSourceActiveSpan {
+				d.ResolvedAgendaSpanMode = agendaContextModeFixed
+			}
+			if d.AssignmentReason == "" {
+				d.AssignmentReason = d.Decision
+			}
 			ac.stats.AssignmentDecisions = append(ac.stats.AssignmentDecisions, d)
 		}
 	}
@@ -778,7 +868,7 @@ func applyAssignments(ac assignmentContext) {
 			id = alias
 		}
 		for i := range ac.candidates {
-			if ac.candidates[i].ID == id {
+			if ac.candidates[i].ID == id || containsExactString(ac.candidates[i].ModelTopicIDs, id) {
 				return &ac.candidates[i]
 			}
 		}
@@ -856,6 +946,50 @@ func applyAssignments(ac assignmentContext) {
 		reason := truncateRunes(strings.TrimSpace(assignment.Reason), assignmentReasonMaxRunes)
 		item := ac.itemAt(nodeID)
 		current := ac.parents[nodeID]
+		if candidateAt(requested) == nil && item != nil && item.CandidateTopicID != "" && candidateAt(item.CandidateTopicID) != nil {
+			// Candidate IDs are server-owned. A later model round can still refer
+			// to its original proposal ID; the item's persisted candidate binding
+			// is the authoritative alias across rounds.
+			requested = item.CandidateTopicID
+		}
+		if assignment.ServerSource == assignmentSourceNoAgendaSpan {
+			if candidate := candidateAt(requested); candidate != nil {
+				beforeEvidence := len(candidate.EvidenceItemIDs)
+				crossKindCompanion := false
+				for _, evidenceItemID := range candidate.EvidenceItemIDs {
+					evidenceItem := ac.itemAt(evidenceItemID)
+					if evidenceItem != nil && item != nil && evidenceItem.Kind != item.Kind {
+						crossKindCompanion = true
+						break
+					}
+				}
+				candidate.addEvidence(nodeID, ac.round)
+				ac.parents[nodeID] = treeUnclassifiedTopicID
+				setMeta(item, classificationTentative, assignmentSourceNoAgendaSpan, candidate.ID, confidence, reason)
+				if ac.stats != nil {
+					if len(candidate.EvidenceItemIDs) > beforeEvidence {
+						ac.stats.CandidateEvidenceAdded++
+						if beforeEvidence > 0 {
+							ac.stats.CompanionCandidateInherited++
+						}
+						if crossKindCompanion {
+							ac.stats.CrossKindCandidateInherited++
+						}
+					} else {
+						ac.stats.CandidateEvidenceDeduplicated++
+					}
+				}
+				record(assignmentDecision{ModelItemID: modelNodeID, ItemID: nodeID, RequestedParentID: originalRequested, SelectedParentID: treeUnclassifiedTopicID, Confidence: confidence, Source: assignmentSourceNoAgendaSpan, Decision: assignmentAcceptedNoAgendaSpan, Status: classificationTentative, CandidateTopicID: candidate.ID, EvidenceSequenceNos: append([]int64(nil), assignment.EvidenceSequenceNos...), ResolvedAgendaSpanMode: assignment.ResolvedAgendaSpanMode, AssignmentReason: reason})
+				continue
+			}
+			// An explicit no-agenda span is still authoritative when a candidate
+			// proposal was invalid. Keep the item staged rather than reviving a
+			// stale fixed agenda.
+			ac.parents[nodeID] = treeUnclassifiedTopicID
+			setMeta(item, classificationUnclassified, assignmentSourceNoAgendaSpan, "", confidence, reason)
+			record(assignmentDecision{ModelItemID: modelNodeID, ItemID: nodeID, RequestedParentID: originalRequested, SelectedParentID: treeUnclassifiedTopicID, Confidence: confidence, Source: assignmentSourceNoAgendaSpan, Decision: assignmentAcceptedNoAgendaSpan, Status: classificationUnclassified, EvidenceSequenceNos: append([]int64(nil), assignment.EvidenceSequenceNos...), ResolvedAgendaSpanMode: assignment.ResolvedAgendaSpanMode, AssignmentReason: reason})
+			continue
+		}
 		if assignment.ServerSource == assignmentSourceActiveSpan {
 			// A model-backed emerging assignment is explicit evidence for an
 			// agenda-external subject. The synthetic active-span assignment must
@@ -1090,6 +1224,7 @@ func reconcileCandidateCompanions(items []liveAnalysisItem, parents map[string]s
 				stats.CompanionCandidateInherited++
 				if anchor := itemAt[anchors[0]]; anchor != nil && anchor.Kind != item.Kind {
 					stats.CrossKindClustered++
+					stats.CrossKindCandidateInherited++
 				}
 			}
 		}
@@ -1497,7 +1632,13 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 		if pc.candidates[order[a]].FirstRound != pc.candidates[order[b]].FirstRound {
 			return pc.candidates[order[a]].FirstRound < pc.candidates[order[b]].FirstRound
 		}
-		return pc.candidates[order[a]].ID < pc.candidates[order[b]].ID
+		orderKey := func(candidate emergingTopicCandidate) string {
+			if len(candidate.ModelTopicIDs) > 0 {
+				return candidate.ModelTopicIDs[0]
+			}
+			return candidate.ID
+		}
+		return orderKey(pc.candidates[order[a]]) < orderKey(pc.candidates[order[b]])
 	})
 
 	reparentEvidence := func(candidate emergingTopicCandidate, topicID string) {
@@ -1602,11 +1743,12 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			continue
 		}
 		pc.addTopic(liveAnalysisTreeNode{
-			ID:          candidate.ID,
-			Kind:        "topic",
-			Label:       candidate.Label,
-			Description: candidate.Description,
-			Origin:      topicOriginDynamic,
+			ID:            candidate.ID,
+			Kind:          "topic",
+			Label:         candidate.Label,
+			Description:   candidate.Description,
+			ModelTopicIDs: append([]string(nil), candidate.ModelTopicIDs...),
+			Origin:        topicOriginDynamic,
 		})
 		pc.labelIndex[normalizeForMatch(candidate.Label)] = candidate.ID
 		reparentEvidence(*candidate, candidate.ID)

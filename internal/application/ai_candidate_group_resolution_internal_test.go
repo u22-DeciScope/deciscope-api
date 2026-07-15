@@ -22,7 +22,8 @@ func TestCandidateCreationIsAtomicWithCanonicalEvidence(t *testing.T) {
 		t.Fatalf("items=%+v", state.Items)
 	}
 	item := state.Items[0]
-	if item.ClassificationStatus != classificationTentative || item.CandidateTopicID != "topic-wetland" {
+	candidateID, _ := canonicalCandidateID("湿地・希少植物", "アジェンダ外の調査課題")
+	if item.ClassificationStatus != classificationTentative || item.CandidateTopicID != candidateID {
 		t.Fatalf("item=%+v", item)
 	}
 	if len(state.EmergingTopics) != 1 || len(state.EmergingTopics[0].EvidenceItemIDs) != 1 || state.EmergingTopics[0].EvidenceItemIDs[0] != item.ID {
