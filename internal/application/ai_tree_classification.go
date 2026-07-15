@@ -30,6 +30,7 @@ const (
 	assignmentSourceRule        = "rule"        // サーバー規則(昇格・repeat等)
 	assignmentSourceReorganizer = "reorganizer" // 再編成タスクのmove_node
 	assignmentSourceFallback    = "fallback"    // 不正・欠落時の救済
+	assignmentSourceActiveSpan  = "active_span" // 発話区間の明示的な議題転換
 
 	// topic.origin: topicノードの由来。
 	topicOriginAgenda  = "agenda"  // 会議前アジェンダ(stable ID, 削除・統合不可)
@@ -126,9 +127,17 @@ type emergingTopicCandidate struct {
 	FirstRound int64 `json:"firstRound,omitempty"`
 	LastRound  int64 `json:"lastRound,omitempty"`
 	RoundCount int   `json:"roundCount,omitempty"`
+	// Stale candidates remain in the payload for audit, but clients can keep
+	// them out of the visible tentative staging area until evidence returns.
+	Inactive           bool  `json:"inactive,omitempty"`
+	InactiveSinceRound int64 `json:"inactiveSinceRound,omitempty"`
 }
 
 func (c *emergingTopicCandidate) addEvidence(itemID string, round int64) {
+	if itemID != "" || round > c.LastRound {
+		c.Inactive = false
+		c.InactiveSinceRound = 0
+	}
 	if itemID != "" {
 		found := false
 		for _, id := range c.EvidenceItemIDs {
@@ -166,7 +175,12 @@ func capEmergingCandidates(candidates []emergingTopicCandidate, max int) []emerg
 		return candidates
 	}
 	sorted := append([]emergingTopicCandidate(nil), candidates...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].LastRound > sorted[j].LastRound })
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Inactive != sorted[j].Inactive {
+			return !sorted[i].Inactive
+		}
+		return sorted[i].LastRound > sorted[j].LastRound
+	})
 	sorted = sorted[:max]
 	keep := make(map[string]struct{}, len(sorted))
 	for _, candidate := range sorted {
@@ -217,6 +231,7 @@ func deriveTopicOrigin(topicID string, agendaIDs map[string]struct{}) string {
 // assignmentDecision は1つの割当提案に対するサーバー判定。ログ専用で、本文
 // (title/body/理由文)は含めない。
 type assignmentDecision struct {
+	ModelItemID       string
 	ItemID            string
 	RequestedParentID string
 	SelectedParentID  string
@@ -229,15 +244,17 @@ type assignmentDecision struct {
 
 // assignmentDecision.Decision の語彙。
 const (
-	assignmentAccepted             = "accepted"                // 提案をそのまま受理
-	assignmentAcceptedRepeat       = "accepted_repeat"         // 同一候補が2ラウンド連続で受理
-	assignmentAcceptedUnclassified = "accepted_unclassified"   // 明示的な未分類提案
-	assignmentDeferredLowConf      = "deferred_low_confidence" // 閾値未満→tentative
-	assignmentDeferredHysteresis   = "deferred_hysteresis"     // assigned済みの移動を保留
-	assignmentDeferredEmerging     = "deferred_emerging"       // 未昇格候補への割当→tentative
-	assignmentRejectedUnknown      = "rejected_unknown_parent" // 存在しない親→未分類へ
-	assignmentRejectedUnknownItem  = "rejected_unknown_item"   // 存在しないitemへの割当
-	assignmentRelatedActionSummary = "related_action_summary"  // 横断agendaは副次関係のみ
+	assignmentAccepted             = "accepted"                  // 提案をそのまま受理
+	assignmentAcceptedRepeat       = "accepted_repeat"           // 同一候補が2ラウンド連続で受理
+	assignmentAcceptedUnclassified = "accepted_unclassified"     // 明示的な未分類提案
+	assignmentDeferredLowConf      = "deferred_low_confidence"   // 閾値未満→tentative
+	assignmentDeferredHysteresis   = "deferred_hysteresis"       // assigned済みの移動を保留
+	assignmentDeferredEmerging     = "deferred_emerging"         // 未昇格候補への割当→tentative
+	assignmentRejectedUnknown      = "rejected_unknown_parent"   // 存在しない親→未分類へ
+	assignmentRejectedUnknownItem  = "rejected_unknown_item"     // 存在しないitemへの割当
+	assignmentRelatedActionSummary = "related_action_summary"    // 横断agendaは副次関係のみ
+	assignmentCorrectedSemantic    = "corrected_semantic_parent" // 内容一致するprimary agendaへ補正
+	assignmentAcceptedActiveSpan   = "accepted_active_span"      // 明示的な議題区間を優先
 )
 
 // emergingDecision は新topic候補に対するサーバー判定(ログ専用)。

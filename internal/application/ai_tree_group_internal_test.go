@@ -145,19 +145,15 @@ func TestActionSummaryAgendaReferencesCanonicalActiveItems(t *testing.T) {
 	if len(todo.RelatedAgendaIDs) != 1 || todo.RelatedAgendaIDs[0] != "agenda-4" {
 		t.Fatalf("relatedAgendaIds=%v", todo.RelatedAgendaIDs)
 	}
-	var actionNode liveAnalysisTreeNode
 	parents := map[string]string{}
 	for _, node := range state.Tree.Nodes {
 		parents[node.ID] = node.ParentID
 		if node.ID == "agenda-4" {
-			actionNode = node
+			t.Fatal("action summary must not be a canonical tree node")
 		}
 	}
 	if parents["todo-wind"] != "agenda-2" {
 		t.Fatalf("canonical parent=%q, want agenda-2", parents["todo-wind"])
-	}
-	if len(actionNode.RelatedItemIDs) != 1 || actionNode.RelatedItemIDs[0] != "todo-wind" {
-		t.Fatalf("action summary references=%v", actionNode.RelatedItemIDs)
 	}
 	for _, edge := range state.Tree.Edges {
 		if edge.Source == "agenda-4" && edge.Target == "todo-wind" {
@@ -336,8 +332,8 @@ func TestSession83c10700ReplayRepairsDecisionsGroupsAndActionSummary(t *testing.
 		{ID: "agenda-3", Title: "住民説明資料の作成", Order: 3, Role: agendaRolePrimary},
 		{ID: "agenda-4", Title: "横断対応", Order: 4, Role: agendaRoleActionSummary},
 	}}
-	model := `{"summary":"fixture","currentTopic":"まとめ","resolvedIds":["risk-bird-route"],"items":[
-		{"id":"risk-bird-route","kind":"risk","severity":"high","title":"観測地点不足","body":"一地点では移動経路を確認できない","status":"open","evidenceSequenceNos":[9]},
+	model := `{"summary":"fixture","currentTopic":"まとめ","resolvedIds":[],"resolutionUpdates":[{"itemId":"risk-bird-route","status":"resolved","evidenceSequenceNos":[7,8],"reason":"追加地点で対応可能と明示"}],"items":[
+		{"id":"risk-bird-route","kind":"risk","severity":"high","title":"観測地点不足","body":"一地点では移動経路を確認できない","status":"open","evidenceSequenceNos":[5,7,8]},
 		{"id":"fact-bird-sites","kind":"fact","severity":"medium","title":"北側・南側にも設置可能","body":"追加二地点を設置できる","status":"open","evidenceSequenceNos":[9]},
 		{"id":"todo-bird-sites","kind":"todo","severity":"high","title":"三地点で調査","body":"海岸側・北側・南側の三地点で実施する","status":"open","evidenceSequenceNos":[9]},
 		{"id":"todo-noise-count","kind":"todo","severity":"high","title":"昼一回・夜二回測定","body":"合計三回実施する","status":"open","evidenceSequenceNos":[16]},
@@ -361,10 +357,15 @@ func TestSession83c10700ReplayRepairsDecisionsGroupsAndActionSummary(t *testing.
 		t.Fatalf("decision audit=%+v", audit)
 	}
 	sequenceNos := make([]int64, 0, len(segments))
+	scope := liveEvidenceScope{Allowed: map[int64]struct{}{}, CurrentRound: map[int64]struct{}{}, TranscriptText: map[int64]string{}, CoveredThrough: int64(len(segments))}
 	for _, segment := range segments {
 		sequenceNos = append(sequenceNos, segment.SequenceNo)
+		scope.Allowed[segment.SequenceNo] = struct{}{}
+		scope.CurrentRound[segment.SequenceNo] = struct{}{}
+		scope.TranscriptText[segment.SequenceNo] = segment.Text
 	}
-	raw, err := parseAndMergeLiveAnalysisPayload(reconciled, nil, mc, 1, sequenceNos, TreeClassificationConfig{PromotionMinItems: 1, PromotionMinRounds: 1})
+	mergeStats := &liveAnalysisTreeMergeStats{}
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(reconciled, nil, mc, 1, sequenceNos, scope, TreeClassificationConfig{PromotionMinItems: 1, PromotionMinRounds: 1}, mergeStats)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +379,7 @@ func TestSession83c10700ReplayRepairsDecisionsGroupsAndActionSummary(t *testing.
 		}
 	}
 	if kinds["decision"] < 3 || kinds["question"] != 1 || kinds["open_issue"] != 1 || resolvedCount != 1 || len(state.Items) > 10 {
-		t.Fatalf("kinds=%v itemCount=%d items=%+v", kinds, len(state.Items), state.Items)
+		t.Fatalf("kinds=%v itemCount=%d items=%+v resolutions=%+v", kinds, len(state.Items), state.Items, mergeStats.ResolutionDecisions)
 	}
 	noiseGroupID := stableGroupID("agenda-2", "夜間測定")
 	reorganized, applied := applyTreeOperations(state.Tree, mc, []treeOperation{

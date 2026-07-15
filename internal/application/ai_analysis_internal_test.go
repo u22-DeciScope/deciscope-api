@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -303,13 +304,19 @@ func TestParseAndMergeLiveAnalysisPayloadMarksResolvedAndCapsIndependently(t *te
 	diff := `{
 		"summary": "更新",
 		"currentTopic": "",
-		"resolvedIds": ["item-5"],
+		"resolvedIds": [],
+		"resolutionUpdates": [{"itemId":"item-5","status":"resolved","evidenceSequenceNos":[1],"reason":"明示的に解決"}],
 		"items": [
 			{"id": "item-new-1", "kind": "risk", "severity": "high", "title": "新規1", "body": "", "status": "open"},
 			{"id": "item-new-2", "kind": "todo", "severity": "low", "title": "新規2", "body": "", "status": "open"}
 		]
 	}`
-	merged := mergeForTest(t, diff, json.RawMessage(previous))
+	scope := liveEvidenceScope{Allowed: map[int64]struct{}{1: {}}, CurrentRound: map[int64]struct{}{1: {}}, TranscriptText: map[int64]string{1: "項目5は解決済みです"}, CoveredThrough: 1}
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(diff, json.RawMessage(previous), nil, 2, []int64{1}, scope, TreeClassificationConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := previousLiveAnalysisState(raw)
 	wantLen := liveAnalysisItemsMaxCount + 1
 	if len(merged.Items) != wantLen {
 		t.Fatalf("items length = %d, want %d (active capped plus 1 retained resolved)", len(merged.Items), wantLen)
@@ -697,10 +704,15 @@ func TestMergeDeduplicatesNewTopicsByLabel(t *testing.T) {
 }
 
 func TestMergeMarksResolvedIdsOnItemsAndNodes(t *testing.T) {
-	diff := `{"summary":"更新","currentTopic":"進捗確認","resolvedIds":["risk-b"],"items":[]}`
-	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	diff := `{"summary":"更新","currentTopic":"進捗確認","resolvedIds":[],"resolutionUpdates":[{"itemId":"risk-b","status":"resolved","evidenceSequenceNos":[1],"reason":"解決済み"}],"items":[]}`
+	scope := liveEvidenceScope{Allowed: map[int64]struct{}{1: {}}, CurrentRound: map[int64]struct{}{1: {}}, TranscriptText: map[int64]string{1: "リスクBは解決済みです"}, CoveredThrough: 1}
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(diff, json.RawMessage(mergeTestPreviousPayload), nil, 2, []int64{1}, scope, TreeClassificationConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := previousLiveAnalysisState(raw)
 	if merged.Items[1].ID != "risk-b" || merged.Items[1].Status != "resolved" {
-		t.Fatalf("item = %+v, want resolved via resolvedIds", merged.Items[1])
+		t.Fatalf("item = %+v, want resolved via validated resolutionUpdates", merged.Items[1])
 	}
 	node := treeNodeByID(merged.Tree, "risk-b")
 	if node == nil || node.Status != "resolved" {
@@ -1003,22 +1015,41 @@ func newInternalTestService(completer AIChatCompleter, config MeetingAnalysisCon
 	return NewMeetingAnalysisService(nil, nil, nil, completer, config)
 }
 
-func TestReorganizeTreeDiscardsStaleTreeVersion(t *testing.T) {
+func TestReorganizeTreeIgnoresLegacyModelTreeVersion(t *testing.T) {
 	completer := &scriptedCompleter{results: []AIChatResult{{
-		Content: `{"basedOnTreeVersion": 3, "operations": [{"type":"create_topic","topicId":"topic-x","label":"分割"}]}`,
+		Content: `{"basedOnTreeVersion": 3, "operations": [
+			{"type":"create_topic","topicId":"topic-x","label":"分割"},
+			{"type":"move_node","nodeId":"issue-0","toParentId":"topic-x"},
+			{"type":"move_node","nodeId":"issue-1","toParentId":"topic-x"}
+		]}`,
 	}}}
 	service := newInternalTestService(completer, MeetingAnalysisConfig{Enabled: true, LiveEnabled: true, Model: "gpt-test"})
 	tree := overcrowdedTreePayload("topic-busy", 8)
 
 	result, applied, err := service.reorganizeTree(context.Background(), "session-1", tree, nil, 12)
-	if err == nil || !strings.Contains(err.Error(), "mismatch") {
-		t.Fatalf("reorganizeTree() error = %v, want version mismatch", err)
+	if err != nil {
+		t.Fatalf("reorganizeTree() error = %v", err)
 	}
-	if applied != 0 {
-		t.Fatalf("applied = %d, want stale response discarded", applied)
+	if applied != 3 {
+		t.Fatalf("applied = %d, want server-owned version to apply operations", applied)
 	}
-	if treeNodeByID(result, "topic-x") != nil {
-		t.Fatalf("stale operations must not be applied")
+	if treeNodeByID(result, "topic-x") == nil {
+		t.Fatalf("model-reported version must not discard valid operations")
+	}
+}
+
+func TestReorganizeTreeUsesServerOwnedVersionsSevenTenAndEleven(t *testing.T) {
+	for _, version := range []int64{7, 10, 11} {
+		t.Run(strconv.FormatInt(version, 10), func(t *testing.T) {
+			completer := &scriptedCompleter{results: []AIChatResult{{Content: `{"basedOnTreeVersion":0,"operations":[]}`}}}
+			service := newInternalTestService(completer, MeetingAnalysisConfig{Enabled: true, LiveEnabled: true, Model: "gpt-test"})
+			if _, _, err := service.reorganizeTree(context.Background(), "session-1", overcrowdedTreePayload("topic-busy", 8), nil, version); err != nil {
+				t.Fatalf("version %d: %v", version, err)
+			}
+		})
+	}
+	if got := reorganizationVersionResult(10, 11); got != "stale" {
+		t.Fatalf("genuine concurrent update result = %q, want stale", got)
 	}
 }
 
@@ -1058,11 +1089,13 @@ func TestParseTreeReorganizerResultRejectsInvalidVersions(t *testing.T) {
 	for _, payload := range []string{
 		`{"basedOnTreeVersion":"not-a-number","operations":[]}`,
 		`{"basedOnTreeVersion":-1,"operations":[]}`,
-		`{"operations":[]}`,
 	} {
 		if _, err := parseTreeReorganizerResult(payload); err == nil {
 			t.Fatalf("parseTreeReorganizerResult(%s) error = nil", payload)
 		}
+	}
+	if result, err := parseTreeReorganizerResult(`{"operations":[]}`); err != nil || result.BasedOnTreeVersion != 0 || result.ModelVersionPresent {
+		t.Fatalf("omitted legacy version = %+v, %v", result, err)
 	}
 }
 

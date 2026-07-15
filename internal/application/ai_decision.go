@@ -168,7 +168,7 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 		if diff.Items[i].Kind != "decision" {
 			continue
 		}
-		decisionIDs[diff.Items[i].ID] = struct{}{}
+		decisionIDs[modelItemReference(diff.Items[i])] = struct{}{}
 		if diff.Items[i].Status == "resolved" {
 			diff.Items[i].Status = "updated"
 		}
@@ -180,6 +180,38 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 		}
 	}
 	diff.ResolvedIds = keptResolved
+	// A positive decision can answer an existing question/open issue or
+	// complete its supporting TODO, but the canonical issue item remains a
+	// separate record. Never change that item's kind into decision.
+	resolvedByDecision := make(map[string]struct{}, len(diff.ResolvedIds))
+	for _, id := range diff.ResolvedIds {
+		resolvedByDecision[canonicalReferenceKey(id)] = struct{}{}
+	}
+	for _, update := range diff.ResolutionUpdates {
+		if normalizeResolutionStatus(update.Status) == "resolved" {
+			resolvedByDecision[canonicalReferenceKey(update.ItemID)] = struct{}{}
+		}
+	}
+	resolutionCandidates := append(append([]liveAnalysisItem(nil), previous.Items...), diff.Items...)
+	for _, item := range resolutionCandidates {
+		itemReference := modelItemReference(item)
+		if itemReference == "" || !resolvableItemKind(item.Kind) || item.Status == "resolved" {
+			continue
+		}
+		for _, candidate := range candidates {
+			if semanticItemSimilarity(item.Title+" "+item.Body, candidate.Statement) < 0.16 {
+				continue
+			}
+			key := canonicalReferenceKey(itemReference)
+			if _, exists := resolvedByDecision[key]; !exists {
+				diff.ResolutionUpdates = append(diff.ResolutionUpdates, resolutionUpdate{
+					ItemID: itemReference, Status: "resolved", EvidenceSequenceNos: []int64{candidate.SequenceNo}, Reason: "subject-matched explicit decision",
+				})
+				resolvedByDecision[key] = struct{}{}
+			}
+			break
+		}
+	}
 
 	encoded, err := json.Marshal(diff)
 	if err != nil {

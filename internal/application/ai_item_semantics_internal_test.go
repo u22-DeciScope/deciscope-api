@@ -63,8 +63,9 @@ func TestResolvedQuestionAndTodoRemainSeparateFromDecisionAndRecap(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved := `{"summary":"解決","resolvedIds":["question-threshold","open-threshold","todo-weather"],"items":[{"id":"decision-threshold","kind":"decision","severity":"high","title":"基準風速は12m/sとする","body":"今回の基準として採用する","status":"open"}],"assignments":[{"nodeId":"decision-threshold","parentTopicId":"agenda-1","confidence":0.9}]}`
-	raw2, err := parseAndMergeLiveAnalysisPayload(resolved, raw1, mc, 2, []int64{2}, TreeClassificationConfig{})
+	resolved := `{"summary":"解決","resolvedIds":[],"resolutionUpdates":[{"itemId":"question-threshold","status":"resolved","evidenceSequenceNos":[2],"reason":"基準を決定"},{"itemId":"open-threshold","status":"resolved","evidenceSequenceNos":[2],"reason":"基準を決定"},{"itemId":"todo-weather","status":"resolved","evidenceSequenceNos":[2],"reason":"確認後に決定"}],"items":[{"id":"decision-threshold","kind":"decision","severity":"high","title":"基準風速は12m/sとする","body":"今回の基準として採用する","status":"open"}],"assignments":[{"nodeId":"decision-threshold","parentTopicId":"agenda-1","confidence":0.9}]}`
+	scope := liveEvidenceScope{Allowed: map[int64]struct{}{2: {}}, CurrentRound: map[int64]struct{}{2: {}}, TranscriptText: map[int64]string{2: "気象データを確認した結果、基準風速は12m/sとすることにします"}, CoveredThrough: 2}
+	raw2, err := parseAndMergeLiveAnalysisPayloadWithEvidence(resolved, raw1, mc, 2, []int64{2}, scope, TreeClassificationConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
