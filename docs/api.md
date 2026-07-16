@@ -80,12 +80,12 @@ POST   /v1/invitations/accept                        (認証必須)
 ```
 
 - `POST /invitations` は `{ "email": "...", "role": "viewer|admin" }` を受け取り、
-  pending 招待を作成して招待メールを送信します。owner ロールは指定できません (`400`)。
+  pending 招待を作成して招待リンクを通知します。owner ロールは指定できません (`400`)。
   既にメンバーのメールアドレスは `409`、同じメール宛の pending 招待がある場合も `409` です。
 - 招待リンクは `{FRONTEND_URL}/invitations/accept?token=<生token>` 形式で、有効期限は72時間です。
   DBには生tokenを保存せず、SHA-256の `token_hash` のみ保存します。
   `token_hash` はいかなるAPIレスポンスにも含めません。
-- メール送信に失敗した場合、作成した招待は削除 (rollback) され `500` を返します。
+- 招待リンクの通知に失敗した場合、作成した招待は削除 (rollback) され `500` を返します。
 - `GET /v1/invitations/preview` は承認前確認用にワークスペース名・招待先メール・ロール・
   status・有効期限のみ返します (会議情報・メンバー一覧などの機密情報は返しません)。
 - `POST /v1/invitations/accept` は `{ "token": "..." }` を受け取り、
@@ -94,19 +94,15 @@ POST   /v1/invitations/accept                        (認証必須)
   成功時は `workspace_members` に追加し、招待を `accepted` に更新して参加ログを出力します。
 - ログインによる自動参加 (旧仕様) は廃止しました。参加は招待リンクの明示的な承諾のみです。
 
-招待メール送信の設定 (環境変数):
+招待リンク通知の設定:
 
 ```env
-DECISCOPE_ENV=development            # production で SMTP 未設定なら招待作成は失敗する
-DECISCOPE_SMTP_HOST=smtp.example.com
-DECISCOPE_SMTP_PORT=587
-DECISCOPE_SMTP_USERNAME=...
-DECISCOPE_SMTP_PASSWORD=...
-DECISCOPE_SMTP_FROM=no-reply@example.com
+DECISCOPE_ENV=development
 ```
 
-- SMTP未設定 + `DECISCOPE_ENV=development` (既定) の場合は dev fallback として
-  招待URL (生tokenを含む) をログに出力します。development 以外ではログに出しません。
+- `DECISCOPE_ENV=development` (既定) では dev fallback として招待URL
+  (生tokenを含む) をログに出力します。productionではログに出さず、通知基盤がないため
+  招待作成は失敗します。
 
 ## EchoBot文字起こし取り込み
 

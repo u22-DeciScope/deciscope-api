@@ -18,10 +18,9 @@ import (
 const defaultTimeout = 10 * time.Second
 
 type Config struct {
-	URL              string
-	Token            string
-	Timeout          time.Duration
-	CandidateUserIDs []string
+	URL     string
+	Token   string
+	Timeout time.Duration
 }
 
 type HTTPDoer interface {
@@ -49,12 +48,10 @@ func (c *Client) SendJoinCommand(ctx context.Context, command application.BotJoi
 		return application.ErrBotControlNotConfigured
 	}
 	commandCandidateUserIDs, commandCandidateUserPrincipalNames := splitCandidateUserIdentifiers(command.CandidateUserIDs)
-	configCandidateUserIDs, configCandidateUserPrincipalNames := splitCandidateUserIdentifiers(c.config.CandidateUserIDs)
-	mergedCandidateUserIDs := mergeCandidateUserIDs(commandCandidateUserIDs, configCandidateUserIDs)
+	mergedCandidateUserIDs := mergeCandidateUserIDs(commandCandidateUserIDs)
 	mergedCandidateUserPrincipalNames := mergeCandidateUserIDs(
 		command.CandidateUserPrincipalNames,
 		commandCandidateUserPrincipalNames,
-		configCandidateUserPrincipalNames,
 	)
 	body, err := json.Marshal(joinRequest{
 		SessionID:                   command.SessionID,

@@ -45,7 +45,6 @@ DECISCOPE_BACKEND_ADDR=100.70.221.61:9090
 DECISCOPE_TRANSCRIPT_ONLY=false
 PORT=9090
 DATABASE_URL=postgres://deciscope:change-me-change-me-change-me-1234@localhost:5432/deciscope?sslmode=disable
-DECISCOPE_TRANSCRIPT_STORE=postgres
 DECISCOPE_INGEST_API_KEY=change-me-change-me-change-me-1234
 DECISCOPE_BOT_CONTROL_URL=http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/join
 DECISCOPE_BOT_CONTROL_TOKEN=change-me-bot-control-token

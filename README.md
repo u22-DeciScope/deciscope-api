@@ -64,18 +64,15 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DATABASE_URL`: PostgreSQL connection URL。ローカル実行時は必須
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: Compose PostgreSQL設定
 - `DECISCOPE_INGEST_API_KEY`: transcript ingest用共有API key。32文字以上、必須
-- `DECISCOPE_TRANSCRIPT_STORE`: `postgres`（既定値。省略可）
 - `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は文字起こし取り込みAPIだけを起動
 - `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketの許可Origin。カンマ区切り
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御API呼び出しtimeout。既定値は `10`
-- `MEETING_TITLE_LOOKUP_USER_IDS`: Teams会議名解決用。Microsoft Graph user object id を推奨。UPN/email も指定できますが、Bot 側で `/users/{upn}` により object id 解決してから使います
 - `FRONTEND_URL`, `ALLOWED_ORIGINS`: CORS設定
 - `SESSION_COOKIE_SECURE`: `true` の場合、セッションCookieに `Secure` 属性を付与
-- `DECISCOPE_SEED_DEMO_DATA`: `true` の場合、起動時にデモ用workspaceをPostgreSQLへ投入
-- `AUTH_PROVIDER`, `FIREBASE_PROJECT_ID`, `FIREBASE_SERVICE_ACCOUNT_JSON` /
-  `GOOGLE_APPLICATION_CREDENTIALS`, `FIREBASE_CREDENTIALS_JSON`: Firebase認証設定。
+- `AUTH_PROVIDER`, `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`,
+  `FIREBASE_CREDENTIALS_JSON`: Firebase認証設定。
   詳細は [docs/firebase-auth.md](docs/firebase-auth.md) を参照してください
 
 完全な例は [.env.example](.env.example) を参照してください。`.env` はGit管理対象外です。
@@ -113,12 +110,9 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 
 `DECISCOPE_TRANSCRIPT_ONLY=true` のtranscript-onlyモードでは、AI分析機能は組み込まれません。
 
-Teams会議名を Microsoft Graph の `/users/{id}/onlineMeetings` から取得する場合、
-`MEETING_TITLE_LOOKUP_USER_IDS` には会議作成者、または会議を参照できる対象ユーザーの
-Azure AD / Microsoft Graph user object id を指定してください。UPN/email を指定した場合は
-`candidateUserPrincipalNames` として Bot join command に渡し、Bot 側で
-`/users/{upn}?$select=id,userPrincipalName,mail` により object id へ解決してから
-`/users/{id}/onlineMeetings` を試します。ログには値そのものではなく件数とハッシュのみを出します。
+Teams会議名を Microsoft Graph の `/users/{id}/onlineMeetings` から取得するための候補は、
+会議作成リクエストの主催者、作成者Microsoft user ID、作成者メールアドレスから組み立てて
+Bot join commandへ渡します。ログには値そのものではなく件数とハッシュのみを出します。
 
 ## Docker Compose
 

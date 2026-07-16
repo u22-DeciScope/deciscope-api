@@ -124,13 +124,9 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	t.Setenv("DECISCOPE_BOT_CONTROL_URL", "http://100.64.0.1:7071/internal/bot/join")
 	t.Setenv("DECISCOPE_BOT_CONTROL_TOKEN", "bot-control-token")
 	t.Setenv("DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS", "12")
-	t.Setenv("MEETING_TITLE_LOOKUP_USER_IDS", "user-a,user-b user-a")
 	config := ConfigFromEnv()
 	if config.Database.URL != "postgres://deciscope:secret@localhost:5432/deciscope" {
 		t.Fatalf("ConfigFromEnv() = %+v", config)
-	}
-	if config.TranscriptIngest.Store != TranscriptStorePostgres {
-		t.Fatalf("ConfigFromEnv() = %+v, want postgres transcript store", config)
 	}
 	if config.TranscriptWebSocket.ClientToken != "dev-ws-token" ||
 		config.TranscriptWebSocket.AllowedOrigins != "http://localhost:3000,http://localhost:5173" {
@@ -144,10 +140,13 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 		config.BotControl.Timeout != 12*time.Second {
 		t.Fatalf("ConfigFromEnv() = %+v, want bot control config", config)
 	}
-	if len(config.BotControl.CandidateUserIDs) != 2 ||
-		config.BotControl.CandidateUserIDs[0] != "user-a" ||
-		config.BotControl.CandidateUserIDs[1] != "user-b" {
-		t.Fatalf("CandidateUserIDs = %#v", config.BotControl.CandidateUserIDs)
+}
+
+func TestConfigFromEnvReadsGoogleApplicationCredentials(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "./serviceAccountKey.json")
+	config := ConfigFromEnv()
+	if config.Firebase.CredentialsFile != "./serviceAccountKey.json" {
+		t.Fatalf("Firebase credentials file = %q", config.Firebase.CredentialsFile)
 	}
 }
 
@@ -233,7 +232,6 @@ func TestValidateRuntimeConfigRequiresTranscriptSettings(t *testing.T) {
 	config := Config{
 		Database: databaseConfigForTest(),
 		TranscriptIngest: TranscriptIngestConfig{
-			Store:  TranscriptStorePostgres,
 			APIKey: ingestAPIKeyPlaceholder,
 		},
 	}
@@ -250,24 +248,10 @@ func TestValidateRuntimeConfigRequiresTranscriptSettings(t *testing.T) {
 	}
 }
 
-func TestValidateRuntimeConfigRejectsSQLiteTranscriptStore(t *testing.T) {
-	config := Config{
-		Database: databaseConfigForTest(),
-		TranscriptIngest: TranscriptIngestConfig{
-			Store:  "sqlite",
-			APIKey: "0123456789abcdef0123456789abcdef",
-		},
-	}
-	if err := ValidateRuntimeConfig(config); err == nil {
-		t.Fatal("ValidateRuntimeConfig() error = nil, want unsupported sqlite store")
-	}
-}
-
-func TestValidateRuntimeConfigRequiresDatabaseURLForPostgresTranscriptStore(t *testing.T) {
+func TestValidateRuntimeConfigRequiresDatabaseURL(t *testing.T) {
 	config := Config{
 		TranscriptOnly: true,
 		TranscriptIngest: TranscriptIngestConfig{
-			Store:  TranscriptStorePostgres,
 			APIKey: "0123456789abcdef0123456789abcdef",
 		},
 	}

@@ -128,7 +128,7 @@ func TestServerEnforcesWorkspaceRolesEndToEnd(t *testing.T) {
 	}
 
 	// 招待は pending で作成され、レスポンスに token_hash を含まない。
-	// (runtime はSMTP未設定 + development のため dev fallback でメールはログ出力になる)
+	// (runtime は development のため dev fallback で招待URLがログ出力される)
 	invited := serveJSON(t, runtime.Handler, http.MethodPost, base+"/invitations",
 		fmt.Sprintf(`{"email":"placeholder-%s@example.com","role":"viewer"}`, suffix), ownerToken)
 	if invited.Code != http.StatusCreated {

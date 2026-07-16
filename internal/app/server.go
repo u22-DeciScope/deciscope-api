@@ -55,7 +55,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 
 	if config.TranscriptOnly {
 		transcriptHub := realtime.NewTranscriptHub()
-		transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, nil, transcriptHub)
+		transcriptRuntime, err := buildTranscriptIngest(ctx, config.Database, nil, transcriptHub)
 		if err != nil {
 			return nil, err
 		}
@@ -79,24 +79,13 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	}
 	closers := []func() error{postgresDB.Close}
 
-	// 固定デモワークスペースの seed は明示的な開発・検証用途のみ。
-	// 通常フローには関与せず、ログイン時の自動参加も行わない (閲覧するには手動で
-	// workspace_members に追加する必要がある)。
-	if config.SeedDemoData {
-		if err := database.SeedDemoData(ctx, postgresDB); err != nil {
-			_ = closeAll(closers)
-			return nil, fmt.Errorf("seed demo data: %w", err)
-		}
-		log.Printf("demo seed data ensured (DECISCOPE_SEED_DEMO_DATA enabled; dev/test only)")
-	}
-
 	transcriptHub := realtime.NewTranscriptHub()
 	meetingSessionRepository := postgresrepository.NewMeetingSessionRepository(postgresDB)
 	analysisService := buildMeetingAnalysisService(config.AI, postgresDB, meetingSessionRepository, transcriptHub)
 	transcriptActivityTracker := application.NewTranscriptActivityTracker()
 	botMediaMetricsStore := application.NewBotMediaMetricsStore()
 	transcriptPublisher := compositeTranscriptSegmentPublisher{publishers: []application.TranscriptSegmentPublisher{transcriptHub, analysisService, transcriptActivityTracker}}
-	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptPublisher)
+	transcriptRuntime, err := buildTranscriptIngest(ctx, config.Database, postgresDB, transcriptPublisher)
 	if err != nil {
 		_ = closeAll(closers)
 		return nil, err
@@ -261,10 +250,7 @@ type transcriptIngestRuntime struct {
 	closers []func() error
 }
 
-func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, databaseConfig database.Config, postgresDB *sql.DB, publisher application.TranscriptSegmentPublisher) (transcriptIngestRuntime, error) {
-	if config.Store != "" && config.Store != TranscriptStorePostgres {
-		return transcriptIngestRuntime{}, fmt.Errorf("unsupported transcript store %q", config.Store)
-	}
+func buildTranscriptIngest(ctx context.Context, databaseConfig database.Config, postgresDB *sql.DB, publisher application.TranscriptSegmentPublisher) (transcriptIngestRuntime, error) {
 	conn := postgresDB
 	var closers []func() error
 	if conn == nil {
@@ -433,26 +419,15 @@ func transcriptRealtimeConfig(config TranscriptWebSocketConfig) realtime.Transcr
 	}
 }
 
-// buildInvitationMailer は招待メール送信の実装を環境に応じて選ぶ。
-//   - SMTP設定あり: 実際に送信
-//   - 未設定 + development: 招待URLをログ出力する dev fallback
-//   - 未設定 + production: 送信失敗にして招待を成功扱いにしない
+// buildInvitationMailer は招待リンク通知の実装を環境に応じて選ぶ。
+//   - development: 招待URLをログ出力する dev fallback
+//   - production: 通知失敗にして招待を成功扱いにしない
 func buildInvitationMailer(config Config) appworkspace.InvitationMailer {
-	if config.InviteEmail.Configured() {
-		log.Printf("invitation email: SMTP mailer enabled (host=%s)", config.InviteEmail.SMTPHost)
-		return email.NewSMTPMailer(email.SMTPConfig{
-			Host:     config.InviteEmail.SMTPHost,
-			Port:     config.InviteEmail.SMTPPort,
-			Username: config.InviteEmail.SMTPUsername,
-			Password: config.InviteEmail.SMTPPassword,
-			From:     config.InviteEmail.From,
-		})
-	}
 	if config.Environment == "production" {
-		log.Printf("invitation email: SMTP is not configured in production; invitation creation will fail until DECISCOPE_SMTP_* is set")
+		log.Printf("invitation delivery is disabled in production")
 		return email.DisabledMailer{}
 	}
-	log.Printf("invitation email: dev fallback enabled; invitation URLs are logged instead of sent (DECISCOPE_ENV=development)")
+	log.Printf("invitation dev fallback enabled; invitation URLs are logged (DECISCOPE_ENV=development)")
 	return email.LogMailer{}
 }
 

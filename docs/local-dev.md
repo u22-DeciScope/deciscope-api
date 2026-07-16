@@ -36,11 +36,9 @@ go run . serve
 
 ```env
 DATABASE_URL=postgres://deciscope:change-me@localhost:5432/deciscope?sslmode=disable
-DECISCOPE_TRANSCRIPT_STORE=postgres
 ```
 
 - `DATABASE_URL`: PostgreSQL接続URLです。必須です。
-- `DECISCOPE_TRANSCRIPT_STORE`: 既定は `postgres` です（省略可）。
 
 接続生成は `internal/infrastructure/database` の `database.Open`、
 スキーマ更新は `go run . migrate` またはComposeの `migrate` serviceが担当します。
@@ -61,11 +59,6 @@ DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS=10
 FRONTEND_URL=http://localhost:5193
 ALLOWED_ORIGINS=http://localhost:5193
 DECISCOPE_ENV=development
-DECISCOPE_SMTP_HOST=
-DECISCOPE_SMTP_PORT=587
-DECISCOPE_SMTP_USERNAME=
-DECISCOPE_SMTP_PASSWORD=
-DECISCOPE_SMTP_FROM=
 ```
 
 - `DECISCOPE_BACKEND_ADDR`: 待受address。設定時は `PORT` より優先します。
@@ -76,20 +69,13 @@ DECISCOPE_SMTP_FROM=
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います。
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません。
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御APIのHTTP timeout秒数。既定値は `10` です。
-- `FRONTEND_URL`: CORSの基準originであり、招待メール内の参加リンクのbase URLにも使います。
+- `FRONTEND_URL`: CORSの基準originであり、招待リンクのbase URLにも使います。
 - `ALLOWED_ORIGINS`: CORS許可originのカンマ区切り。
-- `DECISCOPE_ENV`: `development` (既定) / `production`。development でSMTP未設定の場合、
-  ワークスペース招待メールは送信されず、招待URL (生tokenを含む) をログに出力します。
-  production でSMTP未設定の場合は招待作成が失敗します。
-- `DECISCOPE_SMTP_*`: ワークスペース招待メールのSMTP設定。`HOST` と `FROM` の両方を
-  設定すると実際に送信します。`USERNAME` 未設定なら認証なしで接続します。
+- `DECISCOPE_ENV`: `development` (既定) / `production`。development では招待URL
+  (生tokenを含む) をログに出力し、production では通知基盤がないため招待作成が失敗します。
 - `DECISCOPE_CREATE_SAMPLE_MEETING_ON_FIRST_WORKSPACE`: 所属0件のユーザーが最初の
   ワークスペースを作成したとき、サンプル会議 (終了済みTeams会議 + 文字起こし +
   議論ツリー / 分析カード) を1件投入します。未設定なら development で有効、production で無効。
-- `DECISCOPE_SEED_DEMO_DATA`: 固定デモワークスペース (`ws_demo_deciscope`) を投入する
-  旧式の開発用 seed。ログイン時の自動参加は廃止済みで、通常フローでは使いません。
-  初回ログインフローの確認では `false` のままにしてください。
-
 ## 動作確認
 
 まずヘルスチェックを確認します。
