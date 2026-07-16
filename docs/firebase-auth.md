@@ -57,14 +57,18 @@ FIREBASE_PROJECT_ID=deciscope-app
 GOOGLE_APPLICATION_CREDENTIALS=<path-to-service-account-json>
 ```
 
-Use a path that matches your local checkout. You can also use `FIREBASE_CREDENTIALS_JSON` instead of `GOOGLE_APPLICATION_CREDENTIALS`, but keeping the service account in a separate ignored file is usually easier locally.
+When running the backend directly on the host, use a path that matches your
+local checkout. You can also use `FIREBASE_CREDENTIALS_JSON` instead of
+`GOOGLE_APPLICATION_CREDENTIALS`, but keeping the service account in a
+separate ignored file is usually easier locally.
 
-When the backend runs in Docker Compose, the API container receives these
-Firebase environment variables from `.env`. If you use a service account file
-path, make sure that path exists inside the container, or use
-`FIREBASE_CREDENTIALS_JSON` for local Docker testing. The Firebase Web
-`VITE_FIREBASE_*` values alone are not enough for backend login because
-`POST /v1/auth/login` verifies the ID token with the Firebase Admin SDK.
+When the backend runs in Docker Compose, place `serviceAccountKey.json` in the
+backend repository root. `compose.yaml` mounts that ignored file read-only at
+`/app/serviceAccountKey.json` and configures `GOOGLE_APPLICATION_CREDENTIALS`
+inside the API container. Alternatively, use `FIREBASE_CREDENTIALS_JSON` for
+local Docker testing. The Firebase Web `VITE_FIREBASE_*` values alone are not
+enough for backend login because `POST /v1/auth/login` verifies the ID token
+with the Firebase Admin SDK.
 
 ## Local Flow
 
