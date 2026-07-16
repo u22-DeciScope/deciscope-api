@@ -86,6 +86,8 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
   いずれか1つでも未設定の場合、AI分析機能全体が自動的に無効化されます(起動時に警告ログを1行出力)。
   transcript取り込みや会議終了処理はAI機能の有無に関係なく動作し続けます
 - `AZURE_OPENAI_API_VERSION`: Azure OpenAI REST APIのバージョン。既定値は `2024-10-21`
+- `AZURE_OPENAI_{LIVE_EXTRACTION,CONTEXT_PLANNER,TREE_AUDIT,TREE_REORGANIZER,FINAL_TREE_REVIEW,FINAL_SUMMARY}_DEPLOYMENT`:
+  AI task別のdeployment。未設定のtaskは既存の`AZURE_OPENAI_DEPLOYMENT`へfallbackします
 - ライブ抽出は対応deploymentでAzure Structured Outputs（`json_schema`, `strict: true`）を使います。
   deploymentがこの形式を明示的に拒否した場合は、同一プロセス中は従来の`json_object`へフォールバックします
 - `AI_LIVE_ANALYSIS_ENABLED`: 会議中ライブAI分析を行うか。既定値は `true`
@@ -99,6 +101,15 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `AI_FINALIZATION_WAIT_TIMEOUT_SECONDS`: 実行中分析またはBot通知済み最終sequenceのDB到着を待つ上限。既定値は `10`
 - `AI_FINALIZATION_QUIET_PERIOD_MILLISECONDS`: drain情報を送らない旧Bot向けのDB静穏判定。既定値は `750`、最小値は `100`
 - `AI_FINAL_FLUSH_MAX_ATTEMPTS`: 終了時の未処理final抽出の最大試行回数。既定値は `3`
+- `TREE_AUDIT_ENABLED`: GPT-5-mini向け議論ツリー監査schedulerを有効化するか。既定値は`false`
+- `TREE_AUDIT_MODE`: `off` / `shadow` / `apply_high_confidence`。不正値・未設定時は安全な`shadow`
+- `TREE_AUDIT_INTERVAL_VERSIONS`, `TREE_AUDIT_INTERVAL_SECONDS`, `TREE_AUDIT_MIN_INTERVAL_SECONDS`:
+  version周期、時間周期、通常triggerのdebounce下限。既定値は順に`3`, `300`, `300`
+- `TREE_AUDIT_MAX_RUNS_PER_SESSION`, `TREE_AUDIT_MAX_RUNS_PER_HOUR`:
+  通常triggerのsession上限・1時間上限。既定値は`20`, `12`
+- `TREE_AUDIT_HIGH_SEVERITY_MIN_INTERVAL_SECONDS`, `TREE_AUDIT_HIGH_SEVERITY_MAX_RUNS_PER_HOUR`:
+  deterministicな重大異常triggerの別枠debounce・1時間上限。既定値は`60`, `4`
+- 入力・頻度・timeout上限の詳細は [docs/tree-auditor.md](docs/tree-auditor.md) を参照してください
 
 `DECISCOPE_TRANSCRIPT_ONLY=true` のtranscript-onlyモードでは、AI分析機能は組み込まれません。
 

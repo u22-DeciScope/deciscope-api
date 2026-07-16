@@ -51,6 +51,58 @@ func (r *MeetingAIAnalysisRepository) UpsertMeetingAIAnalysis(ctx context.Contex
 	return scanMeetingAIAnalysis(row)
 }
 
+func (r *MeetingAIAnalysisRepository) CompareAndSwapMeetingAIAnalysis(ctx context.Context, expectedVersion int64, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, bool, error) {
+	payload, err := nullableJSONPayload(analysis.Payload)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode meeting ai analysis CAS payload: %w", err)
+	}
+	updatedAt := analysis.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	row := r.db.QueryRowContext(ctx, `
+		UPDATE meeting_session_ai_analyses
+		SET status=$1, version=$2, payload=$3, model=$4,
+			segment_count=$5, input_chars=$6, last_error=$7, updated_at=$8
+		WHERE session_id=$9 AND analysis_type=$10 AND version=$11
+		RETURNING session_id, analysis_type, status, version, payload,
+			COALESCE(model, ''), segment_count, input_chars,
+			COALESCE(last_error, ''), created_at, updated_at
+	`, string(analysis.Status), analysis.Version, payload, nullable(analysis.Model),
+		analysis.SegmentCount, analysis.InputChars, nullable(analysis.LastError), updatedAt.UTC(),
+		analysis.SessionID, string(analysis.Type), expectedVersion)
+	saved, err := scanMeetingAIAnalysis(row)
+	if err == nil {
+		return saved, true, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return nil, false, fmt.Errorf("compare-and-swap meeting ai analysis: %w", err)
+	}
+	if expectedVersion != 0 {
+		return nil, false, nil
+	}
+	row = r.db.QueryRowContext(ctx, `
+		INSERT INTO meeting_session_ai_analyses (
+			session_id, analysis_type, status, version, payload, model,
+			segment_count, input_chars, last_error, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (session_id, analysis_type) DO NOTHING
+		RETURNING session_id, analysis_type, status, version, payload,
+			COALESCE(model, ''), segment_count, input_chars,
+			COALESCE(last_error, ''), created_at, updated_at
+	`, analysis.SessionID, string(analysis.Type), string(analysis.Status), analysis.Version,
+		payload, nullable(analysis.Model), analysis.SegmentCount, analysis.InputChars,
+		nullable(analysis.LastError), updatedAt.UTC())
+	saved, err = scanMeetingAIAnalysis(row)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("insert meeting ai analysis CAS: %w", err)
+	}
+	return saved, true, nil
+}
+
 func (r *MeetingAIAnalysisRepository) GetMeetingAIAnalysis(ctx context.Context, sessionID string, analysisType domain.MeetingAIAnalysisType) (*domain.MeetingAIAnalysis, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT session_id, analysis_type, status, version, payload, COALESCE(model, ''), segment_count, input_chars, COALESCE(last_error, ''), created_at, updated_at
@@ -109,3 +161,4 @@ func scanMeetingAIAnalysis(row meetingAIAnalysisScanner) (*domain.MeetingAIAnaly
 }
 
 var _ application.MeetingAIAnalysisRepository = (*MeetingAIAnalysisRepository)(nil)
+var _ application.MeetingAIAnalysisCompareAndSwapRepository = (*MeetingAIAnalysisRepository)(nil)

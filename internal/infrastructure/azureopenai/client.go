@@ -202,6 +202,7 @@ func (c *Client) completeOnce(ctx context.Context, request application.AIChatReq
 	}
 	return application.AIChatResult{
 		Content:          choice.Message.Content,
+		Model:            parsed.Model,
 		PromptTokens:     parsed.Usage.PromptTokens,
 		CompletionTokens: parsed.Usage.CompletionTokens,
 	}, nil
@@ -308,6 +309,7 @@ type chatCompletionRequest struct {
 }
 
 type chatCompletionResponse struct {
+	Model   string `json:"model"`
 	Choices []struct {
 		Message      chatMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`

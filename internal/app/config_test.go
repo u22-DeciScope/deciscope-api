@@ -1,11 +1,119 @@
 package app
 
 import (
+	"errors"
 	"testing"
 	"time"
 
+	"deciscope-core-api/internal/application"
+	"deciscope-core-api/internal/domain"
 	"deciscope-core-api/internal/infrastructure/database"
 )
+
+func TestAIConfigRoutesDeploymentsPerTaskAndFallsBackToShared(t *testing.T) {
+	t.Setenv("AZURE_OPENAI_DEPLOYMENT", "shared-deployment")
+	t.Setenv("AZURE_OPENAI_LIVE_EXTRACTION_DEPLOYMENT", "nano-deployment")
+	t.Setenv("AZURE_OPENAI_TREE_AUDIT_DEPLOYMENT", "mini-audit-deployment")
+	t.Setenv("AZURE_OPENAI_TREE_REORGANIZER_DEPLOYMENT", "mini-reorganizer-deployment")
+	t.Setenv("AZURE_OPENAI_FINAL_TREE_REVIEW_DEPLOYMENT", "mini-review-deployment")
+	t.Setenv("AZURE_OPENAI_FINAL_SUMMARY_DEPLOYMENT", "mini-summary-deployment")
+	t.Setenv("AZURE_OPENAI_CONTEXT_PLANNER_DEPLOYMENT", "")
+	t.Setenv("AI_MODEL_CONTEXT_PLANNER", "")
+	config := aiConfigFromEnv()
+	if config.TaskModels.LiveExtraction != "nano-deployment" ||
+		config.TaskModels.TreeAudit != "mini-audit-deployment" ||
+		config.TaskModels.TreeReorganizer != "mini-reorganizer-deployment" ||
+		config.TaskModels.FinalTreeReview != "mini-review-deployment" ||
+		config.TaskModels.FinalSummary != "mini-summary-deployment" {
+		t.Fatalf("task deployments = %+v", config.TaskModels)
+	}
+	if config.TaskModels.ContextPlanner != "" || config.AzureOpenAI.Deployment != "shared-deployment" {
+		t.Fatalf("shared fallback config = %+v task=%+v", config.AzureOpenAI, config.TaskModels)
+	}
+}
+
+func TestAIConfigTreeAuditDefaultsToDisabledShadow(t *testing.T) {
+	t.Setenv("TREE_AUDIT_ENABLED", "")
+	t.Setenv("TREE_AUDIT_MODE", "")
+	config := aiConfigFromEnv()
+	if config.TreeAudit.Enabled {
+		t.Fatal("tree audit must require explicit enablement")
+	}
+	if config.TreeAudit.Mode != domain.MeetingTreeAuditShadow {
+		t.Fatalf("tree audit mode = %q, want shadow", config.TreeAudit.Mode)
+	}
+	if config.TreeAudit.Interval != 5*time.Minute || config.TreeAudit.MinInterval != 5*time.Minute ||
+		config.TreeAudit.MaxRunsPerHour != 12 || config.TreeAudit.HighSeverityMinInterval != time.Minute ||
+		config.TreeAudit.HighSeverityMaxRunsPerHour != 4 {
+		t.Fatalf("tree audit scheduling defaults = %+v", config.TreeAudit)
+	}
+}
+
+func TestAIConfigTreeAuditReadsExplicitEnablement(t *testing.T) {
+	t.Setenv("TREE_AUDIT_ENABLED", "true")
+	t.Setenv("TREE_AUDIT_MODE", "shadow")
+	config := aiConfigFromEnv()
+	if !config.TreeAudit.Enabled || config.TreeAuditEnabledInvalid {
+		t.Fatalf("tree audit enablement = enabled:%t invalid:%t", config.TreeAudit.Enabled, config.TreeAuditEnabledInvalid)
+	}
+	if config.TreeAudit.Mode != domain.MeetingTreeAuditShadow {
+		t.Fatalf("tree audit mode = %q, want shadow", config.TreeAudit.Mode)
+	}
+}
+
+func TestAIConfigTreeAuditRejectsInvalidEnablement(t *testing.T) {
+	t.Setenv("TREE_AUDIT_ENABLED", "enabled")
+	config := aiConfigFromEnv()
+	if config.TreeAudit.Enabled || !config.TreeAuditEnabledInvalid {
+		t.Fatalf("invalid tree audit enablement = enabled:%t invalid:%t", config.TreeAudit.Enabled, config.TreeAuditEnabledInvalid)
+	}
+	if got := treeAuditConfigurationIssue(config, true); got != "invalid_feature_flag" {
+		t.Fatalf("treeAuditConfigurationIssue() = %q, want invalid_feature_flag", got)
+	}
+}
+
+func TestTreeAuditConfigurationRequiresDedicatedDeployments(t *testing.T) {
+	config := AIConfig{
+		TreeAudit: application.TreeAuditConfig{Enabled: true, Mode: domain.MeetingTreeAuditShadow},
+	}
+	if got := treeAuditConfigurationIssue(config, true); got != "tree_audit_deployment_empty" {
+		t.Fatalf("missing tree audit deployment issue = %q", got)
+	}
+	config.TaskModels.TreeAudit = "gpt-5-mini-audit"
+	if got := treeAuditConfigurationIssue(config, true); got != "final_tree_review_deployment_empty" {
+		t.Fatalf("missing final review deployment issue = %q", got)
+	}
+	config.TaskModels.FinalTreeReview = "gpt-5-mini-final-review"
+	if got := treeAuditConfigurationIssue(config, true); got != "" {
+		t.Fatalf("configured tree audit issue = %q", got)
+	}
+}
+
+func TestTreeAuditRepositoryIssueDistinguishesMigration(t *testing.T) {
+	if got := treeAuditRepositoryIssue(nil); got != "" {
+		t.Fatalf("nil repository issue = %q", got)
+	}
+	if got := treeAuditRepositoryIssue(errors.Join(errors.New("readiness"), application.ErrMeetingTreeAuditMigrationMissing)); got != "migration_missing" {
+		t.Fatalf("migration repository issue = %q", got)
+	}
+	if got := treeAuditRepositoryIssue(errors.New("database unavailable")); got != "repository_not_ready" {
+		t.Fatalf("generic repository issue = %q", got)
+	}
+}
+
+func TestTreeAuditSchedulerRegistrationRequiresActiveConfigAndRepository(t *testing.T) {
+	config := application.TreeAuditConfig{Enabled: true, Mode: domain.MeetingTreeAuditShadow}
+	if !treeAuditSchedulerRegistered(config, true) {
+		t.Fatal("active tree audit with ready repository must register the scheduler")
+	}
+	if treeAuditSchedulerRegistered(config, false) {
+		t.Fatal("tree audit without a ready repository must not register the scheduler")
+	}
+	config.Mode = domain.MeetingTreeAuditOff
+	if treeAuditSchedulerRegistered(config, true) {
+		t.Fatal("off mode must not register the scheduler")
+	}
+}
 
 func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://deciscope:secret@localhost:5432/deciscope")

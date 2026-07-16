@@ -283,6 +283,9 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
 - `treeVersion` はtreeを生成したlive analysis versionです。`treeChanges` はそのversionで
   サーバーが算出した構造差分で、`newNodeIds` / `updatedNodeIds` / `reparentedNodeIds` /
   `resolvedNodeIds` / `promotedNodeIds` を必要なものだけ含みます。旧payloadでは省略されます
+- tree auditorが検証済みpatchを適用したversionでは、任意の
+  `changeSource: "tree_auditor"`, `auditRunId`, `basedOnTreeVersion` が追加されます。
+  `treeChanges.source` / `treeChanges.auditRunId`も同じ由来を示します。旧クライアントは無視できます
 
 ## Teams Bot会議セッション
 

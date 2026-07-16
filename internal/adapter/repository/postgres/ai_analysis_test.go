@@ -105,6 +105,32 @@ func TestMeetingAIAnalysisRepositoryKeepsPayloadOnFailure(t *testing.T) {
 	}
 }
 
+func TestMeetingAIAnalysisRepositoryCASRejectsStaleLiveWrite(t *testing.T) {
+	repository, _ := newTestMeetingAIAnalysisRepository(t)
+	ctx := context.Background()
+	if _, err := repository.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+		SessionID: "session_test", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 2,
+		Payload: json.RawMessage(`{"treeVersion":2}`), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, applied, err := repository.CompareAndSwapMeetingAIAnalysis(ctx, 1, domain.MeetingAIAnalysis{
+		SessionID: "session_test", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 2,
+		Payload: json.RawMessage(`{"treeVersion":2,"stale":true}`), UpdatedAt: time.Now().UTC(),
+	}); err != nil || applied {
+		t.Fatalf("stale CAS applied=%t err=%v", applied, err)
+	}
+	if saved, applied, err := repository.CompareAndSwapMeetingAIAnalysis(ctx, 2, domain.MeetingAIAnalysis{
+		SessionID: "session_test", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 3,
+		Payload: json.RawMessage(`{"treeVersion":3}`), UpdatedAt: time.Now().UTC(),
+	}); err != nil || !applied || saved.Version != 3 {
+		t.Fatalf("current CAS saved=%+v applied=%t err=%v", saved, applied, err)
+	}
+}
+
 func TestMeetingAIAnalysisRepositoryGetReturnsNotFound(t *testing.T) {
 	repository, _ := newTestMeetingAIAnalysisRepository(t)
 	ctx := context.Background()

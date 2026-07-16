@@ -573,6 +573,66 @@ func (f *fakeAIAnalysisRepository) upsertSnapshot() []domain.MeetingAIAnalysis {
 	return append([]domain.MeetingAIAnalysis{}, f.upserts...)
 }
 
+type fakeMeetingTreeAuditRepository struct {
+	mu   sync.Mutex
+	runs []domain.MeetingTreeAuditRun
+}
+
+func (f *fakeMeetingTreeAuditRepository) CheckMeetingTreeAuditRepository(context.Context) error {
+	return nil
+}
+
+func (f *fakeMeetingTreeAuditRepository) TryStartMeetingTreeAuditRun(_ context.Context, run domain.MeetingTreeAuditRun) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runs = append(f.runs, run)
+	return true, nil
+}
+
+func (f *fakeMeetingTreeAuditRepository) SaveMeetingTreeAuditRun(_ context.Context, run domain.MeetingTreeAuditRun) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for index := range f.runs {
+		if f.runs[index].ID == run.ID {
+			f.runs[index] = run
+			return nil
+		}
+	}
+	f.runs = append(f.runs, run)
+	return nil
+}
+
+func (f *fakeMeetingTreeAuditRepository) GetLatestMeetingTreeAuditRun(context.Context, string) (*domain.MeetingTreeAuditRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.runs) == 0 {
+		return nil, domain.ErrNotFound
+	}
+	run := f.runs[len(f.runs)-1]
+	return &run, nil
+}
+
+func (f *fakeMeetingTreeAuditRepository) CountMeetingTreeAuditProviderCalls(context.Context, string, domain.MeetingTreeAuditTriggerClass, time.Time) (int, error) {
+	return 0, nil
+}
+
+func (f *fakeMeetingTreeAuditRepository) ApplyMeetingTreeAudit(_ context.Context, run domain.MeetingTreeAuditRun, _ int64, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, bool, error) {
+	f.mu.Lock()
+	f.runs = append(f.runs, run)
+	f.mu.Unlock()
+	return &analysis, false, nil
+}
+
+func (f *fakeMeetingTreeAuditRepository) latest() *domain.MeetingTreeAuditRun {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.runs) == 0 {
+		return nil
+	}
+	run := f.runs[len(f.runs)-1]
+	return &run
+}
+
 type fakeAIChatCompleter struct {
 	mu       sync.Mutex
 	requests []application.AIChatRequest
@@ -968,6 +1028,46 @@ func TestMeetingFinalizationFlushesOnlyUnanalyzedTailAndAlignsCoverage(t *testin
 		if envelope.CoveredThroughSequenceNo != 27 || envelope.SegmentCount != 27 {
 			t.Fatalf("%s coverage = %+v, want through/count 27", analysisType, envelope)
 		}
+	}
+}
+
+func TestMeetingFinalizationCallsFinalTreeReviewDeployment(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	repository.seed(domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 9, Payload: coveredLivePayload(t, 24),
+	})
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{
+		{Content: `{"basedOnTreeVersion":9,"summary":"変更なし","findings":[],"operations":[]}`, Model: "gpt-5-mini"},
+		{Content: finalAnalysisResultJSON, Model: "gpt-5-nano"},
+	}}
+	config := testLiveOnlyConfig(time.Hour, 1)
+	config.FinalEnabled = true
+	config.FinalMaxInputChars = 12000
+	config.TaskModels.TreeAudit = "tree-audit-mini"
+	config.TaskModels.FinalTreeReview = "final-review-mini"
+	config.TreeAudit = application.TreeAuditConfig{Enabled: true, Mode: domain.MeetingTreeAuditShadow}
+	auditRepository := &fakeMeetingTreeAuditRepository{}
+	service := application.NewMeetingAnalysisService(repository, &fakeAnalysisTranscriptRepository{segments: finalSegmentsThrough(24)}, &fakeAnalysisSessionRepository{}, completer, config)
+	service.SetMeetingTreeAuditRepository(auditRepository)
+
+	err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
+		BotLastForwardedFinalSequence: 24,
+		TranscriptQueueDrained:        true,
+	})
+	if err != nil {
+		t.Fatalf("FinalizeMeetingSession() error = %v", err)
+	}
+	requests := completer.requestSnapshot()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want final review + final summary", len(requests))
+	}
+	if requests[0].Deployment != "final-review-mini" {
+		t.Fatalf("final review deployment = %q, want final-review-mini", requests[0].Deployment)
+	}
+	run := auditRepository.latest()
+	if run == nil || run.Task != "final_tree_review" || run.Deployment != "final-review-mini" {
+		t.Fatalf("final tree review run = %+v", run)
 	}
 }
 

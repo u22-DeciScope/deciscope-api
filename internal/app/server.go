@@ -315,8 +315,26 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 	analysisRepository := postgresrepository.NewMeetingAIAnalysisRepository(postgresDB)
 	transcriptSegmentRepository := postgresrepository.NewTranscriptSegmentRepository(postgresDB)
 	completer := azureopenai.NewClient(config.AzureOpenAI)
+	auditRepository := postgresrepository.NewMeetingTreeAuditRepository(postgresDB)
+	auditReason := treeAuditConfigurationIssue(config, enabled)
+	repositoryReady := false
+	if auditReason == "" {
+		readinessCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		readinessErr := auditRepository.CheckMeetingTreeAuditRepository(readinessCtx)
+		cancel()
+		auditReason = treeAuditRepositoryIssue(readinessErr)
+		if readinessErr == nil {
+			repositoryReady = true
+		}
+	}
+	effectiveTreeAudit := config.TreeAudit
+	if auditReason != "" {
+		effectiveTreeAudit.Enabled = false
+	}
+	schedulerRegistered := treeAuditSchedulerRegistered(effectiveTreeAudit, repositoryReady)
+	logTreeAuditConfiguration(config, auditReason, repositoryReady, schedulerRegistered)
 
-	return application.NewMeetingAnalysisService(
+	service := application.NewMeetingAnalysisService(
 		analysisRepository,
 		transcriptSegmentRepository,
 		meetingSessionRepository,
@@ -339,14 +357,73 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 			TaskModels: application.AITaskModels{
 				ContextPlanner:  config.TaskModels.ContextPlanner,
 				LiveExtraction:  config.TaskModels.LiveExtraction,
+				TreeAudit:       config.TaskModels.TreeAudit,
 				TreeReorganizer: config.TaskModels.TreeReorganizer,
+				FinalTreeReview: config.TaskModels.FinalTreeReview,
 				FinalSummary:    config.TaskModels.FinalSummary,
 			},
-			TreeClassification: config.TreeClassification,
-			DebugDroppedNodes:  config.DebugDroppedNodes,
+			TreeClassification:         config.TreeClassification,
+			DebugDroppedNodes:          config.DebugDroppedNodes,
+			TreeAudit:                  effectiveTreeAudit,
+			TreeAuditUnavailableReason: auditReason,
 		},
 		publisher,
 	)
+	if schedulerRegistered {
+		service.SetMeetingTreeAuditRepository(auditRepository)
+	}
+	return service
+}
+
+func logTreeAuditConfiguration(config AIConfig, auditReason string, repositoryReady, schedulerRegistered bool) {
+	if auditReason == "feature_flag_false" || auditReason == "mode_off" {
+		log.Printf("AI tree audit disabled. reason=%s", auditReason)
+	} else if auditReason != "" {
+		log.Printf("AI tree audit unavailable. reason=%s", auditReason)
+	}
+	log.Printf("AI tree audit configuration. enabled=%t requested=%t mode=%s treeAuditDeployment=%s finalTreeReviewDeployment=%s intervalVersions=%d intervalSeconds=%.0f minIntervalSeconds=%.0f maxRunsPerSession=%d maxRunsPerHour=%d highSeverityMinIntervalSeconds=%.0f highSeverityMaxRunsPerHour=%d repositoryReady=%t schedulerRegistered=%t reason=%s",
+		schedulerRegistered, config.TreeAudit.Enabled, config.TreeAudit.Mode,
+		strings.TrimSpace(config.TaskModels.TreeAudit), strings.TrimSpace(config.TaskModels.FinalTreeReview),
+		config.TreeAudit.IntervalVersions, config.TreeAudit.Interval.Seconds(), config.TreeAudit.MinInterval.Seconds(),
+		config.TreeAudit.MaxRunsPerSession, config.TreeAudit.MaxRunsPerHour,
+		config.TreeAudit.HighSeverityMinInterval.Seconds(), config.TreeAudit.HighSeverityMaxRunsPerHour,
+		repositoryReady, schedulerRegistered, firstNonEmpty(auditReason, "ready"))
+}
+
+func treeAuditSchedulerRegistered(config application.TreeAuditConfig, repositoryReady bool) bool {
+	return config.Enabled && config.Mode != domain.MeetingTreeAuditOff && repositoryReady
+}
+
+func treeAuditConfigurationIssue(config AIConfig, aiEnabled bool) string {
+	if config.TreeAuditEnabledInvalid {
+		return "invalid_feature_flag"
+	}
+	if !config.TreeAudit.Enabled {
+		return "feature_flag_false"
+	}
+	if config.TreeAudit.Mode == domain.MeetingTreeAuditOff {
+		return "mode_off"
+	}
+	if !aiEnabled {
+		return "azure_openai_not_configured"
+	}
+	if strings.TrimSpace(config.TaskModels.TreeAudit) == "" {
+		return "tree_audit_deployment_empty"
+	}
+	if strings.TrimSpace(config.TaskModels.FinalTreeReview) == "" {
+		return "final_tree_review_deployment_empty"
+	}
+	return ""
+}
+
+func treeAuditRepositoryIssue(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, application.ErrMeetingTreeAuditMigrationMissing) {
+		return "migration_missing"
+	}
+	return "repository_not_ready"
 }
 
 func transcriptRealtimeConfig(config TranscriptWebSocketConfig) realtime.TranscriptWebSocketConfig {

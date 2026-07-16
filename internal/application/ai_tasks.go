@@ -304,10 +304,11 @@ func parseTreeReorganizerResult(content string) (*treeReorganizerResult, error) 
 // version, input tree version, fallback flag, latency, token usage). The
 // returned model name is what should be recorded on analysis rows.
 func (s *MeetingAnalysisService) completeTask(ctx context.Context, task aiTask, request AIChatRequest, inputTreeVersion int64) (AIChatResult, string, error) {
-	deployment := s.config.TaskModels.deploymentFor(task)
-	fallback := deployment == ""
-	request.Deployment = deployment
-	model := s.config.modelNameFor(task)
+	override := s.config.TaskModels.deploymentFor(task)
+	fallback := override == ""
+	deployment := s.config.modelNameFor(task)
+	request.Deployment = override
+	model := deployment
 
 	if s.completer == nil {
 		return AIChatResult{}, model, fmt.Errorf("azure openai completer is not configured")
@@ -316,12 +317,15 @@ func (s *MeetingAnalysisService) completeTask(ctx context.Context, task aiTask, 
 	result, err := s.completer.Complete(ctx, request)
 	elapsed := s.now().Sub(start)
 	if err != nil {
-		log.Printf("AI task failed. task=%s model=%s promptVersion=%s inputTreeVersion=%d fallbackModel=%t elapsed=%s error=%v",
-			task, model, task.promptVersion(), inputTreeVersion, fallback, elapsed, err)
+		log.Printf("AI task failed. task=%s deployment=%s model=%s promptVersion=%s inputTreeVersion=%d fallbackModel=%t elapsed=%s result=failed error=%v",
+			task, deployment, model, task.promptVersion(), inputTreeVersion, fallback, elapsed, err)
 		return result, model, err
 	}
-	log.Printf("AI task completed. task=%s model=%s promptVersion=%s inputTreeVersion=%d fallbackModel=%t elapsed=%s promptTokens=%d completionTokens=%d",
-		task, model, task.promptVersion(), inputTreeVersion, fallback, elapsed, result.PromptTokens, result.CompletionTokens)
+	if strings.TrimSpace(result.Model) != "" {
+		model = strings.TrimSpace(result.Model)
+	}
+	log.Printf("AI task completed. task=%s deployment=%s model=%s promptVersion=%s inputTreeVersion=%d fallbackModel=%t elapsed=%s promptTokens=%d completionTokens=%d result=completed",
+		task, deployment, model, task.promptVersion(), inputTreeVersion, fallback, elapsed, result.PromptTokens, result.CompletionTokens)
 	return result, model, nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"deciscope-core-api/internal/application"
+	"deciscope-core-api/internal/domain"
 	"deciscope-core-api/internal/infrastructure/azureopenai"
 	"deciscope-core-api/internal/infrastructure/botcontrol"
 	"deciscope-core-api/internal/infrastructure/database"
@@ -113,9 +114,12 @@ type AIConfig struct {
 	FinalizationWaitTimeout   time.Duration
 	FinalizationQuietPeriod   time.Duration
 	FinalFlushMaxAttempts     int
-	// TaskModels are optional per-task deployment names (AI_MODEL_*). Empty
-	// entries fall back to the shared AZURE_OPENAI_DEPLOYMENT.
-	TaskModels AITaskModelsConfig
+	// TaskModels are optional per-task AZURE_OPENAI_*_DEPLOYMENT names. The
+	// legacy AI_MODEL_* aliases remain accepted; empty entries fall back to
+	// the shared AZURE_OPENAI_DEPLOYMENT.
+	TaskModels              AITaskModelsConfig
+	TreeAudit               application.TreeAuditConfig
+	TreeAuditEnabledInvalid bool
 	// TreeClassification は議論ツリーの意味分類ポリシー(AI_TREE_*)。ゼロ値の
 	// 項目は application 側の既定値が使われる。
 	TreeClassification application.TreeClassificationConfig
@@ -128,7 +132,9 @@ type AIConfig struct {
 type AITaskModelsConfig struct {
 	ContextPlanner  string
 	LiveExtraction  string
+	TreeAudit       string
 	TreeReorganizer string
+	FinalTreeReview string
 	FinalSummary    string
 }
 
@@ -243,6 +249,7 @@ func environmentFromEnv() string {
 
 func aiConfigFromEnv() AIConfig {
 	requestTimeout := secondsDurationFromEnv(os.Getenv("AI_REQUEST_TIMEOUT_SECONDS"), defaultAIRequestTimeoutSeconds, 1)
+	treeAuditEnabled, treeAuditEnabledInvalid := treeAuditEnabledFromEnv(os.Getenv("TREE_AUDIT_ENABLED"))
 	return AIConfig{
 		AzureOpenAI: azureopenai.Config{
 			Endpoint:   strings.TrimSpace(os.Getenv("AZURE_OPENAI_ENDPOINT")),
@@ -262,11 +269,36 @@ func aiConfigFromEnv() AIConfig {
 		FinalizationQuietPeriod:   millisecondsDurationFromEnv(os.Getenv("AI_FINALIZATION_QUIET_PERIOD_MILLISECONDS"), defaultAIFinalizationQuietMillis, 100),
 		FinalFlushMaxAttempts:     positiveIntFromEnv(os.Getenv("AI_FINAL_FLUSH_MAX_ATTEMPTS"), defaultAIFinalFlushMaxAttempts),
 		TaskModels: AITaskModelsConfig{
-			ContextPlanner:  strings.TrimSpace(os.Getenv("AI_MODEL_CONTEXT_PLANNER")),
-			LiveExtraction:  strings.TrimSpace(os.Getenv("AI_MODEL_LIVE_EXTRACTION")),
-			TreeReorganizer: strings.TrimSpace(os.Getenv("AI_MODEL_TREE_REORGANIZER")),
-			FinalSummary:    strings.TrimSpace(os.Getenv("AI_MODEL_FINAL_SUMMARY")),
+			ContextPlanner:  firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_CONTEXT_PLANNER_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_CONTEXT_PLANNER"))),
+			LiveExtraction:  firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_LIVE_EXTRACTION_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_LIVE_EXTRACTION"))),
+			TreeAudit:       firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_TREE_AUDIT_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_TREE_AUDIT"))),
+			TreeReorganizer: firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_TREE_REORGANIZER_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_TREE_REORGANIZER"))),
+			FinalTreeReview: firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_FINAL_TREE_REVIEW_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_FINAL_TREE_REVIEW"))),
+			FinalSummary:    firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_FINAL_SUMMARY_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_FINAL_SUMMARY"))),
 		},
+		TreeAudit: application.TreeAuditConfig{
+			Enabled:                    treeAuditEnabled,
+			Mode:                       treeAuditModeFromEnv(os.Getenv("TREE_AUDIT_MODE")),
+			IntervalVersions:           int64(positiveIntFromEnv(os.Getenv("TREE_AUDIT_INTERVAL_VERSIONS"), 3)),
+			Interval:                   secondsDurationFromEnv(os.Getenv("TREE_AUDIT_INTERVAL_SECONDS"), 300, 1),
+			MinInterval:                secondsDurationFromEnv(os.Getenv("TREE_AUDIT_MIN_INTERVAL_SECONDS"), 300, 1),
+			MaxRunsPerSession:          positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_RUNS_PER_SESSION"), 20),
+			MaxRunsPerHour:             positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_RUNS_PER_HOUR"), 12),
+			HighSeverityMinInterval:    secondsDurationFromEnv(os.Getenv("TREE_AUDIT_HIGH_SEVERITY_MIN_INTERVAL_SECONDS"), 60, 1),
+			HighSeverityMaxRunsPerHour: positiveIntFromEnv(os.Getenv("TREE_AUDIT_HIGH_SEVERITY_MAX_RUNS_PER_HOUR"), 4),
+			Timeout:                    secondsDurationFromEnv(os.Getenv("TREE_AUDIT_TIMEOUT_SECONDS"), 25, 1),
+			MaxOutputTokens:            positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_OUTPUT_TOKENS"), 2500),
+			MaxNodes:                   positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_NODES"), 80),
+			MaxRecentSegments:          positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_RECENT_SEGMENTS"), 16),
+			MaxEvidenceSegments:        positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_EVIDENCE_SEGMENTS"), 24),
+			MaxInputTokens:             positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_INPUT_TOKENS"), 12000),
+			MaxPersistedJSONBytes:      positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_PERSISTED_JSON_BYTES"), 256*1024),
+			HighConfidenceThreshold:    floatFromEnv(os.Getenv("TREE_AUDIT_HIGH_CONFIDENCE_THRESHOLD")),
+			RequiredImprovementMargin:  floatFromEnv(os.Getenv("TREE_AUDIT_REQUIRED_IMPROVEMENT_MARGIN")),
+			CohesionThreshold:          floatFromEnv(os.Getenv("TREE_AUDIT_COHESION_THRESHOLD")),
+			TentativeMaxVersions:       int64(positiveIntFromEnv(os.Getenv("TREE_AUDIT_TENTATIVE_MAX_VERSIONS"), 3)),
+		},
+		TreeAuditEnabledInvalid: treeAuditEnabledInvalid,
 		// ゼロ値(未設定・不正値)は application 側の既定値に正規化されるため、
 		// 既定値をここで二重管理しない。
 		TreeClassification: application.TreeClassificationConfig{
@@ -373,6 +405,26 @@ func boolFromEnvDefaultTrue(value string) bool {
 		return true
 	}
 	return strings.EqualFold(trimmed, "true")
+}
+
+func treeAuditEnabledFromEnv(value string) (enabled bool, invalid bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false, false
+	}
+	enabled, err := strconv.ParseBool(trimmed)
+	if err != nil {
+		return false, true
+	}
+	return enabled, false
+}
+
+func treeAuditModeFromEnv(value string) domain.MeetingTreeAuditMode {
+	mode := domain.MeetingTreeAuditMode(strings.ToLower(strings.TrimSpace(value)))
+	if !domain.ValidMeetingTreeAuditMode(mode) {
+		return domain.MeetingTreeAuditShadow
+	}
+	return mode
 }
 
 func botControlTimeoutFromEnv(value string) time.Duration {

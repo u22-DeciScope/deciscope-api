@@ -219,7 +219,9 @@ type aiTask string
 const (
 	aiTaskContextPlanner  aiTask = "context_planner"
 	aiTaskLiveExtraction  aiTask = "live_extraction"
+	aiTaskTreeAudit       aiTask = "tree_audit"
 	aiTaskTreeReorganizer aiTask = "tree_reorganizer"
+	aiTaskFinalTreeReview aiTask = "final_tree_review"
 	aiTaskFinalSummary    aiTask = "final_summary"
 )
 
@@ -229,6 +231,8 @@ func (t aiTask) promptVersion() string {
 		return contextPlannerPromptVersion
 	case aiTaskLiveExtraction:
 		return liveAnalysisPromptVersion
+	case aiTaskTreeAudit, aiTaskFinalTreeReview:
+		return treeAuditPromptVersion
 	case aiTaskTreeReorganizer:
 		return treeReorganizerPromptVersion
 	case aiTaskFinalSummary:
@@ -244,7 +248,9 @@ func (t aiTask) promptVersion() string {
 type AITaskModels struct {
 	ContextPlanner  string
 	LiveExtraction  string
+	TreeAudit       string
 	TreeReorganizer string
+	FinalTreeReview string
 	FinalSummary    string
 }
 
@@ -254,8 +260,12 @@ func (m AITaskModels) deploymentFor(task aiTask) string {
 		return strings.TrimSpace(m.ContextPlanner)
 	case aiTaskLiveExtraction:
 		return strings.TrimSpace(m.LiveExtraction)
+	case aiTaskTreeAudit:
+		return strings.TrimSpace(m.TreeAudit)
 	case aiTaskTreeReorganizer:
 		return strings.TrimSpace(m.TreeReorganizer)
+	case aiTaskFinalTreeReview:
+		return strings.TrimSpace(m.FinalTreeReview)
 	case aiTaskFinalSummary:
 		return strings.TrimSpace(m.FinalSummary)
 	default:
@@ -309,6 +319,13 @@ type MeetingAnalysisConfig struct {
 
 	// DebugDroppedNodes は破棄ノード詳細ログを出すか。
 	DebugDroppedNodes bool
+
+	TreeAudit TreeAuditConfig
+	// TreeAuditUnavailableReason is populated by the composition root when the
+	// feature was requested but could not be wired safely (for example, a
+	// missing deployment or migration). It is used only for explicit fallback
+	// observability and never changes normal live-analysis behavior.
+	TreeAuditUnavailableReason string
 }
 
 const defaultReorganizeMinInterval = 60 * time.Second
@@ -389,6 +406,7 @@ type MeetingAnalysisService struct {
 	transcriptRepo TranscriptSegmentRepository
 	sessionRepo    MeetingSessionRepository
 	config         MeetingAnalysisConfig
+	auditRepo      MeetingTreeAuditRepository
 	now            func() time.Time
 
 	mu       sync.Mutex
@@ -407,6 +425,14 @@ type MeetingAnalysisService struct {
 	startOnce sync.Once
 	closeOnce sync.Once
 	stopCh    chan struct{}
+}
+
+// SetMeetingTreeAuditRepository injects the persistence/CAS adapter without
+// widening the long-standing constructor signature used by existing callers.
+func (s *MeetingAnalysisService) SetMeetingTreeAuditRepository(repository MeetingTreeAuditRepository) {
+	if s != nil {
+		s.auditRepo = repository
+	}
 }
 
 type liveAnalysisSessionState struct {
@@ -440,6 +466,20 @@ type liveAnalysisSessionState struct {
 	// lastReorganizeAt throttles the tree reorganization task (Task E) so an
 	// overcrowded topic triggers at most one pass per configured interval.
 	lastReorganizeAt time.Time
+	// Tree audit scheduling is a bounded per-session single flight. pending is
+	// one coalesced rerun flag, never an unbounded queue.
+	auditRunning            bool
+	auditRunningDone        chan struct{}
+	auditCancel             context.CancelFunc
+	auditPending            bool
+	auditPendingReason      string
+	lastAuditAt             time.Time
+	lastHighSeverityAuditAt time.Time
+	lastAuditVersion        int64
+	lastAuditHash           string
+	// auditClosed is set when the session enters ending. Live audits may finish
+	// for history, but cannot apply or schedule a follow-up after this boundary.
+	auditClosed bool
 }
 
 const (
@@ -463,6 +503,7 @@ func NewMeetingAnalysisService(
 	if config.LiveInterval <= 0 {
 		config.LiveInterval = defaultLiveAnalysisInterval
 	}
+	config.TreeAudit = config.TreeAudit.normalized()
 	return &MeetingAnalysisService{
 		analysisRepo:         analysisRepo,
 		transcriptRepo:       transcriptRepo,
@@ -518,7 +559,7 @@ func (s *MeetingAnalysisService) PrepareMeetingSession(session domain.MeetingSes
 // Start launches the periodic live-analysis scheduler. It is a no-op when
 // live analysis is disabled. Stop the scheduler with Close.
 func (s *MeetingAnalysisService) Start(ctx context.Context) {
-	if s == nil || !s.config.liveActive() {
+	if s == nil || (!s.config.liveActive() && !s.config.TreeAudit.active()) {
 		return
 	}
 	s.startOnce.Do(func() {
@@ -526,14 +567,25 @@ func (s *MeetingAnalysisService) Start(ctx context.Context) {
 	})
 }
 
-// Close stops the scheduler started by Start. It does not cancel in-flight
-// analysis calls.
+// Close stops the scheduler and cancels in-flight tree audits. Live/final
+// analysis calls retain their established caller-owned cancellation behavior.
 func (s *MeetingAnalysisService) Close() error {
 	if s == nil {
 		return nil
 	}
 	s.closeOnce.Do(func() {
 		close(s.stopCh)
+		s.mu.Lock()
+		cancels := make([]context.CancelFunc, 0, len(s.sessions))
+		for _, state := range s.sessions {
+			if state.auditCancel != nil {
+				cancels = append(cancels, state.auditCancel)
+			}
+		}
+		s.mu.Unlock()
+		for _, cancel := range cancels {
+			cancel()
+		}
 	})
 	return nil
 }
@@ -558,9 +610,17 @@ type liveAnalysisJob struct {
 	segments  []domain.TranscriptSegment
 }
 
+type treeAuditJob struct {
+	sessionID     string
+	triggerReason string
+	payload       json.RawMessage
+	version       int64
+}
+
 func (s *MeetingAnalysisService) tick(ctx context.Context) {
 	now := s.now()
 	var jobs []liveAnalysisJob
+	var auditJobs []treeAuditJob
 
 	s.mu.Lock()
 	for sessionID, state := range s.sessions {
@@ -568,10 +628,29 @@ func (s *MeetingAnalysisService) tick(ctx context.Context) {
 			delete(s.sessions, sessionID)
 			continue
 		}
-		if state.running {
-			continue
+		if s.config.TreeAudit.active() && s.auditRepo != nil && !state.running && !state.finalizing && !state.auditClosed && !state.auditRunning && state.lastVersion > state.lastAuditVersion && len(state.lastPayload) > 0 {
+			versionDue := state.lastVersion-state.lastAuditVersion >= s.config.TreeAudit.IntervalVersions
+			timeDue := (!state.lastAuditAt.IsZero() && now.Sub(state.lastAuditAt) >= s.config.TreeAudit.Interval) ||
+				(state.lastAuditAt.IsZero() && !state.lastActivityAt.IsZero() && now.Sub(state.lastActivityAt) >= s.config.TreeAudit.Interval)
+			pendingSince := state.lastAuditAt
+			pendingInterval := s.config.TreeAudit.MinInterval
+			if treeAuditTriggerClass(state.auditPendingReason, false) == domain.MeetingTreeAuditTriggerHigh {
+				pendingSince = state.lastHighSeverityAuditAt
+				pendingInterval = s.config.TreeAudit.HighSeverityMinInterval
+			}
+			pendingDue := state.auditPending && (pendingSince.IsZero() || now.Sub(pendingSince) >= pendingInterval)
+			if versionDue || timeDue || pendingDue {
+				reason := state.auditPendingReason
+				if reason == "" && versionDue {
+					reason = "interval_versions"
+				}
+				if reason == "" {
+					reason = "interval_seconds"
+				}
+				auditJobs = append(auditJobs, treeAuditJob{sessionID: sessionID, triggerReason: reason, payload: append(json.RawMessage(nil), state.lastPayload...), version: state.lastVersion})
+			}
 		}
-		if state.finalizing {
+		if state.running || state.finalizing || !s.config.liveActive() {
 			continue
 		}
 		if state.pendingChars < s.config.LiveMinChars {
@@ -594,6 +673,9 @@ func (s *MeetingAnalysisService) tick(ctx context.Context) {
 
 	for _, job := range jobs {
 		go s.runLiveAnalysis(ctx, job.sessionID, job.segments)
+	}
+	for _, job := range auditJobs {
+		s.scheduleTreeAudit(ctx, job.sessionID, job.triggerReason, job.payload, job.version)
 	}
 }
 
@@ -726,7 +808,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		return false, retryable
 	}
 
-	saved, upsertErr := s.analysisRepo.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+	saved, persisted, upsertErr := s.persistLiveAnalysis(ctx, previousVersion, domain.MeetingAIAnalysis{
 		SessionID:    sessionID,
 		Type:         domain.MeetingAIAnalysisLive,
 		Status:       domain.MeetingAIAnalysisCompleted,
@@ -744,6 +826,10 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		finishLiveRunLocked(state)
 		s.mu.Unlock()
 		log.Printf("Live AI analysis persist failed. sessionId=%s version=%d error=%v", sessionID, newVersion, upsertErr)
+		return false, true
+	}
+	if !persisted {
+		s.handleStaleLiveAnalysisResult(ctx, sessionID, segments, previousVersion)
 		return false, true
 	}
 	modelResolvedIDCount := countModelResolvedIDs(result.Content)
@@ -838,6 +924,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	state.nextAttemptAt = time.Time{}
 	state.retryBlocked = false
 	s.mu.Unlock()
+	s.considerTreeAudit(ctx, sessionID, previousPayload, payload, newVersion)
 	return true, false
 }
 
@@ -980,7 +1067,7 @@ func (s *MeetingAnalysisService) maybeReorganizeLiveTree(ctx context.Context, se
 		log.Printf("Tree reorganization marshal failed. sessionId=%s error=%v", sessionID, marshalErr)
 		return payload, version
 	}
-	saved, upsertErr := s.analysisRepo.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+	saved, persisted, upsertErr := s.persistLiveAnalysis(ctx, version, domain.MeetingAIAnalysis{
 		SessionID: sessionID,
 		Type:      domain.MeetingAIAnalysisLive,
 		Status:    domain.MeetingAIAnalysisCompleted,
@@ -991,6 +1078,14 @@ func (s *MeetingAnalysisService) maybeReorganizeLiveTree(ctx context.Context, se
 	})
 	if upsertErr != nil {
 		log.Printf("Tree reorganization persist failed. sessionId=%s error=%v", sessionID, upsertErr)
+		return payload, version
+	}
+	if !persisted {
+		currentAnalysis, currentErr := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive)
+		if currentErr == nil && currentAnalysis != nil && currentAnalysis.Version > version {
+			log.Printf("Tree reorganization stale result discarded. sessionId=%s expectedVersion=%d currentVersion=%d", sessionID, version, currentAnalysis.Version)
+			return currentAnalysis.Payload, currentAnalysis.Version
+		}
 		return payload, version
 	}
 	s.publishAnalysis(*saved)
@@ -1012,7 +1107,6 @@ func (s *MeetingAnalysisService) seedLiveAnalysisState(ctx context.Context, sess
 			log.Printf("Live AI analysis previous state lookup failed. sessionId=%s error=%v", sessionID, err)
 		}
 	}
-
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
 	state.versionSeeded = true
@@ -1020,6 +1114,58 @@ func (s *MeetingAnalysisService) seedLiveAnalysisState(ctx context.Context, sess
 	state.lastVersion = version
 	s.mu.Unlock()
 	return payload, version
+}
+
+func (s *MeetingAnalysisService) persistLiveAnalysis(ctx context.Context, expectedVersion int64, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, bool, error) {
+	if repository, ok := s.analysisRepo.(MeetingAIAnalysisCompareAndSwapRepository); ok {
+		return repository.CompareAndSwapMeetingAIAnalysis(ctx, expectedVersion, analysis)
+	}
+	saved, err := s.analysisRepo.UpsertMeetingAIAnalysis(ctx, analysis)
+	return saved, err == nil, err
+}
+
+func (s *MeetingAnalysisService) handleStaleLiveAnalysisResult(ctx context.Context, sessionID string, segments []domain.TranscriptSegment, expectedVersion int64) {
+	current, err := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive)
+	remaining := segments
+	if err == nil && current != nil {
+		remaining = filterAlreadyAnalyzedSegments(segments, current.Payload)
+	}
+	s.mu.Lock()
+	state := s.sessionStateLocked(sessionID)
+	finishLiveRunLocked(state)
+	state.pending = append(append([]domain.TranscriptSegment{}, remaining...), state.pending...)
+	state.pendingChars = sumSegmentChars(state.pending)
+	state.nextAttemptAt = time.Time{}
+	if err == nil && current != nil && current.Version > state.lastVersion {
+		state.lastPayload = append(json.RawMessage(nil), current.Payload...)
+		state.lastVersion = current.Version
+		state.versionSeeded = true
+	}
+	s.mu.Unlock()
+	if err == nil && current != nil {
+		s.publishAnalysis(*current)
+	}
+	log.Printf("Live AI analysis stale result discarded. sessionId=%s expectedVersion=%d currentVersion=%d remainingSegments=%d lookupError=%v", sessionID, expectedVersion, func() int64 {
+		if current == nil {
+			return 0
+		}
+		return current.Version
+	}(), len(remaining), err)
+}
+
+func filterAlreadyAnalyzedSegments(segments []domain.TranscriptSegment, payload json.RawMessage) []domain.TranscriptSegment {
+	coverage := previousLiveAnalysisState(payload)
+	analyzed := make(map[string]struct{}, len(coverage.AnalyzedFinalSegments))
+	for _, ref := range coverage.AnalyzedFinalSegments {
+		analyzed[finalSegmentKey(ref.CallID, ref.SequenceNo)] = struct{}{}
+	}
+	filtered := make([]domain.TranscriptSegment, 0, len(segments))
+	for _, segment := range segments {
+		if _, exists := analyzed[finalSegmentKey(segment.CallID, segment.SequenceNo)]; !exists {
+			filtered = append(filtered, segment)
+		}
+	}
+	return filtered
 }
 
 func (s *MeetingAnalysisService) handleLiveAnalysisFailure(ctx context.Context, sessionID string, segments []domain.TranscriptSegment, previousPayload json.RawMessage, previousVersion int64, cause error, segmentCount, inputChars int, elapsed time.Duration) bool {
@@ -1041,7 +1187,7 @@ func (s *MeetingAnalysisService) handleLiveAnalysisFailure(ctx context.Context, 
 	}
 	s.mu.Unlock()
 
-	saved, err := s.analysisRepo.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+	saved, persisted, err := s.persistLiveAnalysis(ctx, previousVersion, domain.MeetingAIAnalysis{
 		SessionID:    sessionID,
 		Type:         domain.MeetingAIAnalysisLive,
 		Status:       domain.MeetingAIAnalysisFailed,
@@ -1055,6 +1201,21 @@ func (s *MeetingAnalysisService) handleLiveAnalysisFailure(ctx context.Context, 
 	})
 	if err != nil {
 		log.Printf("Live AI analysis failure persist failed. sessionId=%s error=%v", sessionID, err)
+		return retryable
+	}
+	if !persisted {
+		if current, currentErr := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive); currentErr == nil && current != nil {
+			s.mu.Lock()
+			state := s.sessionStateLocked(sessionID)
+			if current.Version > state.lastVersion {
+				state.lastPayload = append(json.RawMessage(nil), current.Payload...)
+				state.lastVersion = current.Version
+				state.versionSeeded = true
+			}
+			s.mu.Unlock()
+			s.publishAnalysis(*current)
+		}
+		log.Printf("Live AI analysis failure state CAS rejected. sessionId=%s expectedVersion=%d", sessionID, previousVersion)
 		return retryable
 	}
 	s.publishAnalysis(*saved)
@@ -1139,6 +1300,9 @@ type finalizationProgressPayload struct {
 	WaitTimedOut                    bool   `json:"waitTimedOut"`
 	FinalizationIncomplete          bool   `json:"finalizationIncomplete"`
 	RetryCount                      int    `json:"retryCount"`
+	FinalTreeReviewFailed           bool   `json:"finalTreeReviewFailed,omitempty"`
+	FinalTreeReviewResult           string `json:"finalTreeReviewResult,omitempty"`
+	FinalTreeAuditRunID             string `json:"finalTreeAuditRunId,omitempty"`
 }
 
 func (s *MeetingAnalysisService) persistFinalizationProgress(ctx context.Context, sessionID string, status domain.MeetingAIAnalysisStatus, version int64, payload finalizationProgressPayload, cause error) {
@@ -1163,8 +1327,15 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
 	state.finalizing = true
+	state.auditClosed = true
+	state.auditPending = false
+	state.auditPendingReason = ""
+	auditCancel := state.auditCancel
 	done := state.runningDone
 	s.mu.Unlock()
+	if auditCancel != nil {
+		auditCancel()
+	}
 
 	if done != nil {
 		waitCtx, cancel := context.WithTimeout(ctx, s.config.finalizationWaitTimeout())
@@ -1445,7 +1616,7 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 		Status:    domain.MeetingAIAnalysisRunning,
 		Version:   version,
 		Payload:   previousPayload,
-		Model:     s.config.Model,
+		Model:     s.config.modelNameFor(aiTaskFinalSummary),
 		UpdatedAt: s.now().UTC(),
 	})
 	if err != nil {
@@ -1460,6 +1631,28 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	meetingCtx := s.sessionMeetingContext(ctx, sessionID)
 	livePayload := prepared.LivePayload
 	liveVersion := prepared.LiveVersion
+
+	// Final review is fail-safe: its failure is observable but never prevents
+	// summary generation or snapshotting the last known-good live tree.
+	review, reviewErr := s.runFinalTreeReview(ctx, sessionID, livePayload, liveVersion)
+	progress.FinalTreeReviewResult = review.Result
+	progress.FinalTreeAuditRunID = review.RunID
+	if reviewErr != nil {
+		progress.FinalTreeReviewFailed = true
+		fallback := previousLiveAnalysisState(livePayload)
+		fallback.Degraded = true
+		fallback.DegradedReason = "final_tree_review_failed"
+		fallback.FinalTreeReviewFailed = true
+		if encoded, marshalErr := json.Marshal(fallback); marshalErr == nil {
+			livePayload = encoded
+		}
+		log.Printf("Final tree review failed; continuing with last-known-good tree. sessionId=%s treeVersion=%d error=%v", sessionID, liveVersion, reviewErr)
+	} else if review.Applied {
+		livePayload = review.Payload
+		liveVersion = review.Version
+	}
+	progress.Stage = "final_tree_review_completed"
+	s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisRunning, progressVersion, progress, nil)
 
 	// Task F(構造): 会議終了時点のツリーを最終整理し、durableなスナップショット
 	// として保存する。要約の成否に関わらず実行する。
@@ -1580,6 +1773,10 @@ type treeSnapshotPayload struct {
 	Degraded                 bool                      `json:"degraded,omitempty"`
 	DegradedReason           string                    `json:"degradedReason,omitempty"`
 	TreeIntegrity            *treeIntegrityDiagnostics `json:"treeIntegrity,omitempty"`
+	ChangeSource             string                    `json:"changeSource,omitempty"`
+	AuditRunID               string                    `json:"auditRunId,omitempty"`
+	BasedOnTreeVersion       int64                     `json:"basedOnTreeVersion,omitempty"`
+	FinalTreeReviewFailed    bool                      `json:"finalTreeReviewFailed,omitempty"`
 }
 
 // persistFinalTreeSnapshot runs the meeting-end reorganization pass (Task F)
@@ -1596,7 +1793,15 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 	tree := previous.Tree
 	model := s.config.modelNameFor(aiTaskTreeReorganizer)
 	reorganizationStatus := "skipped"
-	if s.completer != nil {
+	if s.config.TreeAudit.active() {
+		model = s.config.modelNameFor(aiTaskFinalTreeReview)
+		reorganizationStatus = "tree_audit_" + string(s.config.TreeAudit.Mode)
+	} else if s.completer != nil {
+		fallbackReason := strings.TrimSpace(s.config.TreeAuditUnavailableReason)
+		if fallbackReason == "" {
+			fallbackReason = "tree_audit_disabled"
+		}
+		log.Printf("Final tree review fallback to tree_reorganizer. sessionId=%s reason=%s deployment=%s", sessionID, fallbackReason, s.config.modelNameFor(aiTaskTreeReorganizer))
 		reorganized, applied, err := s.reorganizeTree(ctx, sessionID, tree, mc, liveVersion)
 		switch {
 		case err != nil:
@@ -1625,11 +1830,18 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 		GeneratedAtUTC:           s.now().UTC().Format(time.RFC3339Nano),
 		ReorganizationStatus:     reorganizationStatus,
 		Tree:                     tree,
+		ChangeSource:             previous.ChangeSource,
+		AuditRunID:               previous.AuditRunID,
+		BasedOnTreeVersion:       previous.BasedOnTreeVersion,
+		FinalTreeReviewFailed:    previous.FinalTreeReviewFailed,
 	}
 	if !integrity.Valid {
 		snapshot.Degraded = true
 		snapshot.DegradedReason = "tree_integrity_rejected"
 		snapshot.TreeIntegrity = &integrity
+	} else if previous.FinalTreeReviewFailed {
+		snapshot.Degraded = true
+		snapshot.DegradedReason = "final_tree_review_failed"
 	}
 	payload, err := json.Marshal(snapshot)
 	if err != nil {
@@ -2462,6 +2674,13 @@ type liveAnalysisPayload struct {
 	Degraded       bool                      `json:"degraded,omitempty"`
 	DegradedReason string                    `json:"degradedReason,omitempty"`
 	TreeIntegrity  *treeIntegrityDiagnostics `json:"treeIntegrity,omitempty"`
+	// Audit provenance is additive metadata. Existing clients ignore it while
+	// newer consumers can distinguish a normal live extraction from a CAS-safe
+	// tree-auditor version.
+	ChangeSource          string `json:"changeSource,omitempty"`
+	AuditRunID            string `json:"auditRunId,omitempty"`
+	BasedOnTreeVersion    int64  `json:"basedOnTreeVersion,omitempty"`
+	FinalTreeReviewFailed bool   `json:"finalTreeReviewFailed,omitempty"`
 	// quarantinedItemCount is populated only while decoding model output and
 	// is intentionally never persisted.
 	quarantinedItemCount int
@@ -2728,6 +2947,8 @@ type liveAnalysisTreeChanges struct {
 	ReparentedNodeIDs []string `json:"reparentedNodeIds,omitempty"`
 	ResolvedNodeIDs   []string `json:"resolvedNodeIds,omitempty"`
 	PromotedNodeIDs   []string `json:"promotedNodeIds,omitempty"`
+	Source            string   `json:"source,omitempty"`
+	AuditRunID        string   `json:"auditRunId,omitempty"`
 }
 
 type liveAnalysisTreeNode struct {
@@ -2751,9 +2972,12 @@ type liveAnalysisTreeNode struct {
 	AgendaRole string `json:"agendaRole,omitempty"`
 	// Group lifecycle metadata supports live-tree hysteresis. Old payloads
 	// omit these fields and are treated as pre-existing stable groups.
-	CreatedAtVersion        int64 `json:"createdAtVersion,omitempty"`
-	UpdatedAtVersion        int64 `json:"updatedAtVersion,omitempty"`
-	UnderfilledSinceVersion int64 `json:"underfilledSinceVersion,omitempty"`
+	CreatedAtVersion        int64   `json:"createdAtVersion,omitempty"`
+	UpdatedAtVersion        int64   `json:"updatedAtVersion,omitempty"`
+	UnderfilledSinceVersion int64   `json:"underfilledSinceVersion,omitempty"`
+	LastParentChangeSource  string  `json:"lastParentChangeSource,omitempty"`
+	LastParentChangeVersion int64   `json:"lastParentChangeVersion,omitempty"`
+	ParentConfidence        float64 `json:"parentConfidence,omitempty"`
 }
 
 type liveAnalysisTreeEdge struct {

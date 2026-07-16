@@ -23,6 +23,10 @@ type treeIntegrityDiagnostics struct {
 	FixedAgendaKindMismatchIDs []string `json:"fixedAgendaKindMismatchIds,omitempty"`
 	RenamedFixedAgendaIDs      []string `json:"renamedFixedAgendaIds,omitempty"`
 	ActionSummaryTreeNodeIDs   []string `json:"actionSummaryTreeNodeIds,omitempty"`
+	InvalidKindNodeIDs         []string `json:"invalidKindNodeIds,omitempty"`
+	EmptyGroupNodeIDs          []string `json:"emptyGroupNodeIds,omitempty"`
+	SingleChildGroupNodeIDs    []string `json:"singleChildGroupNodeIds,omitempty"`
+	HardDepthNodeIDs           []string `json:"hardDepthNodeIds,omitempty"`
 	ExpectedFixedAgendaCount   int      `json:"expectedFixedAgendaCount"`
 	ActualFixedAgendaCount     int      `json:"actualFixedAgendaCount"`
 	RootCount                  int      `json:"rootCount"`
@@ -86,6 +90,9 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 		}
 		firstKinds[id] = node.Kind
 		nodes[id] = node
+		if !validLiveAnalysisTreeNodeKind(node.Kind) {
+			d.InvalidKindNodeIDs = append(d.InvalidKindNodeIDs, id)
+		}
 		if _, action := actionAgenda[id]; action {
 			d.ActionSummaryTreeNodeIDs = append(d.ActionSummaryTreeNodeIDs, id)
 		}
@@ -149,6 +156,26 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 		}
 	}
 
+	childCounts := make(map[string]int)
+	for id, node := range nodes {
+		if id != treeRootNodeID {
+			childCounts[node.ParentID]++
+		}
+	}
+	for id, node := range nodes {
+		if node.Kind != "group" {
+			continue
+		}
+		switch childCounts[id] {
+		case 0:
+			d.EmptyGroupNodeIDs = append(d.EmptyGroupNodeIDs, id)
+		case 1:
+			// One-child groups are retained briefly by the existing hysteresis
+			// policy, so report them without making the canonical tree invalid.
+			d.SingleChildGroupNodeIDs = append(d.SingleChildGroupNodeIDs, id)
+		}
+	}
+
 	// Parent chains are authoritative; detect cycles independently of edges.
 	for start := range nodes {
 		seen := make(map[string]struct{})
@@ -164,6 +191,9 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 				break
 			}
 			current = node.ParentID
+		}
+		if len(seen) > treeHardMaxDepth {
+			d.HardDepthNodeIDs = append(d.HardDepthNodeIDs, start)
 		}
 	}
 
@@ -199,7 +229,8 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 		len(d.InvalidParentKindNodeIDs) == 0 && len(d.RootDirectDetailNodeIDs) == 0 &&
 		len(d.MissingFixedAgendaIDs) == 0 && len(d.MovedFixedAgendaIDs) == 0 &&
 		len(d.FixedAgendaKindMismatchIDs) == 0 && len(d.RenamedFixedAgendaIDs) == 0 &&
-		len(d.ActionSummaryTreeNodeIDs) == 0
+		len(d.ActionSummaryTreeNodeIDs) == 0 && len(d.InvalidKindNodeIDs) == 0 &&
+		len(d.EmptyGroupNodeIDs) == 0 && len(d.HardDepthNodeIDs) == 0
 	return d
 }
 
@@ -212,6 +243,7 @@ func sortTreeIntegrityDiagnostics(d *treeIntegrityDiagnostics) {
 		&d.SelfParentNodeIDs, &d.OrphanNodeIDs, &d.CycleNodeIDs, &d.InvalidParentKindNodeIDs,
 		&d.RootDirectDetailNodeIDs, &d.MissingFixedAgendaIDs, &d.MovedFixedAgendaIDs,
 		&d.FixedAgendaKindMismatchIDs, &d.RenamedFixedAgendaIDs, &d.ActionSummaryTreeNodeIDs,
+		&d.InvalidKindNodeIDs, &d.EmptyGroupNodeIDs, &d.SingleChildGroupNodeIDs, &d.HardDepthNodeIDs,
 	}
 	for _, value := range values {
 		*value = uniqueNonEmptyIDs(*value)
