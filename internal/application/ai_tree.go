@@ -512,6 +512,15 @@ func rebuildDiscussionTree(
 		if label == "" {
 			continue
 		}
+		// 「以上をまとめます」等の会話制御発話をtopic候補にしない。まとめ・
+		// 進行の宣言は議論の主題ではないため、candidateも作らない。
+		if isDiscourseOnlyText(label) {
+			if stats != nil {
+				stats.DiscourseOnlyCandidatesRejected++
+			}
+			recordEmerging(emergingDecision{CandidateID: normalizeProposedTopicID(proposed.ID, label), Decision: emergingRejectedNoEvidence, Reason: "discourse_only_label"})
+			continue
+		}
 		proposedID := normalizeProposedTopicID(proposed.ID, label)
 		if proposedID == "" {
 			continue
@@ -791,6 +800,78 @@ func emergingTopicCore(value string) string {
 		core = strings.ReplaceAll(core, generic, "")
 	}
 	return core
+}
+
+// candidateSubjectCoherenceThreshold は candidate label と証拠itemが同一主題と
+// みなせる最小の意味的類似度。semanticPrimaryTopic の下限(0.16)と揃える。
+const candidateSubjectCoherenceThreshold = 0.16
+
+// candidateSubjectIncoherenceReason は昇格を保留すべき理由を返す(空なら昇格可)。
+// subjectが空・会話制御発話・汎用語のみ、またはlabelと証拠itemの主題が一致
+// しない(過半数が不一致、または一致itemが昇格最小件数未満)場合に保留する。
+func candidateSubjectIncoherenceReason(candidate emergingTopicCandidate, itemAt func(string) *liveAnalysisItem, cfg TreeClassificationConfig) string {
+	label := strings.TrimSpace(candidate.Label)
+	if label == "" {
+		return "subject_empty"
+	}
+	if isDiscourseOnlyText(label) {
+		return "discourse_only_label"
+	}
+	if emergingTopicCore(label) == "" && emergingTopicCore(candidate.Description) == "" {
+		return "subject_generic_only"
+	}
+	subject := strings.TrimSpace(label + " " + candidate.Description)
+	subjectCore := emergingTopicCore(label)
+	total, coherent := 0, 0
+	for _, itemID := range candidate.EvidenceItemIDs {
+		item := itemAt(itemID)
+		if item == nil {
+			continue
+		}
+		total++
+		text := strings.TrimSpace(item.Title + " " + item.Body)
+		score := semanticItemSimilarity(subject, text)
+		itemCore := emergingTopicCore(item.Title)
+		if len([]rune(subjectCore)) >= 3 && len([]rune(itemCore)) >= 3 &&
+			(strings.Contains(itemCore, subjectCore) || strings.Contains(subjectCore, itemCore)) && score < 0.75 {
+			score = 0.75
+		}
+		// 短いlabelと長い証拠文ではbigram Diceが過小評価になるため、主題語の
+		// bigramを1つでも共有していれば同一主題候補として扱う(保留判定は
+		// 「全証拠が完全に無関係」という極端なケースだけを対象にする)。
+		if score >= candidateSubjectCoherenceThreshold || sharesSubjectBigram(subjectCore, text) {
+			coherent++
+		}
+	}
+	if total == 0 {
+		return "no_canonical_evidence"
+	}
+	// 証拠itemが1件もlabelの主題と一致しないcandidateは昇格しない。語彙が
+	// 違っても意味的に関連する証拠が集まる正当なcandidateを止めないよう、
+	// 「全証拠が不一致」の場合だけ保留する(部分的な混入は監査AIが検出する)。
+	if coherent == 0 {
+		return "subject_incoherent"
+	}
+	return ""
+}
+
+// sharesSubjectBigram はsubjectの主題語bigramが証拠テキストに1つでも
+// 含まれるかを返す。両者とも正規化してから比較する。
+func sharesSubjectBigram(subjectCore, text string) bool {
+	subjectKey := semanticItemKey(subjectCore)
+	textKey := semanticItemKey(text)
+	if subjectKey == "" || textKey == "" {
+		return false
+	}
+	for gram := range runeBigrams(subjectKey) {
+		if len([]rune(gram)) < 2 {
+			continue
+		}
+		if strings.Contains(textKey, gram) {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalCandidateID(label, description string) (string, string) {
@@ -1736,6 +1817,16 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 		}
 		if *pc.dynamicTopicCount >= pc.cfg.MaxDynamicTopics {
 			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingRejectedTopicCap})
+			continue
+		}
+		// 昇格前にcandidate labelと証拠itemの意味的一貫性を検証する。subjectが
+		// 空・汎用語のみ・会話制御発話、またはlabelと証拠の主題が一致しない
+		// candidateはtopicにしない(候補としては保持し、証拠の入れ替わりを待つ)。
+		if reason := candidateSubjectIncoherenceReason(*candidate, pc.itemAt, pc.cfg); reason != "" {
+			if pc.stats != nil {
+				pc.stats.CandidateSubjectIncoherentDeferred++
+			}
+			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingWaitingEvidence, Reason: reason})
 			continue
 		}
 		if promotions >= maxPromotionsPerRound {

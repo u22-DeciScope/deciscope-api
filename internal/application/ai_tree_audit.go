@@ -22,7 +22,16 @@ type treeAuditExecution struct {
 	Applied        bool
 	AuditedVersion int64
 	TriggerClass   domain.MeetingTreeAuditTriggerClass
+	// ProviderCalled is true once the run reached the AI provider. Runs that
+	// fail before this point (repository errors, suppression) must not consume
+	// the provider-call min interval so they can retry after recovery.
+	ProviderCalled bool
 }
+
+// treeAuditRepositoryFailureBackoff is the short delay applied after an audit
+// attempt that failed without calling the provider. It prevents a tight retry
+// loop against a failing repository without consuming provider rate limits.
+const treeAuditRepositoryFailureBackoff = 10 * time.Second
 
 func (s *MeetingAnalysisService) considerTreeAudit(ctx context.Context, sessionID string, previousPayload, payload json.RawMessage, version int64) {
 	if s == nil || !s.config.TreeAudit.active() || s.auditRepo == nil || version <= 0 || len(payload) == 0 {
@@ -122,6 +131,13 @@ func (s *MeetingAnalysisService) scheduleTreeAudit(ctx context.Context, sessionI
 		log.Printf("Tree audit skipped. sessionId=%s treeVersion=%d auditSkipped=true auditSkipReason=tree_version_already_audited", sessionID, version)
 		return
 	}
+	if now.Before(state.auditRepoBackoffUntil) {
+		state.auditPending = true
+		state.auditPendingReason = coalesceTreeAuditReason(state.auditPendingReason, triggerReason)
+		s.mu.Unlock()
+		log.Printf("Tree audit backing off after repository failure. sessionId=%s treeVersion=%d auditRepoBackoff=true auditPending=true", sessionID, version)
+		return
+	}
 	lastRateLimitedAt := state.lastAuditAt
 	minimumInterval := s.config.TreeAudit.MinInterval
 	if triggerClass == domain.MeetingTreeAuditTriggerHigh {
@@ -178,7 +194,6 @@ func (s *MeetingAnalysisService) finishTreeAuditFlight(ctx context.Context, sess
 		close(state.auditRunningDone)
 		state.auditRunningDone = nil
 	}
-	state.lastAuditAt = now
 	auditedVersion := execution.AuditedVersion
 	if auditedVersion == 0 {
 		auditedVersion = requestedVersion
@@ -187,6 +202,15 @@ func (s *MeetingAnalysisService) finishTreeAuditFlight(ctx context.Context, sess
 		auditedVersion = execution.Version
 	}
 	auditFailed := execution.Result == "failed" || execution.Result == "timeout" || execution.Result == "canceled" || execution.Result == "invalid_schema" || execution.Result == "panic"
+	// Failures that never reached the provider (repository errors, panics
+	// before the call) must not consume the provider min interval; a short
+	// backoff prevents a tight retry loop while the repository is down.
+	if auditFailed && !execution.ProviderCalled {
+		state.auditRepoBackoffUntil = now.Add(treeAuditRepositoryFailureBackoff)
+	} else {
+		state.lastAuditAt = now
+		state.auditRepoBackoffUntil = time.Time{}
+	}
 	if !auditFailed && auditedVersion > state.lastAuditVersion {
 		state.lastAuditVersion = auditedVersion
 	}
@@ -216,7 +240,8 @@ func (s *MeetingAnalysisService) finishTreeAuditFlight(ctx context.Context, sess
 		pendingSince = state.lastHighSeverityAuditAt
 		pendingInterval = s.config.TreeAudit.HighSeverityMinInterval
 	}
-	if pending && (pendingSince.IsZero() || now.Sub(pendingSince) >= pendingInterval) {
+	if pending && !now.Before(state.auditRepoBackoffUntil) &&
+		(pendingSince.IsZero() || now.Sub(pendingSince) >= pendingInterval) {
 		state.auditPending = false
 		state.auditPendingReason = ""
 	} else {
@@ -368,6 +393,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	if err := s.auditRepo.SaveMeetingTreeAuditRun(ctx, run); err != nil {
 		return execution, err
 	}
+	execution.ProviderCalled = true
 	auditCtx, cancel := context.WithTimeout(ctx, s.config.TreeAudit.Timeout)
 	defer cancel()
 	started := s.now()
@@ -683,10 +709,10 @@ func shortAuditHash(value string) string {
 }
 
 func logTreeAuditRun(run domain.MeetingTreeAuditRun, findingCount, wouldApply, applied int) {
-	log.Printf("Tree audit completed. sessionId=%s auditRunId=%s mode=%s triggerReason=%s basedOnTreeVersion=%d resultingTreeVersion=%d snapshotHash=%s deployment=%s model=%s promptVersion=%s status=%s result=%s elapsedMs=%d promptTokens=%d completionTokens=%d findingCount=%d operationsWouldApply=%d operationsApplied=%d",
+	log.Printf("Tree audit completed. sessionId=%s auditRunId=%s mode=%s triggerReason=%s basedOnTreeVersion=%d resultingTreeVersion=%d snapshotHash=%s deployment=%s model=%s promptVersion=%s status=%s result=%s disposition=%s elapsedMs=%d promptTokens=%d completionTokens=%d findingCount=%d operationsWouldApply=%d operationsApplied=%d",
 		run.SessionID, run.ID, run.Mode, run.TriggerReason, run.BasedOnTreeVersion,
 		run.ResultingTreeVersion, shortAuditHash(run.SnapshotHash), run.Deployment,
-		run.Model, run.PromptVersion, run.Status, run.Result, run.ElapsedMilliseconds,
+		run.Model, run.PromptVersion, run.Status, run.Result, run.Disposition, run.ElapsedMilliseconds,
 		run.PromptTokens, run.CompletionTokens, findingCount, wouldApply, applied)
 }
 

@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -477,6 +479,11 @@ type liveAnalysisSessionState struct {
 	lastHighSeverityAuditAt time.Time
 	lastAuditVersion        int64
 	lastAuditHash           string
+	// auditRepoBackoffUntil delays the next audit attempt after a failure that
+	// never reached the provider (e.g. repository INSERT failure). Such runs do
+	// not consume the provider-call min interval, so this short backoff is the
+	// only thing preventing a tight retry loop while the database is down.
+	auditRepoBackoffUntil time.Time
 	// auditClosed is set when the session enters ending. Live audits may finish
 	// for history, but cannot apply or schedule a follow-up after this boundary.
 	auditClosed bool
@@ -867,8 +874,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.SourceActionSummaryAgendaCount, actionSummaryAgendaIDs, treeStats.LogicalActionSummaryCount, treeStats.ActionSummaryCandidates, treeStats.DeduplicatedActionItems, treeStats.RenderedActionItems, treeStats.ActiveTodoReferences, treeStats.ActiveOpenIssueFallbacks, treeStats.CompletedTodoExcluded, treeStats.ResolvedItemsExcluded, treeStats.ClusteredReferences)
 	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d tentativeItemsHidden=%d companionParentInherited=%d companionCandidateInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d tentativeMetadataLost=%d",
 		sessionID, newVersion, treeStats.TrueUnclassifiedItems, stats.TentativeItems, treeStats.TentativeItemsHidden, treeStats.CompanionParentInherited, treeStats.CompanionCandidateInherited, treeStats.SemanticParentCorrected, treeStats.PromotedItemsReparented, treeStats.StaleCandidatesHidden, treeStats.TentativeMetadataLost)
-	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d",
-		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited)
+	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d discourseOnlyItemsRejected=%d discourseOnlyCandidatesRejected=%d candidateSubjectIncoherentDeferred=%d",
+		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited, treeStats.DiscourseOnlyItemsRejected, treeStats.DiscourseOnlyCandidatesRejected, treeStats.CandidateSubjectIncoherentDeferred)
 	log.Printf("Live no-agenda candidate lifecycle. sessionId=%s version=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v staleAgendaFallbackRejected=%d fixedAgendaAssignmentRejectedByNoAgendaSpan=%d candidateSubjectKey=%v candidateIdsMerged=%d companionCandidateInherited=%d crossKindCandidateInherited=%d dynamicTopicPromoted=%d promotedItemIds=%v promotedItemsRemainingOutsideTopic=%d",
 		sessionID, newVersion, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.StaleAgendaFallbackRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, uniqueNonEmptyIDs(treeStats.CandidateSubjectKeys), treeStats.CandidateIDsMerged, treeStats.CompanionCandidateInherited, treeStats.CrossKindCandidateInherited, treeStats.DynamicTopicsPromoted, uniqueNonEmptyIDs(treeStats.PromotedItemIDs), treeStats.PromotedItemsRemainingOutsideTopic)
 	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d recapMerged=%d",
@@ -906,6 +913,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	log.Printf("Live group diagnostics. sessionId=%s version=%d groupCandidates=%d groupsCreated=%d groupsSkipped=%d groupSkipReasons=%v groupsFlattened=%d nestedGroupCount=%d",
 		sessionID, newVersion, treeStats.GroupCandidates, treeStats.GroupsCreated, treeStats.GroupsSkipped, treeStats.GroupSkipReasons, treeStats.GroupsFlattened, treeHealth.NestedGroupCount)
 	logClassificationDecisions(sessionID, treeStats)
+	logLiveSnapshotBroadcast(sessionID, payloadState, previousLiveAnalysisState(previousPayload))
 	s.publishAnalysis(*saved)
 
 	// Task E: 全topic対象の過密検知に基づくライブ再編成。running=true のまま
@@ -1062,6 +1070,8 @@ func (s *MeetingAnalysisService) maybeReorganizeLiveTree(ctx context.Context, se
 	if current.Items == nil {
 		current.Items = []liveAnalysisItem{}
 	}
+	applyLiveTreeSnapshotMetadata(&current, previousTree, version, nil)
+	logLiveSnapshotBroadcast(sessionID, current, previousLiveAnalysisState(payload))
 	newPayload, marshalErr := json.Marshal(current)
 	if marshalErr != nil {
 		log.Printf("Tree reorganization marshal failed. sessionId=%s error=%v", sessionID, marshalErr)
@@ -2681,6 +2691,17 @@ type liveAnalysisPayload struct {
 	AuditRunID            string `json:"auditRunId,omitempty"`
 	BasedOnTreeVersion    int64  `json:"basedOnTreeVersion,omitempty"`
 	FinalTreeReviewFailed bool   `json:"finalTreeReviewFailed,omitempty"`
+	// Snapshot metadata: completed live payloads always carry the full tree
+	// (payloadKind=full_snapshot). Node/edge counts and the hash let clients
+	// verify what they applied, and removed/merged ids explain legitimate node
+	// disappearance (dedup merges, group flattening) so clients can preserve
+	// their last-known-good tree when a shrink is unexplained.
+	PayloadKind    string   `json:"payloadKind,omitempty"`
+	NodeCount      int      `json:"nodeCount,omitempty"`
+	EdgeCount      int      `json:"edgeCount,omitempty"`
+	RemovedNodeIDs []string `json:"removedNodeIds,omitempty"`
+	MergedNodeIDs  []string `json:"mergedNodeIds,omitempty"`
+	TreeHash       string   `json:"treeHash,omitempty"`
 	// quarantinedItemCount is populated only while decoding model output and
 	// is intentionally never persisted.
 	quarantinedItemCount int
@@ -3079,6 +3100,14 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, stats ...*liveAnalysis
 		if !validLiveAnalysisItemKind(item.Kind) {
 			continue
 		}
+		// 会話制御発話(「以上をまとめます」等)はfact/issue/question/todo/
+		// decisionにしない。発話自体はtranscriptに残るため情報は失われない。
+		if isDiscourseOnlyItem(item.Title, item.Body) {
+			if mergeStats != nil {
+				mergeStats.DiscourseOnlyItemsRejected++
+			}
+			continue
+		}
 		if !validLiveAnalysisSeverity(item.Severity) {
 			item.Severity = "medium"
 		}
@@ -3312,21 +3341,31 @@ type liveAnalysisTreeMergeStats struct {
 	RecapMerged                     int
 	// Classification/projection diagnostics make the computed action summary
 	// and tentative staging observable without creating extra tree nodes.
-	ActionSummaryCandidates                     int
-	ActiveTodoReferences                        int
-	ActiveOpenIssueFallbacks                    int
-	CompletedTodoExcluded                       int
-	ResolvedItemsExcluded                       int
-	ClusteredReferences                         int
-	TrueUnclassifiedItems                       int
-	TentativeItemsHidden                        int
-	CompanionParentInherited                    int
-	SemanticParentCorrected                     int
-	PromotedItemsReparented                     int
-	PromotedItemIDs                             []string
-	StaleCandidatesHidden                       int
-	CandidateCreated                            int
-	CandidateCreationRejectedNoEvidence         int
+	ActionSummaryCandidates             int
+	ActiveTodoReferences                int
+	ActiveOpenIssueFallbacks            int
+	CompletedTodoExcluded               int
+	ResolvedItemsExcluded               int
+	ClusteredReferences                 int
+	TrueUnclassifiedItems               int
+	TentativeItemsHidden                int
+	CompanionParentInherited            int
+	SemanticParentCorrected             int
+	PromotedItemsReparented             int
+	PromotedItemIDs                     []string
+	StaleCandidatesHidden               int
+	CandidateCreated                    int
+	CandidateCreationRejectedNoEvidence int
+	// DiscourseOnlyItemsRejected counts model diff items whose title/body were
+	// pure meeting-control speech (recap intro, topic transition, greetings)
+	// and were therefore never turned into canonical items.
+	DiscourseOnlyItemsRejected int
+	// DiscourseOnlyCandidatesRejected counts proposed new topics whose label
+	// was pure meeting-control speech and were never turned into candidates.
+	DiscourseOnlyCandidatesRejected int
+	// CandidateSubjectIncoherentDeferred counts candidates whose promotion was
+	// deferred because their label did not semantically cover their evidence.
+	CandidateSubjectIncoherentDeferred          int
 	CandidateEvidenceAdded                      int
 	CandidateEvidenceDeduplicated               int
 	CandidateEvidenceRemapped                   int
@@ -3752,6 +3791,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	if merged.Items == nil {
 		merged.Items = []liveAnalysisItem{}
 	}
+	applyLiveTreeSnapshotMetadata(&merged, previous.Tree, previous.TreeVersion, mergeIDRemaps(legacyIDRemap, idRemap))
 	normalized, err := json.Marshal(merged)
 	if err != nil {
 		return nil, fmt.Errorf("marshal normalized live analysis payload: %w", err)
@@ -3870,6 +3910,77 @@ func (e *liveAnalysisSchemaError) Unwrap() error { return e.cause }
 func isLiveAnalysisSchemaError(err error) bool {
 	var schemaErr *liveAnalysisSchemaError
 	return errors.As(err, &schemaErr)
+}
+
+// logLiveSnapshotBroadcast records, right before a completed live payload is
+// broadcast, everything needed to diagnose "the tree disappeared" reports
+// from logs alone: what the snapshot contains and how it relates to the
+// previous version. Contents of the meeting are deliberately not logged.
+func logLiveSnapshotBroadcast(sessionID string, current, previous liveAnalysisPayload) {
+	previousNodeCount := 0
+	if previous.Tree != nil {
+		previousNodeCount = len(previous.Tree.Nodes)
+	}
+	newNodeCount := 0
+	if current.TreeChanges != nil {
+		newNodeCount = len(current.TreeChanges.NewNodeIDs)
+	}
+	log.Printf("Live analysis snapshot broadcast. sessionId=%s treeVersion=%d payloadKind=%s nodeCount=%d edgeCount=%d previousTreeVersion=%d previousNodeCount=%d removedNodeCount=%d mergedNodeCount=%d newNodeCount=%d treeHash=%s",
+		sessionID, current.TreeVersion, current.PayloadKind, current.NodeCount, current.EdgeCount,
+		previous.TreeVersion, previousNodeCount, len(current.RemovedNodeIDs), len(current.MergedNodeIDs), newNodeCount, current.TreeHash)
+}
+
+// applyLiveTreeSnapshotMetadata stamps the full-snapshot metadata on a payload
+// that carries a complete tree: kind, counts, hash, the previous version it
+// was based on, and which previous nodes disappeared (with the dedup-merged
+// subset called out separately via mergedIDs).
+func applyLiveTreeSnapshotMetadata(payload *liveAnalysisPayload, previousTree *liveAnalysisTree, basedOnTreeVersion int64, mergedIDs map[string]string) {
+	if payload == nil || payload.Tree == nil {
+		return
+	}
+	payload.PayloadKind = "full_snapshot"
+	payload.NodeCount = len(payload.Tree.Nodes)
+	payload.EdgeCount = len(payload.Tree.Edges)
+	if basedOnTreeVersion > 0 {
+		payload.BasedOnTreeVersion = basedOnTreeVersion
+	}
+	currentIDs := make(map[string]struct{}, len(payload.Tree.Nodes))
+	for _, node := range payload.Tree.Nodes {
+		currentIDs[node.ID] = struct{}{}
+	}
+	removed := make([]string, 0)
+	merged := make([]string, 0)
+	if previousTree != nil {
+		for _, node := range previousTree.Nodes {
+			if _, kept := currentIDs[node.ID]; kept {
+				continue
+			}
+			if _, wasMerged := mergedIDs[node.ID]; wasMerged {
+				merged = append(merged, node.ID)
+			}
+			removed = append(removed, node.ID)
+		}
+	}
+	sort.Strings(removed)
+	sort.Strings(merged)
+	payload.RemovedNodeIDs = removed
+	payload.MergedNodeIDs = merged
+	payload.TreeHash = liveTreeHash(payload.Tree)
+}
+
+// liveTreeHash is a deterministic short hash over node ids and parents, used
+// to compare what the server broadcast with what a client applied.
+func liveTreeHash(tree *liveAnalysisTree) string {
+	if tree == nil {
+		return ""
+	}
+	lines := make([]string, 0, len(tree.Nodes))
+	for _, node := range tree.Nodes {
+		lines = append(lines, node.ID+"|"+node.ParentID)
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:8])
 }
 
 func diffLiveAnalysisTrees(previous, current *liveAnalysisTree, treeVersion int64) *liveAnalysisTreeChanges {

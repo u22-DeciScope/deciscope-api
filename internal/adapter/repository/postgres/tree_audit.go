@@ -199,7 +199,7 @@ func writeMeetingTreeAuditRun(ctx context.Context, queryer meetingTreeAuditQuery
 			raw_response, findings, operations, validator_result,
 			prompt_tokens, completion_tokens, elapsed_ms, error_code, error_message,
 			created_at, completed_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
 	`+conflictClause, run.ID, run.SessionID, run.BasedOnTreeVersion, resultingVersion,
 		string(run.Mode), run.TriggerReason, string(run.TriggerClass), run.Task,
 		run.Deployment, run.Model, run.PromptVersion, run.SnapshotHash, string(run.Status),
