@@ -2,6 +2,7 @@ package application
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"deciscope-core-api/internal/domain"
@@ -24,6 +25,39 @@ func TestDetectDecisionCandidatesAcceptsExplicitAndRejectsUndecided(t *testing.T
 	}
 	if candidates[0].SequenceNo != 1 || candidates[1].SequenceNo != 4 {
 		t.Fatalf("candidate sequences = [%d %d], want [1 4]", candidates[0].SequenceNo, candidates[1].SequenceNo)
+	}
+}
+
+func TestDecisionCandidateJoinsAdjacentSameSpeakerFragments(t *testing.T) {
+	segments := []domain.TranscriptSegment{
+		{SequenceNo: 10, SpeakerID: "speaker-1", Text: "渡り鳥の調査については、海岸側、北側、南側の合計三地点で。", IsFinal: true},
+		{SequenceNo: 11, SpeakerID: "speaker-1", Text: "ええ。実施することを決定します。", IsFinal: true},
+	}
+	candidates := detectDecisionCandidates(segments)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates=%+v", candidates)
+	}
+	if got := candidates[0].SourceSequenceNos; len(got) != 2 || got[0] != 10 || got[1] != 11 {
+		t.Fatalf("sourceSequenceNos=%v", got)
+	}
+	if title := decisionCandidateTitle(candidates[0].Statement); !strings.Contains(title, "渡り鳥") || title == "実施" {
+		t.Fatalf("title=%q statement=%q", title, candidates[0].Statement)
+	}
+}
+
+func TestDecisionCandidateRejectsPredicateOnlyMarker(t *testing.T) {
+	if candidates := detectDecisionCandidates([]domain.TranscriptSegment{finalSegment(11, "ええ。実施することを決定します。")}); len(candidates) != 0 {
+		t.Fatalf("predicate-only candidates=%+v", candidates)
+	}
+}
+
+func TestDecisionCandidateCanUsePriorFragmentAcrossAnalysisRounds(t *testing.T) {
+	current := []domain.TranscriptSegment{{SequenceNo: 11, SpeakerID: "speaker-1", Text: "実施することを決定します。", IsFinal: true}}
+	prior := domain.TranscriptSegment{SequenceNo: 10, SpeakerID: "speaker-1", Text: "渡り鳥の調査は三地点で。", IsFinal: true}
+	scope := liveEvidenceScope{Allowed: map[int64]struct{}{10: {}, 11: {}}, CurrentRound: map[int64]struct{}{11: {}}, TranscriptText: map[int64]string{10: prior.Text, 11: current[0].Text}, Segments: map[int64]domain.TranscriptSegment{10: prior, 11: current[0]}}
+	candidates := detectDecisionCandidates(extendDecisionSegmentsWithPriorFragment(current, scope))
+	if len(candidates) != 1 || len(candidates[0].SourceSequenceNos) != 2 {
+		t.Fatalf("candidates=%+v", candidates)
 	}
 }
 
@@ -119,7 +153,7 @@ func TestTodoTransitionsToDecisionWithoutDuplicateCard(t *testing.T) {
 	}
 }
 
-func TestSameRoundQuestionAndTodoWithSameTitleRemainSeparate(t *testing.T) {
+func TestSameRoundQuestionAndTodoBecomeOneCanonicalProposition(t *testing.T) {
 	diff := `{"summary":"更新","currentTopic":"鳥類","resolvedIds":[],"items":[{"id":"question-sites","kind":"question","severity":"medium","title":"追加観測地点の設置基準を決める","body":"基準は何か","status":"open"},{"id":"todo-sites","kind":"todo","severity":"high","title":"追加観測地点の設置基準を決める","body":"風向と鳥の経路から基準を決める","status":"open"}],"assignments":[{"nodeId":"question-sites","parentTopicId":"agenda-1","confidence":0.9},{"nodeId":"todo-sites","parentTopicId":"agenda-1","confidence":0.9}]}`
 	stats := &liveAnalysisTreeMergeStats{}
 	raw, err := parseAndMergeLiveAnalysisPayload(diff, nil, &meetingContext{Agenda: []agendaItem{{ID: "agenda-1", Title: "鳥類", Order: 1}}}, 1, []int64{1}, TreeClassificationConfig{}, stats)
@@ -127,10 +161,10 @@ func TestSameRoundQuestionAndTodoWithSameTitleRemainSeparate(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.Items) != 2 || state.Items[0].Kind != "question" || state.Items[1].Kind != "todo" {
+	if len(state.Items) != 1 || state.Items[0].Kind != "todo" || len(state.Items[0].RelatedQuestions) != 1 {
 		t.Fatalf("items=%+v", state.Items)
 	}
-	if stats.DuplicateItemsMerged != 0 {
-		t.Fatalf("duplicateItemsMerged=%d", stats.DuplicateItemsMerged)
+	if stats.PropositionItemsMerged != 1 {
+		t.Fatalf("propositionItemsMerged=%d", stats.PropositionItemsMerged)
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operations []treeAuditOperation, segments []domain.TranscriptSegment, mc *meetingContext, evidenceRoles map[int64]treeAuditEvidenceRole, cfg TreeAuditConfig, runID string, resultingVersion int64, markApplied bool) (liveAnalysisPayload, treeAuditValidatorResult) {
 	cfg = cfg.normalized()
+	shadowEvaluation := !markApplied && cfg.Mode == domain.MeetingTreeAuditShadow
 	dry := cloneLiveAnalysisPayload(original)
 	result := treeAuditValidatorResult{OperationsProposed: len(operations)}
 	accepted := make(map[string]bool, len(operations))
@@ -38,19 +39,47 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 			result.Evaluations = append(result.Evaluations, evaluation)
 			continue
 		}
-		if operation.Confidence < cfg.HighConfidenceThreshold {
+		autoApplyAllowed := treeAuditAutoApplyOperationAllowed(operation.Type)
+		autoConfidence := operation.Confidence >= cfg.HighConfidenceThreshold
+		evaluation.AutoApplyEligible = autoApplyAllowed && autoConfidence
+		if !autoConfidence && !shadowEvaluation {
 			evaluation.Reason = "below_high_confidence_threshold"
+			evaluation.AutoApplyReason = evaluation.Reason
 			result.Evaluations = append(result.Evaluations, evaluation)
 			continue
 		}
-		if !treeAuditAutoApplyOperationAllowed(operation.Type) {
+		if !autoApplyAllowed && !shadowEvaluation {
 			evaluation.Reason = "shadow_only_operation"
+			evaluation.AutoApplyReason = evaluation.Reason
+			result.Evaluations = append(result.Evaluations, evaluation)
+			continue
+		}
+		if !autoConfidence {
+			evaluation.AutoApplyReason = "below_high_confidence_threshold"
+		}
+		if !autoApplyAllowed {
+			evaluation.AutoApplyReason = "operation_not_in_auto_apply_whitelist"
+		}
+		if shadowEvaluation && !autoApplyAllowed {
+			if reason := validateShadowTreeAuditOperation(dry, operation, segmentText, evidenceRoles); reason != "" {
+				evaluation.Reason = reason
+				result.Evaluations = append(result.Evaluations, evaluation)
+				continue
+			}
+			accepted[operation.OperationID] = true
+			evaluation.Result = "validated_shadow"
+			evaluation.WouldApply = true
+			result.OperationsWouldApply++
 			result.Evaluations = append(result.Evaluations, evaluation)
 			continue
 		}
 
 		candidate := cloneLiveAnalysisPayload(dry)
-		currentScore, newScore, reason := applyOneTreeAuditOperation(&candidate, operation, segmentText, evidenceRoles, mc, cfg, runID, resultingVersion)
+		operationCfg := cfg
+		if shadowEvaluation {
+			operationCfg.RequiredImprovementMargin = 0.000001
+		}
+		currentScore, newScore, reason := applyOneTreeAuditOperation(&candidate, operation, segmentText, evidenceRoles, mc, operationCfg, runID, resultingVersion)
 		evaluation.CurrentParentScore = currentScore
 		evaluation.NewParentScore = newScore
 		evaluation.Improvement = newScore - currentScore
@@ -75,6 +104,9 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 		beforeQuality = afterQuality
 		accepted[operation.OperationID] = true
 		evaluation.Result = "validated"
+		if shadowEvaluation {
+			evaluation.Result = "validated_shadow"
+		}
 		evaluation.WouldApply = true
 		evaluation.Applied = markApplied
 		result.OperationsWouldApply++
@@ -103,6 +135,71 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 		dry.TreeChanges.AuditRunID = runID
 	}
 	return dry, result
+}
+
+func validateShadowTreeAuditOperation(state liveAnalysisPayload, operation treeAuditOperation, segmentText map[int64]string, evidenceRoles map[int64]treeAuditEvidenceRole) string {
+	itemIDs := make(map[string]struct{}, len(state.Items))
+	for _, item := range state.Items {
+		itemIDs[item.ID] = struct{}{}
+	}
+	candidateIDs := make(map[string]struct{}, len(state.EmergingTopics))
+	for _, candidate := range state.EmergingTopics {
+		candidateIDs[candidate.ID] = struct{}{}
+	}
+	evidenceBound := func() bool {
+		if len(operation.EvidenceSequenceNos) == 0 {
+			return false
+		}
+		for _, sequenceNo := range operation.EvidenceSequenceNos {
+			if _, exists := segmentText[sequenceNo]; !exists || evidenceRoles[sequenceNo] == treeAuditEvidenceReference {
+				return false
+			}
+		}
+		return true
+	}
+	switch operation.Type {
+	case TreeAuditMergeItems:
+		if len(operation.NodeIDs) < 2 {
+			return "merge_requires_multiple_items"
+		}
+		for _, id := range operation.NodeIDs {
+			if _, exists := itemIDs[id]; !exists {
+				return "unknown_target_node"
+			}
+		}
+	case TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription:
+		if _, exists := itemIDs[operation.NodeID]; !exists {
+			return "unknown_target_node"
+		}
+		if strings.TrimSpace(operation.Label) == "" {
+			return "rewrite_label_required"
+		}
+	case TreeAuditDeactivateItem:
+		if _, exists := itemIDs[operation.NodeID]; !exists {
+			return "unknown_target_node"
+		}
+	case TreeAuditSplitCandidate, TreeAuditCreateTopicFromCandidate:
+		if _, exists := candidateIDs[operation.CandidateID]; !exists {
+			return "invalid_candidate"
+		}
+	case TreeAuditAssignItemToCandidate:
+		if _, exists := itemIDs[operation.NodeID]; !exists {
+			return "unknown_target_node"
+		}
+		if _, exists := candidateIDs[operation.CandidateID]; !exists {
+			return "invalid_candidate"
+		}
+	case TreeAuditChangeEvidenceRole, TreeAuditMergeFragmentedUtterances:
+		if !evidenceBound() {
+			return "unbound_operation_evidence"
+		}
+	default:
+		return "shadow_only_operation"
+	}
+	if len(operation.EvidenceSequenceNos) > 0 && !evidenceBound() {
+		return "unbound_operation_evidence"
+	}
+	return ""
 }
 
 // treeAuditAutoApplyOperationAllowed is intentionally narrow. Every operation

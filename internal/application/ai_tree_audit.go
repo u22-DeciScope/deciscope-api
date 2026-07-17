@@ -452,6 +452,22 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	}
 	applyMode := s.config.TreeAudit.Mode == domain.MeetingTreeAuditApplyHighConfidence
 	dry, validator := validateAndDryRunTreeAuditOperations(state, response.Operations, segments, mc, snapshot.EvidenceRoles, s.config.TreeAudit, runID, version+1, false)
+	validator.ParserElementsRejected = len(response.ParseRejections)
+	validator.ParserIDsCanonicalized = response.CanonicalizationCount
+	parserOperationRejections := 0
+	for _, rejection := range response.ParseRejections {
+		if rejection.ElementType != "operation" {
+			continue
+		}
+		parserOperationRejections++
+		validator.Evaluations = append(validator.Evaluations, treeAuditValidatorEvaluation{
+			OperationID: rejection.ElementID,
+			Result:      "rejected",
+			Reason:      "parser_" + rejection.Reason,
+		})
+	}
+	validator.OperationsProposed += parserOperationRejections
+	validator.OperationsRejected += parserOperationRejections
 	run.Findings = boundedAuditJSON(response.Findings, s.config.TreeAudit.MaxPersistedJSONBytes)
 	run.Operations = boundedAuditJSON(response.Operations, s.config.TreeAudit.MaxPersistedJSONBytes)
 	run.ValidatorResult = boundedAuditJSON(validator, s.config.TreeAudit.MaxPersistedJSONBytes)
@@ -461,6 +477,9 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	if !applyMode {
 		logTreeAuditDetails(sessionID, response, validator)
 		run.Result = "shadow"
+		if len(response.ParseRejections) > 0 {
+			run.Result = "partial_success"
+		}
 		if validator.OperationsWouldApply > 0 {
 			run.Disposition = "would_apply"
 		} else {
@@ -733,9 +752,9 @@ func logTreeAuditDetails(sessionID string, response *treeAuditResponse, validato
 	}
 	log.Printf("Tree audit findings. sessionId=%s findingCount=%d findingCountByType=%v highSeverityFindings=%d mediumSeverityFindings=%d lowSeverityFindings=%d",
 		sessionID, len(response.Findings), byType, bySeverity["high"], bySeverity["medium"], bySeverity["low"])
-	log.Printf("Tree audit operations. sessionId=%s operationsProposed=%d operationsWouldApply=%d operationsApplied=%d operationsRejected=%d operationsRejectedByReason=%v staleOperationsRejected=%d",
+	log.Printf("Tree audit operations. sessionId=%s operationsProposed=%d operationsWouldApply=%d operationsApplied=%d operationsRejected=%d operationsRejectedByReason=%v staleOperationsRejected=%d parserElementsRejected=%d parserIdsCanonicalized=%d",
 		sessionID, validator.OperationsProposed, validator.OperationsWouldApply, validator.OperationsApplied,
-		validator.OperationsRejected, rejected, validator.StaleOperationsRejected)
+		validator.OperationsRejected, rejected, validator.StaleOperationsRejected, validator.ParserElementsRejected, validator.ParserIDsCanonicalized)
 	log.Printf("Tree audit quality. sessionId=%s topicOutliersBefore=%d topicOutliersAfter=%d candidateFragmentationBefore=%d candidateFragmentationAfter=%d crossAgendaContaminationBefore=%d crossAgendaContaminationAfter=%d treeIntegrityValid=%t",
 		sessionID, validator.TopicOutliersBefore, validator.TopicOutliersAfter,
 		validator.CandidateFragmentationBefore, validator.CandidateFragmentationAfter,

@@ -378,21 +378,21 @@ func TestSession83c10700ReplayRepairsDecisionsGroupsAndActionSummary(t *testing.
 			resolvedCount++
 		}
 	}
-	if kinds["decision"] < 3 || kinds["question"] != 1 || kinds["open_issue"] != 1 || resolvedCount != 1 || len(state.Items) > 10 {
+	if kinds["decision"] < 3 || kinds["question"] != 0 || kinds["open_issue"] != 1 || resolvedCount != 1 || len(state.Items) > 10 {
 		t.Fatalf("kinds=%v itemCount=%d items=%+v resolutions=%+v", kinds, len(state.Items), state.Items, mergeStats.ResolutionDecisions)
 	}
 	noiseGroupID := stableGroupID("agenda-2", "夜間測定")
 	reorganized, applied := applyTreeOperations(state.Tree, mc, []treeOperation{
 		{Type: "create_group", ParentTopicID: "agenda-1", Label: "観測地点の不足", EvidenceItemIDs: []string{"risk-bird-route", "fact-bird-sites", "todo-bird-sites"}},
-		{Type: "create_group", ParentTopicID: "agenda-2", Label: "夜間測定", EvidenceItemIDs: []string{"todo-noise-count", "question-wind-speed", "open-wind-speed", "todo-weather-data"}},
-		{Type: "create_group", ParentID: noiseGroupID, Label: "強風日の条件", EvidenceItemIDs: []string{"question-wind-speed", "open-wind-speed", "todo-weather-data"}},
+		{Type: "create_group", ParentTopicID: "agenda-2", Label: "夜間測定", EvidenceItemIDs: []string{"todo-noise-count", "open-wind-speed", "todo-weather-data"}},
+		{Type: "create_group", ParentID: noiseGroupID, Label: "強風日の条件", EvidenceItemIDs: []string{"open-wind-speed", "todo-weather-data"}},
 		{Type: "create_group", ParentTopicID: "agenda-3", Label: "公開方法と説明会", EvidenceItemIDs: []string{"todo-web-publish", "todo-meeting-date"}},
 	}, TreeClassificationConfig{}, &liveAnalysisTreeMergeStats{})
-	if applied != 4 {
+	if applied != 3 {
 		t.Fatalf("groups applied=%d", applied)
 	}
 	health := computeTreeHealth(reorganized)
-	if health.GroupCount != 4 || health.NestedGroupCount != 1 || treeDepthOf(reorganized) != 4 || health.SingleChildGroupCount != 0 {
+	if health.GroupCount != 3 || health.NestedGroupCount != 0 || treeDepthOf(reorganized) != 3 || health.SingleChildGroupCount != 0 {
 		t.Fatalf("health=%+v depth=%d", health, treeDepthOf(reorganized))
 	}
 	canonicalParents := make(map[string]string)

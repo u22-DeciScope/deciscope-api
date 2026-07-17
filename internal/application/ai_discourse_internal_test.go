@@ -52,6 +52,20 @@ func TestIsDiscourseOnlyItem(t *testing.T) {
 	}
 }
 
+func TestDiscourseTimelineMarksRecapContentAsReferenceUntilTransition(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		30: "以上をまとめます。",
+		31: "決定事項は渡り鳥を三地点で調査することです。",
+		32: "未解決の課題は強風日の風速基準です。",
+		33: "次の議題へ移ります。",
+		34: "新しい施工計画を検討します。",
+	}, 30, 31, 32, 33, 34)
+	timeline := classifyDiscourseTimeline(scope)
+	if timeline.Roles[30] != liveEvidenceDiscourseOnly || timeline.Roles[31] != liveEvidenceReferenceRecap || timeline.Roles[32] != liveEvidenceReferenceRecap || timeline.Roles[33] != liveEvidenceDiscourseOnly || timeline.Roles[34] != liveEvidencePrimary {
+		t.Fatalf("roles=%+v transitions=%+v", timeline.Roles, timeline.Transitions)
+	}
+}
+
 // 対象session(session_497ed2b0aedf9dc6)の回帰: 「以上をまとめます」発話から
 // fact itemと新topic候補が作られ、recap再言及から重複issueがcandidate証拠に
 // なった。制御発話はitemにもcandidateにもしない。
@@ -130,5 +144,17 @@ func TestCandidateSubjectIncoherenceBlocksPromotion(t *testing.T) {
 	}
 	if reason := candidateSubjectIncoherenceReason(coherentCandidate, itemAt(plantItems), cfg); reason != "" {
 		t.Errorf("coherent candidate reason = %q, want empty", reason)
+	}
+}
+
+func TestCandidateOriginalSubjectRejectsUnrelatedMutation(t *testing.T) {
+	candidate := emergingTopicCandidate{ID: "candidate-plant", Label: "湿地・希少植物調査", Description: "植物種類の確認"}
+	initializeCandidateSubject(&candidate)
+	original := candidate.OriginalSubject
+	if updateCandidateSubject(&candidate, "強風日の風速基準", "騒音測定条件") {
+		t.Fatal("unrelated candidate subject mutation was accepted")
+	}
+	if candidate.OriginalSubject != original || candidate.Label != "湿地・希少植物調査" {
+		t.Fatalf("candidate mutated=%+v", candidate)
 	}
 }

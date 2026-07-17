@@ -11,6 +11,14 @@ Tree Auditorは、ライブ抽出とは別のGPT-5-mini deploymentで現在の�
 2. title・description・candidate・evidence・parent metadataを使うdeterministic semantic precheck
 3. 圧縮snapshotを使うGPT tree audit / final tree review
 
+ライブ抽出側では、隣接する同一話者の断片をlogical utteranceとして結合し、recap開始・議題遷移・
+明示訂正をdiscourse timelineで追跡します。recap本文は`reference_recap`として既存命題の補助証拠には
+使えますが、新規item/topic/candidateのprimary evidenceには使いません。
+
+question/open_issue/todoの表層差は、primary/correction evidenceとsubject coreが一致する場合に限り
+canonical propositionへ統合します。質問文、解決条件、次アクションは`relatedQuestions`,
+`resolutionConditions`, `nextActions`として保持されます。
+
 AI operationはcanonical ID、`basedOnTreeVersion`、現在親、対象kind、fixed agenda、depth、
 evidence role、subject score、parent stickiness、status、直近の親変更をサーバーで再検証します。
 
@@ -26,6 +34,11 @@ evidence role、subject score、parent stickiness、status、直近の親変更�
 `restore_previous_parent`、candidateのpromotion/fold/deactivate、groupの作成・統合・分割・rename・削除、
 resolved item移動、agenda境界をまたぐ移動、node kind変更・削除、primary evidence変更はすべてshadow-onlyです。
 model confidenceだけでwhitelist外operationが適用されることはありません。
+
+`merge_items`, `rewrite_item`, `deactivate_item`, `split_candidate`,
+`create_topic_from_candidate`, `assign_item_to_candidate`, `change_evidence_role`,
+`merge_fragmented_utterances`もshadow検証専用です。shadowでは構造・参照・証拠を検証した
+`validated_shadow`を記録できますが、`autoApplyEligible=false`のままでtreeを変更しません。
 
 ## Mode
 
@@ -75,6 +88,11 @@ context再確認とDB CASより遅延responseは適用されません。
 終了pipelineはfinal transcript flush後に`final_tree_review`を実行し、その後tree snapshotとsummaryを保存します。
 reviewのtimeout・schema failure・provider failure時も最後の正常live treeで継続し、
 finalization/tree snapshotの`finalTreeReviewFailed`と`degraded`で観測できます。
+
+finding/operationの一部だけが非canonical IDや無効dependencyを含む場合は、無効要素だけを隔離し、
+残りを`partial_success`として検証・保存します。昇格済みcandidate IDがmoveの補助欄に残った場合は、
+tree nodeとしてcanonicalであることを確認して不要な補助参照を除去します。JSON envelope、version、
+上限違反などレスポンス全体の安全性を判定できない場合だけ`invalid_schema`になります。
 
 順序は常に`final flush → final_tree_review → final tree snapshot → final summary`です。
 

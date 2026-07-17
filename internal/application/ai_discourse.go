@@ -2,7 +2,10 @@ package application
 
 import (
 	"regexp"
+	"sort"
 	"strings"
+
+	"deciscope-core-api/internal/domain"
 )
 
 // このファイルは会話制御発話(discourse act)の判定を持つ。
@@ -12,6 +15,33 @@ import (
 // 発話全体が制御表現で構成されているかどうかで行う。
 
 type discourseAct string
+
+type liveEvidenceRole string
+
+const (
+	liveEvidencePrimary        liveEvidenceRole = "primary"
+	liveEvidenceSupporting     liveEvidenceRole = "supporting"
+	liveEvidenceReferenceRecap liveEvidenceRole = "reference_recap"
+	liveEvidenceDiscourseOnly  liveEvidenceRole = "discourse_only"
+	liveEvidenceCorrection     liveEvidenceRole = "correction"
+)
+
+type liveEvidenceRoleRef struct {
+	SequenceNo int64            `json:"sequenceNo"`
+	Role       liveEvidenceRole `json:"role"`
+}
+
+type discourseTimeline struct {
+	Roles       map[int64]liveEvidenceRole
+	Transitions []discourseTimelineTransition
+}
+
+type discourseTimelineTransition struct {
+	SequenceNo int64
+	From       string
+	To         string
+	Act        discourseAct
+}
 
 const (
 	// discourseContent: 通常の議論内容(既定)。
@@ -45,6 +75,8 @@ var (
 		regexp.MustCompile(`^(よろしくお願いします|お疲れ様でした|ありがとうございました|聞こえますか|始めましょう|終わりましょう)$`),
 	}
 )
+
+var discourseCorrectionPattern = regexp.MustCompile(`(?:訂正|修正|変更|撤回|取り消|追加事項|新たな(?:決定|論点|課題)|まとめに追加|先ほどの.+(?:ではなく|を改め))`)
 
 // classifyDiscourseAct は発話テキストのdiscourse actを判定する。
 // 制御表現とフィラーだけで構成された短い発話のみを制御発話として扱い、
@@ -114,4 +146,88 @@ func normalizeDiscourseText(text string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// classifyDiscourseTimeline interprets discourse acts as state transitions.
+// Content after a recap introduction is reference evidence until a genuine
+// topic transition or an explicit correction occurs. This prevents a recap
+// from creating a second decision, issue, or topic while preserving it as
+// supporting evidence for an existing canonical proposition.
+func classifyDiscourseTimeline(scope liveEvidenceScope) discourseTimeline {
+	timeline := discourseTimeline{Roles: make(map[int64]liveEvidenceRole)}
+	sequenceNos := make([]int64, 0, len(scope.Allowed)+len(scope.CurrentRound))
+	seen := make(map[int64]struct{})
+	for sequenceNo := range scope.Allowed {
+		seen[sequenceNo] = struct{}{}
+		sequenceNos = append(sequenceNos, sequenceNo)
+	}
+	for sequenceNo := range scope.CurrentRound {
+		if _, exists := seen[sequenceNo]; !exists {
+			sequenceNos = append(sequenceNos, sequenceNo)
+		}
+	}
+	sort.Slice(sequenceNos, func(i, j int) bool { return sequenceNos[i] < sequenceNos[j] })
+	mode := "content"
+	for _, sequenceNo := range sequenceNos {
+		text := scope.TranscriptText[sequenceNo]
+		if segment, exists := scope.Segments[sequenceNo]; exists && strings.TrimSpace(segment.Text) != "" {
+			text = segment.Text
+		}
+		act := classifyDiscourseAct(text)
+		switch act {
+		case discourseRecapIntro:
+			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
+			timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "recap", Act: act})
+			mode = "recap"
+		case discourseTopicTransition:
+			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
+			timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "content", Act: act})
+			mode = "content"
+		case discourseMeetingControl:
+			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
+		case discourseContent:
+			if mode == "recap" {
+				if discourseCorrectionPattern.MatchString(text) {
+					timeline.Roles[sequenceNo] = liveEvidenceCorrection
+				} else {
+					timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
+				}
+			} else {
+				timeline.Roles[sequenceNo] = liveEvidencePrimary
+			}
+		}
+	}
+	return timeline
+}
+
+func evidenceRolesForItem(sequenceNos []int64, timeline discourseTimeline) []liveEvidenceRoleRef {
+	refs := make([]liveEvidenceRoleRef, 0, len(sequenceNos))
+	for _, sequenceNo := range sequenceNos {
+		role := timeline.Roles[sequenceNo]
+		if role == "" {
+			role = liveEvidenceSupporting
+		}
+		refs = append(refs, liveEvidenceRoleRef{SequenceNo: sequenceNo, Role: role})
+	}
+	return refs
+}
+
+func evidenceIsReferenceOnly(sequenceNos []int64, timeline discourseTimeline) bool {
+	if len(sequenceNos) == 0 {
+		return false
+	}
+	for _, sequenceNo := range sequenceNos {
+		role := timeline.Roles[sequenceNo]
+		if role != liveEvidenceReferenceRecap && role != liveEvidenceDiscourseOnly {
+			return false
+		}
+	}
+	return true
+}
+
+func segmentFromEvidenceScope(scope liveEvidenceScope, sequenceNo int64) domain.TranscriptSegment {
+	if segment, exists := scope.Segments[sequenceNo]; exists {
+		return segment
+	}
+	return domain.TranscriptSegment{SequenceNo: sequenceNo, Text: scope.TranscriptText[sequenceNo], IsFinal: true}
 }

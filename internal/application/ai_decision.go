@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"deciscope-core-api/internal/domain"
@@ -18,10 +19,12 @@ import (
 // compares the candidate with the model diff and previous canonical items,
 // then rejects negated/future/consideration wording before accepting it.
 type decisionCandidate struct {
-	SequenceNo int64
-	Statement  string
-	Hash       string
-	Recap      bool
+	SequenceNo         int64
+	SourceSequenceNos  []int64
+	LogicalUtteranceID string
+	Statement          string
+	Hash               string
+	Recap              bool
 }
 
 type decisionExtractionAudit struct {
@@ -43,7 +46,7 @@ var (
 func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCandidate {
 	var candidates []decisionCandidate
 	seen := make(map[string]struct{})
-	for _, segment := range segments {
+	for index, segment := range segments {
 		if !segment.IsFinal || segment.SequenceNo <= 0 {
 			continue
 		}
@@ -56,7 +59,19 @@ func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCan
 			if !recap && !decisionPositivePattern.MatchString(clause) {
 				continue
 			}
-			key := semanticItemKey(clause)
+			sourceSequenceNos := []int64{segment.SequenceNo}
+			statement := clause
+			if !recap && !completeDecisionStatement(statement) && index > 0 {
+				previous := segments[index-1]
+				if logicalUtteranceContinuation(previous, segment) {
+					statement = joinDecisionFragments(previous.Text, clause)
+					sourceSequenceNos = []int64{previous.SequenceNo, segment.SequenceNo}
+				}
+			}
+			if !recap && !completeDecisionStatement(statement) {
+				continue
+			}
+			key := semanticItemKey(statement)
 			if key == "" {
 				continue
 			}
@@ -65,16 +80,99 @@ func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCan
 				continue
 			}
 			seen[dedupeKey] = struct{}{}
-			sum := sha256.Sum256([]byte(clause))
+			sum := sha256.Sum256([]byte(statement))
 			candidates = append(candidates, decisionCandidate{
-				SequenceNo: segment.SequenceNo,
-				Statement:  clause,
-				Hash:       hex.EncodeToString(sum[:8]),
-				Recap:      recap,
+				SequenceNo:         segment.SequenceNo,
+				SourceSequenceNos:  sourceSequenceNos,
+				LogicalUtteranceID: logicalUtteranceID(sourceSequenceNos),
+				Statement:          statement,
+				Hash:               hex.EncodeToString(sum[:8]),
+				Recap:              recap,
 			})
 		}
 	}
 	return candidates
+}
+
+func extendDecisionSegmentsWithPriorFragment(round []domain.TranscriptSegment, scope liveEvidenceScope) []domain.TranscriptSegment {
+	if len(round) == 0 {
+		return round
+	}
+	firstAt := 0
+	for i := 1; i < len(round); i++ {
+		if round[i].SequenceNo > 0 && (round[firstAt].SequenceNo <= 0 || round[i].SequenceNo < round[firstAt].SequenceNo) {
+			firstAt = i
+		}
+	}
+	first := round[firstAt]
+	if first.SequenceNo <= 1 || (!decisionPositivePattern.MatchString(first.Text) && !decisionRecapPattern.MatchString(first.Text)) {
+		return round
+	}
+	previous := segmentFromEvidenceScope(scope, first.SequenceNo-1)
+	if !logicalUtteranceContinuation(previous, first) {
+		return round
+	}
+	extended := make([]domain.TranscriptSegment, 0, len(round)+1)
+	extended = append(extended, previous)
+	extended = append(extended, round...)
+	return extended
+}
+
+func logicalUtteranceContinuation(previous, current domain.TranscriptSegment) bool {
+	if !previous.IsFinal || previous.SequenceNo <= 0 || current.SequenceNo != previous.SequenceNo+1 {
+		return false
+	}
+	if previous.SpeakerID != "" && current.SpeakerID != "" && previous.SpeakerID != current.SpeakerID {
+		return false
+	}
+	if previous.SpeakerName != "" && current.SpeakerName != "" && previous.SpeakerName != current.SpeakerName {
+		return false
+	}
+	if !previous.RecognizedAtUTC.IsZero() && !current.RecognizedAtUTC.IsZero() {
+		gap := current.RecognizedAtUTC.Sub(previous.RecognizedAtUTC)
+		if gap < 0 || gap > 12*time.Second {
+			return false
+		}
+	}
+	if classifyDiscourseAct(previous.Text) != discourseContent || classifyDiscourseAct(current.Text) != discourseContent {
+		return false
+	}
+	trimmed := strings.TrimSpace(strings.TrimRight(previous.Text, "。！？!? "))
+	return strings.HasSuffix(trimmed, "で") || strings.HasSuffix(trimmed, "を") || strings.HasSuffix(trimmed, "は") ||
+		strings.HasSuffix(trimmed, "に") || strings.HasSuffix(trimmed, "として") || strings.HasSuffix(trimmed, "について") ||
+		strings.HasSuffix(trimmed, "については")
+}
+
+func joinDecisionFragments(previous, current string) string {
+	left := strings.TrimSpace(strings.TrimRight(previous, "。！？!? "))
+	right := strings.TrimSpace(current)
+	right = regexp.MustCompile(`^(?:はい|ええ|えー|ええと|えっと|あの)[、。 ]*`).ReplaceAllString(right, "")
+	return strings.TrimSpace(left + right)
+}
+
+func completeDecisionStatement(statement string) bool {
+	title := normalizeForMatch(decisionCandidateTitle(statement))
+	for _, filler := range []string{"はい", "ええ", "えー", "ええと", "えっと", "あの"} {
+		title = strings.TrimPrefix(title, filler)
+	}
+	if title == "" {
+		return false
+	}
+	switch title {
+	case "実施", "採用", "確定", "決定", "進行", "進め", "進める", "方針":
+		return false
+	default:
+		return true
+	}
+}
+
+func logicalUtteranceID(sequenceNos []int64) string {
+	parts := make([]string, 0, len(sequenceNos))
+	for _, sequenceNo := range sequenceNos {
+		parts = append(parts, strconv.FormatInt(sequenceNo, 10))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, ":")))
+	return "utterance-" + hex.EncodeToString(sum[:6])
 }
 
 // reconcileDecisionCandidates augments only the model diff passed to the
@@ -118,7 +216,7 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 			} else {
 				audit.MergedDecisions++
 			}
-			item.EvidenceSequenceNos = appendUniqueSequence(item.EvidenceSequenceNos, candidate.SequenceNo)
+			item.EvidenceSequenceNos = appendUniqueSequences(item.EvidenceSequenceNos, candidate.SourceSequenceNos)
 			continue
 		}
 
@@ -130,7 +228,7 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 				updated.Status = "updated"
 				updated.Title = decisionCandidateTitle(candidate.Statement)
 				updated.Body = candidate.Statement
-				updated.EvidenceSequenceNos = []int64{candidate.SequenceNo}
+				updated.EvidenceSequenceNos = append([]int64(nil), candidate.SourceSequenceNos...)
 				diff.Items = append(diff.Items, updated)
 				if previousItem.Kind == "decision" {
 					audit.MergedDecisions++
@@ -146,7 +244,7 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 			updated := *existing
 			updated.Kind = "decision"
 			updated.Status = "updated"
-			updated.EvidenceSequenceNos = []int64{candidate.SequenceNo}
+			updated.EvidenceSequenceNos = append([]int64(nil), candidate.SourceSequenceNos...)
 			diff.Items = append(diff.Items, updated)
 			audit.MergedDecisions++
 			continue
@@ -158,7 +256,7 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 			Title:               decisionCandidateTitle(candidate.Statement),
 			Body:                candidate.Statement,
 			Status:              "open",
-			EvidenceSequenceNos: []int64{candidate.SequenceNo},
+			EvidenceSequenceNos: append([]int64(nil), candidate.SourceSequenceNos...),
 		})
 		diff.Assignments = append(diff.Assignments, treeAssignment{NodeID: id, ParentTopicID: treeUnclassifiedTopicID, Confidence: 0.5, Reason: "server decision candidate"})
 		audit.AcceptedDecisions++
@@ -205,7 +303,7 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 			key := canonicalReferenceKey(itemReference)
 			if _, exists := resolvedByDecision[key]; !exists {
 				diff.ResolutionUpdates = append(diff.ResolutionUpdates, resolutionUpdate{
-					ItemID: itemReference, Status: "resolved", EvidenceSequenceNos: []int64{candidate.SequenceNo}, Reason: "subject-matched explicit decision",
+					ItemID: itemReference, Status: "resolved", EvidenceSequenceNos: append([]int64(nil), candidate.SourceSequenceNos...), Reason: "subject-matched explicit decision",
 				})
 				resolvedByDecision[key] = struct{}{}
 			}
@@ -233,7 +331,7 @@ func reconcileDecisionRecap(diff *liveAnalysisPayload, previous []liveAnalysisIt
 		}
 		updated := item
 		updated.Status = "updated"
-		updated.EvidenceSequenceNos = []int64{candidate.SequenceNo}
+		updated.EvidenceSequenceNos = append([]int64(nil), candidate.SourceSequenceNos...)
 		diff.Items = append(diff.Items, updated)
 		audit.MergedDecisions++
 		matched = true
@@ -341,6 +439,13 @@ func appendUniqueSequence(values []int64, sequenceNo int64) []int64 {
 	return values
 }
 
+func appendUniqueSequences(values, sequenceNos []int64) []int64 {
+	for _, sequenceNo := range sequenceNos {
+		values = appendUniqueSequence(values, sequenceNo)
+	}
+	return values
+}
+
 func distinctCandidateSegments(candidates []decisionCandidate) int {
 	seen := make(map[int64]struct{})
 	for _, candidate := range candidates {
@@ -419,7 +524,11 @@ func formatDecisionCandidateRefs(candidates []decisionCandidate) string {
 	}
 	parts := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		parts = append(parts, strconv.FormatInt(candidate.SequenceNo, 10)+":"+candidate.Hash)
+		sequenceParts := make([]string, 0, len(candidate.SourceSequenceNos))
+		for _, sequenceNo := range candidate.SourceSequenceNos {
+			sequenceParts = append(sequenceParts, strconv.FormatInt(sequenceNo, 10))
+		}
+		parts = append(parts, candidate.LogicalUtteranceID+":"+strings.Join(sequenceParts, "+")+":"+candidate.Hash)
 	}
 	return "[" + strings.Join(parts, ",") + "]"
 }

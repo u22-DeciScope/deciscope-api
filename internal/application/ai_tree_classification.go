@@ -118,9 +118,14 @@ func (c TreeClassificationConfig) normalized() TreeClassificationConfig {
 // するまでツリーには現れず、証拠itemは追加論点(topic-unclassified)に tentative
 // で置かれる。
 type emergingTopicCandidate struct {
-	ID          string `json:"id"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
+	ID                string   `json:"id"`
+	Label             string   `json:"label"`
+	Description       string   `json:"description,omitempty"`
+	OriginalSubject   string   `json:"originalSubject,omitempty"`
+	CurrentSubject    string   `json:"currentSubject,omitempty"`
+	SubjectHistory    []string `json:"subjectHistory,omitempty"`
+	OriginItemIDs     []string `json:"originItemIds,omitempty"`
+	OriginSequenceNos []int64  `json:"originSequenceNos,omitempty"`
 	// ModelTopicIDs are non-authoritative aliases retained only so later model
 	// rounds can refer to their original proposal after ID canonicalization.
 	ModelTopicIDs []string `json:"modelTopicIds,omitempty"`
@@ -152,12 +157,59 @@ func (c *emergingTopicCandidate) addEvidence(itemID string, round int64) {
 		}
 		if !found && len(c.EvidenceItemIDs) < candidateEvidenceMaxItems {
 			c.EvidenceItemIDs = append(c.EvidenceItemIDs, itemID)
+			if len(c.OriginItemIDs) < candidateEvidenceMaxItems {
+				c.OriginItemIDs = append(c.OriginItemIDs, itemID)
+			}
 		}
 	}
 	if round > c.LastRound {
 		c.LastRound = round
 		c.RoundCount++
 	}
+}
+
+func initializeCandidateSubject(candidate *emergingTopicCandidate) {
+	if candidate == nil {
+		return
+	}
+	subject := strings.TrimSpace(candidate.Label + " " + candidate.Description)
+	if candidate.OriginalSubject == "" {
+		candidate.OriginalSubject = subject
+	}
+	if candidate.CurrentSubject == "" {
+		candidate.CurrentSubject = subject
+	}
+	if len(candidate.SubjectHistory) == 0 && subject != "" {
+		candidate.SubjectHistory = []string{subject}
+	}
+}
+
+func candidateSubjectCompatible(candidate emergingTopicCandidate, label, description string) bool {
+	initializeCandidateSubject(&candidate)
+	proposed := strings.TrimSpace(label + " " + description)
+	if proposed == "" || candidate.CurrentSubject == "" {
+		return true
+	}
+	return semanticItemSimilarity(candidate.CurrentSubject, proposed) >= 0.28 || sharedTreeAuditSubjectTerm(candidate.CurrentSubject, proposed)
+}
+
+func updateCandidateSubject(candidate *emergingTopicCandidate, label, description string) bool {
+	if candidate == nil || !candidateSubjectCompatible(*candidate, label, description) {
+		return false
+	}
+	initializeCandidateSubject(candidate)
+	proposed := strings.TrimSpace(label + " " + description)
+	if proposed != "" && semanticItemKey(proposed) != semanticItemKey(candidate.CurrentSubject) {
+		candidate.CurrentSubject = proposed
+		candidate.SubjectHistory = appendUniqueText(candidate.SubjectHistory, proposed)
+	}
+	if strings.TrimSpace(label) != "" {
+		candidate.Label = strings.TrimSpace(label)
+	}
+	if strings.TrimSpace(description) != "" {
+		candidate.Description = strings.TrimSpace(description)
+	}
+	return true
 }
 
 // pruneCandidateEvidence removes evidence ids whose item no longer exists
@@ -170,6 +222,14 @@ func pruneCandidateEvidence(candidate *emergingTopicCandidate, itemIDs map[strin
 		}
 	}
 	candidate.EvidenceItemIDs = kept
+}
+
+func candidatePromotionEvidenceCount(candidate emergingTopicCandidate) int {
+	count := len(candidate.EvidenceItemIDs)
+	if originCount := len(uniqueNonEmptyIDs(candidate.OriginItemIDs)); originCount > count {
+		count = originCount
+	}
+	return count
 }
 
 // capEmergingCandidates keeps at most max candidates, evicting the ones with

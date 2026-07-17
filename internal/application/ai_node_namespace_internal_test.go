@@ -251,8 +251,9 @@ func TestSession91f9cfe6aad64b7bDeterministicReplay(t *testing.T) {
 		t.Fatalf("action stats=%+v", stats)
 	}
 	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "アジェンダ外の調査課題")
-	if itemTopicID(state.Tree, "open-wind") != "agenda-2" || itemTopicID(state.Tree, "decision-web") != "agenda-3" || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
-		t.Fatalf("parents wind=%s web=%s wetland=%s assignments=%+v transitions=%+v", parentOf(state.Tree, "open-wind"), parentOf(state.Tree, "decision-web"), parentOf(state.Tree, "todo-wetland"), stats.AssignmentDecisions, stats.AgendaTransitions)
+	wind, web, wetland := findItemByTitlePart(state.Items, "強風日"), findItemByTitlePart(state.Items, "Web公開"), findItemByTitlePart(state.Items, "湿地")
+	if wind == nil || web == nil || wetland == nil || itemTopicID(state.Tree, wind.ID) != "agenda-2" || itemTopicID(state.Tree, web.ID) != "agenda-3" || itemTopicID(state.Tree, wetland.ID) != dynamicID {
+		t.Fatalf("parents wind=%+v web=%+v wetland=%+v assignments=%+v transitions=%+v", wind, web, wetland, stats.AssignmentDecisions, stats.AgendaTransitions)
 	}
 	resolved := findItemByID(state.Items, "risk-bird-sites")
 	if resolved == nil || resolved.Status != "resolved" || treeNodeByID(state.Tree, "risk-bird-sites") == nil {

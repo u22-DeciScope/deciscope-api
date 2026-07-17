@@ -436,6 +436,9 @@ func rebuildDiscussionTree(
 		labelIndex[normalizeForMatch(topic.Label)] = id
 	}
 	candidates := append([]emergingTopicCandidate(nil), priorCandidates...)
+	for i := range candidates {
+		initializeCandidateSubject(&candidates[i])
+	}
 	candidateAlias := make(map[string]string)
 	initialCandidateIDs := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
@@ -586,9 +589,11 @@ func rebuildDiscussionTree(
 		}
 		if at := candidateIndexByID(candidateID); at >= 0 {
 			addModelTopicID(&candidates[at], proposedID)
-			candidates[at].Label = label
-			if description != "" {
-				candidates[at].Description = description
+			if !updateCandidateSubject(&candidates[at], label, description) {
+				if stats != nil {
+					stats.CandidateSubjectMutationRejected++
+				}
+				continue
 			}
 			proposedCandidateIDs[candidates[at].ID] = struct{}{}
 			continue
@@ -621,9 +626,12 @@ func rebuildDiscussionTree(
 			continue
 		}
 		candidates = append(candidates, emergingTopicCandidate{
-			ID:          candidateID,
-			Label:       label,
-			Description: description,
+			ID:              candidateID,
+			Label:           label,
+			Description:     description,
+			OriginalSubject: strings.TrimSpace(label + " " + description),
+			CurrentSubject:  strings.TrimSpace(label + " " + description),
+			SubjectHistory:  []string{strings.TrimSpace(label + " " + description)},
 			ModelTopicIDs: func() []string {
 				if proposedID == candidateID {
 					return nil
@@ -666,6 +674,11 @@ func rebuildDiscussionTree(
 	for i := range candidates {
 		candidate := &candidates[i]
 		pruneCandidateEvidence(candidate, validDetailIDs)
+		for _, itemID := range candidate.EvidenceItemIDs {
+			if evidenceItem := itemAt(itemID); evidenceItem != nil {
+				candidate.OriginSequenceNos = appendUniqueSequences(candidate.OriginSequenceNos, evidenceItem.EvidenceSequenceNos)
+			}
+		}
 		if len(candidate.EvidenceItemIDs) == 0 {
 			rejectedCandidateIDs[candidate.ID] = struct{}{}
 			if _, proposed := proposedCandidateIDs[candidate.ID]; proposed {
@@ -846,9 +859,10 @@ func candidateSubjectIncoherenceReason(candidate emergingTopicCandidate, itemAt 
 	if total == 0 {
 		return "no_canonical_evidence"
 	}
-	// 証拠itemが1件もlabelの主題と一致しないcandidateは昇格しない。語彙が
-	// 違っても意味的に関連する証拠が集まる正当なcandidateを止めないよう、
-	// 「全証拠が不一致」の場合だけ保留する(部分的な混入は監査AIが検出する)。
+	// A candidate with no coherent evidence must not promote. Mixed candidates
+	// are split/folded by repairMixedEmergingCandidates before this check; here
+	// we retain tolerance for multilingual or format-specific wording that may
+	// share little surface vocabulary with an otherwise stable subject label.
 	if coherent == 0 {
 		return "subject_incoherent"
 	}
@@ -1788,9 +1802,10 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			continue
 		}
 		stableLongEnough := candidate.RoundCount >= pc.cfg.PromotionMinRounds
-		if len(candidate.EvidenceItemIDs) < pc.cfg.PromotionMinItems || !stableLongEnough {
+		evidenceCount := candidatePromotionEvidenceCount(*candidate)
+		if evidenceCount < pc.cfg.PromotionMinItems || !stableLongEnough {
 			if candidate.LastRound > 0 && pc.round-candidate.LastRound >= 4 &&
-				(len(candidate.EvidenceItemIDs) < pc.cfg.PromotionMinItems || !stableLongEnough) {
+				(evidenceCount < pc.cfg.PromotionMinItems || !stableLongEnough) {
 				wasInactive := candidate.Inactive
 				candidate.Inactive = true
 				if candidate.InactiveSinceRound == 0 {

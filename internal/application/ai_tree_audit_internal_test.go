@@ -326,6 +326,46 @@ func TestTreeAuditAutoApplyWhitelistRejectsEveryNonMoveOperation(t *testing.T) {
 	}
 }
 
+func TestTreeAuditParserCanonicalizesPromotedCandidateAndKeepsValidOperations(t *testing.T) {
+	response := treeAuditResponse{BasedOnTreeVersion: 13, Summary: "partial", Operations: []treeAuditOperation{
+		{OperationID: "valid-move", Type: TreeAuditMoveItem, NodeID: "item-1", FromParentID: "topic-old", ToParentID: "candidate-promoted", CandidateID: "candidate-promoted", Confidence: .95},
+		{OperationID: "invalid-move", Type: TreeAuditMoveItem, NodeID: "missing-item", FromParentID: "topic-old", ToParentID: "candidate-promoted", Confidence: .95},
+	}}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := map[string]struct{}{"item-1": {}, "topic-old": {}, "candidate-promoted": {}}
+	parsed, err := parseTreeAuditResponse(string(encoded), 13, nodes, map[string]struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Operations) != 1 || parsed.Operations[0].CandidateID != "" || parsed.CanonicalizationCount != 1 {
+		t.Fatalf("parsed=%+v", parsed)
+	}
+	if len(parsed.ParseRejections) != 1 || parsed.ParseRejections[0].ElementID != "invalid-move" {
+		t.Fatalf("rejections=%+v", parsed.ParseRejections)
+	}
+}
+
+func TestTreeAuditShadowValidatesMergeWithoutExpandingAutoApplyWhitelist(t *testing.T) {
+	payload, segments, mc := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	roles := classifyTreeAuditEvidence(state, segments)
+	operation := treeAuditOperation{OperationID: "merge-shadow", Type: TreeAuditMergeItems, NodeIDs: []string{"item-risk-rare-plants", "item-todo-plant-survey"}, Confidence: .82, EvidenceSequenceNos: []int64{22}}
+	_, validator := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{Mode: domain.MeetingTreeAuditShadow}, "audit-shadow", 13, false)
+	if validator.OperationsWouldApply != 1 || len(validator.Evaluations) != 1 {
+		t.Fatalf("validator=%+v", validator)
+	}
+	evaluation := validator.Evaluations[0]
+	if evaluation.Result != "validated_shadow" || evaluation.AutoApplyEligible || evaluation.AutoApplyReason == "" {
+		t.Fatalf("evaluation=%+v", evaluation)
+	}
+	if treeAuditAutoApplyOperationAllowed(TreeAuditMergeItems) {
+		t.Fatal("merge_items unexpectedly entered auto-apply whitelist")
+	}
+}
+
 func TestEndingSessionDiscardsDelayedLiveAuditApply(t *testing.T) {
 	service, analysisRepo, auditRepo, publisher, completer, payload := newTreeAuditRunnerFixture(t, domain.MeetingTreeAuditApplyHighConfidence, false)
 	completer.block = make(chan struct{})

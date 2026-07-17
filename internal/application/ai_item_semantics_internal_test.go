@@ -56,7 +56,7 @@ func TestQuestionOpenIssueTodoSemanticFixtures(t *testing.T) {
 	}
 }
 
-func TestResolvedQuestionAndTodoRemainSeparateFromDecisionAndRecap(t *testing.T) {
+func TestResolvedCanonicalIssueAndTodoRemainSeparateFromDecisionAndRecap(t *testing.T) {
 	mc := &meetingContext{Agenda: []agendaItem{{ID: "agenda-1", Title: "強風日の条件", Order: 1}}}
 	initial := `{"summary":"未解決","items":[{"id":"question-threshold","kind":"question","severity":"medium","title":"基準風速は何m/sか","body":"回答が必要","status":"open"},{"id":"open-threshold","kind":"open_issue","severity":"high","title":"基準風速が未確定","body":"決める必要がある","status":"open"},{"id":"todo-weather","kind":"todo","severity":"high","title":"気象データを確認する","body":"判断材料を確認する","status":"open"}],"assignments":[{"nodeId":"question-threshold","parentTopicId":"agenda-1","confidence":0.9},{"nodeId":"open-threshold","parentTopicId":"agenda-1","confidence":0.9},{"nodeId":"todo-weather","parentTopicId":"agenda-1","confidence":0.9}]}`
 	raw1, err := parseAndMergeLiveAnalysisPayload(initial, nil, mc, 1, []int64{1}, TreeClassificationConfig{})
@@ -70,13 +70,16 @@ func TestResolvedQuestionAndTodoRemainSeparateFromDecisionAndRecap(t *testing.T)
 		t.Fatal(err)
 	}
 	state2 := previousLiveAnalysisState(raw2)
-	if len(state2.Items) != 4 || itemByID(state2.Items, "decision-threshold").Kind != "decision" {
+	if len(state2.Items) != 3 || itemByID(state2.Items, "decision-threshold").Kind != "decision" {
 		t.Fatalf("items=%+v", state2.Items)
 	}
-	for _, id := range []string{"question-threshold", "open-threshold", "todo-weather"} {
+	for _, id := range []string{"open-threshold", "todo-weather"} {
 		if item := itemByID(state2.Items, id); item == nil || item.Status != "resolved" {
 			t.Fatalf("resolved item %s=%+v", id, item)
 		}
+	}
+	if issue := itemByID(state2.Items, "open-threshold"); issue == nil || len(issue.RelatedQuestions) != 1 || itemByID(state2.Items, "question-threshold") != nil {
+		t.Fatalf("canonical issue=%+v items=%+v", issue, state2.Items)
 	}
 
 	previous, _ := json.Marshal(state2)
@@ -87,7 +90,7 @@ func TestResolvedQuestionAndTodoRemainSeparateFromDecisionAndRecap(t *testing.T)
 	}
 	state3 := previousLiveAnalysisState(raw3)
 	decision := itemByID(state3.Items, "decision-threshold")
-	if len(state3.Items) != 4 || decision == nil || len(decision.EvidenceSequenceNos) != 2 {
+	if len(state3.Items) != 3 || decision == nil || len(decision.EvidenceSequenceNos) != 2 {
 		t.Fatalf("recap items=%+v", state3.Items)
 	}
 }

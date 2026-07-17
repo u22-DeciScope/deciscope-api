@@ -280,6 +280,15 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 			continue
 		}
 		itemText := item.Title + " " + item.Body
+		if lowInformationDecisionItem(item) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditLowInformationDecision, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "decision predicate has no recoverable subject", Score: 1})
+		}
+		if isDiscourseOnlyItem(item.Title, item.Body) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditDiscourseOnlyItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "meeting-control speech was persisted as a discussion item", Score: 1})
+		}
+		if allTreeAuditEvidenceReference(item.EvidenceSequenceNos, roles) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditRecapReferenceContamination, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "independent item is grounded only in recap/reference evidence", Score: 0.95})
+		}
 		currentScore := semanticItemSimilarity(itemText, containerText(node.ParentID))
 		bestID, bestScore := "", currentScore
 		for _, candidate := range containers {
@@ -344,6 +353,15 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 		if candidate.Inactive || (candidate.FirstRound > 0 && state.TreeVersion-candidate.FirstRound >= cfg.TentativeMaxVersions) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditStaleTentative, NodeIDs: append([]string(nil), candidate.EvidenceItemIDs...), RelatedNodeIDs: []string{candidate.ID}, Reason: "tentative candidate has remained without promotion beyond the configured version window", Score: 0.8})
 		}
+		if candidate.RoundCount >= 2 && len(candidate.EvidenceItemIDs) >= 2 && candidateSubjectIncoherenceReason(candidate, func(id string) *liveAnalysisItem {
+			item, exists := items[id]
+			if !exists {
+				return nil
+			}
+			return &item
+		}, TreeClassificationConfig{}) == "" {
+			add(treeAuditPrecheckFinding{Type: TreeAuditMissingRequiredTopic, NodeIDs: append([]string(nil), candidate.EvidenceItemIDs...), RelatedNodeIDs: []string{candidate.ID}, Reason: "multi-round coherent candidate has no promoted topic", Score: 0.85})
+		}
 		_ = evidenceTexts
 	}
 
@@ -356,6 +374,13 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 		}
 		for j := i + 1; j < len(state.Items); j++ {
 			rightTop := topContainer(state.Items[j].ID)
+			if leftTop == rightTop {
+				if matched, score := sameKindSemanticDuplicate(state.Items[i], state.Items[j]); matched {
+					add(treeAuditPrecheckFinding{Type: TreeAuditSemanticDuplicateSibling, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "same-kind sibling nodes represent the same proposition", Score: score})
+				} else if sameCanonicalProposition(state.Items[i], state.Items[j]) {
+					add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateCrossKindProposition, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "cross-kind sibling nodes represent one canonical proposition", Score: 0.9})
+				}
+			}
 			if rightTop == "" || leftTop == rightTop {
 				continue
 			}
@@ -398,22 +423,38 @@ func inferredAgendaForTopic(topic liveAnalysisTreeNode, mc *meetingContext) stri
 func classifyTreeAuditEvidence(state liveAnalysisPayload, segments []domain.TranscriptSegment) map[int64]treeAuditEvidenceRole {
 	roles := make(map[int64]treeAuditEvidenceRole)
 	segmentBySequence := make(map[int64]domain.TranscriptSegment, len(segments))
+	scope := liveEvidenceScope{Allowed: make(map[int64]struct{}), CurrentRound: make(map[int64]struct{}), TranscriptText: make(map[int64]string), Segments: make(map[int64]domain.TranscriptSegment)}
 	for _, segment := range segments {
 		segmentBySequence[segment.SequenceNo] = segment
 		roles[segment.SequenceNo] = treeAuditEvidenceSupporting
+		scope.Allowed[segment.SequenceNo] = struct{}{}
+		scope.TranscriptText[segment.SequenceNo] = segment.Text
+		scope.Segments[segment.SequenceNo] = segment
+		if segment.SequenceNo > scope.CoveredThrough {
+			scope.CoveredThrough = segment.SequenceNo
+		}
+	}
+	timeline := classifyDiscourseTimeline(scope)
+	for sequenceNo, role := range timeline.Roles {
+		switch role {
+		case liveEvidenceReferenceRecap, liveEvidenceDiscourseOnly:
+			roles[sequenceNo] = treeAuditEvidenceReference
+		case liveEvidencePrimary, liveEvidenceCorrection:
+			roles[sequenceNo] = treeAuditEvidencePrimary
+		}
 	}
 	for _, item := range state.Items {
 		if len(item.EvidenceSequenceNos) == 0 {
 			continue
 		}
 		primary := item.EvidenceSequenceNos[0]
-		if looksLikeTreeAuditReference(segmentBySequence[primary].Text, state) {
+		if roles[primary] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[primary].Text, state) {
 			roles[primary] = treeAuditEvidenceReference
 		} else {
 			roles[primary] = treeAuditEvidencePrimary
 		}
 		for _, sequenceNo := range item.EvidenceSequenceNos[1:] {
-			if looksLikeTreeAuditReference(segmentBySequence[sequenceNo].Text, state) {
+			if roles[sequenceNo] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[sequenceNo].Text, state) {
 				roles[sequenceNo] = treeAuditEvidenceReference
 			}
 		}

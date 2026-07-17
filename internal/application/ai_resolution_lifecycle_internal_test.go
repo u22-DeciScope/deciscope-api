@@ -79,14 +79,12 @@ func TestIssueRecapReopensExistingQuestionAndOpenIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.Items) != 2 {
+	if len(state.Items) != 1 {
 		t.Fatalf("recap created duplicate items: %+v", state.Items)
 	}
-	for _, id := range []string{"question-wind", "open-wind"} {
-		item := findItemByID(state.Items, id)
-		if item == nil || item.Status != "open" || item.ReopenedAtVersion != 5 || !equalInt64s(item.ReopenEvidenceSequenceNos, []int64{35}) {
-			t.Fatalf("reopened %s=%+v", id, item)
-		}
+	item := findItemByID(state.Items, "open-wind")
+	if item == nil || item.Status != "open" || item.ReopenedAtVersion != 5 || !equalInt64s(item.ReopenEvidenceSequenceNos, []int64{35}) || len(item.RelatedQuestions) != 1 {
+		t.Fatalf("reopened canonical issue=%+v", item)
 	}
 }
 
@@ -273,9 +271,14 @@ func TestSession0f1ade26ee8babedDeterministicReplay(t *testing.T) {
 	if item := findItemByID(state.Items, "risk-sites"); item == nil || item.Status != "resolved" {
 		t.Fatalf("observation risk=%+v", item)
 	}
-	for _, id := range []string{"question-wind", "open-wind", "open-date", "todo-weather", "todo-date", "todo-wetland"} {
+	for _, id := range []string{"open-wind", "open-date", "todo-wetland"} {
 		if item := findItemByID(state.Items, id); item == nil || item.Status == "resolved" {
 			t.Fatalf("item %s must remain open/active: %+v", id, item)
+		}
+	}
+	for _, id := range []string{"open-wind", "open-date"} {
+		if item := findItemByID(state.Items, id); item == nil || len(item.NextActions) == 0 {
+			t.Fatalf("canonical issue %s lost next action: %+v", id, item)
 		}
 	}
 	if item := findItemByID(state.Items, "question-count"); item == nil || item.Status != "resolved" {

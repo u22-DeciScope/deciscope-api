@@ -779,13 +779,20 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, err, len(segments), inputChars, elapsed)
 		return false, retryable
 	}
+	roundSeqNos := make([]int64, 0, len(segments))
+	for _, segment := range segments {
+		if segment.SequenceNo > 0 {
+			roundSeqNos = append(roundSeqNos, segment.SequenceNo)
+		}
+	}
+	evidenceScope := s.liveEvidenceScope(ctx, sessionID, previousPayload, segments)
 	issueCandidates := detectIssueCandidates(segments)
 	issueContent, issueAudit, issueErr := reconcileIssueCandidates(result.Content, previousPayload, issueCandidates)
 	if issueErr != nil {
 		issueContent = result.Content
 		log.Printf("Question/open issue reconciliation failed. sessionId=%s error=%v", sessionID, issueErr)
 	}
-	decisionCandidates := detectDecisionCandidates(segments)
+	decisionCandidates := detectDecisionCandidates(extendDecisionSegmentsWithPriorFragment(segments, evidenceScope))
 	reconciledContent, decisionAudit, reconcileErr := reconcileDecisionCandidates(issueContent, previousPayload, decisionCandidates)
 	if reconcileErr != nil {
 		// The normal parser below remains the source of truth for malformed
@@ -796,13 +803,6 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	}
 	treeStats := &liveAnalysisTreeMergeStats{}
 	newVersion := previousVersion + 1
-	roundSeqNos := make([]int64, 0, len(segments))
-	for _, segment := range segments {
-		if segment.SequenceNo > 0 {
-			roundSeqNos = append(roundSeqNos, segment.SequenceNo)
-		}
-	}
-	evidenceScope := s.liveEvidenceScope(ctx, sessionID, previousPayload, segments)
 	payload, parseErr := parseAndMergeLiveAnalysisPayloadWithEvidence(reconciledContent, previousPayload, meetingCtx, newVersion, roundSeqNos, evidenceScope, s.config.TreeClassification, treeStats)
 	logTaskSchemaResult(aiTaskLiveExtraction, sessionID, parseErr)
 	if parseErr != nil {
@@ -874,12 +874,15 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.SourceActionSummaryAgendaCount, actionSummaryAgendaIDs, treeStats.LogicalActionSummaryCount, treeStats.ActionSummaryCandidates, treeStats.DeduplicatedActionItems, treeStats.RenderedActionItems, treeStats.ActiveTodoReferences, treeStats.ActiveOpenIssueFallbacks, treeStats.CompletedTodoExcluded, treeStats.ResolvedItemsExcluded, treeStats.ClusteredReferences)
 	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d tentativeItemsHidden=%d companionParentInherited=%d companionCandidateInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d tentativeMetadataLost=%d",
 		sessionID, newVersion, treeStats.TrueUnclassifiedItems, stats.TentativeItems, treeStats.TentativeItemsHidden, treeStats.CompanionParentInherited, treeStats.CompanionCandidateInherited, treeStats.SemanticParentCorrected, treeStats.PromotedItemsReparented, treeStats.StaleCandidatesHidden, treeStats.TentativeMetadataLost)
-	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d discourseOnlyItemsRejected=%d discourseOnlyCandidatesRejected=%d candidateSubjectIncoherentDeferred=%d",
-		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited, treeStats.DiscourseOnlyItemsRejected, treeStats.DiscourseOnlyCandidatesRejected, treeStats.CandidateSubjectIncoherentDeferred)
+	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d discourseOnlyItemsRejected=%d discourseOnlyCandidatesRejected=%d candidateSubjectIncoherentDeferred=%d candidateSubjectMutationRejected=%d candidateSubjectsSplit=%d",
+		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited, treeStats.DiscourseOnlyItemsRejected, treeStats.DiscourseOnlyCandidatesRejected, treeStats.CandidateSubjectIncoherentDeferred, treeStats.CandidateSubjectMutationRejected, treeStats.CandidateSubjectsSplit)
 	log.Printf("Live no-agenda candidate lifecycle. sessionId=%s version=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v staleAgendaFallbackRejected=%d fixedAgendaAssignmentRejectedByNoAgendaSpan=%d candidateSubjectKey=%v candidateIdsMerged=%d companionCandidateInherited=%d crossKindCandidateInherited=%d dynamicTopicPromoted=%d promotedItemIds=%v promotedItemsRemainingOutsideTopic=%d",
 		sessionID, newVersion, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.StaleAgendaFallbackRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, uniqueNonEmptyIDs(treeStats.CandidateSubjectKeys), treeStats.CandidateIDsMerged, treeStats.CompanionCandidateInherited, treeStats.CrossKindCandidateInherited, treeStats.DynamicTopicsPromoted, uniqueNonEmptyIDs(treeStats.PromotedItemIDs), treeStats.PromotedItemsRemainingOutsideTopic)
-	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d recapMerged=%d",
-		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.RecapMerged)
+	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d propositionItemsMerged=%d recapMerged=%d referenceRecapItemsMerged=%d referenceRecapItemsRejected=%d referenceRecapTopicProposalsRejected=%d lowInformationDecisionsRejected=%d",
+		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.PropositionItemsMerged, treeStats.RecapMerged, treeStats.ReferenceRecapItemsMerged, treeStats.ReferenceRecapItemsRejected, treeStats.ReferenceRecapTopicProposalsRejected, treeStats.LowInformationDecisionsRejected)
+	for _, transition := range classifyDiscourseTimeline(evidenceScope).Transitions {
+		log.Printf("Discourse timeline transition. sessionId=%s version=%d sequenceNo=%d from=%s to=%s act=%s", sessionID, newVersion, transition.SequenceNo, transition.From, transition.To, transition.Act)
+	}
 	log.Printf("Live evidence normalization. sessionId=%s version=%d numericStringsNormalized=%d rejectedValues=%d outOfRoundValues=%d quarantinedItems=%d currentRoundEvidenceAccepted=%d historicalEvidenceAccepted=%d futureEvidenceRejected=%d missingEvidenceRejected=%d existingEvidencePreserved=%d",
 		sessionID, newVersion, treeStats.EvidenceNumericStringsNormalized, treeStats.EvidenceValuesRejected, treeStats.EvidenceValuesOutOfRound, treeStats.EvidenceItemsQuarantined, treeStats.CurrentRoundEvidenceAccepted, treeStats.HistoricalEvidenceAccepted, treeStats.FutureEvidenceRejected, treeStats.MissingEvidenceRejected, treeStats.ExistingEvidencePreserved)
 	resolutionAudit := summarizeResolutionEvaluations(treeStats.ResolutionDecisions)
@@ -937,7 +940,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 }
 
 func (s *MeetingAnalysisService) liveEvidenceScope(ctx context.Context, sessionID string, previousPayload json.RawMessage, round []domain.TranscriptSegment) liveEvidenceScope {
-	scope := liveEvidenceScope{Allowed: make(map[int64]struct{}), CurrentRound: make(map[int64]struct{}), TranscriptText: make(map[int64]string)}
+	scope := liveEvidenceScope{Allowed: make(map[int64]struct{}), CurrentRound: make(map[int64]struct{}), TranscriptText: make(map[int64]string), Segments: make(map[int64]domain.TranscriptSegment)}
 	previous := previousLiveAnalysisState(previousPayload)
 	scope.CoveredThrough = previous.CoveredThroughSequenceNo
 	for _, segment := range round {
@@ -946,6 +949,7 @@ func (s *MeetingAnalysisService) liveEvidenceScope(ctx context.Context, sessionI
 		}
 		scope.CurrentRound[segment.SequenceNo] = struct{}{}
 		scope.TranscriptText[segment.SequenceNo] = strings.TrimSpace(segment.Text)
+		scope.Segments[segment.SequenceNo] = segment
 		if segment.SequenceNo > scope.CoveredThrough {
 			scope.CoveredThrough = segment.SequenceNo
 		}
@@ -973,6 +977,7 @@ func (s *MeetingAnalysisService) liveEvidenceScope(ctx context.Context, sessionI
 		}
 		scope.Allowed[segment.SequenceNo] = struct{}{}
 		scope.TranscriptText[segment.SequenceNo] = strings.TrimSpace(segment.Text)
+		scope.Segments[segment.SequenceNo] = segment
 	}
 	return scope
 }
@@ -2800,6 +2805,14 @@ type liveAnalysisItem struct {
 	AssignmentSource     string  `json:"assignmentSource,omitempty"` // model | rule | reorganizer | fallback
 	AssignmentReason     string  `json:"assignmentReason,omitempty"` // AIの分類理由(人手確認用に短縮保持)
 	EvidenceSequenceNos  []int64 `json:"evidenceSequenceNos,omitempty"`
+	// PropositionKey and EvidenceRoles are deterministic, server-owned audit
+	// metadata. Related questions, resolution conditions and next actions keep
+	// cross-kind wording as attributes of one canonical proposition.
+	PropositionKey       string                `json:"propositionKey,omitempty"`
+	EvidenceRoles        []liveEvidenceRoleRef `json:"evidenceRoles,omitempty"`
+	RelatedQuestions     []string              `json:"relatedQuestions,omitempty"`
+	ResolutionConditions []string              `json:"resolutionConditions,omitempty"`
+	NextActions          []string              `json:"nextActions,omitempty"`
 	// Resolution metadata is additive and server-owned. Status remains the
 	// backwards-compatible wire state while these fields make grounding and
 	// reopen history auditable without a database migration.
@@ -3094,6 +3107,11 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, stats ...*liveAnalysis
 		item.AssignmentSource = ""
 		item.AssignmentReason = ""
 		item.RelatedAgendaIDs = nil
+		item.PropositionKey = ""
+		item.EvidenceRoles = nil
+		item.RelatedQuestions = nil
+		item.ResolutionConditions = nil
+		item.NextActions = nil
 		if item.Title == "" && item.Body == "" {
 			continue
 		}
@@ -3335,10 +3353,15 @@ type liveAnalysisTreeMergeStats struct {
 	// Same-kind dedup diagnostics deliberately exclude cross-kind discussion
 	// companions. A question/open_issue/todo cluster remains separate canonical
 	// items even when it is rendered as one action-summary row.
-	SameKindSemanticMergeCandidates int
-	SameKindSemanticMerged          int
-	CrossKindClustered              int
-	RecapMerged                     int
+	SameKindSemanticMergeCandidates      int
+	SameKindSemanticMerged               int
+	CrossKindClustered                   int
+	PropositionItemsMerged               int
+	RecapMerged                          int
+	ReferenceRecapItemsMerged            int
+	ReferenceRecapItemsRejected          int
+	ReferenceRecapTopicProposalsRejected int
+	LowInformationDecisionsRejected      int
 	// Classification/projection diagnostics make the computed action summary
 	// and tentative staging observable without creating extra tree nodes.
 	ActionSummaryCandidates             int
@@ -3366,6 +3389,8 @@ type liveAnalysisTreeMergeStats struct {
 	// CandidateSubjectIncoherentDeferred counts candidates whose promotion was
 	// deferred because their label did not semantically cover their evidence.
 	CandidateSubjectIncoherentDeferred          int
+	CandidateSubjectMutationRejected            int
+	CandidateSubjectsSplit                      int
 	CandidateEvidenceAdded                      int
 	CandidateEvidenceDeduplicated               int
 	CandidateEvidenceRemapped                   int
@@ -3623,11 +3648,12 @@ type liveEvidenceScope struct {
 	Allowed        map[int64]struct{}
 	CurrentRound   map[int64]struct{}
 	TranscriptText map[int64]string
+	Segments       map[int64]domain.TranscriptSegment
 	CoveredThrough int64
 }
 
 func evidenceScopeForRound(roundSeqNos []int64) liveEvidenceScope {
-	scope := liveEvidenceScope{Allowed: make(map[int64]struct{}), CurrentRound: make(map[int64]struct{}), TranscriptText: make(map[int64]string)}
+	scope := liveEvidenceScope{Allowed: make(map[int64]struct{}), CurrentRound: make(map[int64]struct{}), TranscriptText: make(map[int64]string), Segments: make(map[int64]domain.TranscriptSegment)}
 	for _, sequenceNo := range roundSeqNos {
 		if sequenceNo <= 0 {
 			continue
@@ -3659,9 +3685,12 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 		}
 	}
 	previous := previousLiveAnalysisState(previousPayload)
+	timeline := classifyDiscourseTimeline(evidenceScope)
+	historicalDiscourseRemap := repairHistoricalDiscourseItems(&previous, timeline, treeStats)
+	repairMixedEmergingCandidates(&previous, mc, treeVersion, treeStats)
 	reservedIDRemap := repairReservedPersistedItemIDs(&previous, treeStats)
 	previousIDRemap := deduplicateExistingLiveState(&previous, treeStats)
-	legacyIDRemap := mergeIDRemaps(reservedIDRemap, previousIDRemap)
+	legacyIDRemap := mergeIDRemaps(historicalDiscourseRemap, reservedIDRemap, previousIDRemap)
 
 	requestedResolvedIDs := make(map[string]struct{}, len(diff.ResolvedIds))
 	for _, id := range diff.ResolvedIds {
@@ -3688,6 +3717,14 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	requestedResolutionUpdates = append(requestedResolutionUpdates, legacyResolutionUpdates(requestedResolvedIDs, diffItems)...)
 	diffItems = normalizeLiveAnalysisItems(diffItems, treeStats)
 	normalizeItemEvidenceSequenceNosWithScope(diffItems, evidenceScope, treeStats)
+	diffItems = filterReferenceRecapDiff(previous.Items, diffItems, roundSeqNos, timeline, treeStats)
+	if roundIsReferenceOnly(roundSeqNos, timeline) {
+		newTopics = nil
+		assignments = nil
+		if treeStats != nil {
+			treeStats.ReferenceRecapTopicProposalsRejected += len(diff.NewTopics)
+		}
+	}
 
 	// Task C (server-side dedup): a "new" item whose normalized title matches
 	// an existing item is remapped onto the existing id, so near-identical
@@ -3748,10 +3785,14 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	merged.Items = mergeLiveAnalysisItems(previous.Items, diffItems, resolutionUpdates)
 	appendItemEvidenceSequenceNos(merged.Items, diffItems, roundSeqNos, treeStats)
 	agendaSpans := detectAgendaContextSpans(evidenceScope, mc, treeStats)
-	assignments, newTopics = applyAgendaContextAssignments(assignments, newTopics, previous.Tree, merged.Items, diffItems, previous.EmergingTopics, agendaSpans, treeStats)
+	agendaEvidenceItems := contentEvidenceItems(diffItems, timeline)
+	assignments, newTopics = applyAgendaContextAssignments(assignments, newTopics, previous.Tree, merged.Items, agendaEvidenceItems, previous.EmergingTopics, agendaSpans, treeStats)
 	merged.Tree, merged.Items, merged.EmergingTopics = rebuildDiscussionTree(
 		previous.Tree, mc, merged.Items, newTopics, assignments, resolvedIDs,
 		previous.EmergingTopics, treeVersion, cfg, treeStats)
+	canonicalizePropositionItems(&merged, timeline, treeStats)
+	pruneEmptyDynamicTopics(merged.Tree)
+	stampEvidenceRoles(merged.Items, timeline)
 	if treeStats != nil && len(treeStats.PromotedItemIDs) > 0 {
 		topicOrigins := make(map[string]string)
 		for _, node := range merged.Tree.Nodes {
@@ -4204,6 +4245,9 @@ func deduplicateExistingLiveState(state *liveAnalysisPayload, stats *liveAnalysi
 				continue
 			}
 			matched, score := sameKindSemanticDuplicate(kept[at], item)
+			if !matched {
+				matched, score = sameKindSequentialProposition(kept[at], item)
+			}
 			if matched && score > bestScore {
 				matchedAt, bestScore = at, score
 			}

@@ -8,48 +8,74 @@ import (
 	"deciscope-core-api/internal/domain"
 )
 
-const treeAuditPromptVersion = "v1"
+const treeAuditPromptVersion = "v2"
 
 type TreeAuditFindingType string
 
 const (
-	TreeAuditSubjectMismatch              TreeAuditFindingType = "subject_mismatch"
-	TreeAuditCrossAgendaContamination     TreeAuditFindingType = "cross_agenda_contamination"
-	TreeAuditCandidateFragmentation       TreeAuditFindingType = "candidate_fragmentation"
-	TreeAuditCandidateMixedSubjects       TreeAuditFindingType = "candidate_mixed_subjects"
-	TreeAuditDuplicateDynamicTopic        TreeAuditFindingType = "duplicate_dynamic_topic"
-	TreeAuditIncorrectReparent            TreeAuditFindingType = "incorrect_reparent"
-	TreeAuditReferenceEvidenceReparent    TreeAuditFindingType = "reference_evidence_reparent"
-	TreeAuditRecapCreatedNewItem          TreeAuditFindingType = "recap_created_new_item"
-	TreeAuditRecapCreatedNewCandidate     TreeAuditFindingType = "recap_created_new_candidate"
-	TreeAuditFloatingTentativeCandidate   TreeAuditFindingType = "floating_tentative_candidate"
-	TreeAuditTopicOutlier                 TreeAuditFindingType = "topic_outlier"
-	TreeAuditGroupOutlier                 TreeAuditFindingType = "group_outlier"
-	TreeAuditGroupLabelMismatch           TreeAuditFindingType = "group_label_mismatch"
-	TreeAuditGroupChurn                   TreeAuditFindingType = "group_churn"
-	TreeAuditMissingGroup                 TreeAuditFindingType = "missing_group"
-	TreeAuditCandidateShouldPromote       TreeAuditFindingType = "candidate_should_promote"
-	TreeAuditCandidateShouldNotPromote    TreeAuditFindingType = "candidate_should_not_promote"
-	TreeAuditCandidateShouldFoldIntoTopic TreeAuditFindingType = "candidate_should_fold_into_existing_topic"
-	TreeAuditParentLowConfidence          TreeAuditFindingType = "parent_low_confidence"
-	TreeAuditStaleTentative               TreeAuditFindingType = "stale_tentative"
+	TreeAuditSubjectMismatch                  TreeAuditFindingType = "subject_mismatch"
+	TreeAuditCrossAgendaContamination         TreeAuditFindingType = "cross_agenda_contamination"
+	TreeAuditCandidateFragmentation           TreeAuditFindingType = "candidate_fragmentation"
+	TreeAuditCandidateMixedSubjects           TreeAuditFindingType = "candidate_mixed_subjects"
+	TreeAuditDuplicateDynamicTopic            TreeAuditFindingType = "duplicate_dynamic_topic"
+	TreeAuditIncorrectReparent                TreeAuditFindingType = "incorrect_reparent"
+	TreeAuditReferenceEvidenceReparent        TreeAuditFindingType = "reference_evidence_reparent"
+	TreeAuditRecapCreatedNewItem              TreeAuditFindingType = "recap_created_new_item"
+	TreeAuditRecapCreatedNewCandidate         TreeAuditFindingType = "recap_created_new_candidate"
+	TreeAuditFloatingTentativeCandidate       TreeAuditFindingType = "floating_tentative_candidate"
+	TreeAuditTopicOutlier                     TreeAuditFindingType = "topic_outlier"
+	TreeAuditGroupOutlier                     TreeAuditFindingType = "group_outlier"
+	TreeAuditGroupLabelMismatch               TreeAuditFindingType = "group_label_mismatch"
+	TreeAuditGroupChurn                       TreeAuditFindingType = "group_churn"
+	TreeAuditMissingGroup                     TreeAuditFindingType = "missing_group"
+	TreeAuditCandidateShouldPromote           TreeAuditFindingType = "candidate_should_promote"
+	TreeAuditCandidateShouldNotPromote        TreeAuditFindingType = "candidate_should_not_promote"
+	TreeAuditCandidateShouldFoldIntoTopic     TreeAuditFindingType = "candidate_should_fold_into_existing_topic"
+	TreeAuditParentLowConfidence              TreeAuditFindingType = "parent_low_confidence"
+	TreeAuditStaleTentative                   TreeAuditFindingType = "stale_tentative"
+	TreeAuditLowInformationDecision           TreeAuditFindingType = "low_information_decision"
+	TreeAuditSemanticDuplicateSibling         TreeAuditFindingType = "semantic_duplicate_sibling"
+	TreeAuditDuplicateCrossKindProposition    TreeAuditFindingType = "duplicate_cross_kind_proposition"
+	TreeAuditMissingRequiredTopic             TreeAuditFindingType = "missing_required_topic"
+	TreeAuditRecapReferenceContamination      TreeAuditFindingType = "recap_reference_contamination"
+	TreeAuditDiscourseOnlyItem                TreeAuditFindingType = "discourse_only_item"
+	TreeAuditLowInformationItem               TreeAuditFindingType = "low_information_item"
+	TreeAuditIncompleteDecision               TreeAuditFindingType = "incomplete_decision"
+	TreeAuditSemanticDuplicateSiblings        TreeAuditFindingType = "semantic_duplicate_siblings"
+	TreeAuditCrossKindDuplicateProposition    TreeAuditFindingType = "cross_kind_duplicate_proposition"
+	TreeAuditMissingDynamicTopic              TreeAuditFindingType = "missing_dynamic_topic"
+	TreeAuditCandidateSubjectEvidenceMismatch TreeAuditFindingType = "candidate_subject_evidence_mismatch"
+	TreeAuditRecapPromotedCandidate           TreeAuditFindingType = "recap_promoted_candidate"
+	TreeAuditOrphanTentativeItem              TreeAuditFindingType = "orphan_tentative_item"
+	TreeAuditGenericTitle                     TreeAuditFindingType = "generic_title"
+	TreeAuditEvidenceFragmentation            TreeAuditFindingType = "evidence_fragmentation"
 )
 
 type TreeAuditOperationType string
 
 const (
-	TreeAuditMoveItem               TreeAuditOperationType = "move_item"
-	TreeAuditRestorePreviousParent  TreeAuditOperationType = "restore_previous_parent"
-	TreeAuditMergeCandidates        TreeAuditOperationType = "merge_candidates"
-	TreeAuditFoldCandidateIntoTopic TreeAuditOperationType = "fold_candidate_into_topic"
-	TreeAuditPromoteCandidate       TreeAuditOperationType = "promote_candidate"
-	TreeAuditMarkCandidateTentative TreeAuditOperationType = "mark_candidate_tentative"
-	TreeAuditDeactivateCandidate    TreeAuditOperationType = "deactivate_candidate"
-	TreeAuditMergeDynamicTopics     TreeAuditOperationType = "merge_dynamic_topics"
-	TreeAuditCreateGroup            TreeAuditOperationType = "create_group"
-	TreeAuditMoveItemsToGroup       TreeAuditOperationType = "move_items_to_group"
-	TreeAuditRenameGroup            TreeAuditOperationType = "rename_group"
-	TreeAuditRemoveEmptyGroup       TreeAuditOperationType = "remove_empty_group"
+	TreeAuditMoveItem                  TreeAuditOperationType = "move_item"
+	TreeAuditRestorePreviousParent     TreeAuditOperationType = "restore_previous_parent"
+	TreeAuditMergeCandidates           TreeAuditOperationType = "merge_candidates"
+	TreeAuditFoldCandidateIntoTopic    TreeAuditOperationType = "fold_candidate_into_topic"
+	TreeAuditPromoteCandidate          TreeAuditOperationType = "promote_candidate"
+	TreeAuditMarkCandidateTentative    TreeAuditOperationType = "mark_candidate_tentative"
+	TreeAuditDeactivateCandidate       TreeAuditOperationType = "deactivate_candidate"
+	TreeAuditMergeDynamicTopics        TreeAuditOperationType = "merge_dynamic_topics"
+	TreeAuditCreateGroup               TreeAuditOperationType = "create_group"
+	TreeAuditMoveItemsToGroup          TreeAuditOperationType = "move_items_to_group"
+	TreeAuditRenameGroup               TreeAuditOperationType = "rename_group"
+	TreeAuditRemoveEmptyGroup          TreeAuditOperationType = "remove_empty_group"
+	TreeAuditMergeItems                TreeAuditOperationType = "merge_items"
+	TreeAuditRewriteItem               TreeAuditOperationType = "rewrite_item"
+	TreeAuditDeactivateItem            TreeAuditOperationType = "deactivate_item"
+	TreeAuditSplitCandidate            TreeAuditOperationType = "split_candidate"
+	TreeAuditCreateTopicFromCandidate  TreeAuditOperationType = "create_topic_from_candidate"
+	TreeAuditAssignItemToCandidate     TreeAuditOperationType = "assign_item_to_candidate"
+	TreeAuditChangeEvidenceRole        TreeAuditOperationType = "change_evidence_role"
+	TreeAuditMergeFragmentedUtterances TreeAuditOperationType = "merge_fragmented_utterances"
+	TreeAuditRewriteItemTitle          TreeAuditOperationType = "rewrite_item_title"
+	TreeAuditRewriteItemDescription    TreeAuditOperationType = "rewrite_item_description"
 )
 
 type treeAuditFinding struct {
@@ -83,10 +109,18 @@ type treeAuditOperation struct {
 }
 
 type treeAuditResponse struct {
-	BasedOnTreeVersion int64                `json:"basedOnTreeVersion"`
-	Summary            string               `json:"summary"`
-	Findings           []treeAuditFinding   `json:"findings"`
-	Operations         []treeAuditOperation `json:"operations"`
+	BasedOnTreeVersion    int64                     `json:"basedOnTreeVersion"`
+	Summary               string                    `json:"summary"`
+	Findings              []treeAuditFinding        `json:"findings"`
+	Operations            []treeAuditOperation      `json:"operations"`
+	ParseRejections       []treeAuditParseRejection `json:"-"`
+	CanonicalizationCount int                       `json:"-"`
+}
+
+type treeAuditParseRejection struct {
+	ElementType string `json:"elementType"`
+	ElementID   string `json:"elementId,omitempty"`
+	Reason      string `json:"reason"`
 }
 
 type treeAuditValidatorEvaluation struct {
@@ -99,6 +133,8 @@ type treeAuditValidatorEvaluation struct {
 	CurrentParentScore float64                `json:"currentParentScore,omitempty"`
 	NewParentScore     float64                `json:"newParentScore,omitempty"`
 	Improvement        float64                `json:"improvement,omitempty"`
+	AutoApplyEligible  bool                   `json:"autoApplyEligible"`
+	AutoApplyReason    string                 `json:"autoApplyReason,omitempty"`
 }
 
 type treeAuditValidatorResult struct {
@@ -117,6 +153,8 @@ type treeAuditValidatorResult struct {
 	CrossAgendaContaminationAfter  int                            `json:"crossAgendaContaminationAfter"`
 	HeuristicDefectCountBefore     int                            `json:"heuristicDefectCountBefore"`
 	HeuristicDefectCountAfter      int                            `json:"heuristicDefectCountAfter"`
+	ParserElementsRejected         int                            `json:"parserElementsRejected"`
+	ParserIDsCanonicalized         int                            `json:"parserIdsCanonicalized"`
 }
 
 type treeAuditPrecheckFinding struct {
@@ -245,6 +283,15 @@ func validTreeAuditFindingType(value TreeAuditFindingType) bool {
 		TreeAuditGroupChurn, TreeAuditMissingGroup, TreeAuditCandidateShouldPromote,
 		TreeAuditCandidateShouldNotPromote, TreeAuditCandidateShouldFoldIntoTopic,
 		TreeAuditParentLowConfidence, TreeAuditStaleTentative:
+		fallthrough
+	case TreeAuditLowInformationDecision, TreeAuditSemanticDuplicateSibling,
+		TreeAuditDuplicateCrossKindProposition, TreeAuditMissingRequiredTopic,
+		TreeAuditRecapReferenceContamination, TreeAuditDiscourseOnlyItem,
+		TreeAuditLowInformationItem, TreeAuditIncompleteDecision,
+		TreeAuditSemanticDuplicateSiblings, TreeAuditCrossKindDuplicateProposition,
+		TreeAuditMissingDynamicTopic, TreeAuditCandidateSubjectEvidenceMismatch,
+		TreeAuditRecapPromotedCandidate, TreeAuditOrphanTentativeItem,
+		TreeAuditGenericTitle, TreeAuditEvidenceFragmentation:
 		return true
 	default:
 		return false
@@ -258,6 +305,12 @@ func validTreeAuditOperationType(value TreeAuditOperationType) bool {
 		TreeAuditMarkCandidateTentative, TreeAuditDeactivateCandidate,
 		TreeAuditMergeDynamicTopics, TreeAuditCreateGroup,
 		TreeAuditMoveItemsToGroup, TreeAuditRenameGroup, TreeAuditRemoveEmptyGroup:
+		fallthrough
+	case TreeAuditMergeItems, TreeAuditRewriteItem, TreeAuditDeactivateItem,
+		TreeAuditSplitCandidate, TreeAuditCreateTopicFromCandidate,
+		TreeAuditAssignItemToCandidate, TreeAuditChangeEvidenceRole,
+		TreeAuditMergeFragmentedUtterances, TreeAuditRewriteItemTitle,
+		TreeAuditRewriteItemDescription:
 		return true
 	default:
 		return false
