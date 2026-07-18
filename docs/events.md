@@ -158,7 +158,9 @@ transcript.partial
 
 議論構造ツリーを画面に反映するためのイベントです。
 
-ノードの `kind` は `topic` / `issue` / `question` / `risk` / `decision` を使います。フロントエンドの議論ツリー（`DiscussionTree`）はこの語彙で色分けし、未知の `kind` は `topic` 表示にフォールバックします。`analysis.delta` の `kind`（`issue` / `question` / `risk`）と語彙を揃えています。
+ノードの `kind` は `topic` / `group` / `issue` / `open_issue` / `question` / `risk` / `fact` / `decision` / `todo` を使います。`group` はAIアシスタントカードではなく、agenda/dynamic topic配下で2件以上のdetail itemをまとめる表示専用の中間ノードです。フロントエンドの議論ツリー（`DiscussionTree`）はこの語彙で色分けします。
+
+live analysisのcanonical構造は通常 `root → topic → group → subgroup → detail`（soft limit 4）です。十分な直接detailがある場合だけgroupをもう1段追加でき、hard limit 5を超えません。detailはtopic/group直下に置けますが、別detailの親にはできません。各nodeの表示親は`parentId`で一意に決まり、`edges`は`parentId`から導出されます。一子groupは2 version連続で不足した場合に平坦化し、ライブ更新の作成・削除振動を抑えます。
 
 `status` は任意で、live analysis では `open` / `updated` / `resolved` を使います。`description` はノード内容を短く説明する任意フィールド、`relatedItemIds` は関連する `analysis.delta` / live analysis `items` のid配列です。live analysisでは存在しないitem idはサーバー側で除外されますが、解消済みitem idは `resolved` カードへの関連として保持されます。
 

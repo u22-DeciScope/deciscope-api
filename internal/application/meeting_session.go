@@ -26,6 +26,7 @@ type MeetingSessionService struct {
 	commander            BotJoinCommander
 	publisher            MeetingSessionPublisher
 	endedObserver        MeetingSessionEndedObserver
+	preparingObserver    MeetingSessionPreparingObserver
 	now                  func() time.Time
 	finalizationMu       sync.Mutex
 	finalizationInFlight map[string]struct{}
@@ -127,6 +128,12 @@ func (s *MeetingSessionService) SetMeetingSessionEndedObserver(observer MeetingS
 	s.endedObserver = observer
 }
 
+// SetMeetingSessionPreparingObserver registers the optional prewarm hook
+// used by analysis pipelines that should begin as soon as metadata is saved.
+func (s *MeetingSessionService) SetMeetingSessionPreparingObserver(observer MeetingSessionPreparingObserver) {
+	s.preparingObserver = observer
+}
+
 func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input MeetingSessionCreateInput) (*MeetingSessionCreateResult, error) {
 	normalizedJoinURL, err := domain.NormalizeTeamsJoinURL(input.JoinURL)
 	if err != nil {
@@ -180,6 +187,9 @@ func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input 
 		if !isNew {
 			s.publishStatusChanged(*created)
 		}
+	}
+	if s.preparingObserver != nil && created != nil {
+		s.preparingObserver.PrepareMeetingSession(*created)
 	}
 	if !isNew {
 		log.Printf("Meeting session reuse. sessionId=%s joinUrlHash=%s status=%s createdAt=%s updatedAt=%s", created.ID, created.JoinURLHash, created.Status, created.CreatedAt.UTC().Format(time.RFC3339Nano), created.UpdatedAt.UTC().Format(time.RFC3339Nano))

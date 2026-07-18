@@ -1,12 +1,44 @@
 package app
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"deciscope-core-api/internal/application"
+	"deciscope-core-api/internal/infrastructure/azureopenai"
 )
+
+func TestTreeAuditStartupLogExplainsMigrationAndDoesNotLeakSecret(t *testing.T) {
+	var output bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+
+	config := AIConfig{
+		AzureOpenAI: azureopenai.Config{APIKey: "do-not-log-this-api-key"},
+		TreeAudit: application.TreeAuditConfig{
+			Enabled: true,
+		},
+		TaskModels: AITaskModelsConfig{
+			TreeAudit:       "mini-audit",
+			FinalTreeReview: "mini-final-review",
+		},
+	}
+	logTreeAuditConfiguration(config, "migration_missing", false, false)
+	logs := output.String()
+	if !strings.Contains(logs, "AI tree audit unavailable. reason=migration_missing") ||
+		!strings.Contains(logs, "schedulerRegistered=false") {
+		t.Fatalf("tree audit startup logs = %q", logs)
+	}
+	if strings.Contains(logs, config.AzureOpenAI.APIKey) {
+		t.Fatal("tree audit startup log leaked the Azure OpenAI API key")
+	}
+}
 
 func TestServerFailsWithoutDatabaseURL(t *testing.T) {
 	setRequiredTranscriptEnv(t)

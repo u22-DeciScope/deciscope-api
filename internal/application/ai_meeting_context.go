@@ -33,6 +33,9 @@ const (
 
 	meetingContextMaxAgendaItems = 10
 	meetingContextMaxDirectives  = 10
+
+	agendaRolePrimary       = "primary"
+	agendaRoleActionSummary = "action_summary"
 )
 
 // meetingContext is the structured, role-separated form of the pre-meeting
@@ -58,6 +61,121 @@ type agendaItem struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	Order int    `json:"order"`
+	// Role separates a normal content agenda from a cross-cutting action
+	// summary. It is optional for old context payloads; an empty role is
+	// treated as primary everywhere.
+	Role string `json:"role,omitempty"`
+}
+
+func normalizeAgendaRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case agendaRoleActionSummary:
+		return agendaRoleActionSummary
+	default:
+		return agendaRolePrimary
+	}
+}
+
+var actionSummaryAgendaTitles = []string{
+	"今後の対応事項",
+	"対応事項",
+	"アクションアイテム",
+	"次のアクション",
+	"今後の予定",
+	"担当期限",
+	"フォローアップ",
+}
+
+// inferAgendaRole is the compatibility path for meetings created before an
+// explicit agenda role existed. A planner response is still treated as a
+// proposal: a well-known cross-cutting action-summary title cannot be turned
+// into a canonical content topic merely because the model returned primary.
+// Conversely, substantive agenda titles remain primary even when they contain
+// generic words such as 担当 or 決定.
+func inferAgendaRole(title, description string) string {
+	key := normalizeForMatch(title + " " + description)
+	if key == "" {
+		return agendaRolePrimary
+	}
+	for _, substantive := range []string{"実施体制", "担当者の選定", "担当者選定", "スケジュール調整"} {
+		if strings.Contains(key, normalizeForMatch(substantive)) {
+			return agendaRolePrimary
+		}
+	}
+	for _, candidate := range actionSummaryAgendaTitles {
+		candidateKey := normalizeForMatch(candidate)
+		if key == candidateKey || strings.HasPrefix(key, candidateKey) || strings.HasSuffix(key, candidateKey) {
+			return agendaRoleActionSummary
+		}
+	}
+	return agendaRolePrimary
+}
+
+func effectiveAgendaRole(role, title, description string) string {
+	if normalizeAgendaRole(role) == agendaRoleActionSummary || inferAgendaRole(title, description) == agendaRoleActionSummary {
+		return agendaRoleActionSummary
+	}
+	return agendaRolePrimary
+}
+
+func (c *meetingContext) actionSummaryAgendaIDs() map[string]struct{} {
+	ids := make(map[string]struct{})
+	if c == nil {
+		return ids
+	}
+	for _, item := range c.Agenda {
+		if effectiveAgendaRole(item.Role, item.Title, "") == agendaRoleActionSummary {
+			ids[item.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// logicalActionSummaryAgendaID collapses any legacy duplicate source agendas
+// into one cross-cutting view. Source agenda records remain observable, but
+// canonical items are projected only once and no action-summary tree node is
+// created.
+func (c *meetingContext) logicalActionSummaryAgendaID() string {
+	if c == nil {
+		return ""
+	}
+	for _, item := range c.Agenda {
+		if effectiveAgendaRole(item.Role, item.Title, "") == agendaRoleActionSummary {
+			return item.ID
+		}
+	}
+	return ""
+}
+
+// reconcileMeetingContextWithFallback applies the planner as a bounded label
+// refinement. The deterministic meeting record remains authoritative for the
+// agenda count/order/IDs, preventing a hallucinated fifth agenda from becoming
+// a second action-summary source.
+func reconcileMeetingContextWithFallback(planned, fallback *meetingContext) *meetingContext {
+	if planned == nil {
+		return fallback
+	}
+	if fallback == nil || len(fallback.Agenda) == 0 {
+		return planned
+	}
+	reconciled := *planned
+	limit := len(planned.Agenda)
+	if limit > len(fallback.Agenda) {
+		limit = len(fallback.Agenda)
+	}
+	reconciled.Agenda = make([]agendaItem, 0, limit)
+	for index := 0; index < limit; index++ {
+		source := fallback.Agenda[index]
+		item := planned.Agenda[index]
+		if strings.TrimSpace(item.Title) == "" {
+			item.Title = source.Title
+		}
+		item.Role = effectiveAgendaRole(item.Role, item.Title, "")
+		item.ID = source.ID
+		item.Order = index + 1
+		reconciled.Agenda = append(reconciled.Agenda, item)
+	}
+	return &reconciled
 }
 
 func (c *meetingContext) isEmpty() bool {
@@ -136,6 +254,7 @@ func parseAgendaItems(agenda string) []agendaItem {
 			ID:    fmt.Sprintf("%s%d", agendaTopicIDPrefix, order),
 			Title: truncateRunes(title, liveAnalysisTopicLabelMaxRunes),
 			Order: order,
+			Role:  inferAgendaRole(title, ""),
 		})
 		if len(items) >= meetingContextMaxAgendaItems {
 			break
@@ -215,7 +334,12 @@ func renderAgendaTopics(c *meetingContext) string {
 	}
 	var b strings.Builder
 	for _, item := range c.Agenda {
-		b.WriteString(item.ID + ": " + item.Title + "\n")
+		role := normalizeAgendaRole(item.Role)
+		b.WriteString(item.ID + ": " + item.Title)
+		if role == agendaRoleActionSummary {
+			b.WriteString(" [role=action_summary, 横断参照専用・primary parentにしない]")
+		}
+		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -260,6 +384,7 @@ func unmarshalMeetingContext(payload json.RawMessage) *meetingContext {
 		if strings.TrimSpace(c.Agenda[i].ID) == "" {
 			c.Agenda[i].ID = fmt.Sprintf("%s%d", agendaTopicIDPrefix, i+1)
 		}
+		c.Agenda[i].Role = effectiveAgendaRole(c.Agenda[i].Role, c.Agenda[i].Title, "")
 	}
 	if c.isEmpty() {
 		return nil

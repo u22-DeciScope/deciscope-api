@@ -20,10 +20,6 @@ const ingestAPIKeyPlaceholder = "REPLACE_WITH_A_LONG_RANDOM_SECRET"
 const minIngestAPIKeyLength = 32
 
 const (
-	TranscriptStorePostgres = "postgres"
-)
-
-const (
 	defaultAzureOpenAIAPIVersion         = "2024-10-21"
 	defaultAIRequestTimeoutSeconds       = 20
 	defaultAIFinalSummaryTimeoutSeconds  = 60
@@ -66,29 +62,15 @@ type Config struct {
 	FrontendURL         string
 	AllowedOrigins      string
 	SessionCookieSecure bool
-	SeedDemoData        bool
-	// Environment は "development" / "production"。招待メールの dev fallback 判定に使う。
+	// Environment は "development" / "production"。招待リンクのログ出力と
+	// サンプル会議の既定値判定に使う。
 	Environment string
-	InviteEmail InviteEmailConfig
 	// CreateSampleMeetingOnFirstWorkspace は、初回作成ワークスペースへ
 	// サンプル会議を投入するかどうか。既定: development=true / production=false。
 	CreateSampleMeetingOnFirstWorkspace bool
 }
 
-type InviteEmailConfig struct {
-	SMTPHost     string
-	SMTPPort     string
-	SMTPUsername string
-	SMTPPassword string
-	From         string
-}
-
-func (c InviteEmailConfig) Configured() bool {
-	return strings.TrimSpace(c.SMTPHost) != "" && strings.TrimSpace(c.From) != ""
-}
-
 type TranscriptIngestConfig struct {
-	Store  string
 	APIKey string
 }
 
@@ -113,9 +95,16 @@ type AIConfig struct {
 	FinalizationWaitTimeout   time.Duration
 	FinalizationQuietPeriod   time.Duration
 	FinalFlushMaxAttempts     int
-	// TaskModels are optional per-task deployment names (AI_MODEL_*). Empty
-	// entries fall back to the shared AZURE_OPENAI_DEPLOYMENT.
-	TaskModels AITaskModelsConfig
+	// TaskModels are optional per-task AZURE_OPENAI_*_DEPLOYMENT names. The
+	// legacy AI_MODEL_* aliases remain accepted; empty entries fall back to
+	// the shared AZURE_OPENAI_DEPLOYMENT.
+	TaskModels              AITaskModelsConfig
+	TreeAudit               application.TreeAuditConfig
+	TreeAuditEnabledInvalid bool
+	// TreeAuditModeDeprecated is true when TREE_AUDIT_MODE is set to any
+	// non-empty value. The mode switch was removed; the audit AI now runs a
+	// single enabled/disabled pipeline controlled solely by TREE_AUDIT_ENABLED.
+	TreeAuditModeDeprecated bool
 	// TreeClassification は議論ツリーの意味分類ポリシー(AI_TREE_*)。ゼロ値の
 	// 項目は application 側の既定値が使われる。
 	TreeClassification application.TreeClassificationConfig
@@ -128,7 +117,9 @@ type AIConfig struct {
 type AITaskModelsConfig struct {
 	ContextPlanner  string
 	LiveExtraction  string
+	TreeAudit       string
 	TreeReorganizer string
+	FinalTreeReview string
 	FinalSummary    string
 }
 
@@ -176,14 +167,10 @@ type MeetingSessionWatchdogConfig struct {
 
 func ConfigFromEnv() Config {
 	transcriptOnly := strings.EqualFold(os.Getenv("DECISCOPE_TRANSCRIPT_ONLY"), "true")
-	transcriptStore := strings.ToLower(strings.TrimSpace(os.Getenv("DECISCOPE_TRANSCRIPT_STORE")))
-	if transcriptStore == "" {
-		transcriptStore = TranscriptStorePostgres
-	}
+	environment := environmentFromEnv()
 	return Config{
 		Database: database.Config{URL: os.Getenv("DATABASE_URL")},
 		TranscriptIngest: TranscriptIngestConfig{
-			Store:  transcriptStore,
 			APIKey: strings.TrimSpace(os.Getenv("DECISCOPE_INGEST_API_KEY")),
 		},
 		TranscriptWebSocket: TranscriptWebSocketConfig{
@@ -192,13 +179,12 @@ func ConfigFromEnv() Config {
 		},
 		TranscriptOnly: transcriptOnly,
 		BotControl: botcontrol.Config{
-			URL:              strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_URL")),
-			Token:            strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_TOKEN")),
-			Timeout:          botControlTimeoutFromEnv(os.Getenv("DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS")),
-			CandidateUserIDs: meetingTitleLookupUserIDsFromEnv(),
+			URL:     strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_URL")),
+			Token:   strings.TrimSpace(os.Getenv("DECISCOPE_BOT_CONTROL_TOKEN")),
+			Timeout: botControlTimeoutFromEnv(os.Getenv("DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS")),
 		},
 		Firebase: firebase.Config{
-			CredentialsFile: firstNonEmpty(os.Getenv("FIREBASE_SERVICE_ACCOUNT_JSON"), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")),
+			CredentialsFile: os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
 			CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"),
 			ProjectID:       os.Getenv("FIREBASE_PROJECT_ID"),
 			Enabled:         os.Getenv("AUTH_PROVIDER") == "firebase",
@@ -208,16 +194,8 @@ func ConfigFromEnv() Config {
 		FrontendURL:                         os.Getenv("FRONTEND_URL"),
 		AllowedOrigins:                      os.Getenv("ALLOWED_ORIGINS"),
 		SessionCookieSecure:                 strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
-		SeedDemoData:                        strings.EqualFold(strings.TrimSpace(os.Getenv("DECISCOPE_SEED_DEMO_DATA")), "true"),
-		Environment:                         environmentFromEnv(),
-		CreateSampleMeetingOnFirstWorkspace: sampleMeetingFlagFromEnv(environmentFromEnv()),
-		InviteEmail: InviteEmailConfig{
-			SMTPHost:     strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_HOST")),
-			SMTPPort:     strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_PORT")),
-			SMTPUsername: strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_USERNAME")),
-			SMTPPassword: os.Getenv("DECISCOPE_SMTP_PASSWORD"),
-			From:         strings.TrimSpace(os.Getenv("DECISCOPE_SMTP_FROM")),
-		},
+		Environment:                         environment,
+		CreateSampleMeetingOnFirstWorkspace: sampleMeetingFlagFromEnv(environment),
 	}
 }
 
@@ -232,7 +210,7 @@ func sampleMeetingFlagFromEnv(environment string) bool {
 }
 
 // environmentFromEnv は DECISCOPE_ENV を読む。未設定時は development。
-// production ではメール未設定時に招待作成が失敗し、dev fallback (URLのログ出力) は無効になる。
+// production では招待URLのログ出力を無効にし、招待作成を失敗させる。
 func environmentFromEnv() string {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("DECISCOPE_ENV")))
 	if value == "production" {
@@ -243,6 +221,7 @@ func environmentFromEnv() string {
 
 func aiConfigFromEnv() AIConfig {
 	requestTimeout := secondsDurationFromEnv(os.Getenv("AI_REQUEST_TIMEOUT_SECONDS"), defaultAIRequestTimeoutSeconds, 1)
+	treeAuditEnabled, treeAuditEnabledInvalid := treeAuditEnabledFromEnv(os.Getenv("TREE_AUDIT_ENABLED"))
 	return AIConfig{
 		AzureOpenAI: azureopenai.Config{
 			Endpoint:   strings.TrimSpace(os.Getenv("AZURE_OPENAI_ENDPOINT")),
@@ -262,11 +241,36 @@ func aiConfigFromEnv() AIConfig {
 		FinalizationQuietPeriod:   millisecondsDurationFromEnv(os.Getenv("AI_FINALIZATION_QUIET_PERIOD_MILLISECONDS"), defaultAIFinalizationQuietMillis, 100),
 		FinalFlushMaxAttempts:     positiveIntFromEnv(os.Getenv("AI_FINAL_FLUSH_MAX_ATTEMPTS"), defaultAIFinalFlushMaxAttempts),
 		TaskModels: AITaskModelsConfig{
-			ContextPlanner:  strings.TrimSpace(os.Getenv("AI_MODEL_CONTEXT_PLANNER")),
-			LiveExtraction:  strings.TrimSpace(os.Getenv("AI_MODEL_LIVE_EXTRACTION")),
-			TreeReorganizer: strings.TrimSpace(os.Getenv("AI_MODEL_TREE_REORGANIZER")),
-			FinalSummary:    strings.TrimSpace(os.Getenv("AI_MODEL_FINAL_SUMMARY")),
+			ContextPlanner:  firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_CONTEXT_PLANNER_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_CONTEXT_PLANNER"))),
+			LiveExtraction:  firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_LIVE_EXTRACTION_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_LIVE_EXTRACTION"))),
+			TreeAudit:       firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_TREE_AUDIT_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_TREE_AUDIT"))),
+			TreeReorganizer: firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_TREE_REORGANIZER_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_TREE_REORGANIZER"))),
+			FinalTreeReview: firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_FINAL_TREE_REVIEW_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_FINAL_TREE_REVIEW"))),
+			FinalSummary:    firstNonEmpty(strings.TrimSpace(os.Getenv("AZURE_OPENAI_FINAL_SUMMARY_DEPLOYMENT")), strings.TrimSpace(os.Getenv("AI_MODEL_FINAL_SUMMARY"))),
 		},
+		TreeAudit: application.TreeAuditConfig{
+			Enabled:                    treeAuditEnabled,
+			IntervalVersions:           int64(positiveIntFromEnv(os.Getenv("TREE_AUDIT_INTERVAL_VERSIONS"), 3)),
+			Interval:                   secondsDurationFromEnv(os.Getenv("TREE_AUDIT_INTERVAL_SECONDS"), 300, 1),
+			MinInterval:                secondsDurationFromEnv(os.Getenv("TREE_AUDIT_MIN_INTERVAL_SECONDS"), 300, 1),
+			MaxRunsPerSession:          positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_RUNS_PER_SESSION"), 20),
+			MaxRunsPerHour:             positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_RUNS_PER_HOUR"), 12),
+			HighSeverityMinInterval:    secondsDurationFromEnv(os.Getenv("TREE_AUDIT_HIGH_SEVERITY_MIN_INTERVAL_SECONDS"), 60, 1),
+			HighSeverityMaxRunsPerHour: positiveIntFromEnv(os.Getenv("TREE_AUDIT_HIGH_SEVERITY_MAX_RUNS_PER_HOUR"), 4),
+			Timeout:                    secondsDurationFromEnv(os.Getenv("TREE_AUDIT_TIMEOUT_SECONDS"), 25, 1),
+			MaxOutputTokens:            positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_OUTPUT_TOKENS"), 2500),
+			MaxNodes:                   positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_NODES"), 80),
+			MaxRecentSegments:          positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_RECENT_SEGMENTS"), 16),
+			MaxEvidenceSegments:        positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_EVIDENCE_SEGMENTS"), 24),
+			MaxInputTokens:             positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_INPUT_TOKENS"), 12000),
+			MaxPersistedJSONBytes:      positiveIntFromEnv(os.Getenv("TREE_AUDIT_MAX_PERSISTED_JSON_BYTES"), 256*1024),
+			HighConfidenceThreshold:    floatFromEnv(os.Getenv("TREE_AUDIT_HIGH_CONFIDENCE_THRESHOLD")),
+			RequiredImprovementMargin:  floatFromEnv(os.Getenv("TREE_AUDIT_REQUIRED_IMPROVEMENT_MARGIN")),
+			CohesionThreshold:          floatFromEnv(os.Getenv("TREE_AUDIT_COHESION_THRESHOLD")),
+			TentativeMaxVersions:       int64(positiveIntFromEnv(os.Getenv("TREE_AUDIT_TENTATIVE_MAX_VERSIONS"), 3)),
+		},
+		TreeAuditEnabledInvalid: treeAuditEnabledInvalid,
+		TreeAuditModeDeprecated: strings.TrimSpace(os.Getenv("TREE_AUDIT_MODE")) != "",
 		// ゼロ値(未設定・不正値)は application 側の既定値に正規化されるため、
 		// 既定値をここで二重管理しない。
 		TreeClassification: application.TreeClassificationConfig{
@@ -375,45 +379,24 @@ func boolFromEnvDefaultTrue(value string) bool {
 	return strings.EqualFold(trimmed, "true")
 }
 
+func treeAuditEnabledFromEnv(value string) (enabled bool, invalid bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return true, false
+	}
+	enabled, err := strconv.ParseBool(trimmed)
+	if err != nil {
+		return false, true
+	}
+	return enabled, false
+}
+
 func botControlTimeoutFromEnv(value string) time.Duration {
 	seconds, err := strconv.Atoi(strings.TrimSpace(value))
 	if err != nil || seconds <= 0 {
 		return 10 * time.Second
 	}
 	return time.Duration(seconds) * time.Second
-}
-
-func meetingTitleLookupUserIDsFromEnv() []string {
-	return splitEnvList(firstNonEmpty(
-		os.Getenv("MEETING_TITLE_LOOKUP_USER_IDS"),
-		os.Getenv("DECISCOPE_MEETING_TITLE_LOOKUP_USER_IDS"),
-	))
-}
-
-func splitEnvList(value string) []string {
-	parts := strings.FieldsFunc(value, func(r rune) bool {
-		switch r {
-		case ',', ';', '\n', '\r', '\t', ' ':
-			return true
-		default:
-			return false
-		}
-	})
-	values := make([]string, 0, len(parts))
-	seen := make(map[string]struct{}, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			continue
-		}
-		key := strings.ToLower(trimmed)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		values = append(values, trimmed)
-	}
-	return values
 }
 
 func LoadEnvironmentFiles() {
@@ -436,16 +419,8 @@ func ValidateRuntimeConfig(config Config) error {
 	if err := validateIngestAPIKey(config.TranscriptIngest.APIKey); err != nil {
 		return err
 	}
-	if !config.TranscriptOnly && strings.TrimSpace(config.Database.URL) == "" {
+	if strings.TrimSpace(config.Database.URL) == "" {
 		return fmt.Errorf("DATABASE_URL is required")
-	}
-	switch config.TranscriptIngest.Store {
-	case "", TranscriptStorePostgres:
-		if strings.TrimSpace(config.Database.URL) == "" {
-			return fmt.Errorf("DATABASE_URL is required")
-		}
-	default:
-		return fmt.Errorf("DECISCOPE_TRANSCRIPT_STORE must be postgres")
 	}
 	return nil
 }

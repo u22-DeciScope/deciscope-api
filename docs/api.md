@@ -80,12 +80,12 @@ POST   /v1/invitations/accept                        (認証必須)
 ```
 
 - `POST /invitations` は `{ "email": "...", "role": "viewer|admin" }` を受け取り、
-  pending 招待を作成して招待メールを送信します。owner ロールは指定できません (`400`)。
+  pending 招待を作成して招待リンクを通知します。owner ロールは指定できません (`400`)。
   既にメンバーのメールアドレスは `409`、同じメール宛の pending 招待がある場合も `409` です。
 - 招待リンクは `{FRONTEND_URL}/invitations/accept?token=<生token>` 形式で、有効期限は72時間です。
   DBには生tokenを保存せず、SHA-256の `token_hash` のみ保存します。
   `token_hash` はいかなるAPIレスポンスにも含めません。
-- メール送信に失敗した場合、作成した招待は削除 (rollback) され `500` を返します。
+- 招待リンクの通知に失敗した場合、作成した招待は削除 (rollback) され `500` を返します。
 - `GET /v1/invitations/preview` は承認前確認用にワークスペース名・招待先メール・ロール・
   status・有効期限のみ返します (会議情報・メンバー一覧などの機密情報は返しません)。
 - `POST /v1/invitations/accept` は `{ "token": "..." }` を受け取り、
@@ -94,19 +94,15 @@ POST   /v1/invitations/accept                        (認証必須)
   成功時は `workspace_members` に追加し、招待を `accepted` に更新して参加ログを出力します。
 - ログインによる自動参加 (旧仕様) は廃止しました。参加は招待リンクの明示的な承諾のみです。
 
-招待メール送信の設定 (環境変数):
+招待リンク通知の設定:
 
 ```env
-DECISCOPE_ENV=development            # production で SMTP 未設定なら招待作成は失敗する
-DECISCOPE_SMTP_HOST=smtp.example.com
-DECISCOPE_SMTP_PORT=587
-DECISCOPE_SMTP_USERNAME=...
-DECISCOPE_SMTP_PASSWORD=...
-DECISCOPE_SMTP_FROM=no-reply@example.com
+DECISCOPE_ENV=development
 ```
 
-- SMTP未設定 + `DECISCOPE_ENV=development` (既定) の場合は dev fallback として
-  招待URL (生tokenを含む) をログに出力します。development 以外ではログに出しません。
+- `DECISCOPE_ENV=development` (既定) では dev fallback として招待URL
+  (生tokenを含む) をログに出力します。productionではログに出さず、通知基盤がないため
+  招待作成は失敗します。
 
 ## EchoBot文字起こし取り込み
 
@@ -242,19 +238,27 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
 - ライブ分析の生成開始時には、`status: "running"` のイベントを1回配信します（version/payloadは
   現在値のまま）。これはWebSocket配信のみのephemeralな通知で、DBには保存されないため
   `GET .../ai-analyses` には現れません
-- live分析の内部動作: モデルは各ラウンドで差分（新規・変化したitem、追加・変化したtreeノード、
-  新規edge、解消済みidの `resolvedIds`）のみを申告し、サーバーが前回状態へ決定論的にマージします。
+- live分析の内部動作: モデルは各ラウンドで差分（新規・変化したitem、親topicの提案、
+  解消済みidの `resolvedIds`）のみを申告し、サーバーが前回状態へ決定論的にマージします。
   保存・配信されるpayloadは常にマージ後の完全な状態なので、クライアントは差分を意識する必要はありません
-- live payloadの `items[].kind` は `issue | question | risk | decision | todo`、
+- live payloadの `items[].kind` は `issue | open_issue | question | risk | fact | decision | todo`、
   `severity` は `low | medium | high`、`status` は `open`（新規）| `updated`（更新）|
   `resolved`（解決済）です。
   未解決（`status` が `resolved` 以外）のitemと解決済み（`status: "resolved"`）のitemは
   それぞれ独立に最大50件までで、超過時は各区分ごとに最も古いitemから除去されます
   （解決済みitemが未解決itemの流入で追い出されること、およびその逆はありません）
+- `items[].evidenceSequenceNos` は、そのitemを直接裏付けた発言のsequence番号をJSON整数で保持します。
+  モデル互換のため受信時はnumeric stringも整数へ正規化しますが、不正文字列・小数・当該ラウンドに
+  実在しないsequenceは値単位で除外し、保存・配信時は整数だけになります
 - 解消・回答・完了した論点は、モデルが `resolvedIds`（解消済みitemのid配列）で申告します。
   `resolvedIds` はモデル→サーバー間の指示用フィールドで、サーバーが該当itemと同じidのtreeノードを
   `status: "resolved"` にした後にクリアするため、保存・配信されるpayloadには現れません
-- `tree` は現在の議論構造で、ノードの `kind`（`topic | issue | question | risk | decision`）は
+- `tree` は現在の議論構造です。通常は最大深さ4の
+  `root → topic(agenda/dynamic) → group → subgroup → detail item` を使います。
+  3件以上の直接detailという強い根拠がある場合だけ深さ5を許可し、絶対に深さ5を超えません。
+  深くできるのはgroupだけで、detail同士の親子化は禁止です。groupを作る根拠が2件未満なら
+  detail itemをtopic/group直下に置きます。ノードの `kind`
+  （`topic | group | issue | open_issue | question | risk | fact | decision | todo`）は
   `tree.update` イベント（[events.md](./events.md)）と同じ語彙です。topicノードと未解決
   （`status` が `resolved` 以外）の非topicノードは合わせて最大36個で、超過時はtopicノードを
   残して最も古い非topicノードから除去されます。解決済み（`status: "resolved"`）の非topicノードは
@@ -268,6 +272,16 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
   重複idはサーバー側で除外されます。既存互換のため、ノードidがitem idと一致する場合は
   `relatedItemIds` が空でも関連カードとして扱えます。`tree.nodes[].status` は任意で、
   `resolved` の場合もノードは削除されず、解決済みとして残ります
+- `items[].relatedAgendaIds` は横断agendaへの副次的な参照です。canonicalな親は
+  `tree.nodes[].parentId` の1つだけで、`relatedAgendaIds` から複数親edgeは作りません。
+  `agendaRole: "action_summary"` のagenda nodeは、activeなTODO・未解決itemを
+  `relatedItemIds` でも参照できるため、内容別topicの所属を失わず横断表示できます
+- `treeVersion` はtreeを生成したlive analysis versionです。`treeChanges` はそのversionで
+  サーバーが算出した構造差分で、`newNodeIds` / `updatedNodeIds` / `reparentedNodeIds` /
+  `resolvedNodeIds` / `promotedNodeIds` を必要なものだけ含みます。旧payloadでは省略されます
+- tree auditorが検証済みpatchを適用したversionでは、任意の
+  `changeSource: "tree_auditor"`, `auditRunId`, `basedOnTreeVersion` が追加されます。
+  `treeChanges.source` / `treeChanges.auditRunId`も同じ由来を示します。旧クライアントは無視できます
 
 ## Teams Bot会議セッション
 

@@ -64,6 +64,26 @@ func TestMeetingSessionServiceStoresPreMeetingContext(t *testing.T) {
 		t.Fatalf("pre meeting context = %+v", result.Session)
 	}
 }
+
+func TestMeetingSessionServiceNotifiesPreparingObserverAfterMetadataSave(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	commander := &fakeBotJoinCommander{}
+	observer := &captureMeetingSessionPreparingObserver{}
+	service := application.NewMeetingSessionService(repository, commander)
+	service.SetMeetingSessionPreparingObserver(observer)
+
+	result, err := service.CreateMeetingSession(context.Background(), application.MeetingSessionCreateInput{
+		JoinURL: "https://teams.microsoft.com/l/meetup-join/context-prewarm",
+		Title:   "環境評価",
+		Agenda:  "鳥類\n騒音",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observer.session.ID != result.Session.ID || observer.session.Title != "環境評価" || observer.session.Agenda != "鳥類\n騒音" {
+		t.Fatalf("prepared session=%+v result=%+v", observer.session, result.Session)
+	}
+}
 func TestMeetingSessionServiceUsesCreatedByEmailAsTitleLookupPrincipalName(t *testing.T) {
 	repository := newFakeMeetingSessionRepository()
 	commander := &fakeBotJoinCommander{}
@@ -545,6 +565,14 @@ func (f *fakeMeetingSessionEndedObserver) snapshot() []domain.MeetingSession {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]domain.MeetingSession(nil), f.sessions...)
+}
+
+type captureMeetingSessionPreparingObserver struct {
+	session domain.MeetingSession
+}
+
+func (o *captureMeetingSessionPreparingObserver) PrepareMeetingSession(session domain.MeetingSession) {
+	o.session = session
 }
 
 type fakeMeetingSessionRepository struct {
