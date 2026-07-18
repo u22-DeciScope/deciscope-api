@@ -4,12 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"net/textproto"
 	"testing"
 
 	"deciscope-core-api/internal/application"
@@ -28,7 +24,6 @@ func TestCoreAPIHTTPContractWithFakeUseCases(t *testing.T) {
 	router.Get("/meetings/{meeting_id}/events", api.ListEvents)
 	router.Get("/meetings/{meeting_id}/segments", api.ListSegments)
 	router.Get("/meetings/{meeting_id}/report", api.GetReport)
-	router.Post("/uploads", api.Upload)
 
 	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/workspaces/w_test/meetings", nil), "meetings")
 	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/meetings/m_http/events", nil), "events")
@@ -59,32 +54,10 @@ func TestCoreAPIHTTPContractWithFakeUseCases(t *testing.T) {
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("missing status = %d, body = %s", missing.Code, missing.Body.String())
 	}
-
-	var uploadBody bytes.Buffer
-	writer := multipart.NewWriter(&uploadBody)
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", `form-data; name="file"; filename="notes.txt"`)
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = part.Write([]byte("hello"))
-	_ = writer.Close()
-	uploadReq := httptest.NewRequest(http.MethodPost, "/uploads", &uploadBody)
-	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
-	upload := httptest.NewRecorder()
-	router.ServeHTTP(upload, uploadReq)
-	if upload.Code != http.StatusCreated {
-		t.Fatalf("upload response = %d %s", upload.Code, upload.Body.String())
-	}
-	if useCases.uploadMediaType != mime.TypeByExtension(".txt") {
-		t.Fatalf("upload media type = %q, want extension-derived type", useCases.uploadMediaType)
-	}
 }
 
 type fakeCoreUseCases struct {
-	meeting         *domain.Meeting
-	uploadMediaType string
+	meeting *domain.Meeting
 }
 
 func (f *fakeCoreUseCases) ListMeetings(context.Context, string) ([]domain.Meeting, error) {
@@ -127,18 +100,6 @@ func (f *fakeCoreUseCases) GetOrCreateReport(_ context.Context, meetingID string
 		return nil, domain.ErrNotFound
 	}
 	return &domain.Report{MeetingID: meetingID, Format: "markdown", Content: "# " + f.meeting.Title}, nil
-}
-
-func (f *fakeCoreUseCases) UploadFile(_ context.Context, workspaceID, filename, mediaType string, _ io.Reader) (*application.UploadResult, error) {
-	f.uploadMediaType = mediaType
-	return &application.UploadResult{
-		Upload: &domain.Upload{ID: "upl_http", WorkspaceID: workspaceID, Filename: filename, MediaType: mediaType, JobID: "job_http"},
-		Job:    &domain.Job{ID: "job_http", WorkspaceID: workspaceID, Status: "completed"},
-	}, nil
-}
-
-func (*fakeCoreUseCases) GetJob(context.Context, string) (*domain.Job, error) {
-	return &domain.Job{}, nil
 }
 
 func serveJSON(t *testing.T, handler http.Handler, method, path string, payload any) *httptest.ResponseRecorder {

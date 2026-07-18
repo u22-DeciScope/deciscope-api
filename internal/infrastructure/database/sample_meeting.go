@@ -14,7 +14,7 @@ import (
 // (終了済みのTeams会議セッション + 文字起こし + 議論ツリー / 分析カード) を投入する。
 // application/workspace の SampleMeetingCreator port の実装。
 //
-// データ内容は旧デモシード (seed/demo_seed.sql の「価格改定方針の検討会議」) を移植したもの。
+// データ内容は「価格改定方針の検討会議」のサンプルシナリオを使用する。
 // 固定の workspace_id (ws_demo_deciscope) は使わず、渡された workspace_id / user_id に紐づける。
 type SampleMeetingSeeder struct {
 	db *sql.DB

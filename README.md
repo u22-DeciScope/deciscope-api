@@ -3,7 +3,7 @@
 DeciScopeのローカルMVP向け、Go + `chi`製バックエンドです。
 
 会議API、WebSocketリアルタイム配信、PostgreSQL永続化、
-Azure EchoBot向け文字起こし取り込み、mock upload/job、Markdownレポート生成を
+Azure EchoBot向け文字起こし取り込み、Markdownレポート生成を
 提供します。Teams音声のSTTはVM上のTeams Botが担当し、このAPIはBotから送られる
 transcript segmentを受け取ります。Azure OpenAIを設定した場合は、会議中ライブ分析と
 会議終了時の最終要約も生成します。raw audioのMedia IngressやファイルSTT/ffmpeg処理は
@@ -64,19 +64,15 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `DATABASE_URL`: PostgreSQL connection URL。ローカル実行時は必須
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: Compose PostgreSQL設定
 - `DECISCOPE_INGEST_API_KEY`: transcript ingest用共有API key。32文字以上、必須
-- `DECISCOPE_TRANSCRIPT_STORE`: `postgres`（既定値。省略可）
 - `DECISCOPE_TRANSCRIPT_ONLY`: `true` の場合は文字起こし取り込みAPIだけを起動
 - `DECISCOPE_WS_ALLOWED_ORIGINS`: transcript WebSocketの許可Origin。カンマ区切り
 - `DECISCOPE_BOT_CONTROL_URL`: Go APIからVM Botへ参加命令を送るURL。Tailscale IPを使います
 - `DECISCOPE_BOT_CONTROL_TOKEN`: VM Bot制御API用token。フロントエンドへ渡しません
 - `DECISCOPE_BOT_CONTROL_TIMEOUT_SECONDS`: VM Bot制御API呼び出しtimeout。既定値は `10`
-- `MEETING_TITLE_LOOKUP_USER_IDS`: Teams会議名解決用。Microsoft Graph user object id を推奨。UPN/email も指定できますが、Bot 側で `/users/{upn}` により object id 解決してから使います
-- `UPLOAD_DIR`: local upload directory
 - `FRONTEND_URL`, `ALLOWED_ORIGINS`: CORS設定
 - `SESSION_COOKIE_SECURE`: `true` の場合、セッションCookieに `Secure` 属性を付与
-- `DECISCOPE_SEED_DEMO_DATA`: `true` の場合、起動時にデモ用workspaceをPostgreSQLへ投入
-- `AUTH_PROVIDER`, `FIREBASE_PROJECT_ID`, `FIREBASE_SERVICE_ACCOUNT_JSON` /
-  `GOOGLE_APPLICATION_CREDENTIALS`, `FIREBASE_CREDENTIALS_JSON`: Firebase認証設定。
+- `AUTH_PROVIDER`, `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`,
+  `FIREBASE_CREDENTIALS_JSON`: Firebase認証設定。
   詳細は [docs/firebase-auth.md](docs/firebase-auth.md) を参照してください
 
 完全な例は [.env.example](.env.example) を参照してください。`.env` はGit管理対象外です。
@@ -87,6 +83,10 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
   いずれか1つでも未設定の場合、AI分析機能全体が自動的に無効化されます(起動時に警告ログを1行出力)。
   transcript取り込みや会議終了処理はAI機能の有無に関係なく動作し続けます
 - `AZURE_OPENAI_API_VERSION`: Azure OpenAI REST APIのバージョン。既定値は `2024-10-21`
+- `AZURE_OPENAI_{LIVE_EXTRACTION,CONTEXT_PLANNER,TREE_AUDIT,TREE_REORGANIZER,FINAL_TREE_REVIEW,FINAL_SUMMARY}_DEPLOYMENT`:
+  AI task別のdeployment。未設定のtaskは既存の`AZURE_OPENAI_DEPLOYMENT`へfallbackします
+- ライブ抽出は対応deploymentでAzure Structured Outputs（`json_schema`, `strict: true`）を使います。
+  deploymentがこの形式を明示的に拒否した場合は、同一プロセス中は従来の`json_object`へフォールバックします
 - `AI_LIVE_ANALYSIS_ENABLED`: 会議中ライブAI分析を行うか。既定値は `true`
 - `AI_LIVE_ANALYSIS_INTERVAL_SECONDS`: ライブ分析の実行間隔。既定値は `10`、最小値は `5`
 - `AI_LIVE_ANALYSIS_MIN_CHARS`: ライブ分析を実行する最小の新規文字数。既定値は `80`
@@ -95,15 +95,24 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `AI_FINAL_SUMMARY_MAX_INPUT_CHARS`: 最終要約に送るtranscriptの最大文字数(超過分は末尾優先で切り詰め)。既定値は `12000`
 - `AI_REQUEST_TIMEOUT_SECONDS`: ライブ分析のAzure OpenAI呼び出しtimeout。既定値は `20`
 - `AI_FINAL_SUMMARY_TIMEOUT_SECONDS`: 最終要約のAzure OpenAI呼び出しtimeout。既定値は `60`
+- `AI_FINALIZATION_WAIT_TIMEOUT_SECONDS`: 実行中分析またはBot通知済み最終sequenceのDB到着を待つ上限。既定値は `10`
+- `AI_FINALIZATION_QUIET_PERIOD_MILLISECONDS`: drain情報を送らない旧Bot向けのDB静穏判定。既定値は `750`、最小値は `100`
+- `AI_FINAL_FLUSH_MAX_ATTEMPTS`: 終了時の未処理final抽出の最大試行回数。既定値は `3`
+- `TREE_AUDIT_ENABLED`: GPT-5-mini向け議論ツリー監査schedulerを有効化するか。既定値は`true`
+- `TREE_AUDIT_MODE`: deprecated and ignored(モード切替は廃止済み。`TREE_AUDIT_ENABLED`のみで制御)
+- `TREE_AUDIT_INTERVAL_VERSIONS`, `TREE_AUDIT_INTERVAL_SECONDS`, `TREE_AUDIT_MIN_INTERVAL_SECONDS`:
+  version周期、時間周期、通常triggerのdebounce下限。既定値は順に`3`, `300`, `300`
+- `TREE_AUDIT_MAX_RUNS_PER_SESSION`, `TREE_AUDIT_MAX_RUNS_PER_HOUR`:
+  通常triggerのsession上限・1時間上限。既定値は`20`, `12`
+- `TREE_AUDIT_HIGH_SEVERITY_MIN_INTERVAL_SECONDS`, `TREE_AUDIT_HIGH_SEVERITY_MAX_RUNS_PER_HOUR`:
+  deterministicな重大異常triggerの別枠debounce・1時間上限。既定値は`60`, `4`
+- 入力・頻度・timeout上限の詳細は [docs/tree-auditor.md](docs/tree-auditor.md) を参照してください
 
 `DECISCOPE_TRANSCRIPT_ONLY=true` のtranscript-onlyモードでは、AI分析機能は組み込まれません。
 
-Teams会議名を Microsoft Graph の `/users/{id}/onlineMeetings` から取得する場合、
-`MEETING_TITLE_LOOKUP_USER_IDS` には会議作成者、または会議を参照できる対象ユーザーの
-Azure AD / Microsoft Graph user object id を指定してください。UPN/email を指定した場合は
-`candidateUserPrincipalNames` として Bot join command に渡し、Bot 側で
-`/users/{upn}?$select=id,userPrincipalName,mail` により object id へ解決してから
-`/users/{id}/onlineMeetings` を試します。ログには値そのものではなく件数とハッシュのみを出します。
+Teams会議名を Microsoft Graph の `/users/{id}/onlineMeetings` から取得するための候補は、
+会議作成リクエストの主催者、作成者Microsoft user ID、作成者メールアドレスから組み立てて
+Bot join commandへ渡します。ログには値そのものではなく件数とハッシュのみを出します。
 
 ## Docker Compose
 

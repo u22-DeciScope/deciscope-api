@@ -326,16 +326,4 @@ func (r *AuthWorkspaceRepository) CanAccessMeeting(_ context.Context, userID, me
 	return nil
 }
 
-func (r *AuthWorkspaceRepository) CanAccessJob(_ context.Context, userID, jobID string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.meetings.mu.Lock()
-	defer r.meetings.mu.Unlock()
-	job, ok := r.meetings.jobs[jobID]
-	if !ok || r.members[job.WorkspaceID][userID] == "" {
-		return domain.ErrNotFound
-	}
-	return nil
-}
-
 var _ appauth.Repository = (*AuthWorkspaceRepository)(nil)

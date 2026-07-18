@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"deciscope-core-api/internal/domain"
@@ -17,14 +18,18 @@ var ErrBotControlNotConfigured = errors.New("bot control is not configured")
 var ErrBotControlCommandFailed = errors.New("bot control command failed")
 
 const DefaultMeetingSessionStaleAfter = 2 * time.Hour
+const DefaultMeetingSessionFinalizationFallbackAfter = 10 * time.Second
 const defaultMeetingSessionTitle = "Teams会議"
 
 type MeetingSessionService struct {
-	repository    MeetingSessionRepository
-	commander     BotJoinCommander
-	publisher     MeetingSessionPublisher
-	endedObserver MeetingSessionEndedObserver
-	now           func() time.Time
+	repository           MeetingSessionRepository
+	commander            BotJoinCommander
+	publisher            MeetingSessionPublisher
+	endedObserver        MeetingSessionEndedObserver
+	preparingObserver    MeetingSessionPreparingObserver
+	now                  func() time.Time
+	finalizationMu       sync.Mutex
+	finalizationInFlight map[string]struct{}
 }
 
 type MeetingSessionCreateResult struct {
@@ -54,15 +59,17 @@ type MeetingSessionCreateInput struct {
 }
 
 type MeetingSessionStatusUpdateInput struct {
-	SessionID   string
-	Status      domain.MeetingSessionStatus
-	BotCallID   string
-	Message     string
-	Reason      string
-	ErrorCode   string
-	Source      string
-	Title       string
-	TitleSource string
+	SessionID                     string
+	Status                        domain.MeetingSessionStatus
+	BotCallID                     string
+	Message                       string
+	Reason                        string
+	ErrorCode                     string
+	Source                        string
+	Title                         string
+	TitleSource                   string
+	BotLastForwardedFinalSequence int64
+	TranscriptQueueDrained        bool
 }
 
 type MeetingSessionEndInput struct {
@@ -105,10 +112,11 @@ func NewMeetingSessionService(repository MeetingSessionRepository, commander Bot
 		statusPublisher = publisher[0]
 	}
 	return &MeetingSessionService{
-		repository: repository,
-		commander:  commander,
-		publisher:  statusPublisher,
-		now:        time.Now,
+		repository:           repository,
+		commander:            commander,
+		publisher:            statusPublisher,
+		now:                  time.Now,
+		finalizationInFlight: make(map[string]struct{}),
 	}
 }
 
@@ -118,6 +126,12 @@ func NewMeetingSessionService(repository MeetingSessionRepository, commander Bot
 // constructor signature and call sites do not change.
 func (s *MeetingSessionService) SetMeetingSessionEndedObserver(observer MeetingSessionEndedObserver) {
 	s.endedObserver = observer
+}
+
+// SetMeetingSessionPreparingObserver registers the optional prewarm hook
+// used by analysis pipelines that should begin as soon as metadata is saved.
+func (s *MeetingSessionService) SetMeetingSessionPreparingObserver(observer MeetingSessionPreparingObserver) {
+	s.preparingObserver = observer
 }
 
 func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input MeetingSessionCreateInput) (*MeetingSessionCreateResult, error) {
@@ -173,6 +187,9 @@ func (s *MeetingSessionService) CreateMeetingSession(ctx context.Context, input 
 		if !isNew {
 			s.publishStatusChanged(*created)
 		}
+	}
+	if s.preparingObserver != nil && created != nil {
+		s.preparingObserver.PrepareMeetingSession(*created)
 	}
 	if !isNew {
 		log.Printf("Meeting session reuse. sessionId=%s joinUrlHash=%s status=%s createdAt=%s updatedAt=%s", created.ID, created.JoinURLHash, created.Status, created.CreatedAt.UTC().Format(time.RFC3339Nano), created.UpdatedAt.UTC().Format(time.RFC3339Nano))
@@ -312,10 +329,27 @@ func (s *MeetingSessionService) EndMeetingSession(ctx context.Context, input Mee
 	}
 	if isTerminalMeetingSessionStatus(previous.Status) {
 		log.Printf("Meeting session end ignored because status is already terminal. sessionId=%s joinUrlHash=%s status=%s botCallId=%s reason=%s", previous.ID, previous.JoinURLHash, previous.Status, previous.BotCallID, reason)
+		if previous.Status == domain.MeetingSessionEnded && s.endedObserver != nil {
+			s.startMeetingSessionFinalization(*previous, MeetingSessionStatusUpdateInput{
+				SessionID: previous.ID, Status: domain.MeetingSessionEnded, BotCallID: previous.BotCallID,
+				Reason: reason, Source: "duplicate_end_retry",
+			})
+		}
 		return previous, nil
 	}
 	if s.commander == nil {
 		return nil, ErrBotControlNotConfigured
+	}
+	ending, err := s.UpdateMeetingSessionStatus(ctx, MeetingSessionStatusUpdateInput{
+		SessionID: previous.ID,
+		Status:    domain.MeetingSessionEnding,
+		BotCallID: previous.BotCallID,
+		Message:   reason,
+		Reason:    reason,
+		Source:    "frontend_manual_end",
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	// Bot command failures are best-effort: the VM Bot may already be
@@ -334,21 +368,40 @@ func (s *MeetingSessionService) EndMeetingSession(ctx context.Context, input Mee
 		}
 		log.Printf("Meeting session end bot command failed, ending session anyway (best-effort). sessionId=%s joinUrlHash=%s botCallId=%s reason=%s error=%v", previous.ID, previous.JoinURLHash, previous.BotCallID, reason, err)
 		message = fmt.Sprintf("%s (bot end command failed: %v)", reason, err)
+		return s.UpdateMeetingSessionStatus(ctx, MeetingSessionStatusUpdateInput{
+			SessionID: previous.ID,
+			Status:    domain.MeetingSessionEnded,
+			BotCallID: previous.BotCallID,
+			Message:   message,
+			Reason:    reason,
+			Source:    "frontend_manual_end_bot_unreachable",
+		})
+	}
+	if s.endedObserver == nil {
+		return s.UpdateMeetingSessionStatus(ctx, MeetingSessionStatusUpdateInput{
+			SessionID: previous.ID, Status: domain.MeetingSessionEnded, BotCallID: previous.BotCallID,
+			Message: message, Reason: reason, Source: "frontend_manual_end_without_finalizer",
+		})
 	}
 
-	updated, err := s.UpdateMeetingSessionStatus(ctx, MeetingSessionStatusUpdateInput{
-		SessionID: previous.ID,
-		Status:    domain.MeetingSessionEnded,
-		BotCallID: previous.BotCallID,
-		Message:   message,
-		Reason:    reason,
-		Source:    "frontend_manual_end",
-	})
-	if err != nil {
-		return nil, err
+	go s.finalizeAfterFallback(previous.ID, reason)
+	log.Printf("Meeting session manual end accepted. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s reason=%s message=%s", ending.ID, ending.JoinURLHash, previous.Status, ending.Status, ending.BotCallID, reason, message)
+	return ending, nil
+}
+
+func (s *MeetingSessionService) finalizeAfterFallback(sessionID, reason string) {
+	timer := time.NewTimer(DefaultMeetingSessionFinalizationFallbackAfter)
+	defer timer.Stop()
+	<-timer.C
+	session, err := s.repository.GetMeetingSession(context.Background(), sessionID)
+	if err != nil || session.Status != domain.MeetingSessionEnding {
+		return
 	}
-	log.Printf("Meeting session manual end completed. sessionId=%s joinUrlHash=%s oldStatus=%s newStatus=%s botCallId=%s reason=%s message=%s", updated.ID, updated.JoinURLHash, previous.Status, updated.Status, updated.BotCallID, reason, message)
-	return updated, nil
+	log.Printf("Meeting session finalization fallback triggered. sessionId=%s wait=%s", sessionID, DefaultMeetingSessionFinalizationFallbackAfter)
+	_, _ = s.UpdateMeetingSessionStatus(context.Background(), MeetingSessionStatusUpdateInput{
+		SessionID: sessionID, Status: domain.MeetingSessionEnded, BotCallID: session.BotCallID,
+		Reason: reason, Source: "finalization_fallback", Message: "bot drain acknowledgement timeout",
+	})
 }
 
 func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, input MeetingSessionStatusUpdateInput) (*domain.MeetingSession, error) {
@@ -374,6 +427,27 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 		log.Printf("Meeting session status update suppressed because previous status is terminal. sessionId=%s joinUrlHash=%s oldStatus=%s requestedStatus=%s botCallId=%s reason=%s errorCode=%s source=%s message=%s",
 			previous.ID, previous.JoinURLHash, previous.Status, status, strings.TrimSpace(input.BotCallID), strings.TrimSpace(input.Reason), strings.TrimSpace(input.ErrorCode), strings.TrimSpace(input.Source), strings.TrimSpace(input.Message))
 		return previous, nil
+	}
+	if status == domain.MeetingSessionEnded && previousErr == nil && previous != nil && previous.Status == domain.MeetingSessionEnded && s.endedObserver != nil {
+		s.startMeetingSessionFinalization(*previous, input)
+		return previous, nil
+	}
+	if status == domain.MeetingSessionEnded && previousErr == nil && previous != nil && !isTerminalMeetingSessionStatus(previous.Status) && s.endedObserver != nil {
+		ending := previous
+		if previous.Status != domain.MeetingSessionEnding {
+			now := s.now().UTC()
+			var updateErr error
+			ending, updateErr = s.repository.UpdateMeetingSessionStatus(ctx, domain.MeetingSessionStatusUpdate{
+				SessionID: previous.ID, Status: domain.MeetingSessionEnding, BotCallID: strings.TrimSpace(input.BotCallID),
+				LastBotStatusAt: &now, UpdatedAt: now,
+			})
+			if updateErr != nil {
+				return nil, updateErr
+			}
+			s.publishStatusChanged(*ending)
+		}
+		s.startMeetingSessionFinalization(*ending, input)
+		return ending, nil
 	}
 
 	now := s.now().UTC()
@@ -423,20 +497,45 @@ func (s *MeetingSessionService) UpdateMeetingSessionStatus(ctx context.Context, 
 			updated.ID, updated.JoinURLHash, incomingTitle, incomingTitleSource, titleDecision.Decision, updated.Title, updated.TitleSource)
 	}
 	s.publishStatusChanged(*updated)
-	if updated.Status == domain.MeetingSessionEnded {
-		previousWasTerminal := previousErr == nil && previous != nil && isTerminalMeetingSessionStatus(previous.Status)
-		if !previousWasTerminal {
-			s.notifyMeetingSessionEnded(*updated)
-		}
-	}
 	return updated, nil
 }
 
-func (s *MeetingSessionService) notifyMeetingSessionEnded(session domain.MeetingSession) {
-	if s.endedObserver == nil {
+func (s *MeetingSessionService) startMeetingSessionFinalization(session domain.MeetingSession, input MeetingSessionStatusUpdateInput) {
+	s.finalizationMu.Lock()
+	if _, exists := s.finalizationInFlight[session.ID]; exists {
+		s.finalizationMu.Unlock()
 		return
 	}
-	s.endedObserver.NotifyMeetingSessionEnded(session)
+	s.finalizationInFlight[session.ID] = struct{}{}
+	s.finalizationMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.finalizationMu.Lock()
+			delete(s.finalizationInFlight, session.ID)
+			s.finalizationMu.Unlock()
+		}()
+		request := MeetingSessionFinalizationRequest{
+			BotLastForwardedFinalSequence: input.BotLastForwardedFinalSequence,
+			TranscriptQueueDrained:        input.TranscriptQueueDrained,
+		}
+		err := s.endedObserver.FinalizeMeetingSession(context.Background(), session, request)
+		now := s.now().UTC()
+		lastError := ""
+		if err != nil {
+			lastError = "meeting finalization incomplete: " + truncateErrorMessage(err, 240)
+		}
+		ended, updateErr := s.repository.UpdateMeetingSessionStatus(context.Background(), domain.MeetingSessionStatusUpdate{
+			SessionID: session.ID, Status: domain.MeetingSessionEnded, BotCallID: session.BotCallID,
+			EndedAt: &now, EndReason: summarizeMeetingSessionEndReason(input), LastError: lastError, UpdatedAt: now,
+		})
+		if updateErr != nil {
+			log.Printf("Meeting session finalization completion persist failed. sessionId=%s error=%v", session.ID, updateErr)
+			return
+		}
+		s.publishStatusChanged(*ended)
+		log.Printf("Meeting session finalization status completed. sessionId=%s status=%s incomplete=%t error=%v", session.ID, ended.Status, err != nil, err)
+	}()
 }
 
 func (s *MeetingSessionService) UpdateMeetingSessionMetadata(ctx context.Context, input MeetingSessionMetadataUpdateInput) (*domain.MeetingSession, error) {
@@ -567,7 +666,7 @@ func shouldSuppressMeetingSessionFailure(previous domain.MeetingSession, input M
 func isJoinedOrBeyondMeetingStatus(status domain.MeetingSessionStatus) bool {
 	switch status {
 	case domain.MeetingSessionJoined, domain.MeetingSessionActive, domain.MeetingSessionRecording,
-		domain.MeetingSessionSpeechError, domain.MeetingSessionSpeechThrottled:
+		domain.MeetingSessionSpeechError, domain.MeetingSessionSpeechThrottled, domain.MeetingSessionEnding:
 		return true
 	default:
 		return false

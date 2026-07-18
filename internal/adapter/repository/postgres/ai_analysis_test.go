@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -65,9 +66,22 @@ func TestMeetingAIAnalysisRepositoryUpsertsInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMeetingAIAnalysis() error = %v", err)
 	}
-	if got.Version != 2 || string(got.Payload) != `{"summary":"更新後の要約です。"}` {
+	// JSONBはキー間の空白を正規化して返すため、文字列一致ではなく意味比較する。
+	if got.Version != 2 || !jsonPayloadEqual(t, got.Payload, `{"summary":"更新後の要約です。"}`) {
 		t.Fatalf("got = %+v payload=%s", got, string(got.Payload))
 	}
+}
+
+func jsonPayloadEqual(t *testing.T, payload json.RawMessage, want string) bool {
+	t.Helper()
+	var gotValue, wantValue any
+	if err := json.Unmarshal(payload, &gotValue); err != nil {
+		t.Fatalf("unmarshal payload %s: %v", string(payload), err)
+	}
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatalf("unmarshal expectation %s: %v", want, err)
+	}
+	return reflect.DeepEqual(gotValue, wantValue)
 }
 
 func TestMeetingAIAnalysisRepositoryKeepsPayloadOnFailure(t *testing.T) {
@@ -100,8 +114,34 @@ func TestMeetingAIAnalysisRepositoryKeepsPayloadOnFailure(t *testing.T) {
 	if failed.Status != domain.MeetingAIAnalysisFailed || failed.LastError != "azure openai timeout" {
 		t.Fatalf("failed = %+v", failed)
 	}
-	if string(failed.Payload) != `{"summary":"成功した要約"}` {
+	if !jsonPayloadEqual(t, failed.Payload, `{"summary":"成功した要約"}`) {
 		t.Fatalf("failed payload = %s, want previous payload retained", string(failed.Payload))
+	}
+}
+
+func TestMeetingAIAnalysisRepositoryCASRejectsStaleLiveWrite(t *testing.T) {
+	repository, _ := newTestMeetingAIAnalysisRepository(t)
+	ctx := context.Background()
+	if _, err := repository.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+		SessionID: "session_test", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 2,
+		Payload: json.RawMessage(`{"treeVersion":2}`), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, applied, err := repository.CompareAndSwapMeetingAIAnalysis(ctx, 1, domain.MeetingAIAnalysis{
+		SessionID: "session_test", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 2,
+		Payload: json.RawMessage(`{"treeVersion":2,"stale":true}`), UpdatedAt: time.Now().UTC(),
+	}); err != nil || applied {
+		t.Fatalf("stale CAS applied=%t err=%v", applied, err)
+	}
+	if saved, applied, err := repository.CompareAndSwapMeetingAIAnalysis(ctx, 2, domain.MeetingAIAnalysis{
+		SessionID: "session_test", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 3,
+		Payload: json.RawMessage(`{"treeVersion":3}`), UpdatedAt: time.Now().UTC(),
+	}); err != nil || !applied || saved.Version != 3 {
+		t.Fatalf("current CAS saved=%+v applied=%t err=%v", saved, applied, err)
 	}
 }
 

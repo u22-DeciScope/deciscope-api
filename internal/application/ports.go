@@ -2,11 +2,14 @@ package application
 
 import (
 	"context"
-	"io"
+	"encoding/json"
+	"errors"
 	"time"
 
 	"deciscope-core-api/internal/domain"
 )
+
+var ErrMeetingTreeAuditMigrationMissing = errors.New("meeting tree audit migration is missing")
 
 type MeetingRepository interface {
 	CreateMeeting(ctx context.Context, workspaceID, title, source string) (*domain.Meeting, error)
@@ -31,10 +34,6 @@ type JobRepository interface {
 	CompleteJob(ctx context.Context, jobID string, result any) error
 	FailJob(ctx context.Context, jobID, message string) error
 	GetJob(ctx context.Context, jobID string) (*domain.Job, error)
-}
-
-type UploadRepository interface {
-	SaveUpload(ctx context.Context, workspaceID, filename, mediaType, path, jobID string) (*domain.Upload, error)
 }
 
 type TranscriptSegmentRepository interface {
@@ -132,17 +131,53 @@ type BotMediaMetricsReader interface {
 	Forget(sessionID string)
 }
 
-// MeetingSessionEndedObserver is notified when a meeting session transitions
-// into the Ended status. It is used to trigger the asynchronous AI final
-// summary without giving MeetingSessionService a direct dependency on the AI
-// analysis service.
+// MeetingSessionEndedObserver owns the synchronous finalization pipeline.
+// MeetingSessionService invokes it asynchronously while status=ending and
+// persists status=ended only after it returns.
 type MeetingSessionEndedObserver interface {
-	NotifyMeetingSessionEnded(session domain.MeetingSession)
+	FinalizeMeetingSession(ctx context.Context, session domain.MeetingSession, request MeetingSessionFinalizationRequest) error
+}
+
+// MeetingSessionPreparingObserver is notified after create/reuse metadata is
+// durable and before the bot join command is sent. Implementations must
+// return quickly; expensive preparation belongs in their own goroutine.
+type MeetingSessionPreparingObserver interface {
+	PrepareMeetingSession(session domain.MeetingSession)
+}
+
+// MeetingSessionFinalizationRequest carries optional drain proof from newer
+// bots. Zero values preserve compatibility with bots that only report
+// status=ended; the finalizer then uses a bounded DB quiet-period fallback.
+type MeetingSessionFinalizationRequest struct {
+	BotLastForwardedFinalSequence int64
+	TranscriptQueueDrained        bool
 }
 
 type MeetingAIAnalysisRepository interface {
 	UpsertMeetingAIAnalysis(ctx context.Context, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, error)
 	GetMeetingAIAnalysis(ctx context.Context, sessionID string, analysisType domain.MeetingAIAnalysisType) (*domain.MeetingAIAnalysis, error)
+}
+
+// MeetingAIAnalysisCompareAndSwapRepository is an optional stronger live-row
+// contract. Production repositories implement it so concurrent backend
+// instances cannot overwrite a newer live tree with work based on an older
+// version. Test fakes and non-live adapters may keep the legacy repository
+// interface; the service falls back to UpsertMeetingAIAnalysis for them.
+type MeetingAIAnalysisCompareAndSwapRepository interface {
+	CompareAndSwapMeetingAIAnalysis(ctx context.Context, expectedVersion int64, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, bool, error)
+}
+
+// MeetingTreeAuditRepository owns durable audit history and the transactional
+// compare-and-swap used when a validated audit patch creates a new live tree
+// version. A stale expected version must return applied=false without changing
+// either live analysis or the saved target session.
+type MeetingTreeAuditRepository interface {
+	CheckMeetingTreeAuditRepository(ctx context.Context) error
+	TryStartMeetingTreeAuditRun(ctx context.Context, run domain.MeetingTreeAuditRun) (bool, error)
+	SaveMeetingTreeAuditRun(ctx context.Context, run domain.MeetingTreeAuditRun) error
+	GetLatestMeetingTreeAuditRun(ctx context.Context, sessionID string) (*domain.MeetingTreeAuditRun, error)
+	CountMeetingTreeAuditProviderCalls(ctx context.Context, sessionID string, triggerClass domain.MeetingTreeAuditTriggerClass, since time.Time) (int, error)
+	ApplyMeetingTreeAudit(ctx context.Context, run domain.MeetingTreeAuditRun, expectedVersion int64, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, bool, error)
 }
 
 type MeetingAIAnalysisPublisher interface {
@@ -155,10 +190,28 @@ type AIChatRequest struct {
 	System    string
 	User      string
 	MaxTokens int
+	// ResponseSchema requests provider-enforced structured output. Adapters
+	// that support it translate this provider-neutral description to their
+	// wire format and may fall back to JSON mode when a deployment does not
+	// support strict schemas.
+	ResponseSchema *AIResponseSchema
+	// Deployment optionally overrides the adapter's default deployment for
+	// this call (per-task model routing). Empty uses the default.
+	Deployment string
+}
+
+type AIResponseSchema struct {
+	Name        string
+	Description string
+	Strict      bool
+	Schema      json.RawMessage
 }
 
 type AIChatResult struct {
-	Content          string
+	Content string
+	// Model is the provider-reported model name. It can differ from the Azure
+	// deployment alias selected for the task.
+	Model            string
 	PromptTokens     int
 	CompletionTokens int
 }
@@ -169,8 +222,4 @@ type AIChatCompleter interface {
 
 type Publisher interface {
 	Publish(event domain.Event)
-}
-
-type ObjectStorage interface {
-	Save(ctx context.Context, key string, src io.Reader) (string, error)
 }

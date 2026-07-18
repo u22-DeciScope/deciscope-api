@@ -52,7 +52,7 @@ func TestClientSendsJoinCommand(t *testing.T) {
 	}
 }
 
-func TestClientSplitsConfiguredCandidateUserIdentifiers(t *testing.T) {
+func TestClientSplitsAndDeduplicatesCommandCandidateUserIdentifiers(t *testing.T) {
 	var gotBody joinRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
@@ -62,31 +62,24 @@ func TestClientSplitsConfiguredCandidateUserIdentifiers(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewClient(Config{
-		URL:              server.URL,
-		Token:            "control-token",
-		Timeout:          time.Second,
-		CandidateUserIDs: []string{"22222222-2222-2222-2222-222222222222", "configured@example.com"},
-	})
+	client := NewClient(Config{URL: server.URL, Token: "control-token", Timeout: time.Second})
 	err := client.SendJoinCommand(context.Background(), application.BotJoinCommand{
 		SessionID:                   "session_1",
 		JoinURL:                     "https://teams.microsoft.com/l/meetup-join/abc",
-		CandidateUserIDs:            []string{"11111111-1111-1111-1111-111111111111", "legacy@example.com"},
-		CandidateUserPrincipalNames: []string{"request@example.com"},
+		CandidateUserIDs:            []string{"11111111-1111-1111-1111-111111111111", "legacy@example.com", "11111111-1111-1111-1111-111111111111"},
+		CandidateUserPrincipalNames: []string{"request@example.com", "LEGACY@example.com"},
 	})
 
 	if err != nil {
 		t.Fatalf("SendJoinCommand() error = %v", err)
 	}
-	if len(gotBody.CandidateUserIDs) != 2 ||
-		gotBody.CandidateUserIDs[0] != "11111111-1111-1111-1111-111111111111" ||
-		gotBody.CandidateUserIDs[1] != "22222222-2222-2222-2222-222222222222" {
+	if len(gotBody.CandidateUserIDs) != 1 ||
+		gotBody.CandidateUserIDs[0] != "11111111-1111-1111-1111-111111111111" {
 		t.Fatalf("candidateUserIds = %#v", gotBody.CandidateUserIDs)
 	}
-	if len(gotBody.CandidateUserPrincipalNames) != 3 ||
+	if len(gotBody.CandidateUserPrincipalNames) != 2 ||
 		gotBody.CandidateUserPrincipalNames[0] != "request@example.com" ||
-		gotBody.CandidateUserPrincipalNames[1] != "legacy@example.com" ||
-		gotBody.CandidateUserPrincipalNames[2] != "configured@example.com" {
+		gotBody.CandidateUserPrincipalNames[1] != "LEGACY@example.com" {
 		t.Fatalf("candidateUserPrincipalNames = %#v", gotBody.CandidateUserPrincipalNames)
 	}
 }

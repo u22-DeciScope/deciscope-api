@@ -92,6 +92,7 @@ const (
 	MeetingSessionRecording       MeetingSessionStatus = "recording"
 	MeetingSessionSpeechError     MeetingSessionStatus = "speech_error"
 	MeetingSessionSpeechThrottled MeetingSessionStatus = "speech_throttled"
+	MeetingSessionEnding          MeetingSessionStatus = "ending"
 	MeetingSessionEnded           MeetingSessionStatus = "ended"
 	MeetingSessionFailed          MeetingSessionStatus = "failed"
 	MeetingSessionStale           MeetingSessionStatus = "stale"
@@ -213,16 +214,6 @@ type Report struct {
 	CreatedAt  string
 }
 
-type Upload struct {
-	ID          string
-	WorkspaceID string
-	Filename    string
-	MediaType   string
-	Path        string
-	JobID       string
-	CreatedAt   string
-}
-
 type User struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
@@ -323,7 +314,7 @@ func ValidMeetingSessionStatus(status MeetingSessionStatus) bool {
 	case MeetingSessionRequested, MeetingSessionPendingJoin, MeetingSessionCommandSent,
 		MeetingSessionJoining, MeetingSessionJoined, MeetingSessionActive,
 		MeetingSessionRecording, MeetingSessionSpeechError, MeetingSessionSpeechThrottled,
-		MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
+		MeetingSessionEnding, MeetingSessionEnded, MeetingSessionFailed, MeetingSessionStale:
 		return true
 	default:
 		return false

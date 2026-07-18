@@ -11,7 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"deciscope-core-api/internal/application"
@@ -63,9 +63,14 @@ const (
 type Client struct {
 	config Config
 	http   HTTPDoer
-	// paramMode is the parameter set accepted by the configured deployment,
-	// discovered at runtime via 400 "unsupported parameter" fallbacks.
-	paramMode atomic.Int32
+	// paramModes maps deployment name -> parameter set accepted by that
+	// deployment, discovered at runtime via 400 "unsupported parameter"
+	// fallbacks. Per-deployment because AIChatRequest.Deployment can route
+	// individual calls to different model generations.
+	paramModes sync.Map
+	// strictSchemaUnsupported remembers deployments that reject json_schema,
+	// allowing provider-compatible fallback to the older json_object mode.
+	strictSchemaUnsupported sync.Map
 }
 
 func NewClient(config Config, httpClient ...HTTPDoer) *Client {
@@ -89,15 +94,32 @@ func (c *Client) Complete(ctx context.Context, request application.AIChatRequest
 		defer cancel()
 	}
 
-	mode := c.paramMode.Load()
+	deployment := strings.TrimSpace(request.Deployment)
+	if deployment == "" {
+		deployment = strings.TrimSpace(c.config.Deployment)
+	}
+
+	mode := paramModeReasoning
+	if stored, ok := c.paramModes.Load(deployment); ok {
+		mode = stored.(int32)
+	}
+	useStrictSchema := request.ResponseSchema != nil
+	if _, unsupported := c.strictSchemaUnsupported.Load(deployment); unsupported {
+		useStrictSchema = false
+	}
 	for {
-		result, err := c.completeOnce(ctx, request, mode)
+		result, err := c.completeOnce(ctx, request, deployment, mode, useStrictSchema)
+		if useStrictSchema && isUnsupportedResponseSchema(err) {
+			useStrictSchema = false
+			c.strictSchemaUnsupported.Store(deployment, struct{}{})
+			continue
+		}
 		nextMode, retry := fallbackParamMode(mode, err)
 		if !retry {
 			return result, err
 		}
 		mode = nextMode
-		c.paramMode.Store(mode)
+		c.paramModes.Store(deployment, mode)
 	}
 }
 
@@ -116,13 +138,13 @@ func fallbackParamMode(mode int32, err error) (int32, bool) {
 	return mode, false
 }
 
-func (c *Client) completeOnce(ctx context.Context, request application.AIChatRequest, mode int32) (application.AIChatResult, error) {
+func (c *Client) completeOnce(ctx context.Context, request application.AIChatRequest, deployment string, mode int32, useStrictSchema bool) (application.AIChatResult, error) {
 	body := chatCompletionRequest{
 		Messages: []chatMessage{
 			{Role: "system", Content: request.System},
 			{Role: "user", Content: request.User},
 		},
-		ResponseFormat: &chatResponseFormat{Type: "json_object"},
+		ResponseFormat: responseFormatFor(request, useStrictSchema),
 	}
 	switch mode {
 	case paramModeReasoning:
@@ -143,7 +165,7 @@ func (c *Client) completeOnce(ctx context.Context, request application.AIChatReq
 		return application.AIChatResult{}, fmt.Errorf("marshal azure openai request: %w", err)
 	}
 
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, completionsURL(c.config), bytes.NewReader(requestBody))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, completionsURL(c.config, deployment), bytes.NewReader(requestBody))
 	if err != nil {
 		return application.AIChatResult{}, fmt.Errorf("build azure openai request: %w", err)
 	}
@@ -180,9 +202,25 @@ func (c *Client) completeOnce(ctx context.Context, request application.AIChatReq
 	}
 	return application.AIChatResult{
 		Content:          choice.Message.Content,
+		Model:            parsed.Model,
 		PromptTokens:     parsed.Usage.PromptTokens,
 		CompletionTokens: parsed.Usage.CompletionTokens,
 	}, nil
+}
+
+func responseFormatFor(request application.AIChatRequest, useStrictSchema bool) *chatResponseFormat {
+	if !useStrictSchema || request.ResponseSchema == nil {
+		return &chatResponseFormat{Type: "json_object"}
+	}
+	return &chatResponseFormat{
+		Type: "json_schema",
+		JSONSchema: &chatJSONSchema{
+			Name:        request.ResponseSchema.Name,
+			Description: request.ResponseSchema.Description,
+			Strict:      request.ResponseSchema.Strict,
+			Schema:      request.ResponseSchema.Schema,
+		},
+	}
 }
 
 // isUnsupportedParam detects the 400 error a model returns when it rejects a
@@ -203,13 +241,31 @@ func isUnsupportedParam(err error, param string) bool {
 		strings.Contains(lower, "invalid")
 }
 
-func completionsURL(config Config) string {
+func isUnsupportedResponseSchema(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "status=400") ||
+		(!strings.Contains(message, "json_schema") && !strings.Contains(message, "response_format")) {
+		return false
+	}
+	return strings.Contains(message, "unsupported") ||
+		strings.Contains(message, "unrecognized") ||
+		strings.Contains(message, "unknown") ||
+		strings.Contains(message, "not supported")
+}
+
+func completionsURL(config Config, deployment string) string {
 	endpoint := strings.TrimRight(strings.TrimSpace(config.Endpoint), "/")
 	version := strings.TrimSpace(config.APIVersion)
 	if version == "" {
 		version = defaultAPIVersion
 	}
-	return fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", endpoint, config.Deployment, version)
+	if strings.TrimSpace(deployment) == "" {
+		deployment = config.Deployment
+	}
+	return fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", endpoint, deployment, version)
 }
 
 func errorSnippet(body []byte) string {
@@ -227,7 +283,15 @@ type chatMessage struct {
 }
 
 type chatResponseFormat struct {
-	Type string `json:"type"`
+	Type       string          `json:"type"`
+	JSONSchema *chatJSONSchema `json:"json_schema,omitempty"`
+}
+
+type chatJSONSchema struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Strict      bool            `json:"strict"`
+	Schema      json.RawMessage `json:"schema"`
 }
 
 type chatCompletionRequest struct {
@@ -245,6 +309,7 @@ type chatCompletionRequest struct {
 }
 
 type chatCompletionResponse struct {
+	Model   string `json:"model"`
 	Choices []struct {
 		Message      chatMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`

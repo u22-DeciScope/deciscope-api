@@ -33,7 +33,7 @@ type CORSConfig struct {
 func NewRouter(deps RouterDependencies) http.Handler {
 	r := chi.NewRouter()
 	r.Use(corsMiddleware(deps.CORS))
-	r.Use(chimiddleware.AllowContentType("application/json", "multipart/form-data"))
+	r.Use(chimiddleware.AllowContentType("application/json"))
 
 	if deps.Healthz != nil {
 		r.Get("/healthz", deps.Healthz)
@@ -95,7 +95,6 @@ func NewRouter(deps RouterDependencies) http.Handler {
 				}
 				r.Get("/meetings", deps.CoreAPI.ListMeetings)
 				r.Post("/meetings", deps.CoreAPI.CreateMeeting)
-				r.Post("/uploads", deps.CoreAPI.Upload)
 			})
 			r.Route("/meetings/{meeting_id}", func(r chi.Router) {
 				r.Use(requireMeetingAccess(deps.Access))
@@ -106,7 +105,6 @@ func NewRouter(deps RouterDependencies) http.Handler {
 				r.Get("/segments", deps.CoreAPI.ListSegments)
 				r.Get("/report", deps.CoreAPI.GetReport)
 			})
-			r.With(requireJobAccess(deps.Access)).Get("/jobs/{job_id}", deps.CoreAPI.GetJob)
 			r.With(requireRealtimeAccess(deps.Access)).Get("/realtime", deps.Realtime)
 		})
 	})

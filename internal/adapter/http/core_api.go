@@ -2,7 +2,6 @@ package httpadapter
 
 import (
 	"context"
-	"io"
 
 	"deciscope-core-api/internal/application"
 	"deciscope-core-api/internal/domain"
@@ -17,8 +16,6 @@ type CoreUseCases interface {
 	ListEvents(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Event, error)
 	ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Segment, error)
 	GetOrCreateReport(ctx context.Context, meetingID string) (*domain.Report, error)
-	UploadFile(ctx context.Context, workspaceID, filename, mediaType string, src io.Reader) (*application.UploadResult, error)
-	GetJob(ctx context.Context, jobID string) (*domain.Job, error)
 }
 
 type CoreAPI struct {

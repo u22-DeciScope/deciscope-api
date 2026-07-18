@@ -19,7 +19,6 @@ type Repositories struct {
 	Events   application.EventRepository
 	Reports  application.ReportRepository
 	Jobs     application.JobRepository
-	Uploads  application.UploadRepository
 	Auth     AuthWorkspaceRepository
 }
 
@@ -36,12 +35,11 @@ type Store interface {
 	application.EventRepository
 	application.ReportRepository
 	application.JobRepository
-	application.UploadRepository
 }
 
 func FromStore(store Store) Repositories {
 	return Repositories{
-		Meetings: store, Events: store, Reports: store, Jobs: store, Uploads: store,
+		Meetings: store, Events: store, Reports: store, Jobs: store,
 	}
 }
 
@@ -181,7 +179,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("jobs and uploads", func(t *testing.T) {
+	t.Run("jobs", func(t *testing.T) {
 		repos := factory(t)
 		ctx := context.Background()
 
@@ -202,14 +200,6 @@ func Run(t *testing.T, factory Factory) {
 		var result map[string]bool
 		if err := json.Unmarshal(completed.Result, &result); err != nil || !result["ok"] {
 			t.Fatalf("completed result = %s, error = %v", completed.Result, err)
-		}
-
-		upload, err := repos.Uploads.SaveUpload(ctx, "w_test", "notes.txt", "text/plain", "/tmp/notes.txt", job.ID)
-		if err != nil {
-			t.Fatalf("SaveUpload() error = %v", err)
-		}
-		if upload.JobID != job.ID || upload.Filename != "notes.txt" {
-			t.Fatalf("upload = %+v", upload)
 		}
 
 		failed, err := repos.Jobs.CreateJob(ctx, "w_test", "report.final", "", "running")

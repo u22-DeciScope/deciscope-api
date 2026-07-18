@@ -24,7 +24,6 @@ import (
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/email"
 	"deciscope-core-api/internal/infrastructure/firebase"
-	"deciscope-core-api/internal/infrastructure/storage"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -56,7 +55,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 
 	if config.TranscriptOnly {
 		transcriptHub := realtime.NewTranscriptHub()
-		transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, nil, transcriptHub)
+		transcriptRuntime, err := buildTranscriptIngest(ctx, config.Database, nil, transcriptHub)
 		if err != nil {
 			return nil, err
 		}
@@ -80,24 +79,13 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	}
 	closers := []func() error{postgresDB.Close}
 
-	// 固定デモワークスペースの seed は明示的な開発・検証用途のみ。
-	// 通常フローには関与せず、ログイン時の自動参加も行わない (閲覧するには手動で
-	// workspace_members に追加する必要がある)。
-	if config.SeedDemoData {
-		if err := database.SeedDemoData(ctx, postgresDB); err != nil {
-			_ = closeAll(closers)
-			return nil, fmt.Errorf("seed demo data: %w", err)
-		}
-		log.Printf("demo seed data ensured (DECISCOPE_SEED_DEMO_DATA enabled; dev/test only)")
-	}
-
 	transcriptHub := realtime.NewTranscriptHub()
 	meetingSessionRepository := postgresrepository.NewMeetingSessionRepository(postgresDB)
 	analysisService := buildMeetingAnalysisService(config.AI, postgresDB, meetingSessionRepository, transcriptHub)
 	transcriptActivityTracker := application.NewTranscriptActivityTracker()
 	botMediaMetricsStore := application.NewBotMediaMetricsStore()
 	transcriptPublisher := compositeTranscriptSegmentPublisher{publishers: []application.TranscriptSegmentPublisher{transcriptHub, analysisService, transcriptActivityTracker}}
-	transcriptRuntime, err := buildTranscriptIngest(ctx, config.TranscriptIngest, config.Database, postgresDB, transcriptPublisher)
+	transcriptRuntime, err := buildTranscriptIngest(ctx, config.Database, postgresDB, transcriptPublisher)
 	if err != nil {
 		_ = closeAll(closers)
 		return nil, err
@@ -118,6 +106,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		transcriptHub,
 	)
 	meetingSessionService.SetMeetingSessionEndedObserver(analysisService)
+	meetingSessionService.SetMeetingSessionPreparingObserver(analysisService)
 	analysisCtx, cancelAnalysis := context.WithCancel(context.Background())
 	analysisService.Start(analysisCtx)
 	closers = append(closers, func() error {
@@ -159,7 +148,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	tokenVerifier := firebase.NewTokenVerifier(authClient)
 	service := application.NewService(
 		repositories.Meetings, repositories.Events, repositories.Reports,
-		repositories.Jobs, repositories.Uploads, hub, storage.NewLocal(config.UploadDir),
+		repositories.Jobs, hub,
 	)
 	authService := appauth.NewService(authRepository, tokenVerifier, 7*24*time.Hour)
 	workspaceService := appworkspace.NewService(authRepository, buildInvitationMailer(config), config.FrontendURL)
@@ -236,7 +225,6 @@ type repositorySet struct {
 	Events   application.EventRepository
 	Reports  application.ReportRepository
 	Jobs     application.JobRepository
-	Uploads  application.UploadRepository
 }
 
 type authWorkspaceRepository interface {
@@ -262,10 +250,7 @@ type transcriptIngestRuntime struct {
 	closers []func() error
 }
 
-func buildTranscriptIngest(ctx context.Context, config TranscriptIngestConfig, databaseConfig database.Config, postgresDB *sql.DB, publisher application.TranscriptSegmentPublisher) (transcriptIngestRuntime, error) {
-	if config.Store != "" && config.Store != TranscriptStorePostgres {
-		return transcriptIngestRuntime{}, fmt.Errorf("unsupported transcript store %q", config.Store)
-	}
+func buildTranscriptIngest(ctx context.Context, databaseConfig database.Config, postgresDB *sql.DB, publisher application.TranscriptSegmentPublisher) (transcriptIngestRuntime, error) {
 	conn := postgresDB
 	var closers []func() error
 	if conn == nil {
@@ -305,6 +290,9 @@ func (p compositeTranscriptSegmentPublisher) PublishTranscriptSegment(segment do
 // every operation on the service becomes a no-op, so callers never need nil
 // checks.
 func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSessionRepository application.MeetingSessionRepository, publisher application.MeetingAIAnalysisPublisher) *application.MeetingAnalysisService {
+	if config.TreeAuditModeDeprecated {
+		log.Printf("TREE_AUDIT_MODE is deprecated and ignored.")
+	}
 	enabled := config.Enabled()
 	if !enabled {
 		log.Printf("AI meeting analysis disabled; missing environment variables: %s", strings.Join(config.MissingAzureOpenAIVars(), ", "))
@@ -316,27 +304,112 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 	analysisRepository := postgresrepository.NewMeetingAIAnalysisRepository(postgresDB)
 	transcriptSegmentRepository := postgresrepository.NewTranscriptSegmentRepository(postgresDB)
 	completer := azureopenai.NewClient(config.AzureOpenAI)
+	auditRepository := postgresrepository.NewMeetingTreeAuditRepository(postgresDB)
+	auditReason := treeAuditConfigurationIssue(config, enabled)
+	repositoryReady := false
+	if auditReason == "" {
+		readinessCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		readinessErr := auditRepository.CheckMeetingTreeAuditRepository(readinessCtx)
+		cancel()
+		auditReason = treeAuditRepositoryIssue(readinessErr)
+		if readinessErr == nil {
+			repositoryReady = true
+		}
+	}
+	effectiveTreeAudit := config.TreeAudit
+	if auditReason != "" {
+		effectiveTreeAudit.Enabled = false
+	}
+	schedulerRegistered := treeAuditSchedulerRegistered(effectiveTreeAudit, repositoryReady)
+	logTreeAuditConfiguration(config, auditReason, repositoryReady, schedulerRegistered)
 
-	return application.NewMeetingAnalysisService(
+	service := application.NewMeetingAnalysisService(
 		analysisRepository,
 		transcriptSegmentRepository,
 		meetingSessionRepository,
 		completer,
 		application.MeetingAnalysisConfig{
-			Enabled:             enabled,
-			LiveEnabled:         config.LiveAnalysisEnabled,
-			LiveInterval:        config.LiveAnalysisInterval,
-			LiveMinChars:        config.LiveAnalysisMinChars,
-			LiveMaxInputChars:   config.LiveAnalysisMaxInputChars,
-			LiveRequestTimeout:  config.AzureOpenAI.Timeout,
-			FinalEnabled:        config.FinalSummaryEnabled,
-			FinalMaxInputChars:  config.FinalSummaryMaxInputChars,
-			FinalRequestTimeout: config.FinalSummaryTimeout,
-			Model:               config.AzureOpenAI.Deployment,
-			DebugDroppedNodes:   config.DebugDroppedNodes,
+			Enabled:                 enabled,
+			LiveEnabled:             config.LiveAnalysisEnabled,
+			LiveInterval:            config.LiveAnalysisInterval,
+			LiveMinChars:            config.LiveAnalysisMinChars,
+			LiveMaxInputChars:       config.LiveAnalysisMaxInputChars,
+			LiveRequestTimeout:      config.AzureOpenAI.Timeout,
+			ContextRequestTimeout:   config.AzureOpenAI.Timeout,
+			FinalEnabled:            config.FinalSummaryEnabled,
+			FinalMaxInputChars:      config.FinalSummaryMaxInputChars,
+			FinalRequestTimeout:     config.FinalSummaryTimeout,
+			FinalizationWaitTimeout: config.FinalizationWaitTimeout,
+			FinalizationQuietPeriod: config.FinalizationQuietPeriod,
+			FinalFlushMaxAttempts:   config.FinalFlushMaxAttempts,
+			Model:                   config.AzureOpenAI.Deployment,
+			TaskModels: application.AITaskModels{
+				ContextPlanner:  config.TaskModels.ContextPlanner,
+				LiveExtraction:  config.TaskModels.LiveExtraction,
+				TreeAudit:       config.TaskModels.TreeAudit,
+				TreeReorganizer: config.TaskModels.TreeReorganizer,
+				FinalTreeReview: config.TaskModels.FinalTreeReview,
+				FinalSummary:    config.TaskModels.FinalSummary,
+			},
+			TreeClassification:         config.TreeClassification,
+			DebugDroppedNodes:          config.DebugDroppedNodes,
+			TreeAudit:                  effectiveTreeAudit,
+			TreeAuditUnavailableReason: auditReason,
 		},
 		publisher,
 	)
+	if schedulerRegistered {
+		service.SetMeetingTreeAuditRepository(auditRepository)
+	}
+	return service
+}
+
+func logTreeAuditConfiguration(config AIConfig, auditReason string, repositoryReady, schedulerRegistered bool) {
+	if auditReason == "feature_flag_false" {
+		log.Printf("AI tree audit disabled. reason=%s", auditReason)
+	} else if auditReason != "" {
+		log.Printf("AI tree audit unavailable. reason=%s", auditReason)
+	}
+	log.Printf("AI tree audit configuration. enabled=%t treeAuditDeployment=%s finalTreeReviewDeployment=%s intervalVersions=%d intervalSeconds=%.0f minIntervalSeconds=%.0f maxRunsPerSession=%d maxRunsPerHour=%d highSeverityMinIntervalSeconds=%.0f highSeverityMaxRunsPerHour=%d repositoryReady=%t schedulerRegistered=%t reason=%s",
+		config.TreeAudit.Enabled,
+		strings.TrimSpace(config.TaskModels.TreeAudit), strings.TrimSpace(config.TaskModels.FinalTreeReview),
+		config.TreeAudit.IntervalVersions, config.TreeAudit.Interval.Seconds(), config.TreeAudit.MinInterval.Seconds(),
+		config.TreeAudit.MaxRunsPerSession, config.TreeAudit.MaxRunsPerHour,
+		config.TreeAudit.HighSeverityMinInterval.Seconds(), config.TreeAudit.HighSeverityMaxRunsPerHour,
+		repositoryReady, schedulerRegistered, firstNonEmpty(auditReason, "ready"))
+}
+
+func treeAuditSchedulerRegistered(config application.TreeAuditConfig, repositoryReady bool) bool {
+	return config.Enabled && repositoryReady
+}
+
+func treeAuditConfigurationIssue(config AIConfig, aiEnabled bool) string {
+	if config.TreeAuditEnabledInvalid {
+		return "invalid_feature_flag"
+	}
+	if !config.TreeAudit.Enabled {
+		return "feature_flag_false"
+	}
+	if !aiEnabled {
+		return "azure_openai_not_configured"
+	}
+	if strings.TrimSpace(config.TaskModels.TreeAudit) == "" {
+		return "tree_audit_deployment_empty"
+	}
+	if strings.TrimSpace(config.TaskModels.FinalTreeReview) == "" {
+		return "final_tree_review_deployment_empty"
+	}
+	return ""
+}
+
+func treeAuditRepositoryIssue(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, application.ErrMeetingTreeAuditMigrationMissing) {
+		return "migration_missing"
+	}
+	return "repository_not_ready"
 }
 
 func transcriptRealtimeConfig(config TranscriptWebSocketConfig) realtime.TranscriptWebSocketConfig {
@@ -346,26 +419,15 @@ func transcriptRealtimeConfig(config TranscriptWebSocketConfig) realtime.Transcr
 	}
 }
 
-// buildInvitationMailer は招待メール送信の実装を環境に応じて選ぶ。
-//   - SMTP設定あり: 実際に送信
-//   - 未設定 + development: 招待URLをログ出力する dev fallback
-//   - 未設定 + production: 送信失敗にして招待を成功扱いにしない
+// buildInvitationMailer は招待リンク通知の実装を環境に応じて選ぶ。
+//   - development: 招待URLをログ出力する dev fallback
+//   - production: 通知失敗にして招待を成功扱いにしない
 func buildInvitationMailer(config Config) appworkspace.InvitationMailer {
-	if config.InviteEmail.Configured() {
-		log.Printf("invitation email: SMTP mailer enabled (host=%s)", config.InviteEmail.SMTPHost)
-		return email.NewSMTPMailer(email.SMTPConfig{
-			Host:     config.InviteEmail.SMTPHost,
-			Port:     config.InviteEmail.SMTPPort,
-			Username: config.InviteEmail.SMTPUsername,
-			Password: config.InviteEmail.SMTPPassword,
-			From:     config.InviteEmail.From,
-		})
-	}
 	if config.Environment == "production" {
-		log.Printf("invitation email: SMTP is not configured in production; invitation creation will fail until DECISCOPE_SMTP_* is set")
+		log.Printf("invitation delivery is disabled in production")
 		return email.DisabledMailer{}
 	}
-	log.Printf("invitation email: dev fallback enabled; invitation URLs are logged instead of sent (DECISCOPE_ENV=development)")
+	log.Printf("invitation dev fallback enabled; invitation URLs are logged (DECISCOPE_ENV=development)")
 	return email.LogMailer{}
 }
 
@@ -406,11 +468,10 @@ type repositoryStore interface {
 	application.EventRepository
 	application.ReportRepository
 	application.JobRepository
-	application.UploadRepository
 }
 
 func repositoriesFromStore(store repositoryStore) repositorySet {
 	return repositorySet{
-		Meetings: store, Events: store, Reports: store, Jobs: store, Uploads: store,
+		Meetings: store, Events: store, Reports: store, Jobs: store,
 	}
 }

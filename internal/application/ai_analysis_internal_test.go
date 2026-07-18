@@ -1,14 +1,146 @@
 package application
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"deciscope-core-api/internal/domain"
 )
+
+// ---------------------------------------------------------------------------
+// 共通ヘルパ
+// ---------------------------------------------------------------------------
+
+// mergeForTest merges a model diff into a previous payload without a meeting
+// context, mirroring the production call in runLiveAnalysis.
+func mergeForTest(t *testing.T, diff string, previous json.RawMessage) liveAnalysisPayload {
+	t.Helper()
+	return mergeForTestWithContext(t, diff, previous, nil)
+}
+
+func mergeForTestWithContext(t *testing.T, diff string, previous json.RawMessage, mc *meetingContext) liveAnalysisPayload {
+	t.Helper()
+	return mergeForTestAtRound(t, diff, previous, mc, 1)
+}
+
+// mergeForTestAtRound merges a model diff at a specific analysis round
+// (treeVersion). Round progression matters for emerging-topic promotion.
+func mergeForTestAtRound(t *testing.T, diff string, previous json.RawMessage, mc *meetingContext, round int64) liveAnalysisPayload {
+	t.Helper()
+	raw, err := parseAndMergeLiveAnalysisPayload(diff, previous, mc, round, nil, TreeClassificationConfig{})
+	if err != nil {
+		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
+	}
+	var merged liveAnalysisPayload
+	if err := json.Unmarshal(raw, &merged); err != nil {
+		t.Fatalf("Unmarshal merged payload: %v", err)
+	}
+	return merged
+}
+
+func treeNodeByID(tree *liveAnalysisTree, id string) *liveAnalysisTreeNode {
+	if tree == nil {
+		return nil
+	}
+	for i := range tree.Nodes {
+		if tree.Nodes[i].ID == id {
+			return &tree.Nodes[i]
+		}
+	}
+	return nil
+}
+
+// assertTreeInvariants checks every stored-tree invariant the backend must
+// guarantee regardless of model output: exactly one root, topics parented on
+// root only, detail nodes parented on topics only, one parent per node,
+// edges exactly mirroring parents, no self references, no unknown ids, no
+// cycles, and no type inversion (a non-topic node can never be a parent).
+func assertTreeInvariants(t *testing.T, tree *liveAnalysisTree) {
+	t.Helper()
+	if tree == nil {
+		return
+	}
+	byID := make(map[string]liveAnalysisTreeNode, len(tree.Nodes))
+	rootCount := 0
+	for _, node := range tree.Nodes {
+		if _, dup := byID[node.ID]; dup {
+			t.Fatalf("duplicate node id %q", node.ID)
+		}
+		byID[node.ID] = node
+		if node.ParentID == "" {
+			rootCount++
+			if node.ID != treeRootNodeID {
+				t.Fatalf("node %q has no parent but is not the root", node.ID)
+			}
+		}
+	}
+	if root, ok := byID[treeRootNodeID]; !ok || root.Kind != "topic" {
+		t.Fatalf("tree must contain the topic root %q, got %+v", treeRootNodeID, byID[treeRootNodeID])
+	}
+	if rootCount != 1 {
+		t.Fatalf("rootCount = %d, want exactly 1", rootCount)
+	}
+	for _, node := range tree.Nodes {
+		if node.ID == treeRootNodeID {
+			continue
+		}
+		if node.ParentID == node.ID {
+			t.Fatalf("node %q is self-referencing", node.ID)
+		}
+		parent, ok := byID[node.ParentID]
+		if !ok {
+			t.Fatalf("node %q references missing parent %q", node.ID, node.ParentID)
+		}
+		if parent.Kind != "topic" {
+			t.Fatalf("node %q has non-topic parent %q (kind=%s): type inversion", node.ID, parent.ID, parent.Kind)
+		}
+		if node.Kind == "topic" && parent.ID != treeRootNodeID {
+			t.Fatalf("topic %q must be parented on root, got %q", node.ID, parent.ID)
+		}
+	}
+	// Edges are exactly the parent map: one incoming edge per non-root node.
+	incoming := make(map[string]int)
+	for _, edge := range tree.Edges {
+		if edge.Source == edge.Target {
+			t.Fatalf("self edge %q", edge.Source)
+		}
+		if byID[edge.Target].ParentID != edge.Source {
+			t.Fatalf("edge %s->%s does not match parentId %q", edge.Source, edge.Target, byID[edge.Target].ParentID)
+		}
+		incoming[edge.Target]++
+	}
+	for _, node := range tree.Nodes {
+		want := 1
+		if node.ID == treeRootNodeID {
+			want = 0
+		}
+		if incoming[node.ID] != want {
+			t.Fatalf("node %q has %d incoming edges, want %d", node.ID, incoming[node.ID], want)
+		}
+	}
+	// 循環なし: 親を遡って必ずrootに到達する。
+	for _, node := range tree.Nodes {
+		seen := map[string]bool{}
+		current := node.ID
+		for current != treeRootNodeID {
+			if seen[current] {
+				t.Fatalf("cycle detected from node %q", node.ID)
+			}
+			seen[current] = true
+			current = byID[current].ParentID
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 文字起こし整形
+// ---------------------------------------------------------------------------
 
 func TestBuildAnalysisTranscriptTruncatesFromOldest(t *testing.T) {
 	segments := []domain.TranscriptSegment{
@@ -57,783 +189,39 @@ func TestBuildAnalysisTranscriptSkipsBlankSegments(t *testing.T) {
 	}
 }
 
-func TestParseAndValidateLiveAnalysisPayloadStripsCodeFence(t *testing.T) {
-	content := "```json\n{\"summary\":\"要約です\",\"currentTopic\":\"進捗確認\",\"items\":[{\"id\":\"decision-release\",\"kind\":\"decision\",\"severity\":\"high\",\"title\":\"リリース延期\",\"body\":\"品質課題によりリリースを1週間延期する。\",\"status\":\"open\"}],\"tree\":null}\n```"
-
-	payload, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	if !strings.Contains(string(payload), "要約です") || !strings.Contains(string(payload), "リリース延期") {
-		t.Fatalf("payload = %s", string(payload))
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadParsesV2Schema(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "DBマイグレーション",
-		"items": [
-			{"id": "risk-db-migration", "kind": "RISK", "severity": "HIGH", "title": "移行中のダウンタイム", "body": "移行作業でダウンタイムが発生する懸念。", "status": "OPEN"}
-		],
-		"tree": {
-			"nodes": [
-				{"id": "topic-db", "kind": "TOPIC", "label": "DBマイグレーション"},
-				{"id": "risk-db-migration", "kind": "risk", "label": "ダウンタイム懸念"}
-			],
-			"edges": [
-				{"source": "topic-db", "target": "risk-db-migration"}
-			]
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if len(payload.Items) != 1 {
-		t.Fatalf("items = %+v", payload.Items)
-	}
-	item := payload.Items[0]
-	if item.Kind != "risk" || item.Severity != "high" || item.Status != "open" {
-		t.Fatalf("item vocab not lowercased: %+v", item)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 2 || len(payload.Tree.Edges) != 1 {
-		t.Fatalf("tree = %+v", payload.Tree)
-	}
-	if payload.Tree.Nodes[0].Kind != "topic" {
-		t.Fatalf("node kind not lowercased: %+v", payload.Tree.Nodes[0])
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadNormalizesTreeNodeDetails(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "DBマイグレーション",
-		"items": [
-			{"id": "risk-db-migration", "kind": "risk", "severity": "high", "title": "移行中のダウンタイム", "body": "懸念。", "status": "open"},
-			{"id": "question-maintenance", "kind": "question", "severity": "medium", "title": "保守時間の確認", "body": "時間帯を確認する。", "status": "open"}
-		],
-		"tree": {
-			"nodes": [
-				{
-					"id": "risk-db-migration",
-					"kind": "risk",
-					"label": "ダウンタイム懸念",
-					"description": "移行作業でサービス停止が起きる可能性を確認している。",
-					"relatedItemIds": ["question-maintenance", "missing-id", "risk-db-migration", "question-maintenance"]
-				}
-			],
-			"edges": []
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil {
-		t.Fatalf("tree = %+v", payload.Tree)
-	}
-	var node *liveAnalysisTreeNode
-	for i := range payload.Tree.Nodes {
-		if payload.Tree.Nodes[i].ID == "risk-db-migration" {
-			node = &payload.Tree.Nodes[i]
-			break
-		}
-	}
-	if node == nil {
-		t.Fatalf("tree nodes = %+v, want risk-db-migration", payload.Tree.Nodes)
-	}
-	if node.Description != "移行作業でサービス停止が起きる可能性を確認している。" {
-		t.Fatalf("description = %q", node.Description)
-	}
-	wantIDs := []string{"risk-db-migration", "question-maintenance"}
-	if fmt.Sprint(node.RelatedItemIDs) != fmt.Sprint(wantIDs) {
-		t.Fatalf("relatedItemIds = %+v, want %+v", node.RelatedItemIDs, wantIDs)
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadKeepsResolvedRelatedItemIDs(t *testing.T) {
-	previous := `{
-		"summary": "前回",
-		"currentTopic": "移行計画",
-		"items": [
-			{"id": "risk-db-migration", "kind": "risk", "severity": "high", "title": "停止懸念", "body": "懸念。", "status": "open"},
-			{"id": "question-maintenance", "kind": "question", "severity": "medium", "title": "保守時間", "body": "確認。", "status": "open"}
-		],
-		"tree": {
-			"nodes": [
-				{"id": "topic-db", "kind": "topic", "label": "DB移行", "relatedItemIds": ["risk-db-migration"]},
-				{"id": "issue-plan", "kind": "issue", "label": "移行計画", "description": "前回説明", "relatedItemIds": ["risk-db-migration", "question-maintenance"]}
-			],
-			"edges": [{"source": "topic-db", "target": "issue-plan"}]
-		}
-	}`
-	diff := `{
-		"summary": "要約更新",
-		"currentTopic": "",
-		"resolvedIds": ["risk-db-migration"],
-		"items": [],
-		"tree": null
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if len(payload.Items) != 2 || payload.Items[0].ID != "risk-db-migration" || payload.Items[0].Status != "resolved" {
-		t.Fatalf("items = %+v, want resolved item retained", payload.Items)
-	}
-	var issueNode *liveAnalysisTreeNode
-	for i := range payload.Tree.Nodes {
-		if payload.Tree.Nodes[i].ID == "issue-plan" {
-			issueNode = &payload.Tree.Nodes[i]
-			break
-		}
-	}
-	if issueNode == nil {
-		t.Fatalf("tree nodes = %+v, want issue-plan", payload.Tree.Nodes)
-	}
-	wantIDs := []string{"risk-db-migration", "question-maintenance"}
-	if fmt.Sprint(issueNode.RelatedItemIDs) != fmt.Sprint(wantIDs) {
-		t.Fatalf("relatedItemIds = %+v, want %+v", issueNode.RelatedItemIDs, wantIDs)
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadPreservesTreeDescriptionOnNodeUpsert(t *testing.T) {
-	previous := `{
-		"summary": "前回",
-		"currentTopic": "移行計画",
-		"items": [
-			{"id": "issue-plan", "kind": "issue", "severity": "medium", "title": "移行計画", "body": "説明。", "status": "open"}
-		],
-		"tree": {
-			"nodes": [
-				{"id": "issue-plan", "kind": "issue", "label": "移行計画", "description": "前回の短い説明", "relatedItemIds": ["issue-plan"]}
-			],
-			"edges": []
-		}
-	}`
-	diff := `{
-		"summary": "要約更新",
-		"currentTopic": "",
-		"resolvedIds": [],
-		"items": [],
-		"tree": {
-			"nodes": [
-				{"id": "issue-plan", "kind": "issue", "label": "移行計画の見直し"}
-			],
-			"edges": []
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil {
-		t.Fatalf("tree = %+v", payload.Tree)
-	}
-	var node *liveAnalysisTreeNode
-	for i := range payload.Tree.Nodes {
-		if payload.Tree.Nodes[i].ID == "issue-plan" {
-			node = &payload.Tree.Nodes[i]
-			break
-		}
-	}
-	if node == nil {
-		t.Fatalf("tree nodes = %+v, want issue-plan", payload.Tree.Nodes)
-	}
-	if node.Label != "移行計画の見直し" || node.Description != "前回の短い説明" {
-		t.Fatalf("node = %+v, want updated label and preserved description", node)
-	}
-	if fmt.Sprint(node.RelatedItemIDs) != fmt.Sprint([]string{"issue-plan"}) {
-		t.Fatalf("relatedItemIds = %+v", node.RelatedItemIDs)
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadDropsInvalidItemsOnly(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "進捗確認",
-		"items": [
-			{"id": "ok-1", "kind": "issue", "severity": "low", "title": "有効なitem", "body": "", "status": "open"},
-			{"id": "bad-kind", "kind": "unknown", "severity": "low", "title": "語彙外kind", "body": "落とされる", "status": "open"},
-			{"id": "bad-empty", "kind": "risk", "severity": "low", "title": "", "body": "", "status": "open"},
-			{"id": "fix-vocab", "kind": "todo", "severity": "urgent", "title": "severity不正は既定値", "body": "", "status": "done"}
-		],
-		"tree": null
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if len(payload.Items) != 2 {
-		t.Fatalf("items = %+v, want invalid elements dropped", payload.Items)
-	}
-	if payload.Items[0].ID != "ok-1" || payload.Items[1].ID != "fix-vocab" {
-		t.Fatalf("items = %+v", payload.Items)
-	}
-	if payload.Items[1].Severity != "medium" || payload.Items[1].Status != "open" {
-		t.Fatalf("invalid severity/status should fall back to defaults: %+v", payload.Items[1])
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadDropsEdgesReferencingMissingNodes(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "進捗確認",
-		"items": [],
-		"tree": {
-			"nodes": [
-				{"id": "topic-main", "kind": "topic", "label": "進捗確認"},
-				{"id": "", "kind": "issue", "label": "id無しノード"},
-				{"id": "bad-kind-node", "kind": "unknown", "label": "語彙外kind"}
-			],
-			"edges": [
-				{"source": "topic-main", "target": "missing-node"},
-				{"source": "topic-main", "target": "topic-main"}
-			]
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 1 || payload.Tree.Nodes[0].ID != "topic-main" {
-		t.Fatalf("tree nodes = %+v", payload.Tree)
-	}
-	if len(payload.Tree.Edges) != 1 || payload.Tree.Edges[0].Target != "topic-main" {
-		t.Fatalf("tree edges = %+v, want dangling edge dropped", payload.Tree.Edges)
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadCapsTreeNodes(t *testing.T) {
-	var nodes []string
-	for i := 0; i < liveAnalysisTreeMaxNodes+3; i++ {
-		nodes = append(nodes, fmt.Sprintf(`{"id":"node-%d","kind":"topic","label":"ノード%d"}`, i, i))
-	}
-	content := fmt.Sprintf(`{"summary":"要約","currentTopic":"","items":[],"tree":{"nodes":[%s],"edges":[{"source":"node-0","target":"node-%d"}]}}`,
-		strings.Join(nodes, ","), liveAnalysisTreeMaxNodes+2)
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != liveAnalysisTreeMaxNodes {
-		t.Fatalf("tree nodes = %+v, want capped at %d", payload.Tree, liveAnalysisTreeMaxNodes)
-	}
-	// The original "node-0 -> node-(max+2)" edge must be dropped because
-	// node-0 was evicted by capping. All surviving nodes are topic-kind and
-	// none of them have an incoming edge, so connectOrphanLiveAnalysisTreeNodes
-	// now wires every non-primary survivor to the primary (oldest surviving)
-	// topic node rather than leaving them orphaned.
-	if len(payload.Tree.Edges) != liveAnalysisTreeMaxNodes-1 {
-		t.Fatalf("edges = %+v, want %d auto-connect edges from primary topic node", payload.Tree.Edges, liveAnalysisTreeMaxNodes-1)
-	}
-	primaryTopicID := payload.Tree.Nodes[0].ID
-	for _, edge := range payload.Tree.Edges {
-		if edge.Source != primaryTopicID {
-			t.Fatalf("edge = %+v, want source = primary topic node %q", edge, primaryTopicID)
-		}
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadConnectsOrphanSecondTopicNode(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "新しい話題",
-		"items": [],
-		"tree": {
-			"nodes": [
-				{"id": "topic-a", "kind": "topic", "label": "話題A"},
-				{"id": "issue-x", "kind": "issue", "label": "課題X"},
-				{"id": "topic-b", "kind": "topic", "label": "話題B"}
-			],
-			"edges": [
-				{"source": "topic-a", "target": "issue-x"}
-			]
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 3 {
-		t.Fatalf("tree nodes = %+v, want 3 nodes kept", payload.Tree)
-	}
-	found := false
-	for _, edge := range payload.Tree.Edges {
-		if edge.Source == "topic-a" && edge.Target == "topic-b" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("edges = %+v, want auto-connect edge from primary topic-a to orphaned topic-b", payload.Tree.Edges)
-	}
-	if len(payload.Tree.Edges) != 2 {
-		t.Fatalf("edges = %+v, want exactly the original edge plus the auto-connect edge", payload.Tree.Edges)
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadSkipsAutoConnectWhenSecondTopicHasIncomingEdge(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "新しい話題",
-		"items": [],
-		"tree": {
-			"nodes": [
-				{"id": "topic-a", "kind": "topic", "label": "話題A"},
-				{"id": "issue-x", "kind": "issue", "label": "課題X"},
-				{"id": "topic-b", "kind": "topic", "label": "話題B"}
-			],
-			"edges": [
-				{"source": "topic-a", "target": "issue-x"},
-				{"source": "issue-x", "target": "topic-b"}
-			]
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 3 {
-		t.Fatalf("tree nodes = %+v, want 3 nodes kept", payload.Tree)
-	}
-	// topic-b already has an incoming edge from issue-x, so no extra edge
-	// from the primary topic should be added.
-	if len(payload.Tree.Edges) != 2 {
-		t.Fatalf("edges = %+v, want original 2 edges unchanged", payload.Tree.Edges)
-	}
-	for _, edge := range payload.Tree.Edges {
-		if edge.Source == "topic-a" && edge.Target == "topic-b" {
-			t.Fatalf("edges = %+v, want no redundant topic-a -> topic-b edge", payload.Tree.Edges)
-		}
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadKeepsResolvedItemsAndLinkedTreeNodes(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "DBマイグレーション",
-		"items": [
-			{"id": "risk-db-migration", "kind": "risk", "severity": "high", "title": "移行中のダウンタイム", "body": "解消済み。", "status": "RESOLVED"},
-			{"id": "decision-release", "kind": "decision", "severity": "medium", "title": "リリース承認", "body": "", "status": "updated"}
-		],
-		"tree": {
-			"nodes": [
-				{"id": "topic-db", "kind": "topic", "label": "DBマイグレーション"},
-				{"id": "risk-db-migration", "kind": "risk", "label": "ダウンタイム懸念"},
-				{"id": "decision-release", "kind": "decision", "label": "リリース承認"}
-			],
-			"edges": [
-				{"source": "topic-db", "target": "risk-db-migration"},
-				{"source": "topic-db", "target": "decision-release"}
-			]
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if len(payload.Items) != 2 || payload.Items[0].ID != "risk-db-migration" || payload.Items[0].Status != "resolved" {
-		t.Fatalf("items = %+v, want resolved item retained", payload.Items)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 3 {
-		t.Fatalf("tree = %+v, want resolved node retained", payload.Tree)
-	}
-	var resolvedNode *liveAnalysisTreeNode
-	for _, node := range payload.Tree.Nodes {
-		if node.ID == "risk-db-migration" {
-			node := node
-			resolvedNode = &node
-		}
-	}
-	if resolvedNode == nil || resolvedNode.Status != "resolved" {
-		t.Fatalf("tree nodes = %+v, want resolved node marked resolved", payload.Tree.Nodes)
-	}
-	if len(payload.Tree.Edges) != 2 {
-		t.Fatalf("tree edges = %+v, want edges to resolved node retained", payload.Tree.Edges)
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadMarksItemsListedInResolvedIds(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "DBマイグレーション",
-		"resolvedIds": [" risk-db-migration ", "", "missing-id"],
-		"items": [
-			{"id": "risk-db-migration", "kind": "risk", "severity": "high", "title": "移行中のダウンタイム", "body": "懸念。", "status": "open"},
-			{"id": "decision-release", "kind": "decision", "severity": "medium", "title": "リリース承認", "body": "", "status": "updated"}
-		],
-		"tree": {
-			"nodes": [
-				{"id": "topic-db", "kind": "topic", "label": "DBマイグレーション"},
-				{"id": "risk-db-migration", "kind": "risk", "label": "ダウンタイム懸念"},
-				{"id": "decision-release", "kind": "decision", "label": "リリース承認"}
-			],
-			"edges": [
-				{"source": "topic-db", "target": "risk-db-migration"},
-				{"source": "topic-db", "target": "decision-release"}
-			]
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if len(payload.Items) != 2 || payload.Items[0].ID != "risk-db-migration" || payload.Items[0].Status != "resolved" {
-		t.Fatalf("items = %+v, want resolvedIds item retained and marked resolved", payload.Items)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 3 {
-		t.Fatalf("tree = %+v, want resolved node retained", payload.Tree)
-	}
-	var resolvedNode *liveAnalysisTreeNode
-	for _, node := range payload.Tree.Nodes {
-		if node.ID == "risk-db-migration" {
-			node := node
-			resolvedNode = &node
-		}
-	}
-	if resolvedNode == nil || resolvedNode.Status != "resolved" {
-		t.Fatalf("tree nodes = %+v, want resolved node marked resolved", payload.Tree.Nodes)
-	}
-	if len(payload.Tree.Edges) != 2 {
-		t.Fatalf("tree edges = %+v, want edge to resolved node retained", payload.Tree.Edges)
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadUnionsResolvedIdsAndResolvedStatus(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "進捗確認",
-		"resolvedIds": ["question-schedule"],
-		"items": [
-			{"id": "question-schedule", "kind": "question", "severity": "low", "title": "スケジュール確認", "body": "", "status": "open"},
-			{"id": "risk-budget", "kind": "risk", "severity": "medium", "title": "予算超過懸念", "body": "", "status": "resolved"},
-			{"id": "issue-remaining", "kind": "issue", "severity": "low", "title": "残課題", "body": "", "status": "open"}
-		],
-		"tree": {
-			"nodes": [
-				{"id": "topic-main", "kind": "topic", "label": "進捗確認"},
-				{"id": "question-schedule", "kind": "question", "label": "スケジュール"},
-				{"id": "risk-budget", "kind": "risk", "label": "予算"},
-				{"id": "issue-remaining", "kind": "issue", "label": "残課題"}
-			],
-			"edges": [
-				{"source": "topic-main", "target": "question-schedule"},
-				{"source": "topic-main", "target": "risk-budget"},
-				{"source": "topic-main", "target": "issue-remaining"}
-			]
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if len(payload.Items) != 3 {
-		t.Fatalf("items = %+v, want resolved items retained", payload.Items)
-	}
-	statusByID := make(map[string]string)
-	for _, item := range payload.Items {
-		statusByID[item.ID] = item.Status
-	}
-	if statusByID["question-schedule"] != "resolved" || statusByID["risk-budget"] != "resolved" || statusByID["issue-remaining"] != "open" {
-		t.Fatalf("items = %+v, want union of resolvedIds and status resolved marked resolved", payload.Items)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 4 {
-		t.Fatalf("tree = %+v, want resolved nodes retained", payload.Tree)
-	}
-	nodeStatusByID := make(map[string]string)
-	for _, node := range payload.Tree.Nodes {
-		nodeStatusByID[node.ID] = node.Status
-	}
-	if nodeStatusByID["question-schedule"] != "resolved" || nodeStatusByID["risk-budget"] != "resolved" {
-		t.Fatalf("tree nodes = %+v, want resolved nodes marked resolved", payload.Tree.Nodes)
-	}
-	if len(payload.Tree.Edges) != 3 {
-		t.Fatalf("tree edges = %+v", payload.Tree.Edges)
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadOmitsResolvedIdsFromNormalizedJSON(t *testing.T) {
-	content := `{"summary":"要約です","currentTopic":"進捗確認","resolvedIds":["risk-x"],"items":[],"tree":null}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	if strings.Contains(string(raw), "resolvedIds") {
-		t.Fatalf("payload = %s, resolvedIds must not appear in the normalized payload", string(raw))
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadInsertsCurrentTopicNodeWhenMissing(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "とても長い現在のトピック名で二十文字を超える場合の切詰め確認",
-		"items": [],
-		"tree": {
-			"nodes": [
-				{"id": "risk-a", "kind": "risk", "label": "懸念A"},
-				{"id": "decision-b", "kind": "decision", "label": "決定B"}
-			],
-			"edges": [
-				{"source": "risk-a", "target": "decision-b"}
-			]
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 3 {
-		t.Fatalf("tree = %+v, want topic-current inserted", payload.Tree)
-	}
-	root := payload.Tree.Nodes[0]
-	if root.ID != "topic-current" || root.Kind != "topic" {
-		t.Fatalf("first node = %+v, want synthetic topic-current at head", root)
-	}
-	if got := len([]rune(root.Label)); got != 20 {
-		t.Fatalf("root label = %q (%d runes), want truncated to 20 runes", root.Label, got)
-	}
-	// risk-a has no incoming edge, so it must be connected from topic-current.
-	// decision-b already has an incoming edge and must not get a second root edge.
-	var rootEdges []liveAnalysisTreeEdge
-	for _, edge := range payload.Tree.Edges {
-		if edge.Source == "topic-current" {
-			rootEdges = append(rootEdges, edge)
-		}
-	}
-	if len(rootEdges) != 1 || rootEdges[0].Target != "risk-a" {
-		t.Fatalf("root edges = %+v, want exactly topic-current -> risk-a", rootEdges)
-	}
-	if len(payload.Tree.Edges) != 2 {
-		t.Fatalf("edges = %+v, want original edge kept plus one root edge", payload.Tree.Edges)
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadKeepsExistingTopicNode(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "進捗確認",
-		"items": [],
-		"tree": {
-			"nodes": [
-				{"id": "topic-main", "kind": "topic", "label": "進捗確認"},
-				{"id": "risk-a", "kind": "risk", "label": "懸念A"}
-			],
-			"edges": []
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 2 {
-		t.Fatalf("tree = %+v, want model nodes untouched", payload.Tree)
-	}
-	if len(payload.Tree.Edges) != 1 || payload.Tree.Edges[0].Source != "topic-main" || payload.Tree.Edges[0].Target != "risk-a" {
-		t.Fatalf("edges = %+v, want existing topic to connect orphan non-topic node", payload.Tree.Edges)
-	}
-	for _, node := range payload.Tree.Nodes {
-		if node.ID == "topic-current" {
-			t.Fatalf("nodes = %+v, topic-current must not be inserted", payload.Tree.Nodes)
-		}
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadSkipsTopicCompletionWhenCurrentTopicEmpty(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "",
-		"items": [],
-		"tree": {
-			"nodes": [{"id": "risk-a", "kind": "risk", "label": "懸念A"}],
-			"edges": []
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 1 || payload.Tree.Nodes[0].ID != "risk-a" {
-		t.Fatalf("tree = %+v, want no synthetic topic when currentTopic is empty", payload.Tree)
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadSkipsTopicCompletionOnIDCollision(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "進捗確認",
-		"items": [],
-		"tree": {
-			"nodes": [{"id": "topic-current", "kind": "risk", "label": "idが衝突するノード"}],
-			"edges": []
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 1 {
-		t.Fatalf("tree = %+v, want no insertion on id collision", payload.Tree)
-	}
-	if payload.Tree.Nodes[0].Kind != "risk" {
-		t.Fatalf("node = %+v, existing node must be kept as-is", payload.Tree.Nodes[0])
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadCollapsesEmptyTreeToNull(t *testing.T) {
-	content := `{"summary":"要約です","currentTopic":"進捗確認","items":[],"tree":{"nodes":[],"edges":[{"source":"a","target":"b"}]}}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	if !strings.Contains(string(raw), `"tree":null`) {
-		t.Fatalf("payload = %s, want tree collapsed to null", string(raw))
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadRejectsEmptyPayload(t *testing.T) {
-	// The payload counts as empty only when summary, currentTopic, items,
-	// and tree nodes are all empty. Items and nodes fully dropped by
-	// validation also count as empty.
-	for name, content := range map[string]string{
-		"all fields empty":              `{"summary":"","currentTopic":"","items":[],"tree":null}`,
-		"only invalid items":            `{"summary":"","currentTopic":"","items":[{"id":"x","kind":"unknown","title":"落ちる"}],"tree":null}`,
-		"only tree with no valid nodes": `{"summary":"","currentTopic":"","items":[],"tree":{"nodes":[{"id":"","kind":"topic","label":""}],"edges":[]}}`,
-	} {
-		if _, err := parseAndMergeLiveAnalysisPayload(content, nil); err == nil {
-			t.Fatalf("%s: expected error for empty live analysis payload", name)
-		}
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadAcceptsTreeOnlyPayload(t *testing.T) {
-	content := `{"summary":"","currentTopic":"","items":[],"tree":{"nodes":[{"id":"topic-a","kind":"topic","label":"論点A"}],"edges":[]}}`
-	if _, err := parseAndMergeLiveAnalysisPayload(content, nil); err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v, tree-only payload should be valid", err)
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadIgnoresLegacyV1Fields(t *testing.T) {
-	content := `{"summary":"要約です","currentTopic":"進捗確認","decisions":[{"text":"旧フィールド"}],"actionItems":[],"openQuestions":["旧"],"concerns":[],"nextChecks":[]}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	if strings.Contains(string(raw), "decisions") || strings.Contains(string(raw), "openQuestions") {
-		t.Fatalf("payload = %s, want legacy v1 fields ignored", string(raw))
-	}
-	if !strings.Contains(string(raw), `"items":[]`) {
-		t.Fatalf("payload = %s, want empty items array", string(raw))
-	}
-}
-
-func TestParseAndValidateLiveAnalysisPayloadRejectsInvalidJSON(t *testing.T) {
-	if _, err := parseAndMergeLiveAnalysisPayload("not json", nil); err == nil {
-		t.Fatal("expected error for invalid json")
-	}
-}
+// ---------------------------------------------------------------------------
+// items のマージ(既存仕様の維持)
+// ---------------------------------------------------------------------------
 
 const mergeTestPreviousPayload = `{
-	"summary": "前回までの要約",
+	"summary": "前回の要約",
 	"currentTopic": "進捗確認",
 	"items": [
-		{"id": "issue-a", "kind": "issue", "severity": "low", "title": "課題A", "body": "課題Aの説明", "status": "open"},
-		{"id": "risk-b", "kind": "risk", "severity": "high", "title": "リスクB", "body": "リスクBの説明", "status": "updated"}
+		{"id": "issue-a", "kind": "issue", "severity": "medium", "title": "課題A", "body": "説明A", "status": "open"},
+		{"id": "risk-b", "kind": "risk", "severity": "high", "title": "リスクB", "body": "説明B", "status": "open"}
 	],
 	"tree": {
 		"nodes": [
-			{"id": "topic-main", "kind": "topic", "label": "進捗確認"},
-			{"id": "issue-a", "kind": "issue", "label": "課題A"},
-			{"id": "risk-b", "kind": "risk", "label": "リスクB"}
+			{"id": "root", "kind": "topic", "label": "会議全体"},
+			{"id": "topic-progress", "kind": "topic", "parentId": "root", "label": "進捗確認"},
+			{"id": "issue-a", "kind": "issue", "parentId": "topic-progress", "label": "課題A"},
+			{"id": "risk-b", "kind": "risk", "parentId": "topic-progress", "label": "リスクB"}
 		],
 		"edges": [
-			{"source": "topic-main", "target": "issue-a"},
-			{"source": "topic-main", "target": "risk-b"}
+			{"source": "root", "target": "topic-progress"},
+			{"source": "topic-progress", "target": "issue-a"},
+			{"source": "topic-progress", "target": "risk-b"}
 		]
 	}
 }`
+
+func TestParseAndMergeLiveAnalysisPayloadStripsCodeFence(t *testing.T) {
+	content := "```json\n{\"summary\":\"要約\",\"currentTopic\":\"話題\",\"items\":[{\"id\":\"i-1\",\"kind\":\"issue\",\"severity\":\"low\",\"title\":\"論点\",\"body\":\"\",\"status\":\"open\"}]}\n```"
+	merged := mergeForTest(t, content, nil)
+	if merged.Summary != "要約" || len(merged.Items) != 1 {
+		t.Fatalf("merged = %+v, want fence stripped and parsed", merged)
+	}
+}
 
 func TestParseAndMergeLiveAnalysisPayloadAppendsNewItemsToPreviousState(t *testing.T) {
 	diff := `{
@@ -842,18 +230,9 @@ func TestParseAndMergeLiveAnalysisPayloadAppendsNewItemsToPreviousState(t *testi
 		"resolvedIds": [],
 		"items": [
 			{"id": "question-c", "kind": "question", "severity": "medium", "title": "質問C", "body": "新しい質問", "status": "open"}
-		],
-		"tree": null
+		]
 	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(mergeTestPreviousPayload))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
 	if merged.Summary != "更新後の要約" || merged.CurrentTopic != "新しい話題" {
 		t.Fatalf("summary/currentTopic = %q/%q, want replaced by diff", merged.Summary, merged.CurrentTopic)
 	}
@@ -863,8 +242,11 @@ func TestParseAndMergeLiveAnalysisPayloadAppendsNewItemsToPreviousState(t *testi
 	if merged.Items[0].ID != "issue-a" || merged.Items[1].ID != "risk-b" || merged.Items[2].ID != "question-c" {
 		t.Fatalf("items order = %+v, want previous order preserved and new appended", merged.Items)
 	}
-	if merged.Items[2].Status != "open" {
-		t.Fatalf("new item status = %q, want open", merged.Items[2].Status)
+	assertTreeInvariants(t, merged.Tree)
+	// 割当が無い新規itemは未分類topicへ接続される。
+	node := treeNodeByID(merged.Tree, "question-c")
+	if node == nil || node.ParentID != treeUnclassifiedTopicID {
+		t.Fatalf("new item node = %+v, want parent %s", node, treeUnclassifiedTopicID)
 	}
 }
 
@@ -874,18 +256,9 @@ func TestParseAndMergeLiveAnalysisPayloadUpsertsExistingItemByID(t *testing.T) {
 		"currentTopic": "進捗確認",
 		"items": [
 			{"id": "issue-a", "kind": "issue", "severity": "high", "title": "課題A(悪化)", "body": "状況が悪化した", "status": "open"}
-		],
-		"tree": null
+		]
 	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(mergeTestPreviousPayload))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
 	if len(merged.Items) != 2 {
 		t.Fatalf("items = %+v, want in-place upsert without growth", merged.Items)
 	}
@@ -896,22 +269,17 @@ func TestParseAndMergeLiveAnalysisPayloadUpsertsExistingItemByID(t *testing.T) {
 	if updated.Status != "updated" {
 		t.Fatalf("upserted status = %q, want forced to updated", updated.Status)
 	}
-	if merged.Items[1].ID != "risk-b" || merged.Items[1].Title != "リスクB" {
-		t.Fatalf("untouched item = %+v, want preserved", merged.Items[1])
+	// 更新されても親は前回のtopicのまま維持される(旧親が置換される訳ではない)。
+	node := treeNodeByID(merged.Tree, "issue-a")
+	if node == nil || node.ParentID != "topic-progress" {
+		t.Fatalf("updated node = %+v, want parent kept as topic-progress", node)
 	}
+	assertTreeInvariants(t, merged.Tree)
 }
 
 func TestParseAndMergeLiveAnalysisPayloadKeepsStateOnSummaryOnlyDiff(t *testing.T) {
-	diff := `{"summary":"要約だけ更新","currentTopic":"","resolvedIds":[],"items":[],"tree":null}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(mergeTestPreviousPayload))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
+	diff := `{"summary":"要約だけ更新","currentTopic":"","resolvedIds":[],"items":[]}`
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
 	if merged.Summary != "要約だけ更新" {
 		t.Fatalf("summary = %q", merged.Summary)
 	}
@@ -921,12 +289,13 @@ func TestParseAndMergeLiveAnalysisPayloadKeepsStateOnSummaryOnlyDiff(t *testing.
 	if len(merged.Items) != 2 || merged.Items[0].ID != "issue-a" || merged.Items[1].ID != "risk-b" {
 		t.Fatalf("items = %+v, want previous items fully preserved", merged.Items)
 	}
-	if merged.Tree == nil || len(merged.Tree.Nodes) != 3 || len(merged.Tree.Edges) != 2 {
-		t.Fatalf("tree = %+v, want previous tree fully preserved", merged.Tree)
+	if treeNodeByID(merged.Tree, "issue-a") == nil || treeNodeByID(merged.Tree, "risk-b") == nil || treeNodeByID(merged.Tree, "topic-progress") == nil {
+		t.Fatalf("tree = %+v, want previous structure preserved", merged.Tree)
 	}
+	assertTreeInvariants(t, merged.Tree)
 }
 
-func TestParseAndMergeLiveAnalysisPayloadMarksResolvedAndEvictsOldestOverItemCap(t *testing.T) {
+func TestParseAndMergeLiveAnalysisPayloadMarksResolvedAndCapsIndependently(t *testing.T) {
 	previousItems := make([]string, 0, liveAnalysisItemsMaxCount)
 	for i := 0; i < liveAnalysisItemsMaxCount; i++ {
 		previousItems = append(previousItems, fmt.Sprintf(`{"id":"item-%d","kind":"issue","severity":"low","title":"項目%d","body":"","status":"open"}`, i, i))
@@ -935,1236 +304,994 @@ func TestParseAndMergeLiveAnalysisPayloadMarksResolvedAndEvictsOldestOverItemCap
 	diff := `{
 		"summary": "更新",
 		"currentTopic": "",
-		"resolvedIds": ["item-5"],
+		"resolvedIds": [],
+		"resolutionUpdates": [{"itemId":"item-5","status":"resolved","evidenceSequenceNos":[1],"reason":"明示的に解決"}],
 		"items": [
 			{"id": "item-new-1", "kind": "risk", "severity": "high", "title": "新規1", "body": "", "status": "open"},
 			{"id": "item-new-2", "kind": "todo", "severity": "low", "title": "新規2", "body": "", "status": "open"}
-		],
-		"tree": null
+		]
 	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
+	scope := liveEvidenceScope{Allowed: map[int64]struct{}{1: {}}, CurrentRound: map[int64]struct{}{1: {}}, TranscriptText: map[int64]string{1: "項目5は解決済みです"}, CoveredThrough: 1}
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(diff, json.RawMessage(previous), nil, 2, []int64{1}, scope, TreeClassificationConfig{})
 	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
+		t.Fatal(err)
 	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
-	// liveAnalysisItemsMaxCount previous + 2 new items, of which item-5
-	// becomes resolved via resolvedIds. Active (non-resolved) and resolved
-	// items are now capped independently (liveAnalysisItemsMaxCount /
-	// liveAnalysisResolvedItemsMaxCount), so the single resolved item never
-	// counts against the active cap: the active items are capped at
-	// liveAnalysisItemsMaxCount (oldest active, item-0, evicted) plus the
-	// 1 resolved item (item-5, retained).
+	merged := previousLiveAnalysisState(raw)
 	wantLen := liveAnalysisItemsMaxCount + 1
 	if len(merged.Items) != wantLen {
-		t.Fatalf("items length = %d, want %d (active capped at %d plus 1 retained resolved item)", len(merged.Items), wantLen, liveAnalysisItemsMaxCount)
+		t.Fatalf("items length = %d, want %d (active capped plus 1 retained resolved)", len(merged.Items), wantLen)
 	}
 	foundResolved := false
-	foundItem1 := false
 	for _, item := range merged.Items {
-		if item.ID == "item-5" && item.Status == "resolved" {
+		if item.ID == "item-5" {
+			if item.Status != "resolved" {
+				t.Fatalf("item-5 status = %q, want resolved", item.Status)
+			}
 			foundResolved = true
-		}
-		if item.ID == "item-1" {
-			foundItem1 = true
 		}
 		if item.ID == "item-0" {
-			t.Fatalf("items = %+v, oldest active item must be evicted over the active cap", merged.Items)
+			t.Fatalf("oldest active item must be evicted over the active cap")
 		}
 	}
 	if !foundResolved {
-		t.Fatalf("items = %+v, resolved item must be retained and marked resolved", merged.Items)
+		t.Fatalf("resolved item must be retained")
 	}
-	if !foundItem1 {
-		t.Fatalf("items = %+v, item-1 must be retained: only 1 active item is over cap so only item-0 is evicted", merged.Items)
-	}
-	if merged.Items[len(merged.Items)-1].ID != "item-new-2" || merged.Items[len(merged.Items)-2].ID != "item-new-1" {
-		t.Fatalf("items tail = %+v, want new items appended", merged.Items[len(merged.Items)-2:])
-	}
+	assertTreeInvariants(t, merged.Tree)
 }
 
-func TestParseAndMergeLiveAnalysisPayloadKeepsAllActiveItemsWhenManyResolvedItemsExist(t *testing.T) {
-	// liveAnalysisResolvedItemsMaxCount previous resolved items already sit
-	// at the resolved cap. A diff that adds liveAnalysisItemsMaxCount new
-	// active items must not be squeezed by the resolved bucket: active and
-	// resolved are capped independently, so all the new active items must
-	// survive alongside all the resolved items.
-	var previousItems []string
-	for i := 0; i < liveAnalysisResolvedItemsMaxCount; i++ {
-		previousItems = append(previousItems, fmt.Sprintf(`{"id":"item-r%d","kind":"issue","severity":"low","title":"解決済%d","body":"","status":"resolved"}`, i, i))
-	}
-	previous := fmt.Sprintf(`{"summary":"前回","currentTopic":"","items":[%s],"tree":null}`, strings.Join(previousItems, ","))
-
-	var diffItems []string
-	for i := 0; i < liveAnalysisItemsMaxCount; i++ {
-		diffItems = append(diffItems, fmt.Sprintf(`{"id":"item-a%d","kind":"issue","severity":"low","title":"進行中%d","body":"","status":"open"}`, i, i))
-	}
-	diff := fmt.Sprintf(`{"summary":"更新","currentTopic":"","items":[%s],"tree":null}`, strings.Join(diffItems, ","))
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
-	wantLen := liveAnalysisResolvedItemsMaxCount + liveAnalysisItemsMaxCount
-	if len(merged.Items) != wantLen {
-		t.Fatalf("items length = %d, want %d (all resolved + all active retained)", len(merged.Items), wantLen)
-	}
-	seen := make(map[string]bool, len(merged.Items))
-	for _, item := range merged.Items {
-		seen[item.ID] = true
-	}
-	for i := 0; i < liveAnalysisResolvedItemsMaxCount; i++ {
-		if !seen[fmt.Sprintf("item-r%d", i)] {
-			t.Fatalf("items = %+v, want resolved item-r%d retained", merged.Items, i)
-		}
-	}
-	for i := 0; i < liveAnalysisItemsMaxCount; i++ {
-		if !seen[fmt.Sprintf("item-a%d", i)] {
-			t.Fatalf("items = %+v, want active item-a%d retained (not evicted by resolved items)", merged.Items, i)
-		}
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadKeepsResolvedItemWhenManyActiveItemsExist(t *testing.T) {
-	// A single resolved item plus liveAnalysisItemsMaxCount previous active
-	// items (at the active cap). A diff flooding in far more new active
-	// items must evict only active items over the active cap; the resolved
-	// item must survive regardless of how much active churn happens
-	// afterward.
-	previousItems := []string{`{"id":"item-r","kind":"issue","severity":"low","title":"解決済","body":"","status":"resolved"}`}
-	for i := 0; i < liveAnalysisItemsMaxCount; i++ {
-		previousItems = append(previousItems, fmt.Sprintf(`{"id":"item-%d","kind":"issue","severity":"low","title":"項目%d","body":"","status":"open"}`, i, i))
-	}
-	previous := fmt.Sprintf(`{"summary":"前回","currentTopic":"","items":[%s],"tree":null}`, strings.Join(previousItems, ","))
-
-	var diffItems []string
-	for i := 0; i < 40; i++ {
-		diffItems = append(diffItems, fmt.Sprintf(`{"id":"item-new-%d","kind":"issue","severity":"low","title":"新規%d","body":"","status":"open"}`, i, i))
-	}
-	diff := fmt.Sprintf(`{"summary":"更新","currentTopic":"","items":[%s],"tree":null}`, strings.Join(diffItems, ","))
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
-	wantLen := 1 + liveAnalysisItemsMaxCount
-	if len(merged.Items) != wantLen {
-		t.Fatalf("items length = %d, want %d (1 resolved + active capped at %d)", len(merged.Items), wantLen, liveAnalysisItemsMaxCount)
-	}
-	foundResolved := false
-	for _, item := range merged.Items {
-		if item.ID == "item-r" {
-			foundResolved = true
-			if item.Status != "resolved" {
-				t.Fatalf("item-r status = %q, want resolved", item.Status)
-			}
-		}
-	}
-	if !foundResolved {
-		t.Fatalf("items = %+v, resolved item-r must survive a flood of new active items", merged.Items)
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadEvictsOldestResolvedItemsOverResolvedCap(t *testing.T) {
-	// liveAnalysisResolvedItemsMaxCount resolved items already sit at the
-	// resolved cap. A diff that marks 5 more items resolved must evict only
-	// the oldest resolved items (not active items), keeping the resolved
-	// bucket at its cap.
-	var previousItems []string
-	for i := 0; i < liveAnalysisResolvedItemsMaxCount; i++ {
-		previousItems = append(previousItems, fmt.Sprintf(`{"id":"item-r%d","kind":"issue","severity":"low","title":"解決済%d","body":"","status":"resolved"}`, i, i))
-	}
-	previous := fmt.Sprintf(`{"summary":"前回","currentTopic":"","items":[%s],"tree":null}`, strings.Join(previousItems, ","))
-
-	var diffItems []string
-	for i := liveAnalysisResolvedItemsMaxCount; i < liveAnalysisResolvedItemsMaxCount+5; i++ {
-		diffItems = append(diffItems, fmt.Sprintf(`{"id":"item-r%d","kind":"issue","severity":"low","title":"解決済%d","body":"","status":"resolved"}`, i, i))
-	}
-	diff := fmt.Sprintf(`{"summary":"更新","currentTopic":"","items":[%s],"tree":null}`, strings.Join(diffItems, ","))
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
-	if len(merged.Items) != liveAnalysisResolvedItemsMaxCount {
-		t.Fatalf("items length = %d, want capped at %d", len(merged.Items), liveAnalysisResolvedItemsMaxCount)
-	}
-	seen := make(map[string]bool, len(merged.Items))
-	for _, item := range merged.Items {
-		seen[item.ID] = true
-	}
-	for i := 0; i < 5; i++ {
-		if seen[fmt.Sprintf("item-r%d", i)] {
-			t.Fatalf("items = %+v, oldest resolved item-r%d must be evicted over the resolved cap", merged.Items, i)
-		}
-	}
-	for i := 5; i < liveAnalysisResolvedItemsMaxCount+5; i++ {
-		if !seen[fmt.Sprintf("item-r%d", i)] {
-			t.Fatalf("items = %+v, want item-r%d retained", merged.Items, i)
-		}
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadMergesTreeWithUpsertAndEdgeDedupe(t *testing.T) {
+func TestParseAndMergeLiveAnalysisPayloadRemapsDuplicateTitleToExistingID(t *testing.T) {
+	// Task C: 既存itemとタイトルが同じ新規idのitemは既存idへ集約され、増殖しない。
 	diff := `{
 		"summary": "更新",
 		"currentTopic": "進捗確認",
-		"items": [],
-		"tree": {
-			"nodes": [
-				{"id": "issue-a", "kind": "issue", "label": "課題A(更新)"},
-				{"id": "decision-d", "kind": "decision", "label": "決定D"}
-			],
-			"edges": [
-				{"source": "topic-main", "target": "issue-a"},
-				{"source": "topic-main", "target": "decision-d"}
-			]
-		}
+		"items": [
+			{"id": "risk-duplicate-new", "kind": "risk", "severity": "high", "title": "リスクB", "body": "また同じ懸念", "status": "open"}
+		]
 	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(mergeTestPreviousPayload))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	if len(merged.Items) != 2 {
+		t.Fatalf("items = %+v, want duplicate remapped onto existing id (no growth)", merged.Items)
 	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
+	if treeNodeByID(merged.Tree, "risk-duplicate-new") != nil {
+		t.Fatalf("tree must not contain a node for the duplicate id")
 	}
-	if merged.Tree == nil || len(merged.Tree.Nodes) != 4 {
-		t.Fatalf("tree nodes = %+v, want previous 3 + new 1", merged.Tree)
-	}
-	if merged.Tree.Nodes[1].ID != "issue-a" || merged.Tree.Nodes[1].Label != "課題A(更新)" {
-		t.Fatalf("upserted node = %+v, want label updated in place", merged.Tree.Nodes[1])
-	}
-	if merged.Tree.Nodes[3].ID != "decision-d" {
-		t.Fatalf("nodes = %+v, want new node appended", merged.Tree.Nodes)
-	}
-	// The duplicate topic-main -> issue-a edge must be deduplicated:
-	// previous 2 edges + diff 2 edges - 1 duplicate = 3.
-	if len(merged.Tree.Edges) != 3 {
-		t.Fatalf("edges = %+v, want deduplicated union", merged.Tree.Edges)
+	riskB := merged.Items[1]
+	if riskB.ID != "risk-b" || riskB.Status != "updated" || riskB.Body != "また同じ懸念" {
+		t.Fatalf("existing item = %+v, want updated in place via dedup remap", riskB)
 	}
 }
 
-func TestParseAndMergeLiveAnalysisPayloadCapsMergedTreeKeepingTopicNodes(t *testing.T) {
-	previousNodes := []string{`{"id":"topic-main","kind":"topic","label":"トピック"}`}
-	var previousEdges []string
-	for i := 0; i < liveAnalysisTreeMaxNodes; i++ {
-		previousNodes = append(previousNodes, fmt.Sprintf(`{"id":"node-%d","kind":"issue","label":"ノード%d"}`, i, i))
-		previousEdges = append(previousEdges, fmt.Sprintf(`{"source":"topic-main","target":"node-%d"}`, i))
-	}
-	previous := fmt.Sprintf(`{"summary":"前回","currentTopic":"トピック","items":[],"tree":{"nodes":[%s],"edges":[%s]}}`,
-		strings.Join(previousNodes, ","), strings.Join(previousEdges, ","))
-	diff := `{
-		"summary": "更新",
-		"currentTopic": "トピック",
-		"items": [],
-		"tree": {
-			"nodes": [{"id": "node-new", "kind": "risk", "label": "新ノード"}],
-			"edges": [{"source": "topic-main", "target": "node-new"}]
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
-	if merged.Tree == nil || len(merged.Tree.Nodes) != liveAnalysisTreeMaxNodes {
-		t.Fatalf("tree nodes = %+v, want capped at %d", merged.Tree, liveAnalysisTreeMaxNodes)
-	}
-	hasTopic := false
-	for _, node := range merged.Tree.Nodes {
-		if node.ID == "topic-main" {
-			hasTopic = true
-		}
-		if node.ID == "node-0" {
-			t.Fatalf("nodes = %+v, oldest non-topic node must be evicted", merged.Tree.Nodes)
-		}
-	}
-	if !hasTopic {
-		t.Fatalf("nodes = %+v, topic node must survive the cap", merged.Tree.Nodes)
-	}
-	for _, edge := range merged.Tree.Edges {
-		if edge.Target == "node-0" {
-			t.Fatalf("edges = %+v, edge to evicted node must be removed", merged.Tree.Edges)
-		}
-	}
-	foundNewEdge := false
-	for _, edge := range merged.Tree.Edges {
-		if edge.Target == "node-new" {
-			foundNewEdge = true
-		}
-	}
-	if !foundNewEdge {
-		t.Fatalf("edges = %+v, want new edge kept", merged.Tree.Edges)
+func TestParseAndMergeLiveAnalysisPayloadRejectsEmptyPayload(t *testing.T) {
+	if _, err := parseAndMergeLiveAnalysisPayload(`{"summary":"","currentTopic":"","items":[]}`, nil, nil, 1, nil, TreeClassificationConfig{}); err == nil {
+		t.Fatalf("expected error for empty payload")
 	}
 }
 
-func TestParseAndMergeLiveAnalysisPayloadKeepsResolvedAndActiveTreeNodesTogether(t *testing.T) {
-	// 1 topic + (liveAnalysisTreeMaxNodes-1) active non-topic nodes (at the
-	// active cap) plus liveAnalysisTreeMaxResolvedNodes resolved non-topic
-	// nodes (at the resolved cap) must all coexist: resolved and active
-	// nodes are capped in independent buckets, so being
-	// at both caps simultaneously must not evict anything.
-	previousNodes := []string{`{"id":"topic-main","kind":"topic","label":"トピック"}`}
-	var previousEdges []string
-	for i := 0; i < liveAnalysisTreeMaxNodes-1; i++ {
-		previousNodes = append(previousNodes, fmt.Sprintf(`{"id":"node-a%d","kind":"issue","label":"進行中%d"}`, i, i))
-		previousEdges = append(previousEdges, fmt.Sprintf(`{"source":"topic-main","target":"node-a%d"}`, i))
-	}
-	for i := 0; i < liveAnalysisTreeMaxResolvedNodes; i++ {
-		previousNodes = append(previousNodes, fmt.Sprintf(`{"id":"node-r%d","kind":"issue","label":"解決済%d","status":"resolved"}`, i, i))
-		previousEdges = append(previousEdges, fmt.Sprintf(`{"source":"topic-main","target":"node-r%d"}`, i))
-	}
-	previous := fmt.Sprintf(`{"summary":"前回","currentTopic":"トピック","items":[],"tree":{"nodes":[%s],"edges":[%s]}}`,
-		strings.Join(previousNodes, ","), strings.Join(previousEdges, ","))
-	diff := `{"summary":"更新","currentTopic":"トピック","items":[],"tree":null}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
-	wantLen := liveAnalysisTreeMaxNodes + liveAnalysisTreeMaxResolvedNodes
-	if merged.Tree == nil || len(merged.Tree.Nodes) != wantLen {
-		t.Fatalf("tree nodes = %+v, want %d (topic + active + resolved all retained)", merged.Tree, wantLen)
-	}
-	seen := make(map[string]bool, len(merged.Tree.Nodes))
-	for _, node := range merged.Tree.Nodes {
-		seen[node.ID] = true
-	}
-	if !seen["topic-main"] {
-		t.Fatalf("nodes = %+v, want topic-main retained", merged.Tree.Nodes)
-	}
-	for i := 0; i < liveAnalysisTreeMaxNodes-1; i++ {
-		if !seen[fmt.Sprintf("node-a%d", i)] {
-			t.Fatalf("nodes = %+v, want active node-a%d retained", merged.Tree.Nodes, i)
-		}
-	}
-	for i := 0; i < liveAnalysisTreeMaxResolvedNodes; i++ {
-		if !seen[fmt.Sprintf("node-r%d", i)] {
-			t.Fatalf("nodes = %+v, want resolved node-r%d retained", merged.Tree.Nodes, i)
-		}
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadEvictsOldestResolvedTreeNodesOverResolvedCap(t *testing.T) {
-	// liveAnalysisTreeMaxResolvedNodes resolved nodes already sit at the
-	// resolved cap. A diff that adds one more resolved node must evict only
-	// the oldest resolved node, and must not touch the topic node or any
-	// active node.
-	previousNodes := []string{`{"id":"topic-main","kind":"topic","label":"トピック"}`}
-	var previousEdges []string
-	for i := 0; i < liveAnalysisTreeMaxResolvedNodes; i++ {
-		previousNodes = append(previousNodes, fmt.Sprintf(`{"id":"node-r%d","kind":"issue","label":"解決済%d","status":"resolved"}`, i, i))
-		previousEdges = append(previousEdges, fmt.Sprintf(`{"source":"topic-main","target":"node-r%d"}`, i))
-	}
-	previous := fmt.Sprintf(`{"summary":"前回","currentTopic":"トピック","items":[],"tree":{"nodes":[%s],"edges":[%s]}}`,
-		strings.Join(previousNodes, ","), strings.Join(previousEdges, ","))
-	diff := fmt.Sprintf(`{
-		"summary": "更新",
-		"currentTopic": "トピック",
-		"items": [],
-		"tree": {
-			"nodes": [{"id": "node-r%d", "kind": "issue", "label": "解決済(新)", "status": "resolved"}],
-			"edges": [{"source": "topic-main", "target": "node-r%d"}]
-		}
-	}`, liveAnalysisTreeMaxResolvedNodes, liveAnalysisTreeMaxResolvedNodes)
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
-	wantLen := 1 + liveAnalysisTreeMaxResolvedNodes
-	if merged.Tree == nil || len(merged.Tree.Nodes) != wantLen {
-		t.Fatalf("tree nodes = %+v, want %d (topic + resolved capped at %d)", merged.Tree, wantLen, liveAnalysisTreeMaxResolvedNodes)
-	}
-	seen := make(map[string]bool, len(merged.Tree.Nodes))
-	for _, node := range merged.Tree.Nodes {
-		seen[node.ID] = true
-	}
-	if !seen["topic-main"] {
-		t.Fatalf("nodes = %+v, want topic-main retained", merged.Tree.Nodes)
-	}
-	if seen["node-r0"] {
-		t.Fatalf("nodes = %+v, oldest resolved node-r0 must be evicted over the resolved cap", merged.Tree.Nodes)
-	}
-	for i := 1; i <= liveAnalysisTreeMaxResolvedNodes; i++ {
-		if !seen[fmt.Sprintf("node-r%d", i)] {
-			t.Fatalf("nodes = %+v, want node-r%d retained", merged.Tree.Nodes, i)
-		}
-	}
-	for _, edge := range merged.Tree.Edges {
-		if edge.Target == "node-r0" {
-			t.Fatalf("edges = %+v, edge to evicted node-r0 must be removed", merged.Tree.Edges)
-		}
-	}
-	foundNewEdge := false
-	for _, edge := range merged.Tree.Edges {
-		if edge.Source == "topic-main" && edge.Target == fmt.Sprintf("node-r%d", liveAnalysisTreeMaxResolvedNodes) {
-			foundNewEdge = true
-		}
-	}
-	if !foundNewEdge {
-		t.Fatalf("edges = %+v, want edge to new resolved node kept", merged.Tree.Edges)
+func TestParseAndMergeLiveAnalysisPayloadRejectsInvalidJSON(t *testing.T) {
+	if _, err := parseAndMergeLiveAnalysisPayload(`not json`, nil, nil, 1, nil, TreeClassificationConfig{}); err == nil {
+		t.Fatalf("expected error for invalid JSON")
 	}
 }
 
 func TestParseAndMergeLiveAnalysisPayloadToleratesInvalidPreviousPayload(t *testing.T) {
-	diff := `{"summary":"要約","currentTopic":"話題","items":[{"id":"issue-a","kind":"issue","severity":"low","title":"課題A","body":"","status":"open"}],"tree":null}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(`{broken json`))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v, invalid previous payload must degrade to empty state", err)
+	diff := `{"summary":"要約","currentTopic":"話題","items":[{"id":"i-1","kind":"issue","severity":"low","title":"論点","body":"","status":"open"}]}`
+	merged := mergeForTest(t, diff, json.RawMessage(`{"broken":`))
+	if len(merged.Items) != 1 {
+		t.Fatalf("items = %+v, want merge to degrade to empty previous state", merged.Items)
 	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
-	if len(merged.Items) != 1 || merged.Items[0].ID != "issue-a" {
-		t.Fatalf("items = %+v, want diff applied to empty state", merged.Items)
-	}
+	assertTreeInvariants(t, merged.Tree)
 }
 
-func TestParseAndMergeLiveAnalysisPayloadIsIdempotentWhenModelEchoesFullState(t *testing.T) {
-	// A weak model may re-output the entire previous state instead of a
-	// diff. Upsert-by-id must keep the result stable (no duplication).
-	raw, err := parseAndMergeLiveAnalysisPayload(mergeTestPreviousPayload, json.RawMessage(mergeTestPreviousPayload))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var merged liveAnalysisPayload
-	if err := json.Unmarshal(raw, &merged); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
-	}
-	if len(merged.Items) != 2 || merged.Items[0].ID != "issue-a" || merged.Items[1].ID != "risk-b" {
-		t.Fatalf("items = %+v, want no duplication on full-state echo", merged.Items)
-	}
-	for _, item := range merged.Items {
-		if item.Status != "updated" {
-			t.Fatalf("item = %+v, echoed items are treated as updates", item)
-		}
-	}
-	if merged.Tree == nil || len(merged.Tree.Nodes) != 3 || len(merged.Tree.Edges) != 2 {
-		t.Fatalf("tree = %+v, want unchanged structure", merged.Tree)
-	}
-}
-
-// The following tests cover the item->tree synthesis fix: when the model
-// reports a new/updated item but omits the corresponding tree node (a
-// pattern observed in production where items keep growing while
-// tree.nodes stays fixed), mergeLiveAnalysisTree now synthesizes a node for
-// it so every item card is guaranteed to have a matching tree node.
-
-func TestParseAndMergeLiveAnalysisPayloadSynthesizesNodeForItemWithoutTreeNode(t *testing.T) {
-	previous := `{
-		"summary": "前回",
-		"currentTopic": "進捗確認",
-		"items": [],
-		"tree": {
-			"nodes": [{"id": "topic-main", "kind": "topic", "label": "進捗確認"}],
-			"edges": []
-		}
-	}`
-	diff := `{
-		"summary": "更新",
-		"currentTopic": "進捗確認",
-		"items": [
-			{"id": "issue-new", "kind": "issue", "severity": "medium", "title": "新しい課題", "body": "詳細説明です。", "status": "open"}
-		],
-		"tree": null
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 2 {
-		t.Fatalf("tree = %+v, want topic-main plus synthesized issue-new node", payload.Tree)
-	}
-	var node *liveAnalysisTreeNode
-	for i := range payload.Tree.Nodes {
-		if payload.Tree.Nodes[i].ID == "issue-new" {
-			node = &payload.Tree.Nodes[i]
-		}
-	}
-	if node == nil {
-		t.Fatalf("tree nodes = %+v, want a synthesized issue-new node", payload.Tree.Nodes)
-	}
-	if node.Kind != "issue" || node.Label != "新しい課題" || node.Description != "詳細説明です。" {
-		t.Fatalf("synthesized node = %+v, want fields derived from the item", node)
-	}
-	if node.Status != "" {
-		t.Fatalf("synthesized node status = %q, want empty for a non-resolved item", node.Status)
-	}
-	if fmt.Sprint(node.RelatedItemIDs) != fmt.Sprint([]string{"issue-new"}) {
-		t.Fatalf("synthesized node relatedItemIds = %+v, want [issue-new]", node.RelatedItemIDs)
-	}
-	foundEdge := false
-	for _, edge := range payload.Tree.Edges {
-		if edge.Source == "topic-main" && edge.Target == "issue-new" {
-			foundEdge = true
-		}
-	}
-	if !foundEdge {
-		t.Fatalf("edges = %+v, want synthesized node auto-connected to the primary topic node", payload.Tree.Edges)
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadDoesNotSynthesizeNodeWhenNodeAlreadyExists(t *testing.T) {
-	previous := `{
-		"summary": "前回",
-		"currentTopic": "進捗確認",
-		"items": [
-			{"id": "issue-a", "kind": "issue", "severity": "low", "title": "課題A", "body": "既存の説明", "status": "open"}
-		],
-		"tree": {
-			"nodes": [
-				{"id": "topic-main", "kind": "topic", "label": "進捗確認"},
-				{"id": "issue-a", "kind": "issue", "label": "課題A", "description": "既存の説明"}
-			],
-			"edges": [{"source": "topic-main", "target": "issue-a"}]
-		}
-	}`
-	diff := `{
-		"summary": "更新",
-		"currentTopic": "進捗確認",
-		"items": [
-			{"id": "issue-a", "kind": "issue", "severity": "low", "title": "課題A(更新)", "body": "更新後の説明", "status": "open"}
-		],
-		"tree": null
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous))
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil || len(payload.Tree.Nodes) != 2 {
-		t.Fatalf("tree = %+v, want no duplicate node created for issue-a", payload.Tree)
-	}
-	count := 0
-	for _, node := range payload.Tree.Nodes {
-		if node.ID == "issue-a" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Fatalf("tree nodes = %+v, want exactly one issue-a node", payload.Tree.Nodes)
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadSynthesizesResolvedNodeStatus(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "進捗確認",
-		"resolvedIds": ["risk-x"],
-		"items": [
-			{"id": "risk-x", "kind": "risk", "severity": "high", "title": "リスクX", "body": "解消済みの懸念", "status": "open"}
-		],
-		"tree": null
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil {
-		t.Fatalf("tree = %+v, want a synthesized node for the resolved item", payload.Tree)
-	}
-	var node *liveAnalysisTreeNode
-	for i := range payload.Tree.Nodes {
-		if payload.Tree.Nodes[i].ID == "risk-x" {
-			node = &payload.Tree.Nodes[i]
-		}
-	}
-	if node == nil {
-		t.Fatalf("tree nodes = %+v, want synthesized risk-x node", payload.Tree.Nodes)
-	}
-	if node.Status != "resolved" {
-		t.Fatalf("synthesized node status = %q, want resolved", node.Status)
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadSynthesizesFallbackKindForTodoItem(t *testing.T) {
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "進捗確認",
-		"items": [
-			{"id": "todo-a", "kind": "todo", "severity": "low", "title": "資料作成", "body": "田中さんが来週までに作成", "status": "open"}
-		],
-		"tree": null
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil {
-		t.Fatalf("tree = %+v, want a synthesized node for the todo item", payload.Tree)
-	}
-	var node *liveAnalysisTreeNode
-	for i := range payload.Tree.Nodes {
-		if payload.Tree.Nodes[i].ID == "todo-a" {
-			node = &payload.Tree.Nodes[i]
-		}
-	}
-	if node == nil {
-		t.Fatalf("tree nodes = %+v, want synthesized todo-a node", payload.Tree.Nodes)
-	}
-	// "todo" is not a valid tree node kind (validLiveAnalysisTreeNodeKind), so
-	// it must be mapped via liveAnalysisItemKindToTreeNodeKindFallback to the
-	// closest valid kind, "issue".
-	if node.Kind != "issue" {
-		t.Fatalf("synthesized node kind = %q, want fallback to issue for a todo item", node.Kind)
-	}
-}
-
-func TestMergeLiveAnalysisTreeSkipsSynthesisForDismissedItem(t *testing.T) {
-	// "dismissed" is not currently a value normalizeLiveAnalysisItems ever
-	// produces (invalid statuses fall back to "open"), but mergeLiveAnalysisTree
-	// itself must still treat a dismissed item defensively -- it must never
-	// synthesize a tree node for one, whatever upstream code passes in.
-	items := []liveAnalysisItem{
-		{ID: "issue-a", Kind: "issue", Title: "課題A", Body: "説明", Status: "dismissed"},
-	}
-	tree := mergeLiveAnalysisTree(nil, nil, map[string]struct{}{}, "", items, nil)
-	if tree != nil {
-		t.Fatalf("tree = %+v, want nil: a dismissed item must not get a synthesized node", tree)
-	}
-}
-
-func TestMergeLiveAnalysisTreeCollectsDiagnosticsOnStats(t *testing.T) {
-	diff := &liveAnalysisTree{
-		Nodes: []liveAnalysisTreeNode{
-			{ID: "topic-main", Kind: "topic", Label: "進捗確認"},
-			{ID: "bad-label", Kind: "issue", Label: ""},
-			{ID: "bad-kind", Kind: "unknown", Label: "語彙外kind"},
-		},
-		Edges: []liveAnalysisTreeEdge{
-			{Source: "topic-main", Target: "missing-node"},
-		},
-	}
-	items := []liveAnalysisItem{
-		{ID: "issue-new", Kind: "issue", Title: "新しい課題", Body: "詳細", Status: "open"},
+func TestParseAndMergeLiveAnalysisPayloadNormalizesEvidenceSequenceNos(t *testing.T) {
+	tests := []struct {
+		name          string
+		evidenceField string
+		want          []int64
+	}{
+		{name: "numbers", evidenceField: `"evidenceSequenceNos":[1,2]`, want: []int64{1, 2}},
+		{name: "numeric strings", evidenceField: `"evidenceSequenceNos":["1","2"]`, want: []int64{1, 2}},
+		{name: "mixed numbers and strings", evidenceField: `"evidenceSequenceNos":[1,"2"]`, want: []int64{1, 2}},
+		{name: "null uses legacy round fallback", evidenceField: `"evidenceSequenceNos":null`, want: []int64{1, 2}},
+		{name: "omitted uses legacy round fallback", evidenceField: ``, want: []int64{1, 2}},
+		{name: "invalid string isolated", evidenceField: `"evidenceSequenceNos":["invalid",2]`, want: []int64{2}},
+		{name: "fraction isolated", evidenceField: `"evidenceSequenceNos":[1.5,2]`, want: []int64{2}},
+		{name: "out of current round isolated", evidenceField: `"evidenceSequenceNos":[99,1]`, want: []int64{1}},
+		{name: "int64 overflow isolated", evidenceField: `"evidenceSequenceNos":[9223372036854775808,2]`, want: []int64{2}},
+		{name: "all invalid does not invent fallback evidence", evidenceField: `"evidenceSequenceNos":["invalid",1.5]`, want: []int64{}},
 	}
 
-	stats := &liveAnalysisTreeMergeStats{}
-	tree := mergeLiveAnalysisTree(nil, diff, map[string]struct{}{}, "進捗確認", items, stats)
-	if tree == nil {
-		t.Fatal("tree = nil, want topic-main plus synthesized issue-new node")
-	}
-	if stats.DroppedEmptyLabel != 1 {
-		t.Fatalf("DroppedEmptyLabel = %d, want 1 (bad-label)", stats.DroppedEmptyLabel)
-	}
-	if stats.DroppedInvalidKind != 1 {
-		t.Fatalf("DroppedInvalidKind = %d, want 1 (bad-kind)", stats.DroppedInvalidKind)
-	}
-	if stats.droppedNodes() != 2 {
-		t.Fatalf("droppedNodes() = %d, want 2", stats.droppedNodes())
-	}
-	if stats.DroppedEdges != 1 {
-		t.Fatalf("DroppedEdges = %d, want 1 (edge to missing-node)", stats.DroppedEdges)
-	}
-	if stats.SynthesizedNodes != 1 {
-		t.Fatalf("SynthesizedNodes = %d, want 1 (issue-new)", stats.SynthesizedNodes)
-	}
-	if got := stats.droppedNodeReasons(); got != "[emptyLabel:1 invalidKind:1]" {
-		t.Fatalf("droppedNodeReasons() = %q, want %q", got, "[emptyLabel:1 invalidKind:1]")
-	}
-}
-
-func TestParseAndMergeLiveAnalysisPayloadRescuesTodoKindTreeNode(t *testing.T) {
-	// モデルが tree.nodes に item専用の kind "todo" を直接出したケース。tree の
-	// 語彙には "todo" が無いため、救済が無いと invalidKind として捨てられてしまう。
-	content := `{
-		"summary": "要約です",
-		"currentTopic": "進捗確認",
-		"items": [],
-		"tree": {
-			"nodes": [
-				{"id": "x", "kind": "todo", "label": "作業", "description": "資料を作成する"}
-			],
-			"edges": []
-		}
-	}`
-
-	raw, err := parseAndMergeLiveAnalysisPayload(content, nil)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
-	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal normalized payload: %v", err)
-	}
-	if payload.Tree == nil {
-		t.Fatalf("tree = %+v, want kind \"todo\" node rescued as issue", payload.Tree)
-	}
-	var node *liveAnalysisTreeNode
-	for i := range payload.Tree.Nodes {
-		if payload.Tree.Nodes[i].ID == "x" {
-			node = &payload.Tree.Nodes[i]
-		}
-	}
-	if node == nil {
-		t.Fatalf("tree nodes = %+v, want node x kept", payload.Tree.Nodes)
-	}
-	if node.Kind != "issue" {
-		t.Fatalf("node kind = %q, want \"issue\" (todo rescued)", node.Kind)
-	}
-}
-
-func TestMergeLiveAnalysisTreeCountsNormalizedTodoNodes(t *testing.T) {
-	diff := &liveAnalysisTree{
-		Nodes: []liveAnalysisTreeNode{
-			{ID: "x", Kind: "todo", Label: "作業"},
-		},
-	}
-	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := mergeLiveAnalysisTree(nil, diff, map[string]struct{}{}, "", nil, stats)
-	if tree == nil {
-		t.Fatal("tree = nil, want node x kept")
-	}
-	if stats.NormalizedTodoNodes != 1 {
-		t.Fatalf("NormalizedTodoNodes = %d, want 1", stats.NormalizedTodoNodes)
-	}
-	if stats.droppedNodes() != 0 {
-		t.Fatalf("droppedNodes() = %d, want 0 (todo must not be dropped)", stats.droppedNodes())
-	}
-}
-
-func TestMergeLiveAnalysisTreeKeepsAllValidTreeNodeKinds(t *testing.T) {
-	// 回帰確認: topic/issue/question/risk/decision は従来どおりすべて残る。
-	diff := &liveAnalysisTree{
-		Nodes: []liveAnalysisTreeNode{
-			{ID: "n-topic", Kind: "topic", Label: "トピック"},
-			{ID: "n-issue", Kind: "issue", Label: "課題"},
-			{ID: "n-question", Kind: "question", Label: "質問"},
-			{ID: "n-risk", Kind: "risk", Label: "リスク"},
-			{ID: "n-decision", Kind: "decision", Label: "決定"},
-		},
-	}
-	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := mergeLiveAnalysisTree(nil, diff, map[string]struct{}{}, "", nil, stats)
-	if tree == nil || len(tree.Nodes) != 5 {
-		t.Fatalf("tree = %+v, want all 5 nodes kept", tree)
-	}
-	if stats.droppedNodes() != 0 {
-		t.Fatalf("droppedNodes() = %d, want 0", stats.droppedNodes())
-	}
-}
-
-func TestMergeLiveAnalysisTreeStillDropsUnknownKind(t *testing.T) {
-	// "todo" 以外の未知kindは、従来どおり invalidKind として drop されなければならない。
-	diff := &liveAnalysisTree{
-		Nodes: []liveAnalysisTreeNode{
-			{ID: "n-bad", Kind: "foobar", Label: "未知kind"},
-		},
-	}
-	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := mergeLiveAnalysisTree(nil, diff, map[string]struct{}{}, "", nil, stats)
-	if tree != nil {
-		t.Fatalf("tree = %+v, want nil (only node dropped)", tree)
-	}
-	if stats.DroppedInvalidKind != 1 {
-		t.Fatalf("DroppedInvalidKind = %d, want 1", stats.DroppedInvalidKind)
-	}
-	if stats.NormalizedTodoNodes != 0 {
-		t.Fatalf("NormalizedTodoNodes = %d, want 0 (foobar must not be rescued)", stats.NormalizedTodoNodes)
-	}
-}
-
-func TestMergeLiveAnalysisTreeCountsDiffNewAndUpdatedNodes(t *testing.T) {
-	previous := &liveAnalysisTree{
-		Nodes: []liveAnalysisTreeNode{
-			{ID: "existing", Kind: "issue", Label: "既存の課題"},
-		},
-	}
-	diff := &liveAnalysisTree{
-		Nodes: []liveAnalysisTreeNode{
-			{ID: "existing", Kind: "issue", Label: "更新後の課題"},
-			{ID: "new", Kind: "issue", Label: "新規の課題"},
-		},
-	}
-	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := mergeLiveAnalysisTree(previous, diff, map[string]struct{}{}, "", nil, stats)
-	if tree == nil || len(tree.Nodes) != 2 {
-		t.Fatalf("tree = %+v, want existing + new nodes", tree)
-	}
-	if stats.DiffUpdatedNodes != 1 {
-		t.Fatalf("DiffUpdatedNodes = %d, want 1 (existing)", stats.DiffUpdatedNodes)
-	}
-	if stats.DiffNewNodes != 1 {
-		t.Fatalf("DiffNewNodes = %d, want 1 (new)", stats.DiffNewNodes)
-	}
-}
-
-func TestFinalizeLiveAnalysisTreePrunesRedundantTopicFallbackEdgeWhenRealParentExists(t *testing.T) {
-	// node-x was first rescued by connectOrphanLiveAnalysisTreeNodes in an
-	// earlier round (topic-main -> node-x), but the model has since reported
-	// its real parent node-y -> node-x. The stale topic fallback must be
-	// pruned because node-x now has an incoming edge from a source other
-	// than the topic. node-y itself has no incoming edge yet, so this round's
-	// connectOrphanLiveAnalysisTreeNodes rescues it with topic-main -> node-y,
-	// which must be left alone (it is node-y's only incoming edge).
-	nodes := []liveAnalysisTreeNode{
-		{ID: "topic-main", Kind: "topic", Label: "トピック"},
-		{ID: "node-y", Kind: "issue", Label: "Y"},
-		{ID: "node-x", Kind: "issue", Label: "X"},
-	}
-	edges := []liveAnalysisTreeEdge{
-		{Source: "topic-main", Target: "node-x"},
-		{Source: "node-y", Target: "node-x"},
-	}
-	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := finalizeLiveAnalysisTree(nodes, edges, "", stats)
-	if tree == nil {
-		t.Fatal("tree = nil, want non-nil")
-	}
-	for _, edge := range tree.Edges {
-		if edge.Source == "topic-main" && edge.Target == "node-x" {
-			t.Fatalf("edges = %+v, want redundant topic-main -> node-x fallback pruned", tree.Edges)
-		}
-	}
-	foundRealEdge := false
-	foundRescueEdge := false
-	for _, edge := range tree.Edges {
-		if edge.Source == "node-y" && edge.Target == "node-x" {
-			foundRealEdge = true
-		}
-		if edge.Source == "topic-main" && edge.Target == "node-y" {
-			foundRescueEdge = true
-		}
-	}
-	if !foundRealEdge {
-		t.Fatalf("edges = %+v, want node-y -> node-x kept", tree.Edges)
-	}
-	if !foundRescueEdge {
-		t.Fatalf("edges = %+v, want topic-main -> node-y rescue edge kept (its only incoming edge)", tree.Edges)
-	}
-	if len(tree.Edges) != 2 {
-		t.Fatalf("edges = %+v, want exactly 2 edges", tree.Edges)
-	}
-	if stats.PrunedTopicEdges != 1 {
-		t.Fatalf("PrunedTopicEdges = %d, want 1", stats.PrunedTopicEdges)
-	}
-}
-
-func TestFinalizeLiveAnalysisTreeKeepsSoleTopicFallbackEdge(t *testing.T) {
-	// node-x has exactly one incoming edge, the topic fallback itself. This
-	// is precisely the shape connectOrphanLiveAnalysisTreeNodes produces for
-	// a freshly rescued node, and pruning must never touch it.
-	nodes := []liveAnalysisTreeNode{
-		{ID: "topic-main", Kind: "topic", Label: "トピック"},
-		{ID: "node-x", Kind: "issue", Label: "X"},
-	}
-	edges := []liveAnalysisTreeEdge{
-		{Source: "topic-main", Target: "node-x"},
-	}
-	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := finalizeLiveAnalysisTree(nodes, edges, "", stats)
-	if tree == nil || len(tree.Edges) != 1 {
-		t.Fatalf("tree = %+v, want the sole topic -> node-x edge kept", tree)
-	}
-	if tree.Edges[0].Source != "topic-main" || tree.Edges[0].Target != "node-x" {
-		t.Fatalf("edges = %+v, want topic-main -> node-x unchanged", tree.Edges)
-	}
-	if stats.PrunedTopicEdges != 0 {
-		t.Fatalf("PrunedTopicEdges = %d, want 0", stats.PrunedTopicEdges)
-	}
-}
-
-func TestFinalizeLiveAnalysisTreePrunesChainedRedundantTopicFallbackEdges(t *testing.T) {
-	// node-z has no incoming edge at all, so this round's
-	// connectOrphanLiveAnalysisTreeNodes rescues it with topic-main ->
-	// node-z (kept: it is node-z's only incoming edge). node-y and node-x
-	// each carry a stale topic fallback from an earlier round, but each now
-	// also has its real parent edge (node-z -> node-y, node-y -> node-x).
-	// Both stale fallbacks must be pruned in a single pass because the
-	// reduced graph (built from only the surviving, non-candidate edges)
-	// already contains the full chain topic-main -> node-z -> node-y ->
-	// node-x, so node-x stays reachable even with both topic-main -> node-x
-	// and topic-main -> node-y removed.
-	nodes := []liveAnalysisTreeNode{
-		{ID: "topic-main", Kind: "topic", Label: "トピック"},
-		{ID: "node-z", Kind: "issue", Label: "Z"},
-		{ID: "node-y", Kind: "issue", Label: "Y"},
-		{ID: "node-x", Kind: "issue", Label: "X"},
-	}
-	edges := []liveAnalysisTreeEdge{
-		{Source: "topic-main", Target: "node-x"},
-		{Source: "node-y", Target: "node-x"},
-		{Source: "topic-main", Target: "node-y"},
-		{Source: "node-z", Target: "node-y"},
-	}
-	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := finalizeLiveAnalysisTree(nodes, edges, "", stats)
-	if tree == nil {
-		t.Fatal("tree = nil, want non-nil")
-	}
-	for _, edge := range tree.Edges {
-		if edge.Source == "topic-main" && (edge.Target == "node-x" || edge.Target == "node-y") {
-			t.Fatalf("edges = %+v, want both chained topic fallbacks pruned", tree.Edges)
-		}
-	}
-	want := map[string]bool{
-		"node-y\x00node-x":     false,
-		"node-z\x00node-y":     false,
-		"topic-main\x00node-z": false,
-	}
-	for _, edge := range tree.Edges {
-		want[edge.Source+"\x00"+edge.Target] = true
-	}
-	for key, found := range want {
-		if !found {
-			t.Fatalf("edges = %+v, want edge %q kept", tree.Edges, key)
-		}
-	}
-	if len(tree.Edges) != 3 {
-		t.Fatalf("edges = %+v, want exactly 3 edges", tree.Edges)
-	}
-	if stats.PrunedTopicEdges != 2 {
-		t.Fatalf("PrunedTopicEdges = %d, want 2", stats.PrunedTopicEdges)
-	}
-}
-
-func TestFinalizeLiveAnalysisTreeNeverPrunesEdgesFromNonPrimaryTopicNode(t *testing.T) {
-	// topic-other is a second topic node (e.g. from an earlier topic
-	// change) that has its own direct edge to node-x. Pruning must only
-	// ever consider edges whose source is the primary topic (topic-main,
-	// the first topic node); topic-other -> node-x must survive even though
-	// node-x also has other incoming edges.
-	nodes := []liveAnalysisTreeNode{
-		{ID: "topic-main", Kind: "topic", Label: "トピック"},
-		{ID: "topic-other", Kind: "topic", Label: "別のトピック"},
-		{ID: "node-y", Kind: "issue", Label: "Y"},
-		{ID: "node-x", Kind: "issue", Label: "X"},
-	}
-	edges := []liveAnalysisTreeEdge{
-		{Source: "topic-main", Target: "node-y"},
-		{Source: "topic-main", Target: "node-x"},
-		{Source: "node-y", Target: "node-x"},
-		{Source: "topic-other", Target: "node-x"},
-	}
-	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := finalizeLiveAnalysisTree(nodes, edges, "", stats)
-	if tree == nil {
-		t.Fatal("tree = nil, want non-nil")
-	}
-	foundOtherTopicEdge := false
-	for _, edge := range tree.Edges {
-		if edge.Source == "topic-main" && edge.Target == "node-x" {
-			t.Fatalf("edges = %+v, want topic-main -> node-x pruned (node-x has real parent node-y)", tree.Edges)
-		}
-		if edge.Source == "topic-other" && edge.Target == "node-x" {
-			foundOtherTopicEdge = true
-		}
-	}
-	if !foundOtherTopicEdge {
-		t.Fatalf("edges = %+v, want topic-other -> node-x kept: only the primary topic's edges are pruning candidates", tree.Edges)
-	}
-	if stats.PrunedTopicEdges != 1 {
-		t.Fatalf("PrunedTopicEdges = %d, want 1 (only topic-main -> node-x)", stats.PrunedTopicEdges)
-	}
-}
-
-func TestChooseOrphanParentIDAttachesDetailNodesUnderMajorTopicNotRoot(t *testing.T) {
-	// root topic + 大分類(major category)topic 1個 + 詳細(issue)ノード5個をすべて
-	// 孤立(edgeなし)の状態で渡す。平坦化バグでは全詳細ノードがrootへ直付けされて
-	// いたが、大分類topicが存在するときは詳細ノードはそちら経由でぶら下がり、
-	// rootのout-degreeは大分類1個分だけに収まらなければならない。
-	diff := &liveAnalysisTree{
-		Nodes: []liveAnalysisTreeNode{
-			{ID: "topic-root", Kind: "topic", Label: "root"},
-			{ID: "topic-major", Kind: "topic", Label: "大分類"},
-			{ID: "issue-1", Kind: "issue", Label: "詳細1"},
-			{ID: "issue-2", Kind: "issue", Label: "詳細2"},
-			{ID: "issue-3", Kind: "issue", Label: "詳細3"},
-			{ID: "issue-4", Kind: "issue", Label: "詳細4"},
-			{ID: "issue-5", Kind: "issue", Label: "詳細5"},
-		},
-	}
-	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := mergeLiveAnalysisTree(nil, diff, map[string]struct{}{}, "", nil, stats)
-	if tree == nil {
-		t.Fatal("tree = nil, want non-nil")
-	}
-	if got := countLiveAnalysisTopicChildren("topic-root", tree.Edges); got != 1 {
-		t.Fatalf("root out-degree = %d, want 1 (only topic-major hangs directly off root)", got)
-	}
-	for _, id := range []string{"issue-1", "issue-2", "issue-3", "issue-4", "issue-5"} {
-		found := false
-		for _, edge := range tree.Edges {
-			if edge.Source == "topic-major" && edge.Target == id {
-				found = true
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			separator := ""
+			if test.evidenceField != "" {
+				separator = ","
 			}
-			if edge.Source == "topic-root" && edge.Target == id {
-				t.Fatalf("edges = %+v, want %s attached under topic-major, not directly under root", tree.Edges, id)
+			diff := fmt.Sprintf(`{
+				"summary":"要約","currentTopic":"話題",
+				"items":[{"id":"issue-evidence","kind":"issue","severity":"low","title":"根拠","body":"本文","status":"open"%s%s}]
+			}`, separator, test.evidenceField)
+			raw, err := parseAndMergeLiveAnalysisPayload(diff, nil, nil, 1, []int64{1, 2}, TreeClassificationConfig{})
+			if err != nil {
+				t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
 			}
-		}
-		if !found {
-			t.Fatalf("edges = %+v, want %s attached under topic-major", tree.Edges, id)
-		}
+			state := previousLiveAnalysisState(raw)
+			if len(state.Items) != 1 {
+				t.Fatalf("items = %+v, want one valid item", state.Items)
+			}
+			got := state.Items[0].EvidenceSequenceNos
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("evidenceSequenceNos = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
-func TestFinalizeLiveAnalysisTreeDetectsFlatTreeByAbsoluteChildCount(t *testing.T) {
-	// 大分類topicが無いまま詳細ノード8個(flatTreeMinTopicChildren)が全てroot
-	// 直下に並ぶと、平坦化(flat tree)として検知されなければならない。
-	nodes := []liveAnalysisTreeNode{{ID: "topic-root", Kind: "topic", Label: "root"}}
-	for i := 0; i < flatTreeMinTopicChildren; i++ {
-		nodes = append(nodes, liveAnalysisTreeNode{ID: fmt.Sprintf("issue-%d", i), Kind: "issue", Label: fmt.Sprintf("詳細%d", i)})
-	}
+func TestParseAndMergeLiveAnalysisPayloadQuarantinesOnlyMalformedItem(t *testing.T) {
+	diff := `{
+		"summary":"要約","currentTopic":"話題",
+		"items":[
+			{"id":"issue-valid","kind":"issue","severity":"low","title":"有効","body":"本文","status":"open","evidenceSequenceNos":[1]},
+			{"id":"issue-invalid","kind":123,"severity":"low","title":"不正","body":"本文","status":"open"},
+			"not-an-object"
+		]
+	}`
 	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := finalizeLiveAnalysisTree(nodes, nil, "", stats)
-	if tree == nil {
-		t.Fatal("tree = nil, want non-nil")
+	raw, err := parseAndMergeLiveAnalysisPayload(diff, nil, nil, 1, []int64{1}, TreeClassificationConfig{}, stats)
+	if err != nil {
+		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
 	}
-	if !stats.FlatTreeDetected {
-		t.Fatalf("FlatTreeDetected = false, want true (topicChildren=%d maxDepth=%d)", stats.TopicChildCount, stats.MaxDepth)
+	state := previousLiveAnalysisState(raw)
+	if len(state.Items) != 1 || state.Items[0].ID != "issue-valid" {
+		t.Fatalf("items = %+v, want only valid item", state.Items)
+	}
+	if stats.EvidenceItemsQuarantined != 2 {
+		t.Fatalf("quarantined items = %d, want 2", stats.EvidenceItemsQuarantined)
 	}
 }
 
-func TestFinalizeLiveAnalysisTreeDoesNotDetectFlatTreeWhenDeep(t *testing.T) {
-	// root + 大分類1個 + その配下に詳細ノードが連なる深いツリーでは、
-	// rootのout-degreeは1のままなので平坦化として検知してはいけない。
-	nodes := []liveAnalysisTreeNode{
-		{ID: "topic-root", Kind: "topic", Label: "root"},
-		{ID: "topic-major", Kind: "topic", Label: "大分類"},
-	}
-	for i := 0; i < flatTreeMinTopicChildren; i++ {
-		nodes = append(nodes, liveAnalysisTreeNode{ID: fmt.Sprintf("issue-%d", i), Kind: "issue", Label: fmt.Sprintf("詳細%d", i)})
-	}
-	edges := []liveAnalysisTreeEdge{{Source: "topic-root", Target: "topic-major"}}
-	for i := 0; i < flatTreeMinTopicChildren; i++ {
-		edges = append(edges, liveAnalysisTreeEdge{Source: "topic-major", Target: fmt.Sprintf("issue-%d", i)})
-	}
+func TestParseAndMergeLiveAnalysisPayloadReportsEvidenceNormalization(t *testing.T) {
+	diff := `{"summary":"要約","currentTopic":"話題","items":[{"id":"issue-evidence","kind":"issue","severity":"low","title":"根拠","body":"本文","status":"open","evidenceSequenceNos":["1","bad",99]}]}`
 	stats := &liveAnalysisTreeMergeStats{}
-
-	tree := finalizeLiveAnalysisTree(nodes, edges, "", stats)
-	if tree == nil {
-		t.Fatal("tree = nil, want non-nil")
+	if _, err := parseAndMergeLiveAnalysisPayload(diff, nil, nil, 1, []int64{1}, TreeClassificationConfig{}, stats); err != nil {
+		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
 	}
-	if stats.FlatTreeDetected {
-		t.Fatalf("FlatTreeDetected = true, want false (topicChildren=%d maxDepth=%d, deep tree via topic-major)", stats.TopicChildCount, stats.MaxDepth)
-	}
-	if stats.MaxDepth < 2 {
-		t.Fatalf("MaxDepth = %d, want >= 2", stats.MaxDepth)
+	if stats.EvidenceNumericStringsNormalized != 1 || stats.EvidenceValuesRejected != 1 || stats.EvidenceValuesOutOfRound != 1 {
+		t.Fatalf("evidence stats = %+v", stats)
 	}
 }
 
-func TestFinalizeLiveAnalysisTreeDetectsFlatTreeByChildRatioEvenWithoutDroppedNodes(t *testing.T) {
-	// droppedNodes=0 でも、topicChildren/totalNodes が
-	// flatTreeChildRatioThreshold(0.7)を超えれば平坦化として検知しなければ
-	// ならない。ここでは絶対数(flatTreeMinTopicChildren=8)には満たない5件の
-	// 詳細ノードだけを使い、比率側の条件だけがトリガーになることを確認する。
-	nodes := []liveAnalysisTreeNode{{ID: "topic-root", Kind: "topic", Label: "root"}}
-	for i := 0; i < 5; i++ {
-		nodes = append(nodes, liveAnalysisTreeNode{ID: fmt.Sprintf("issue-%d", i), Kind: "issue", Label: fmt.Sprintf("詳細%d", i)})
-	}
-	stats := &liveAnalysisTreeMergeStats{}
+// ---------------------------------------------------------------------------
+// ツリー構造の制約(Phase 2 の中核)
+// ---------------------------------------------------------------------------
 
-	tree := finalizeLiveAnalysisTree(nodes, nil, "", stats)
-	if tree == nil {
-		t.Fatal("tree = nil, want non-nil")
-	}
-	if stats.droppedNodes() != 0 {
-		t.Fatalf("droppedNodes() = %d, want 0", stats.droppedNodes())
-	}
-	if stats.TopicChildCount >= flatTreeMinTopicChildren {
-		t.Fatalf("TopicChildCount = %d, want below flatTreeMinTopicChildren so only the ratio condition can trigger", stats.TopicChildCount)
-	}
-	if !stats.FlatTreeDetected {
-		t.Fatalf("FlatTreeDetected = false, want true via child-ratio threshold (topicChildren=%d totalNodes=%d)", stats.TopicChildCount, len(nodes))
-	}
-}
-
-func TestFinalizeLiveAnalysisTreeReparentsRootFallbackNodeWhenMajorTopicAppearsLater(t *testing.T) {
-	// previous ラウンドでは大分類が無く、issue-x が root(primaryTopicID)から
-	// 直接ぶら下がる「救済」状態だった。今回のラウンドで大分類topicノードが
-	// 追加されたら、issue-x はその大分類配下へ付け替わり、ツリーはroot直下の
-	// 平坦な形から深さ2以上へ変わらなければならない。
-	previous := `{
-		"summary": "前回",
+func TestMergeAssignsParentTopicFromAssignments(t *testing.T) {
+	diff := `{
+		"summary": "要約",
 		"currentTopic": "進捗確認",
-		"items": [],
+		"items": [
+			{"id": "question-x", "kind": "question", "severity": "low", "title": "質問X", "body": "", "status": "open"}
+		],
+		"assignments": [
+			{"nodeId": "question-x", "parentTopicId": "topic-progress", "confidence": 0.9, "reason": "進捗の質問"}
+		]
+	}`
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	node := treeNodeByID(merged.Tree, "question-x")
+	if node == nil || node.ParentID != "topic-progress" {
+		t.Fatalf("node = %+v, want assigned parent topic-progress", node)
+	}
+	assertTreeInvariants(t, merged.Tree)
+}
+
+func TestMergeReplacesOldParentOnReassignment(t *testing.T) {
+	// 既存topicへの再割当(十分なconfidence)は1ラウンドで移動し、旧親エッジが
+	// 残らないこと。前回payloadに分類confidenceが無い(legacy)場合、移動は
+	// confidence >= 閾値で許可される。
+	previous := `{
+		"summary": "前回の要約",
+		"currentTopic": "進捗確認",
+		"items": [
+			{"id": "issue-a", "kind": "issue", "severity": "medium", "title": "課題A", "body": "説明A", "status": "open"}
+		],
 		"tree": {
 			"nodes": [
-				{"id": "topic-root", "kind": "topic", "label": "進捗確認"},
-				{"id": "issue-x", "kind": "issue", "label": "課題X"}
+				{"id": "root", "kind": "topic", "label": "会議全体"},
+				{"id": "topic-progress", "kind": "topic", "parentId": "root", "label": "進捗確認"},
+				{"id": "topic-quality", "kind": "topic", "parentId": "root", "label": "品質"},
+				{"id": "issue-a", "kind": "issue", "parentId": "topic-progress", "label": "課題A"}
 			],
 			"edges": [
-				{"source": "topic-root", "target": "issue-x"}
+				{"source": "root", "target": "topic-progress"},
+				{"source": "root", "target": "topic-quality"},
+				{"source": "topic-progress", "target": "issue-a"}
 			]
 		}
 	}`
 	diff := `{
-		"summary": "更新",
-		"currentTopic": "進捗確認",
+		"summary": "要約",
+		"currentTopic": "品質",
 		"items": [],
-		"tree": {
-			"nodes": [
-				{"id": "topic-major", "kind": "topic", "label": "大分類"}
-			],
-			"edges": []
-		}
+		"assignments": [
+			{"nodeId": "issue-a", "parentTopicId": "topic-quality", "confidence": 0.8, "reason": "品質の議論"}
+		]
 	}`
+	merged := mergeForTest(t, diff, json.RawMessage(previous))
+	node := treeNodeByID(merged.Tree, "issue-a")
+	if node == nil || node.ParentID != "topic-quality" {
+		t.Fatalf("node = %+v, want moved to topic-quality", node)
+	}
+	// 旧親エッジ(topic-progress -> issue-a)が残っていないこと。
+	for _, edge := range merged.Tree.Edges {
+		if edge.Source == "topic-progress" && edge.Target == "issue-a" {
+			t.Fatalf("old parent edge must be replaced, got %+v", merged.Tree.Edges)
+		}
+	}
+	assertTreeInvariants(t, merged.Tree)
+}
 
-	stats := &liveAnalysisTreeMergeStats{}
-	raw, err := parseAndMergeLiveAnalysisPayload(diff, json.RawMessage(previous), stats)
-	if err != nil {
-		t.Fatalf("parseAndMergeLiveAnalysisPayload() error = %v", err)
+func TestMergeSendsNewTopicProposalToEmergingCandidate(t *testing.T) {
+	// 既にtopicがある会議では、newTopics提案は直ちにtopicにならず emerging
+	// 候補になる。提案先へ割り当てられたitemは追加論点にtentativeで置かれ、
+	// 候補の証拠として記録される。
+	diff := `{
+		"summary": "要約",
+		"currentTopic": "品質",
+		"items": [],
+		"newTopics": [{"id": "topic-quality", "label": "品質"}],
+		"assignments": [
+			{"nodeId": "issue-a", "parentTopicId": "topic-quality", "confidence": 0.8, "reason": "品質の議論"}
+		]
+	}`
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	assertTreeInvariants(t, merged.Tree)
+	if treeNodeByID(merged.Tree, "topic-quality") != nil {
+		t.Fatalf("proposed topic must not be created immediately: %+v", merged.Tree.Nodes)
 	}
-	var payload liveAnalysisPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("Unmarshal merged payload: %v", err)
+	candidateID, _ := canonicalCandidateID("品質", "")
+	if len(merged.EmergingTopics) != 1 || merged.EmergingTopics[0].ID != candidateID {
+		t.Fatalf("emergingTopics = %+v, want server candidate %s", merged.EmergingTopics, candidateID)
 	}
-	if stats.ReparentedNodes < 1 {
-		t.Fatalf("ReparentedNodes = %d, want >= 1", stats.ReparentedNodes)
+	if got := merged.EmergingTopics[0].EvidenceItemIDs; len(got) != 1 || got[0] != "issue-a" {
+		t.Fatalf("evidence = %+v, want [issue-a]", got)
 	}
-	if stats.MaxDepth < 2 {
-		t.Fatalf("MaxDepth = %d, want >= 2 (issue-x moved under topic-major)", stats.MaxDepth)
-	}
-	foundReparented := false
-	for _, edge := range payload.Tree.Edges {
-		if edge.Source == "topic-major" && edge.Target == "issue-x" {
-			foundReparented = true
-		}
-		if edge.Source == "topic-root" && edge.Target == "issue-x" {
-			t.Fatalf("edges = %+v, want stale topic-root -> issue-x fallback removed by reparenting", payload.Tree.Edges)
-		}
-	}
-	if !foundReparented {
-		t.Fatalf("edges = %+v, want issue-x reparented under topic-major", payload.Tree.Edges)
+	// 既にtopic-progressに配置済みのitemは、未昇格候補のために動かさない。
+	node := treeNodeByID(merged.Tree, "issue-a")
+	if node == nil || node.ParentID != "topic-progress" {
+		t.Fatalf("node = %+v, want kept under topic-progress until promotion", node)
 	}
 }
 
-func TestParseAndValidateFinalAnalysisPayloadParsesSchema(t *testing.T) {
-	content := `{"suggestedTitle":"週次定例","overview":"概要です","decisions":[{"text":"リリース承認","importance":"high"}],"actionItems":[{"text":"資料作成","owner":"田中","due":"来週","priority":"medium"}],"openIssues":["未確定の予算"],"keyPoints":["重要な論点"],"nextMeetingTopics":["次回議題"]}`
+func TestMergeSendsUnknownParentToUnclassified(t *testing.T) {
+	diff := `{
+		"summary": "要約",
+		"currentTopic": "",
+		"items": [{"id": "todo-y", "kind": "todo", "severity": "low", "title": "作業Y", "body": "", "status": "open"}],
+		"assignments": [{"nodeId": "todo-y", "parentTopicId": "topic-not-exists", "confidence": 0.4, "reason": ""}]
+	}`
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	node := treeNodeByID(merged.Tree, "todo-y")
+	if node == nil || node.ParentID != treeUnclassifiedTopicID {
+		t.Fatalf("node = %+v, want rescued into %s (not the latest topic)", node, treeUnclassifiedTopicID)
+	}
+	// AIアシスタントカードの「TODO」と議論ツリーの種別表示を一致させるため、
+	// todo itemはツリーでもkind "todo" のまま合成される(issueへ変換しない)。
+	if node.Kind != "todo" {
+		t.Fatalf("todo item must synthesize a todo node, got %q", node.Kind)
+	}
+	assertTreeInvariants(t, merged.Tree)
+}
 
+func TestMergeRejectsDetailNodeAsParentByClimbingToTopic(t *testing.T) {
+	// 詳細ノード(issue-a)を親に指定しても、そのtopic祖先(topic-progress)へ
+	// 正規化される(型逆転の防止)。
+	diff := `{
+		"summary": "要約",
+		"currentTopic": "",
+		"items": [{"id": "risk-z", "kind": "risk", "severity": "high", "title": "リスクZ", "body": "", "status": "open"}],
+		"assignments": [{"nodeId": "risk-z", "parentTopicId": "issue-a", "confidence": 0.7, "reason": "課題Aに関連"}]
+	}`
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	node := treeNodeByID(merged.Tree, "risk-z")
+	if node == nil || node.ParentID != "topic-progress" {
+		t.Fatalf("node = %+v, want parent normalized to the topic ancestor topic-progress", node)
+	}
+	assertTreeInvariants(t, merged.Tree)
+}
+
+func TestMergeNormalizesLegacyMultiParentUnionEdges(t *testing.T) {
+	// 旧形式(和集合エッジ・複数親・双方向・型逆転)の前回payloadが、単一親の
+	// 正規化済みツリーへ変換されること。
+	previous := `{
+		"summary": "前回",
+		"currentTopic": "全体",
+		"items": [
+			{"id": "issue-1", "kind": "issue", "severity": "low", "title": "論点1", "body": "", "status": "open"},
+			{"id": "risk-1", "kind": "risk", "severity": "low", "title": "リスク1", "body": "", "status": "open"}
+		],
+		"tree": {
+			"nodes": [
+				{"id": "topic-main", "kind": "topic", "label": "全体"},
+				{"id": "topic-sub", "kind": "topic", "label": "サブ"},
+				{"id": "issue-1", "kind": "issue", "label": "論点1"},
+				{"id": "risk-1", "kind": "risk", "label": "リスク1"}
+			],
+			"edges": [
+				{"source": "topic-main", "target": "issue-1"},
+				{"source": "topic-sub", "target": "issue-1"},
+				{"source": "issue-1", "target": "risk-1"},
+				{"source": "risk-1", "target": "issue-1"},
+				{"source": "risk-1", "target": "topic-sub"},
+				{"source": "topic-main", "target": "topic-sub"}
+			]
+		}
+	}`
+	diff := `{"summary":"更新","currentTopic":"全体","items":[]}`
+	merged := mergeForTest(t, diff, json.RawMessage(previous))
+	assertTreeInvariants(t, merged.Tree)
+	if treeNodeByID(merged.Tree, "issue-1") == nil || treeNodeByID(merged.Tree, "risk-1") == nil {
+		t.Fatalf("legacy nodes must survive normalization: %+v", merged.Tree)
+	}
+}
+
+func TestMergeSurvivesLegacyCyclicEdgesWithoutHanging(t *testing.T) {
+	previous := `{
+		"summary": "前回",
+		"currentTopic": "全体",
+		"items": [
+			{"id": "a", "kind": "issue", "severity": "low", "title": "A", "body": "", "status": "open"},
+			{"id": "b", "kind": "issue", "severity": "low", "title": "B", "body": "", "status": "open"},
+			{"id": "c", "kind": "issue", "severity": "low", "title": "C", "body": "", "status": "open"}
+		],
+		"tree": {
+			"nodes": [
+				{"id": "a", "kind": "issue", "label": "A"},
+				{"id": "b", "kind": "issue", "label": "B"},
+				{"id": "c", "kind": "issue", "label": "C"}
+			],
+			"edges": [
+				{"source": "a", "target": "b"},
+				{"source": "b", "target": "c"},
+				{"source": "c", "target": "a"}
+			]
+		}
+	}`
+	diff := `{"summary":"更新","currentTopic":"","items":[]}`
+	merged := mergeForTest(t, diff, json.RawMessage(previous))
+	assertTreeInvariants(t, merged.Tree)
+	// 長い循環しか無い詳細ノードは全て未分類topicへ救済される。
+	for _, id := range []string{"a", "b", "c"} {
+		node := treeNodeByID(merged.Tree, id)
+		if node == nil || node.ParentID != treeUnclassifiedTopicID {
+			t.Fatalf("node %s = %+v, want rescued into unclassified", id, node)
+		}
+	}
+}
+
+func TestMergeNeverCreatesSecondRoot(t *testing.T) {
+	diff := `{
+		"summary": "要約",
+		"currentTopic": "",
+		"items": [],
+		"newTopics": [
+			{"id": "root", "label": "偽root"},
+			{"id": "topic-a", "label": "分類A"}
+		]
+	}`
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	assertTreeInvariants(t, merged.Tree)
+	root := treeNodeByID(merged.Tree, treeRootNodeID)
+	if root == nil || root.Label == "偽root" {
+		t.Fatalf("root = %+v, must not be replaced by model proposal", root)
+	}
+}
+
+func TestMergeDeduplicatesNewTopicsByLabel(t *testing.T) {
+	diff := `{
+		"summary": "要約",
+		"currentTopic": "",
+		"items": [{"id": "q-1", "kind": "question", "severity": "low", "title": "質問1", "body": "", "status": "open"}],
+		"newTopics": [{"id": "topic-shinchoku", "label": "進捗確認"}],
+		"assignments": [{"nodeId": "q-1", "parentTopicId": "topic-shinchoku", "confidence": 0.9, "reason": ""}]
+	}`
+	merged := mergeForTest(t, diff, json.RawMessage(mergeTestPreviousPayload))
+	if treeNodeByID(merged.Tree, "topic-shinchoku") != nil {
+		t.Fatalf("duplicate-label topic must not be created: %+v", merged.Tree.Nodes)
+	}
+	node := treeNodeByID(merged.Tree, "q-1")
+	if node == nil || node.ParentID != "topic-progress" {
+		t.Fatalf("node = %+v, want assignment aliased onto existing topic-progress", node)
+	}
+	assertTreeInvariants(t, merged.Tree)
+}
+
+func TestMergeMarksResolvedIdsOnItemsAndNodes(t *testing.T) {
+	diff := `{"summary":"更新","currentTopic":"進捗確認","resolvedIds":[],"resolutionUpdates":[{"itemId":"risk-b","status":"resolved","evidenceSequenceNos":[1],"reason":"解決済み"}],"items":[]}`
+	scope := liveEvidenceScope{Allowed: map[int64]struct{}{1: {}}, CurrentRound: map[int64]struct{}{1: {}}, TranscriptText: map[int64]string{1: "リスクBは解決済みです"}, CoveredThrough: 1}
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(diff, json.RawMessage(mergeTestPreviousPayload), nil, 2, []int64{1}, scope, TreeClassificationConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := previousLiveAnalysisState(raw)
+	if merged.Items[1].ID != "risk-b" || merged.Items[1].Status != "resolved" {
+		t.Fatalf("item = %+v, want resolved via validated resolutionUpdates", merged.Items[1])
+	}
+	node := treeNodeByID(merged.Tree, "risk-b")
+	if node == nil || node.Status != "resolved" {
+		t.Fatalf("node = %+v, want resolved status mirrored on tree node", node)
+	}
+	if merged.ResolvedIds != nil {
+		t.Fatalf("resolvedIds must be cleared from the persisted payload")
+	}
+}
+
+func TestConvertLegacyTreeDiffProducesProposals(t *testing.T) {
+	// v2スキーマのまま出力するモデルへの後方互換: tree差分が提案へ変換される。
+	diff := `{
+		"summary": "要約",
+		"currentTopic": "基盤",
+		"items": [],
+		"tree": {
+			"nodes": [
+				{"id": "topic-infra", "kind": "topic", "label": "基盤"},
+				{"id": "issue-db", "kind": "issue", "label": "DB移行", "description": "移行手順が未定"}
+			],
+			"edges": [{"source": "topic-infra", "target": "issue-db"}]
+		}
+	}`
+	merged := mergeForTest(t, diff, nil)
+	assertTreeInvariants(t, merged.Tree)
+	topic := treeNodeByID(merged.Tree, "topic-infra")
+	if topic == nil || topic.Kind != "topic" || topic.ParentID != treeRootNodeID {
+		t.Fatalf("topic = %+v, want converted to a root-parented topic", topic)
+	}
+	node := treeNodeByID(merged.Tree, "issue-db")
+	if node == nil || node.ParentID != "topic-infra" {
+		t.Fatalf("node = %+v, want legacy edge converted to assignment", node)
+	}
+	found := false
+	for _, item := range merged.Items {
+		if item.ID == "issue-db" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("legacy detail node must be converted into an item: %+v", merged.Items)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// アジェンダ活用(Phase 3)
+// ---------------------------------------------------------------------------
+
+func fixtureMeetingContext() *meetingContext {
+	return buildMeetingContext(&meetingSessionPreContext{
+		Title:   "定例会議",
+		Purpose: "文字起こしとAI分析の品質を確認する",
+		Context: "DeciScopeはTeams会議をAIで分析するプロダクト",
+		Agenda:  "1. 文字起こし精度\n2. AI分析の制御\n3. 今後の課題",
+	})
+}
+
+func TestBuildMeetingContextParsesAgendaWithStableIDs(t *testing.T) {
+	mc := fixtureMeetingContext()
+	if mc == nil || len(mc.Agenda) != 3 {
+		t.Fatalf("meetingContext = %+v, want 3 agenda items", mc)
+	}
+	wants := []struct{ id, title string }{
+		{"agenda-1", "文字起こし精度"},
+		{"agenda-2", "AI分析の制御"},
+		{"agenda-3", "今後の課題"},
+	}
+	for i, want := range wants {
+		if mc.Agenda[i].ID != want.id || mc.Agenda[i].Title != want.title {
+			t.Fatalf("agenda[%d] = %+v, want %+v", i, mc.Agenda[i], want)
+		}
+	}
+}
+
+func TestParseAgendaItemsHandlesBulletsAndDedup(t *testing.T) {
+	items := parseAgendaItems("・文字起こし精度\n- 文字起こし精度\n(2) AI分析の制御\n\n③ 今後の課題")
+	if len(items) != 3 {
+		t.Fatalf("items = %+v, want bullets stripped and duplicates removed", items)
+	}
+	if items[0].Title != "文字起こし精度" || items[1].Title != "AI分析の制御" || items[2].Title != "今後の課題" {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
+func TestMergeBuildsInitialAgendaSkeleton(t *testing.T) {
+	mc := fixtureMeetingContext()
+	diff := `{"summary":"開始","currentTopic":"文字起こし精度","items":[{"id":"q-open","kind":"question","severity":"low","title":"最初の質問","body":"","status":"open"}],"assignments":[{"nodeId":"q-open","parentTopicId":"agenda-1","confidence":0.9,"reason":""}]}`
+	merged := mergeForTestWithContext(t, diff, nil, mc)
+	assertTreeInvariants(t, merged.Tree)
+	root := treeNodeByID(merged.Tree, treeRootNodeID)
+	if root == nil || root.Label != "定例会議" || !strings.Contains(root.Description, "品質を確認") {
+		t.Fatalf("root = %+v, want label/description from meeting context", root)
+	}
+	for _, id := range []string{"agenda-1", "agenda-2", "agenda-3"} {
+		topic := treeNodeByID(merged.Tree, id)
+		if topic == nil || topic.Kind != "topic" || topic.ParentID != treeRootNodeID {
+			t.Fatalf("agenda topic %s = %+v, want present under root", id, topic)
+		}
+	}
+	node := treeNodeByID(merged.Tree, "q-open")
+	if node == nil || node.ParentID != "agenda-1" {
+		t.Fatalf("node = %+v, want classified into agenda-1", node)
+	}
+	// 未分類topicは子が無い限り生成されない。
+	if treeNodeByID(merged.Tree, treeUnclassifiedTopicID) != nil {
+		t.Fatalf("unclassified topic must not appear without children")
+	}
+}
+
+func TestMergeClassifiesFixtureUtterancesAcrossAgendaTopics(t *testing.T) {
+	// ユーザー指定のアジェンダ活用fixture: 4つの発言由来itemが3つのアジェンダ
+	// topicと追加論点へ分散し、単一topicへ集中しないこと。
+	mc := fixtureMeetingContext()
+	diff := `{
+		"summary": "文字起こしとAI分析について議論",
+		"currentTopic": "文字起こし精度",
+		"items": [
+			{"id": "risk-speaker-id", "kind": "risk", "severity": "high", "title": "話者識別が不安定", "body": "複数人で話すと話者識別が不安定になる", "status": "open"},
+			{"id": "risk-dup-cards", "kind": "risk", "severity": "medium", "title": "同じリスクを何度も作る", "body": "AIが同じリスクを繰り返し生成する", "status": "open"},
+			{"id": "todo-model-compare", "kind": "todo", "severity": "medium", "title": "モデル別出力を比較", "body": "次回はモデルごとの出力を比較したい", "status": "open"},
+			{"id": "issue-report-format", "kind": "issue", "severity": "low", "title": "レポート形式の見直し", "body": "会議終了後のレポート形式も見直したい", "status": "open"}
+		],
+		"assignments": [
+			{"nodeId": "risk-speaker-id", "parentTopicId": "agenda-1", "confidence": 0.92, "reason": "話者識別は文字起こし精度の議題"},
+			{"nodeId": "risk-dup-cards", "parentTopicId": "agenda-2", "confidence": 0.88, "reason": "AI分析の制御に関する問題"},
+			{"nodeId": "todo-model-compare", "parentTopicId": "agenda-3", "confidence": 0.85, "reason": "今後の課題"},
+			{"nodeId": "issue-report-format", "parentTopicId": "topic-unclassified", "confidence": 0.6, "reason": "アジェンダ外の議論"}
+		]
+	}`
+	merged := mergeForTestWithContext(t, diff, nil, mc)
+	assertTreeInvariants(t, merged.Tree)
+	wants := map[string]string{
+		"risk-speaker-id":     "agenda-1",
+		"risk-dup-cards":      "agenda-2",
+		"todo-model-compare":  "agenda-3",
+		"issue-report-format": treeUnclassifiedTopicID,
+	}
+	parentCounts := map[string]int{}
+	for id, wantParent := range wants {
+		node := treeNodeByID(merged.Tree, id)
+		if node == nil || node.ParentID != wantParent {
+			t.Fatalf("node %s = %+v, want parent %s", id, node, wantParent)
+		}
+		parentCounts[node.ParentID]++
+	}
+	for parent, count := range parentCounts {
+		if count > 1 {
+			t.Fatalf("parent %s holds %d of 4 nodes, want spread across topics", parent, count)
+		}
+	}
+	health := computeTreeHealth(merged.Tree)
+	if health.MaxConcentration > 0.5 {
+		t.Fatalf("health = %+v, want no topic holding most detail nodes", health)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ツリー再編成(Task E/F)
+// ---------------------------------------------------------------------------
+
+func overcrowdedTreePayload(topicID string, childCount int) *liveAnalysisTree {
+	tree := &liveAnalysisTree{
+		Nodes: []liveAnalysisTreeNode{
+			{ID: treeRootNodeID, Kind: "topic", Label: "会議"},
+			{ID: topicID, Kind: "topic", ParentID: treeRootNodeID, Label: "過密topic"},
+		},
+	}
+	for i := 0; i < childCount; i++ {
+		id := fmt.Sprintf("issue-%d", i)
+		tree.Nodes = append(tree.Nodes, liveAnalysisTreeNode{ID: id, Kind: "issue", ParentID: topicID, Label: fmt.Sprintf("論点%d", i)})
+	}
+	for _, node := range tree.Nodes {
+		if node.ParentID != "" {
+			tree.Edges = append(tree.Edges, liveAnalysisTreeEdge{Source: node.ParentID, Target: node.ID})
+		}
+	}
+	return tree
+}
+
+func TestComputeTreeHealthDetectsOvercrowdedTopicAnywhere(t *testing.T) {
+	tree := overcrowdedTreePayload("topic-busy", treeReorganizeMaxTopicChildren)
+	health := computeTreeHealth(tree)
+	if !health.needsReorganization() {
+		t.Fatalf("health = %+v, want reorganization trigger", health)
+	}
+	if health.MaxTopicID != "topic-busy" {
+		t.Fatalf("MaxTopicID = %q, want topic-busy", health.MaxTopicID)
+	}
+
+	small := overcrowdedTreePayload("topic-ok", 3)
+	if computeTreeHealth(small).needsReorganization() {
+		t.Fatalf("small tree must not trigger reorganization")
+	}
+}
+
+func TestComputeTreeHealthIgnoresResolvedNodes(t *testing.T) {
+	tree := overcrowdedTreePayload("topic-busy", treeReorganizeMaxTopicChildren)
+	for i := range tree.Nodes {
+		if tree.Nodes[i].Kind != "topic" {
+			tree.Nodes[i].Status = "resolved"
+		}
+	}
+	if computeTreeHealth(tree).needsReorganization() {
+		t.Fatalf("resolved nodes must not count toward crowding")
+	}
+}
+
+func TestApplyTreeOperationsSplitsOvercrowdedTopicLocally(t *testing.T) {
+	tree := overcrowdedTreePayload("topic-busy", 8)
+	ops := []treeOperation{
+		{Type: "create_topic", TopicID: "topic-speech-quality", Label: "音声認識品質"},
+		{Type: "move_node", NodeID: "issue-0", ToParentID: "topic-speech-quality"},
+		{Type: "move_node", NodeID: "issue-1", ToParentID: "topic-speech-quality"},
+		{Type: "rename_topic", TopicID: "topic-busy", Label: "分析ロジック"},
+	}
+	rebuilt, applied := applyTreeOperations(tree, nil, ops, TreeClassificationConfig{}, nil)
+	if applied != 4 {
+		t.Fatalf("applied = %d, want 4", applied)
+	}
+	assertTreeInvariants(t, rebuilt)
+	moved := treeNodeByID(rebuilt, "issue-0")
+	if moved == nil || moved.ParentID != "topic-speech-quality" {
+		t.Fatalf("moved node = %+v", moved)
+	}
+	renamed := treeNodeByID(rebuilt, "topic-busy")
+	if renamed == nil || renamed.Label != "分析ロジック" {
+		t.Fatalf("renamed topic = %+v", renamed)
+	}
+	// 残ったノードの親は維持される。
+	stay := treeNodeByID(rebuilt, "issue-5")
+	if stay == nil || stay.ParentID != "topic-busy" {
+		t.Fatalf("unmoved node = %+v", stay)
+	}
+}
+
+func TestApplyTreeOperationsSkipsInvalidOperations(t *testing.T) {
+	tree := overcrowdedTreePayload("topic-busy", 3)
+	mc := fixtureMeetingContext()
+	ops := []treeOperation{
+		{Type: "move_node", NodeID: "issue-0", ToParentID: "issue-1"},             // 詳細ノードを親にできない
+		{Type: "move_node", NodeID: "missing", ToParentID: "topic-busy"},          // 存在しないノード
+		{Type: "merge_topic", FromTopicID: "agenda-1", IntoTopicID: "topic-busy"}, // アジェンダは統合不可
+		{Type: "unknown_op"},
+	}
+	rebuilt, applied := applyTreeOperations(tree, mc, ops, TreeClassificationConfig{}, nil)
+	if applied != 0 {
+		t.Fatalf("applied = %d, want all invalid operations skipped", applied)
+	}
+	node := treeNodeByID(rebuilt, "issue-0")
+	if node == nil || node.ParentID != "topic-busy" {
+		t.Fatalf("node = %+v, want unchanged", node)
+	}
+}
+
+func TestApplyTreeOperationsMergeTopicMovesChildren(t *testing.T) {
+	tree := overcrowdedTreePayload("topic-busy", 2)
+	tree.Nodes = append(tree.Nodes, liveAnalysisTreeNode{ID: "topic-dup", Kind: "topic", ParentID: treeRootNodeID, Label: "重複topic"})
+	tree.Nodes = append(tree.Nodes, liveAnalysisTreeNode{ID: "issue-x", Kind: "issue", ParentID: "topic-dup", Label: "論点X"})
+	tree.Edges = append(tree.Edges,
+		liveAnalysisTreeEdge{Source: treeRootNodeID, Target: "topic-dup"},
+		liveAnalysisTreeEdge{Source: "topic-dup", Target: "issue-x"})
+	rebuilt, applied := applyTreeOperations(tree, nil, []treeOperation{
+		{Type: "merge_topic", FromTopicID: "topic-dup", IntoTopicID: "topic-busy"},
+	}, TreeClassificationConfig{}, nil)
+	if applied != 1 {
+		t.Fatalf("applied = %d, want 1", applied)
+	}
+	assertTreeInvariants(t, rebuilt)
+	if treeNodeByID(rebuilt, "topic-dup") != nil {
+		t.Fatalf("merged topic must be removed")
+	}
+	moved := treeNodeByID(rebuilt, "issue-x")
+	if moved == nil || moved.ParentID != "topic-busy" {
+		t.Fatalf("moved child = %+v", moved)
+	}
+}
+
+// scriptedCompleter returns queued results in order.
+type scriptedCompleter struct {
+	results  []AIChatResult
+	err      error
+	requests []AIChatRequest
+}
+
+func (c *scriptedCompleter) Complete(_ context.Context, request AIChatRequest) (AIChatResult, error) {
+	c.requests = append(c.requests, request)
+	if c.err != nil {
+		return AIChatResult{}, c.err
+	}
+	if len(c.results) == 0 {
+		return AIChatResult{}, fmt.Errorf("no scripted result")
+	}
+	result := c.results[0]
+	c.results = c.results[1:]
+	return result, nil
+}
+
+func newInternalTestService(completer AIChatCompleter, config MeetingAnalysisConfig) *MeetingAnalysisService {
+	return NewMeetingAnalysisService(nil, nil, nil, completer, config)
+}
+
+func TestReorganizeTreeIgnoresLegacyModelTreeVersion(t *testing.T) {
+	completer := &scriptedCompleter{results: []AIChatResult{{
+		Content: `{"basedOnTreeVersion": 3, "operations": [
+			{"type":"create_topic","topicId":"topic-x","label":"分割"},
+			{"type":"move_node","nodeId":"issue-0","toParentId":"topic-x"},
+			{"type":"move_node","nodeId":"issue-1","toParentId":"topic-x"}
+		]}`,
+	}}}
+	service := newInternalTestService(completer, MeetingAnalysisConfig{Enabled: true, LiveEnabled: true, Model: "gpt-test"})
+	tree := overcrowdedTreePayload("topic-busy", 8)
+
+	result, applied, err := service.reorganizeTree(context.Background(), "session-1", tree, nil, 12)
+	if err != nil {
+		t.Fatalf("reorganizeTree() error = %v", err)
+	}
+	if applied != 3 {
+		t.Fatalf("applied = %d, want server-owned version to apply operations", applied)
+	}
+	if treeNodeByID(result, "topic-x") == nil {
+		t.Fatalf("model-reported version must not discard valid operations")
+	}
+}
+
+func TestReorganizeTreeUsesServerOwnedVersionsSevenTenAndEleven(t *testing.T) {
+	for _, version := range []int64{7, 10, 11} {
+		t.Run(strconv.FormatInt(version, 10), func(t *testing.T) {
+			completer := &scriptedCompleter{results: []AIChatResult{{Content: `{"basedOnTreeVersion":0,"operations":[]}`}}}
+			service := newInternalTestService(completer, MeetingAnalysisConfig{Enabled: true, LiveEnabled: true, Model: "gpt-test"})
+			if _, _, err := service.reorganizeTree(context.Background(), "session-1", overcrowdedTreePayload("topic-busy", 8), nil, version); err != nil {
+				t.Fatalf("version %d: %v", version, err)
+			}
+		})
+	}
+	if got := reorganizationVersionResult(10, 11); got != "stale" {
+		t.Fatalf("genuine concurrent update result = %q, want stale", got)
+	}
+}
+
+func TestReorganizeTreeAppliesMatchingTreeVersion(t *testing.T) {
+	completer := &scriptedCompleter{results: []AIChatResult{{
+		Content: `{"basedOnTreeVersion": 12, "operations": [
+			{"type":"create_topic","topicId":"topic-x","label":"分割"},
+			{"type":"move_node","nodeId":"issue-0","toParentId":"topic-x"},
+			{"type":"move_node","nodeId":"issue-1","toParentId":"topic-x"}
+		]}`,
+	}}}
+	service := newInternalTestService(completer, MeetingAnalysisConfig{Enabled: true, LiveEnabled: true, Model: "gpt-test"})
+	tree := overcrowdedTreePayload("topic-busy", 8)
+
+	result, applied, err := service.reorganizeTree(context.Background(), "session-1", tree, nil, 12)
+	if err != nil {
+		t.Fatalf("reorganizeTree() error = %v", err)
+	}
+	if applied != 3 {
+		t.Fatalf("applied = %d, want 3", applied)
+	}
+	assertTreeInvariants(t, result)
+	moved := treeNodeByID(result, "issue-0")
+	if moved == nil || moved.ParentID != "topic-x" {
+		t.Fatalf("moved = %+v", moved)
+	}
+}
+
+func TestParseTreeReorganizerResultAcceptsNumericStringVersion(t *testing.T) {
+	result, err := parseTreeReorganizerResult(`{"basedOnTreeVersion":"12","operations":[]}`)
+	if err != nil || result.BasedOnTreeVersion != 12 {
+		t.Fatalf("parseTreeReorganizerResult() = %+v, %v, want version 12", result, err)
+	}
+}
+
+func TestParseTreeReorganizerResultRejectsInvalidVersions(t *testing.T) {
+	for _, payload := range []string{
+		`{"basedOnTreeVersion":"not-a-number","operations":[]}`,
+		`{"basedOnTreeVersion":-1,"operations":[]}`,
+	} {
+		if _, err := parseTreeReorganizerResult(payload); err == nil {
+			t.Fatalf("parseTreeReorganizerResult(%s) error = nil", payload)
+		}
+	}
+	if result, err := parseTreeReorganizerResult(`{"operations":[]}`); err != nil || result.BasedOnTreeVersion != 0 || result.ModelVersionPresent {
+		t.Fatalf("omitted legacy version = %+v, %v", result, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// タスク別モデル設定
+// ---------------------------------------------------------------------------
+
+func TestTaskModelsFallBackToSharedModel(t *testing.T) {
+	config := MeetingAnalysisConfig{
+		Model: "gpt-shared",
+		TaskModels: AITaskModels{
+			TreeReorganizer: "gpt-strong",
+		},
+	}
+	if got := config.modelNameFor(aiTaskLiveExtraction); got != "gpt-shared" {
+		t.Fatalf("live model = %q, want fallback to shared", got)
+	}
+	if got := config.modelNameFor(aiTaskTreeReorganizer); got != "gpt-strong" {
+		t.Fatalf("reorganizer model = %q, want dedicated deployment", got)
+	}
+	if got := config.TaskModels.deploymentFor(aiTaskFinalSummary); got != "" {
+		t.Fatalf("final deployment = %q, want empty (use default)", got)
+	}
+}
+
+func TestCompleteTaskRoutesDeploymentPerTask(t *testing.T) {
+	completer := &scriptedCompleter{results: []AIChatResult{{Content: "{}"}, {Content: "{}"}}}
+	service := newInternalTestService(completer, MeetingAnalysisConfig{
+		Enabled: true,
+		Model:   "gpt-shared",
+		TaskModels: AITaskModels{
+			TreeReorganizer: "gpt-strong",
+		},
+	})
+	if _, model, err := service.completeTask(context.Background(), aiTaskLiveExtraction, AIChatRequest{}, 1); err != nil || model != "gpt-shared" {
+		t.Fatalf("live task model = %q err = %v, want gpt-shared", model, err)
+	}
+	if _, model, err := service.completeTask(context.Background(), aiTaskTreeReorganizer, AIChatRequest{}, 1); err != nil || model != "gpt-strong" {
+		t.Fatalf("reorganizer task model = %q err = %v, want gpt-strong", model, err)
+	}
+	if completer.requests[0].Deployment != "" {
+		t.Fatalf("live request deployment = %q, want default (empty)", completer.requests[0].Deployment)
+	}
+	if completer.requests[1].Deployment != "gpt-strong" {
+		t.Fatalf("reorganizer request deployment = %q, want gpt-strong", completer.requests[1].Deployment)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Meeting Context とプロンプト
+// ---------------------------------------------------------------------------
+
+func TestBuildLiveAnalysisUserPromptSeparatesRoles(t *testing.T) {
+	mc := buildMeetingContext(&meetingSessionPreContext{
+		Title:             "定例",
+		Purpose:           "リリース可否を決める",
+		Context:           "既にDBは移行済み",
+		Agenda:            "1. 品質\n2. スケジュール",
+		CustomInstruction: "技術的リスクを優先して抽出する",
+	})
+	prompt := buildLiveAnalysisUserPrompt(json.RawMessage(mergeTestPreviousPayload), mc, "田中: テストの発言", 5)
+
+	for _, want := range []string{
+		"目的・ゴール(何を重要な論点として採用するかの判断基準",
+		"前提・背景(発言を解釈するための既知情報",
+		"agenda-1: 品質(会議前アジェンダ)",
+		"agenda-2: スケジュール(会議前アジェンダ)",
+		"topic-unclassified",
+		"tree version 5",
+		"id=issue-a",
+		"[新しい発言(差分)]",
+		"[更新ルール]",
+		`"evidenceSequenceNos": [123]`,
+		"JSON整数(number、引用符なし)",
+		"補足指示",
+		"技術的リスクを優先して抽出する",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q\n---\n%s", want, prompt)
+		}
+	}
+	// 補足指示は更新ルールより後に置かれ、制約を上書きできない位置にある。
+	if strings.Index(prompt, "[更新ルール]") > strings.Index(prompt, "技術的リスクを優先して抽出する") {
+		t.Fatalf("directives must appear after the update rules")
+	}
+	// 前回payload全体のJSONは埋め込まない(コンパクトな状態のみ)。
+	if strings.Contains(prompt, `"parentId"`) {
+		t.Fatalf("prompt must not embed the raw previous payload JSON")
+	}
+}
+
+func TestBuildLiveAnalysisUserPromptWithoutContext(t *testing.T) {
+	prompt := buildLiveAnalysisUserPrompt(nil, nil, "", 0)
+	if !strings.Contains(prompt, "(新しい発言はありません)") {
+		t.Fatalf("prompt = %q, want placeholder for empty diff", prompt)
+	}
+	if !strings.Contains(prompt, "newTopicsで大分類を作成") {
+		t.Fatalf("prompt must instruct topic creation when no topics exist")
+	}
+}
+
+func TestRenderMeetingContextSectionsSkipsEmptyFieldsAndDirectives(t *testing.T) {
+	mc := buildMeetingContext(&meetingSessionPreContext{
+		Purpose:           "目的X",
+		CustomInstruction: "指示Y",
+	})
+	section := renderMeetingContextSections(mc)
+	if !strings.Contains(section, "目的X") {
+		t.Fatalf("section = %q", section)
+	}
+	if strings.Contains(section, "指示Y") {
+		t.Fatalf("directives must not be rendered inside the context section")
+	}
+	if strings.Contains(section, "前提・背景") {
+		t.Fatalf("empty fields must be omitted: %q", section)
+	}
+}
+
+func TestMeetingContextRoundTripsThroughJSON(t *testing.T) {
+	mc := fixtureMeetingContext()
+	payload, err := marshalMeetingContext(mc)
+	if err != nil {
+		t.Fatalf("marshalMeetingContext() error = %v", err)
+	}
+	restored := unmarshalMeetingContext(payload)
+	if restored == nil || len(restored.Agenda) != 3 || restored.Agenda[0].ID != "agenda-1" {
+		t.Fatalf("restored = %+v, want stable agenda ids after round trip", restored)
+	}
+	if unmarshalMeetingContext(json.RawMessage(`{"bad`)) != nil {
+		t.Fatalf("invalid payload must degrade to nil")
+	}
+}
+
+func TestParseContextPlannerResultReassignsStableIDs(t *testing.T) {
+	fallback := fixtureMeetingContext()
+	content := `{"title":"定例会議","purpose":"品質確認","background":"","agendaItems":[{"title":"文字起こし精度","order":1},{"title":"AI分析の制御","order":2}],"aiDirectives":["リスク優先"]}`
+	mc, err := parseContextPlannerResult(content, fallback)
+	if err != nil {
+		t.Fatalf("parseContextPlannerResult() error = %v", err)
+	}
+	if len(mc.Agenda) != 2 || mc.Agenda[0].ID != "agenda-1" || mc.Agenda[1].ID != "agenda-2" {
+		t.Fatalf("agenda = %+v, want server-assigned stable ids", mc.Agenda)
+	}
+	if mc.Background != fallback.Background {
+		t.Fatalf("background = %q, want fallback fill for empty planner field", mc.Background)
+	}
+	if _, err := parseContextPlannerResult(`{}`, nil); err == nil {
+		t.Fatalf("empty planner output without fallback must fail")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 最終要約・その他
+// ---------------------------------------------------------------------------
+
+func TestParseAndValidateFinalAnalysisPayloadParsesSchema(t *testing.T) {
+	content := `{"suggestedTitle":"週次定例","overview":"概要","decisions":[{"text":"リリースする","importance":"high"}],"actionItems":[],"openIssues":[],"keyPoints":[],"nextMeetingTopics":[]}`
 	payload, err := parseAndValidateFinalAnalysisPayload(content)
 	if err != nil {
 		t.Fatalf("parseAndValidateFinalAnalysisPayload() error = %v", err)
 	}
-	if !strings.Contains(string(payload), "週次定例") || !strings.Contains(string(payload), "リリース承認") {
-		t.Fatalf("payload = %s", string(payload))
+	var parsed finalAnalysisPayload
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if parsed.SuggestedTitle != "週次定例" || len(parsed.Decisions) != 1 {
+		t.Fatalf("parsed = %+v", parsed)
 	}
 }
 
 func TestParseAndValidateFinalAnalysisPayloadRejectsEmptyPayload(t *testing.T) {
-	if _, err := parseAndValidateFinalAnalysisPayload(`{"suggestedTitle":"","overview":"","decisions":[],"actionItems":[],"openIssues":[],"keyPoints":[],"nextMeetingTopics":[]}`); err == nil {
-		t.Fatal("expected error for empty final analysis payload")
+	if _, err := parseAndValidateFinalAnalysisPayload(`{}`); err == nil {
+		t.Fatalf("expected error for empty final payload")
+	}
+}
+
+func TestBuildFinalAnalysisUserPromptNotesTruncation(t *testing.T) {
+	prompt := buildFinalAnalysisUserPrompt(nil, fixtureMeetingContext(), "田中: 発言", true)
+	if !strings.Contains(prompt, "冒頭の発言は省略") {
+		t.Fatalf("prompt = %q, want truncation note", prompt)
+	}
+	if !strings.Contains(prompt, "agenda-1: 文字起こし精度") {
+		t.Fatalf("prompt must include the agenda topics")
+	}
+	if !strings.Contains(prompt, "目的・ゴールに対してどこまで到達したか") {
+		t.Fatalf("prompt must ask for goal-attainment coverage")
 	}
 }
 
 func TestLiveAnalysisBackoffCapsAtMaxBackoff(t *testing.T) {
 	interval := 10 * time.Second
-	if got := liveAnalysisBackoff(interval, 0); got != interval {
-		t.Fatalf("liveAnalysisBackoff(0) = %s, want %s", got, interval)
-	}
 	if got := liveAnalysisBackoff(interval, 1); got != 20*time.Second {
-		t.Fatalf("liveAnalysisBackoff(1) = %s, want 20s", got)
+		t.Fatalf("backoff(1) = %s", got)
 	}
-	if got := liveAnalysisBackoff(interval, 10); got != meetingAnalysisMaxBackoff {
-		t.Fatalf("liveAnalysisBackoff(10) = %s, want capped at %s", got, meetingAnalysisMaxBackoff)
-	}
-}
-
-func TestMeetingSessionPreContextRenderSkipsEmptyFields(t *testing.T) {
-	preContext := &meetingSessionPreContext{
-		Purpose:  "意思決定",
-		Context:  "原価が上昇している",
-		Concerns: "期限が近い",
-	}
-	if preContext.isEmpty() {
-		t.Fatal("preContext should not be empty")
-	}
-	rendered := preContext.render()
-	if !strings.Contains(rendered, "目的: 意思決定") || !strings.Contains(rendered, "懸念点: 期限が近い") {
-		t.Fatalf("rendered = %q", rendered)
-	}
-	if !strings.Contains(rendered, "前提・背景: 原価が上昇している") {
-		t.Fatalf("rendered = %q, want context line", rendered)
-	}
-	if strings.Contains(rendered, "アジェンダ") {
-		t.Fatalf("rendered = %q, should not include empty agenda", rendered)
-	}
-
-	empty := &meetingSessionPreContext{}
-	if !empty.isEmpty() {
-		t.Fatal("empty preContext should report isEmpty() == true")
-	}
-
-	contextOnly := &meetingSessionPreContext{Context: "背景のみ"}
-	if contextOnly.isEmpty() {
-		t.Fatal("context-only preContext should not report isEmpty()")
-	}
-}
-
-func TestBuildLiveAnalysisUserPromptIncludesNullForFirstRun(t *testing.T) {
-	prompt := buildLiveAnalysisUserPrompt(nil, nil, "田中さん: こんにちは")
-	if !strings.Contains(prompt, "null") {
-		t.Fatalf("prompt = %q, want null previous state", prompt)
-	}
-	if !strings.Contains(prompt, "田中さん: こんにちは") {
-		t.Fatalf("prompt = %q, want diff text included", prompt)
-	}
-}
-
-func TestBuildFinalAnalysisUserPromptNotesTruncation(t *testing.T) {
-	prompt := buildFinalAnalysisUserPrompt(nil, nil, "田中さん: 発言", true)
-	if !strings.Contains(prompt, "省略されています") {
-		t.Fatalf("prompt = %q, want truncation notice", prompt)
+	if got := liveAnalysisBackoff(interval, 100); got != meetingAnalysisMaxBackoff {
+		t.Fatalf("backoff(100) = %s, want capped at %s", got, meetingAnalysisMaxBackoff)
 	}
 }
