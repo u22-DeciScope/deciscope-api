@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
-
-	"deciscope-core-api/internal/domain"
 )
 
-const treeAuditPromptVersion = "v2"
+const treeAuditPromptVersion = "v3"
 
 type TreeAuditFindingType string
 
@@ -76,6 +74,10 @@ const (
 	TreeAuditMergeFragmentedUtterances TreeAuditOperationType = "merge_fragmented_utterances"
 	TreeAuditRewriteItemTitle          TreeAuditOperationType = "rewrite_item_title"
 	TreeAuditRewriteItemDescription    TreeAuditOperationType = "rewrite_item_description"
+	// TreeAuditMoveNode moves a topic/group container node to a new parent
+	// (root/topic/group). See treeAuditOperationClassification and its
+	// applier in applyOneTreeAuditOperation.
+	TreeAuditMoveNode TreeAuditOperationType = "move_node"
 )
 
 type treeAuditFinding struct {
@@ -90,22 +92,27 @@ type treeAuditFinding struct {
 	Confidence          float64              `json:"confidence"`
 }
 
+// treeAuditOperation is the v3 patch schema. Every ID field is a canonical
+// machine ID reference (or a resolvable alias handled by
+// canonicalizeTreeAuditResponse): TargetCanonicalItemID/TargetCanonicalItemIDs
+// point at detail items, TargetCanonicalNodeID/FromParentCanonicalNodeID/
+// ToParentCanonicalNodeID point at tree nodes (topic/group containers for
+// move_node/rename_group/remove_empty_group), and TargetCandidateID points at
+// an emerging (not yet promoted) topic candidate.
 type treeAuditOperation struct {
-	OperationID           string                 `json:"operationId"`
-	Type                  TreeAuditOperationType `json:"type"`
-	NodeID                string                 `json:"nodeId"`
-	NodeIDs               []string               `json:"nodeIds"`
-	CandidateID           string                 `json:"candidateId"`
-	FromCandidateID       string                 `json:"fromCandidateId"`
-	ToCandidateID         string                 `json:"toCandidateId"`
-	FromParentID          string                 `json:"fromParentId"`
-	ToParentID            string                 `json:"toParentId"`
-	GroupID               string                 `json:"groupId"`
-	Label                 string                 `json:"label"`
-	Reason                string                 `json:"reason"`
-	Confidence            float64                `json:"confidence"`
-	EvidenceSequenceNos   []int64                `json:"evidenceSequenceNos"`
-	DependsOnOperationIDs []string               `json:"dependsOnOperationIds"`
+	OperationID               string                 `json:"operationId"`
+	Type                      TreeAuditOperationType `json:"type"`
+	TargetCanonicalItemID     string                 `json:"targetCanonicalItemId"`
+	TargetCanonicalNodeID     string                 `json:"targetCanonicalNodeId"`
+	TargetCanonicalItemIDs    []string               `json:"targetCanonicalItemIds"`
+	TargetCandidateID         string                 `json:"targetCandidateId"`
+	FromParentCanonicalNodeID string                 `json:"fromParentCanonicalNodeId"`
+	ToParentCanonicalNodeID   string                 `json:"toParentCanonicalNodeId"`
+	Label                     string                 `json:"label"`
+	Reason                    string                 `json:"reason"`
+	Confidence                float64                `json:"confidence"`
+	EvidenceSequenceNos       []int64                `json:"evidenceSequenceNos"`
+	DependsOnOperationIDs     []string               `json:"dependsOnOperationIds"`
 }
 
 type treeAuditResponse struct {
@@ -124,24 +131,36 @@ type treeAuditParseRejection struct {
 }
 
 type treeAuditValidatorEvaluation struct {
-	OperationID        string                 `json:"operationId"`
-	Type               TreeAuditOperationType `json:"type"`
-	Result             string                 `json:"result"`
-	Reason             string                 `json:"reason,omitempty"`
-	WouldApply         bool                   `json:"wouldApply"`
-	Applied            bool                   `json:"applied"`
-	CurrentParentScore float64                `json:"currentParentScore,omitempty"`
-	NewParentScore     float64                `json:"newParentScore,omitempty"`
-	Improvement        float64                `json:"improvement,omitempty"`
-	AutoApplyEligible  bool                   `json:"autoApplyEligible"`
-	AutoApplyReason    string                 `json:"autoApplyReason,omitempty"`
+	OperationID string                 `json:"operationId"`
+	Type        TreeAuditOperationType `json:"type"`
+	Result      string                 `json:"result"`
+	Reason      string                 `json:"reason,omitempty"`
+	// Category classifies a rejection as "unsupported" (the operation type
+	// itself has no applier and is never applied regardless of confidence)
+	// or "unsafe" (an applicable operation type whose operation-specific
+	// safety conditions, confidence, or dependency were not satisfied this
+	// round). It is left empty (omitted) for accepted operations.
+	Category           string  `json:"category,omitempty"`
+	Valid              bool    `json:"valid"`
+	Applied            bool    `json:"applied"`
+	CurrentParentScore float64 `json:"currentParentScore,omitempty"`
+	NewParentScore     float64 `json:"newParentScore,omitempty"`
+	Improvement        float64 `json:"improvement,omitempty"`
+	// ModelConfidence is the operation's own self-reported confidence, exactly
+	// as the model returned it. EffectiveConfidence is the server-adjusted
+	// value the HighConfidenceThreshold gate actually compares against (see
+	// treeAuditEffectiveConfidence): for move-type operations it applies
+	// bounded structural bonuses/penalties on top of ModelConfidence; for
+	// every other operation type it equals ModelConfidence unchanged.
+	ModelConfidence     float64 `json:"modelConfidence"`
+	EffectiveConfidence float64 `json:"effectiveConfidence"`
 }
 
 type treeAuditValidatorResult struct {
 	TreeIntegrityValid             bool                           `json:"treeIntegrityValid"`
 	Evaluations                    []treeAuditValidatorEvaluation `json:"evaluations"`
 	OperationsProposed             int                            `json:"operationsProposed"`
-	OperationsWouldApply           int                            `json:"operationsWouldApply"`
+	OperationsValid                int                            `json:"operationsValid"`
 	OperationsApplied              int                            `json:"operationsApplied"`
 	OperationsRejected             int                            `json:"operationsRejected"`
 	StaleOperationsRejected        int                            `json:"staleOperationsRejected"`
@@ -154,7 +173,7 @@ type treeAuditValidatorResult struct {
 	HeuristicDefectCountBefore     int                            `json:"heuristicDefectCountBefore"`
 	HeuristicDefectCountAfter      int                            `json:"heuristicDefectCountAfter"`
 	ParserElementsRejected         int                            `json:"parserElementsRejected"`
-	ParserIDsCanonicalized         int                            `json:"parserIdsCanonicalized"`
+	OperationsCanonicalized        int                            `json:"operationsCanonicalized"`
 }
 
 type treeAuditPrecheckFinding struct {
@@ -185,7 +204,6 @@ type treeAuditEvidenceSegment struct {
 // semantic movement. Zero values are normalized to conservative defaults.
 type TreeAuditConfig struct {
 	Enabled                    bool
-	Mode                       domain.MeetingTreeAuditMode
 	IntervalVersions           int64
 	Interval                   time.Duration
 	MinInterval                time.Duration
@@ -207,9 +225,6 @@ type TreeAuditConfig struct {
 }
 
 func (c TreeAuditConfig) normalized() TreeAuditConfig {
-	if !domain.ValidMeetingTreeAuditMode(c.Mode) {
-		c.Mode = domain.MeetingTreeAuditShadow
-	}
 	if c.IntervalVersions <= 0 {
 		c.IntervalVersions = 3
 	}
@@ -269,7 +284,7 @@ func (c TreeAuditConfig) normalized() TreeAuditConfig {
 
 func (c TreeAuditConfig) active() bool {
 	c = c.normalized()
-	return c.Enabled && c.Mode != domain.MeetingTreeAuditOff
+	return c.Enabled
 }
 
 func validTreeAuditFindingType(value TreeAuditFindingType) bool {
@@ -310,7 +325,7 @@ func validTreeAuditOperationType(value TreeAuditOperationType) bool {
 		TreeAuditSplitCandidate, TreeAuditCreateTopicFromCandidate,
 		TreeAuditAssignItemToCandidate, TreeAuditChangeEvidenceRole,
 		TreeAuditMergeFragmentedUtterances, TreeAuditRewriteItemTitle,
-		TreeAuditRewriteItemDescription:
+		TreeAuditRewriteItemDescription, TreeAuditMoveNode:
 		return true
 	default:
 		return false

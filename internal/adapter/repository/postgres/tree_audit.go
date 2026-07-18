@@ -125,7 +125,7 @@ func (r *MeetingTreeAuditRepository) ApplyMeetingTreeAudit(ctx context.Context, 
 
 const meetingTreeAuditSelect = `
 	SELECT id, session_id, based_on_tree_version,
-		COALESCE(resulting_tree_version, 0), mode, trigger_reason, trigger_class, task,
+		COALESCE(resulting_tree_version, 0), trigger_reason, trigger_class, task,
 		COALESCE(deployment, ''), COALESCE(model, ''), prompt_version,
 		snapshot_hash, status, result, disposition, suppression_reason,
 		provider_called, meeting_elapsed_seconds, input_summary, input_payload,
@@ -193,15 +193,15 @@ func writeMeetingTreeAuditRun(ctx context.Context, queryer meetingTreeAuditQuery
 	result, err := queryer.ExecContext(ctx, `
 		INSERT INTO meeting_tree_audit_runs (
 			id, session_id, based_on_tree_version, resulting_tree_version,
-			mode, trigger_reason, trigger_class, task, deployment, model, prompt_version,
+			trigger_reason, trigger_class, task, deployment, model, prompt_version,
 			snapshot_hash, status, result, disposition, suppression_reason,
 			provider_called, meeting_elapsed_seconds, input_summary, input_payload,
 			raw_response, findings, operations, validator_result,
 			prompt_tokens, completion_tokens, elapsed_ms, error_code, error_message,
 			created_at, completed_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
 	`+conflictClause, run.ID, run.SessionID, run.BasedOnTreeVersion, resultingVersion,
-		string(run.Mode), run.TriggerReason, string(run.TriggerClass), run.Task,
+		run.TriggerReason, string(run.TriggerClass), run.Task,
 		run.Deployment, run.Model, run.PromptVersion, run.SnapshotHash, string(run.Status),
 		run.Result, run.Disposition, run.SuppressionReason, run.ProviderCalled,
 		run.MeetingElapsedSeconds, input, inputPayload, run.RawResponse, findings,
@@ -240,11 +240,11 @@ type meetingTreeAuditScanner interface {
 
 func scanMeetingTreeAuditRun(row meetingTreeAuditScanner) (*domain.MeetingTreeAuditRun, error) {
 	var run domain.MeetingTreeAuditRun
-	var mode, status, triggerClass string
+	var status, triggerClass string
 	var input, inputPayload, findings, operations, validator []byte
 	var completedAt sql.NullTime
 	err := row.Scan(&run.ID, &run.SessionID, &run.BasedOnTreeVersion,
-		&run.ResultingTreeVersion, &mode, &run.TriggerReason, &triggerClass,
+		&run.ResultingTreeVersion, &run.TriggerReason, &triggerClass,
 		&run.Task, &run.Deployment, &run.Model, &run.PromptVersion, &run.SnapshotHash,
 		&status, &run.Result, &run.Disposition, &run.SuppressionReason,
 		&run.ProviderCalled, &run.MeetingElapsedSeconds, &input, &inputPayload,
@@ -257,7 +257,6 @@ func scanMeetingTreeAuditRun(row meetingTreeAuditScanner) (*domain.MeetingTreeAu
 	if err != nil {
 		return nil, fmt.Errorf("query meeting tree audit run: %w", err)
 	}
-	run.Mode = domain.MeetingTreeAuditMode(mode)
 	run.TriggerClass = domain.MeetingTreeAuditTriggerClass(triggerClass)
 	run.Status = domain.MeetingTreeAuditStatus(status)
 	run.InputSummary = append(json.RawMessage(nil), input...)

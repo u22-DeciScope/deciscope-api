@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"deciscope-core-api/internal/domain"
 )
 
 // 対象session(session_497ed2b0aedf9dc6)の回帰: 監査runのINSERTが失敗した後、
@@ -17,7 +15,7 @@ import (
 // なり続けた。provider未呼び出しの失敗はmin intervalを消費せず、短いbackoff後に
 // 再試行できること。
 func TestTreeAuditRepositoryFailureDoesNotConsumeProviderMinInterval(t *testing.T) {
-	service, _, auditRepo, _, completer, payload := newTreeAuditRunnerFixture(t, domain.MeetingTreeAuditShadow, false)
+	service, _, auditRepo, _, completer, payload := newTreeAuditRunnerFixture(t, false)
 	service.config.TreeAudit.MinInterval = 5 * time.Minute
 	base := time.Date(2026, 7, 17, 6, 8, 0, 0, time.UTC)
 	current := base
@@ -67,8 +65,8 @@ func TestTreeAuditRepositoryFailureDoesNotConsumeProviderMinInterval(t *testing.
 		defer service.mu.Unlock()
 		return !service.sessionStateLocked("session_26959b9519c5f880").auditRunning
 	})
-	if run := auditRepo.latest(); run == nil || run.Result != "shadow" || !run.ProviderCalled {
-		t.Fatalf("recovered run = %+v, want shadow run with providerCalled", run)
+	if run := auditRepo.latest(); run == nil || run.Result != "applied" || !run.ProviderCalled {
+		t.Fatalf("recovered run = %+v, want applied run with providerCalled", run)
 	}
 	service.mu.Lock()
 	if state.lastAuditAt.IsZero() {
@@ -77,40 +75,45 @@ func TestTreeAuditRepositoryFailureDoesNotConsumeProviderMinInterval(t *testing.
 	service.mu.Unlock()
 }
 
-// fake providerでのshadow監査とfinal tree reviewが、運用時に確認するログ
+// fake providerでの監査とfinal tree reviewが、運用時に確認するログ
 // (AI task completed. task=tree_audit / Tree audit completed. disposition= /
-// task=final_tree_review)を出すこと。
-func TestTreeAuditShadowAndFinalReviewEmitOperationalLogs(t *testing.T) {
-	service, _, auditRepo, _, completer, payload := newTreeAuditRunnerFixture(t, domain.MeetingTreeAuditShadow, false)
+// task=final_tree_review)を出すこと。監査とfinal reviewは同一sessionの同一
+// treeVersionを対象にすると片方の適用がもう片方をstale化させるため、CASの
+// 干渉を避けて独立に確認できるよう別々のfixtureを使う。
+func TestTreeAuditAndFinalReviewEmitOperationalLogs(t *testing.T) {
+	auditService, _, auditRepo, _, auditCompleter, auditPayload := newTreeAuditRunnerFixture(t, false)
+	reviewService, _, _, _, reviewCompleter, reviewPayload := newTreeAuditRunnerFixture(t, false)
 
 	var buffer bytes.Buffer
 	previous := log.Writer()
 	log.SetOutput(&buffer)
 	defer log.SetOutput(previous)
 
-	execution, err := service.runTreeAudit(context.Background(), "session_26959b9519c5f880", "semantic_anomaly", aiTaskTreeAudit, payload, 12, false)
-	if err != nil || execution.Result != "shadow" || !execution.ProviderCalled {
-		t.Fatalf("shadow execution = %+v err=%v", execution, err)
+	execution, err := auditService.runTreeAudit(context.Background(), "session_26959b9519c5f880", "semantic_anomaly", aiTaskTreeAudit, auditPayload, 12, false)
+	if err != nil || execution.Result != "applied" || !execution.ProviderCalled {
+		t.Fatalf("tree audit execution = %+v err=%v", execution, err)
 	}
-	if run := auditRepo.latest(); run == nil || run.Task != "tree_audit" || run.Result != "shadow" {
-		t.Fatalf("shadow run = %+v", run)
+	if run := auditRepo.latest(); run == nil || run.Task != "tree_audit" || run.Result != "applied" {
+		t.Fatalf("tree audit run = %+v", run)
 	}
 
-	finalExecution, err := service.runFinalTreeReview(context.Background(), "session_26959b9519c5f880", payload, 12)
-	if err != nil || finalExecution.Result != "shadow" {
+	finalExecution, err := reviewService.runFinalTreeReview(context.Background(), "session_26959b9519c5f880", reviewPayload, 12)
+	if err != nil || finalExecution.Result != "applied" {
 		t.Fatalf("final review execution = %+v err=%v", finalExecution, err)
 	}
-	if completer.callCount() != 2 {
-		t.Fatalf("provider calls = %d, want 2 (audit + final review)", completer.callCount())
+	if auditCompleter.callCount() != 1 {
+		t.Fatalf("tree audit provider calls = %d, want 1", auditCompleter.callCount())
+	}
+	if reviewCompleter.callCount() != 1 {
+		t.Fatalf("final review provider calls = %d, want 1", reviewCompleter.callCount())
 	}
 
 	logged := buffer.String()
 	for _, want := range []string{
 		"AI task completed. task=tree_audit deployment=tree-audit-mini",
 		"Tree audit completed.",
-		"mode=shadow",
-		"result=shadow",
-		"disposition=",
+		"result=applied",
+		"disposition=applied",
 		"AI task completed. task=final_tree_review deployment=tree-audit-mini",
 	} {
 		if !strings.Contains(logged, want) {

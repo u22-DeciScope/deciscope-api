@@ -290,6 +290,9 @@ func (p compositeTranscriptSegmentPublisher) PublishTranscriptSegment(segment do
 // every operation on the service becomes a no-op, so callers never need nil
 // checks.
 func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSessionRepository application.MeetingSessionRepository, publisher application.MeetingAIAnalysisPublisher) *application.MeetingAnalysisService {
+	if config.TreeAuditModeDeprecated {
+		log.Printf("TREE_AUDIT_MODE is deprecated and ignored.")
+	}
 	enabled := config.Enabled()
 	if !enabled {
 		log.Printf("AI meeting analysis disabled; missing environment variables: %s", strings.Join(config.MissingAzureOpenAIVars(), ", "))
@@ -362,13 +365,13 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 }
 
 func logTreeAuditConfiguration(config AIConfig, auditReason string, repositoryReady, schedulerRegistered bool) {
-	if auditReason == "feature_flag_false" || auditReason == "mode_off" {
+	if auditReason == "feature_flag_false" {
 		log.Printf("AI tree audit disabled. reason=%s", auditReason)
 	} else if auditReason != "" {
 		log.Printf("AI tree audit unavailable. reason=%s", auditReason)
 	}
-	log.Printf("AI tree audit configuration. enabled=%t requested=%t mode=%s treeAuditDeployment=%s finalTreeReviewDeployment=%s intervalVersions=%d intervalSeconds=%.0f minIntervalSeconds=%.0f maxRunsPerSession=%d maxRunsPerHour=%d highSeverityMinIntervalSeconds=%.0f highSeverityMaxRunsPerHour=%d repositoryReady=%t schedulerRegistered=%t reason=%s",
-		schedulerRegistered, config.TreeAudit.Enabled, config.TreeAudit.Mode,
+	log.Printf("AI tree audit configuration. enabled=%t treeAuditDeployment=%s finalTreeReviewDeployment=%s intervalVersions=%d intervalSeconds=%.0f minIntervalSeconds=%.0f maxRunsPerSession=%d maxRunsPerHour=%d highSeverityMinIntervalSeconds=%.0f highSeverityMaxRunsPerHour=%d repositoryReady=%t schedulerRegistered=%t reason=%s",
+		config.TreeAudit.Enabled,
 		strings.TrimSpace(config.TaskModels.TreeAudit), strings.TrimSpace(config.TaskModels.FinalTreeReview),
 		config.TreeAudit.IntervalVersions, config.TreeAudit.Interval.Seconds(), config.TreeAudit.MinInterval.Seconds(),
 		config.TreeAudit.MaxRunsPerSession, config.TreeAudit.MaxRunsPerHour,
@@ -377,7 +380,7 @@ func logTreeAuditConfiguration(config AIConfig, auditReason string, repositoryRe
 }
 
 func treeAuditSchedulerRegistered(config application.TreeAuditConfig, repositoryReady bool) bool {
-	return config.Enabled && config.Mode != domain.MeetingTreeAuditOff && repositoryReady
+	return config.Enabled && repositoryReady
 }
 
 func treeAuditConfigurationIssue(config AIConfig, aiEnabled bool) string {
@@ -386,9 +389,6 @@ func treeAuditConfigurationIssue(config AIConfig, aiEnabled bool) string {
 	}
 	if !config.TreeAudit.Enabled {
 		return "feature_flag_false"
-	}
-	if config.TreeAudit.Mode == domain.MeetingTreeAuditOff {
-		return "mode_off"
 	}
 	if !aiEnabled {
 		return "azure_openai_not_configured"

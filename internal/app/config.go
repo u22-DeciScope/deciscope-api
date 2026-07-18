@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"deciscope-core-api/internal/application"
-	"deciscope-core-api/internal/domain"
 	"deciscope-core-api/internal/infrastructure/azureopenai"
 	"deciscope-core-api/internal/infrastructure/botcontrol"
 	"deciscope-core-api/internal/infrastructure/database"
@@ -102,6 +101,10 @@ type AIConfig struct {
 	TaskModels              AITaskModelsConfig
 	TreeAudit               application.TreeAuditConfig
 	TreeAuditEnabledInvalid bool
+	// TreeAuditModeDeprecated is true when TREE_AUDIT_MODE is set to any
+	// non-empty value. The mode switch was removed; the audit AI now runs a
+	// single enabled/disabled pipeline controlled solely by TREE_AUDIT_ENABLED.
+	TreeAuditModeDeprecated bool
 	// TreeClassification は議論ツリーの意味分類ポリシー(AI_TREE_*)。ゼロ値の
 	// 項目は application 側の既定値が使われる。
 	TreeClassification application.TreeClassificationConfig
@@ -247,7 +250,6 @@ func aiConfigFromEnv() AIConfig {
 		},
 		TreeAudit: application.TreeAuditConfig{
 			Enabled:                    treeAuditEnabled,
-			Mode:                       treeAuditModeFromEnv(os.Getenv("TREE_AUDIT_MODE")),
 			IntervalVersions:           int64(positiveIntFromEnv(os.Getenv("TREE_AUDIT_INTERVAL_VERSIONS"), 3)),
 			Interval:                   secondsDurationFromEnv(os.Getenv("TREE_AUDIT_INTERVAL_SECONDS"), 300, 1),
 			MinInterval:                secondsDurationFromEnv(os.Getenv("TREE_AUDIT_MIN_INTERVAL_SECONDS"), 300, 1),
@@ -268,6 +270,7 @@ func aiConfigFromEnv() AIConfig {
 			TentativeMaxVersions:       int64(positiveIntFromEnv(os.Getenv("TREE_AUDIT_TENTATIVE_MAX_VERSIONS"), 3)),
 		},
 		TreeAuditEnabledInvalid: treeAuditEnabledInvalid,
+		TreeAuditModeDeprecated: strings.TrimSpace(os.Getenv("TREE_AUDIT_MODE")) != "",
 		// ゼロ値(未設定・不正値)は application 側の既定値に正規化されるため、
 		// 既定値をここで二重管理しない。
 		TreeClassification: application.TreeClassificationConfig{
@@ -379,21 +382,13 @@ func boolFromEnvDefaultTrue(value string) bool {
 func treeAuditEnabledFromEnv(value string) (enabled bool, invalid bool) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return false, false
+		return true, false
 	}
 	enabled, err := strconv.ParseBool(trimmed)
 	if err != nil {
 		return false, true
 	}
 	return enabled, false
-}
-
-func treeAuditModeFromEnv(value string) domain.MeetingTreeAuditMode {
-	mode := domain.MeetingTreeAuditMode(strings.ToLower(strings.TrimSpace(value)))
-	if !domain.ValidMeetingTreeAuditMode(mode) {
-		return domain.MeetingTreeAuditShadow
-	}
-	return mode
 }
 
 func botControlTimeoutFromEnv(value string) time.Duration {

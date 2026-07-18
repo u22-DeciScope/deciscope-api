@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"deciscope-core-api/internal/application"
-	"deciscope-core-api/internal/domain"
 	"deciscope-core-api/internal/infrastructure/azureopenai"
 )
 
@@ -24,7 +23,6 @@ func TestTreeAuditStartupLogExplainsMigrationAndDoesNotLeakSecret(t *testing.T) 
 		AzureOpenAI: azureopenai.Config{APIKey: "do-not-log-this-api-key"},
 		TreeAudit: application.TreeAuditConfig{
 			Enabled: true,
-			Mode:    domain.MeetingTreeAuditShadow,
 		},
 		TaskModels: AITaskModelsConfig{
 			TreeAudit:       "mini-audit",

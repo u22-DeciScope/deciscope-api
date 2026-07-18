@@ -5,14 +5,6 @@ import (
 	"time"
 )
 
-type MeetingTreeAuditMode string
-
-const (
-	MeetingTreeAuditOff                 MeetingTreeAuditMode = "off"
-	MeetingTreeAuditShadow              MeetingTreeAuditMode = "shadow"
-	MeetingTreeAuditApplyHighConfidence MeetingTreeAuditMode = "apply_high_confidence"
-)
-
 type MeetingTreeAuditStatus string
 
 const (
@@ -38,7 +30,6 @@ type MeetingTreeAuditRun struct {
 	SessionID             string
 	BasedOnTreeVersion    int64
 	ResultingTreeVersion  int64
-	Mode                  MeetingTreeAuditMode
 	TriggerReason         string
 	TriggerClass          MeetingTreeAuditTriggerClass
 	Task                  string
@@ -65,13 +56,4 @@ type MeetingTreeAuditRun struct {
 	ErrorMessage          string
 	CreatedAt             time.Time
 	CompletedAt           *time.Time
-}
-
-func ValidMeetingTreeAuditMode(mode MeetingTreeAuditMode) bool {
-	switch mode {
-	case MeetingTreeAuditOff, MeetingTreeAuditShadow, MeetingTreeAuditApplyHighConfidence:
-		return true
-	default:
-		return false
-	}
 }

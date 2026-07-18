@@ -18,19 +18,27 @@ type treeAuditSnapshot struct {
 	CoverageThroughSequenceNo int64                        `json:"coverageThroughSequenceNo"`
 	Nodes                     []treeAuditSnapshotNode      `json:"nodes"`
 	Candidates                []treeAuditSnapshotCandidate `json:"candidates"`
-	RecentTreeChanges         *liveAnalysisTreeChanges     `json:"recentTreeChanges,omitempty"`
-	PrecheckFindings          []treeAuditPrecheckFinding   `json:"precheckFindings"`
-	EvidenceSegments          []treeAuditEvidenceSegment   `json:"evidenceSegments"`
-	RecentTranscript          []treeAuditEvidenceSegment   `json:"recentTranscript"`
-	Compressed                bool                         `json:"compressed"`
+	// AgendaIDs lists the stable canonical node IDs of the fixed pre-meeting
+	// agenda topics (root excluded). Operations may use them anywhere a
+	// canonical node ID is expected.
+	AgendaIDs []string `json:"agendaIds"`
+	// ValidParentCanonicalNodeIDs lists the existing topic/group container
+	// node IDs an operation may use as a toParent (action_summary agenda
+	// excluded).
+	ValidParentCanonicalNodeIDs []string                   `json:"validParentCanonicalNodeIds"`
+	RecentTreeChanges           *liveAnalysisTreeChanges   `json:"recentTreeChanges,omitempty"`
+	PrecheckFindings            []treeAuditPrecheckFinding `json:"precheckFindings"`
+	EvidenceSegments            []treeAuditEvidenceSegment `json:"evidenceSegments"`
+	RecentTranscript            []treeAuditEvidenceSegment `json:"recentTranscript"`
+	Compressed                  bool                       `json:"compressed"`
 }
 
 type treeAuditSnapshotNode struct {
-	ID                       string                 `json:"id"`
-	Kind                     string                 `json:"kind"`
+	CanonicalNodeID          string                 `json:"canonicalNodeId"`
+	NodeType                 string                 `json:"nodeType"`
 	Title                    string                 `json:"title"`
 	Description              string                 `json:"description,omitempty"`
-	ParentID                 string                 `json:"parentId"`
+	ParentCanonicalNodeID    string                 `json:"parentCanonicalNodeId"`
 	Fixed                    bool                   `json:"fixed"`
 	Dynamic                  bool                   `json:"dynamic"`
 	Tentative                bool                   `json:"tentative"`
@@ -48,7 +56,7 @@ type treeAuditEvidenceRef struct {
 }
 
 type treeAuditSnapshotCandidate struct {
-	ID              string   `json:"id"`
+	ID              string   `json:"candidateId"`
 	Title           string   `json:"title"`
 	Description     string   `json:"description,omitempty"`
 	EvidenceItemIDs []string `json:"evidenceItemIds"`
@@ -56,6 +64,12 @@ type treeAuditSnapshotCandidate struct {
 	LastVersion     int64    `json:"lastVersion"`
 	RoundCount      int      `json:"roundCount"`
 	Inactive        bool     `json:"inactive"`
+	// PromotedNodeID is set when this candidate has already been promoted to
+	// a dynamic topic tree node (which keeps the candidate's own ID). A
+	// promoted candidate is removed from EmergingTopics tracking on the round
+	// it is promoted, so seeing this set for a still-listed candidate is
+	// unexpected but handled defensively.
+	PromotedNodeID string `json:"promotedNodeId,omitempty"`
 }
 
 type treeAuditSnapshotBuild struct {
@@ -81,7 +95,12 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 	for _, item := range state.Items {
 		items[item.ID] = item
 	}
+	allNodeIDs := make(map[string]struct{}, len(state.Tree.Nodes))
+	for _, node := range state.Tree.Nodes {
+		allNodeIDs[node.ID] = struct{}{}
+	}
 	nodes := make([]treeAuditSnapshotNode, 0, len(selected))
+	var agendaIDs, validParentIDs []string
 	for _, node := range selected {
 		item := items[node.ID]
 		refs := make([]treeAuditEvidenceRef, 0, len(item.EvidenceSequenceNos))
@@ -89,9 +108,9 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 			refs = append(refs, treeAuditEvidenceRef{SequenceNo: sequenceNo, Role: roles[sequenceNo]})
 		}
 		nodes = append(nodes, treeAuditSnapshotNode{
-			ID: node.ID, Kind: node.Kind, Title: node.Label,
+			CanonicalNodeID: node.ID, NodeType: node.Kind, Title: node.Label,
 			Description:              firstNonEmptyTrimmed(node.Description, item.Body),
-			ParentID:                 node.ParentID,
+			ParentCanonicalNodeID:    node.ParentID,
 			Fixed:                    node.ID == treeRootNodeID || node.Origin == topicOriginAgenda,
 			Dynamic:                  node.Origin == topicOriginDynamic,
 			Tentative:                item.ClassificationStatus == classificationTentative,
@@ -102,21 +121,37 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 			EvidenceSequenceNos:      append([]int64(nil), item.EvidenceSequenceNos...),
 			EvidenceRoles:            refs,
 		})
+		if node.Origin == topicOriginAgenda {
+			agendaIDs = append(agendaIDs, node.ID)
+		}
+		if (node.Kind == "topic" || node.Kind == "group") && node.ID != treeRootNodeID && node.AgendaRole != agendaRoleActionSummary {
+			validParentIDs = append(validParentIDs, node.ID)
+		}
 	}
+	// root is a valid move_node destination (it is not a valid move_item
+	// destination; that is enforced independently in the move_item applier),
+	// so it belongs in the advisory validParentCanonicalNodeIds list even
+	// though the loop above deliberately excludes it from itself.
+	validParentIDs = append(validParentIDs, treeRootNodeID)
 	candidates := make([]treeAuditSnapshotCandidate, 0, len(state.EmergingTopics))
 	for _, candidate := range state.EmergingTopics {
-		candidates = append(candidates, treeAuditSnapshotCandidate{
+		snapshotCandidate := treeAuditSnapshotCandidate{
 			ID: candidate.ID, Title: candidate.Label, Description: candidate.Description,
 			EvidenceItemIDs: append([]string(nil), candidate.EvidenceItemIDs...),
 			FirstVersion:    candidate.FirstRound, LastVersion: candidate.LastRound,
 			RoundCount: candidate.RoundCount, Inactive: candidate.Inactive,
-		})
+		}
+		if _, promoted := allNodeIDs[candidate.ID]; promoted {
+			snapshotCandidate.PromotedNodeID = candidate.ID
+		}
+		candidates = append(candidates, snapshotCandidate)
 	}
 	evidence, recent := selectTreeAuditTranscript(state, segments, roles, precheck, cfg)
 	snapshot := treeAuditSnapshot{
 		SessionID: sessionID, TreeVersion: state.TreeVersion,
 		CoverageThroughSequenceNo: state.CoveredThroughSequenceNo,
 		Nodes:                     nodes, Candidates: candidates, RecentTreeChanges: state.TreeChanges,
+		AgendaIDs: agendaIDs, ValidParentCanonicalNodeIDs: validParentIDs,
 		PrecheckFindings: precheck, EvidenceSegments: evidence,
 		RecentTranscript: recent, Compressed: compressed,
 	}
@@ -168,15 +203,15 @@ func prioritizeTreeAuditSnapshotNodes(nodes []treeAuditSnapshotNode, findings []
 		}
 	}
 	sort.SliceStable(nodes, func(i, j int) bool {
-		if priority[nodes[i].ID] != priority[nodes[j].ID] {
-			return priority[nodes[i].ID] > priority[nodes[j].ID]
+		if priority[nodes[i].CanonicalNodeID] != priority[nodes[j].CanonicalNodeID] {
+			return priority[nodes[i].CanonicalNodeID] > priority[nodes[j].CanonicalNodeID]
 		}
-		containerI := nodes[i].Fixed || nodes[i].Kind == "topic" || nodes[i].Kind == "group"
-		containerJ := nodes[j].Fixed || nodes[j].Kind == "topic" || nodes[j].Kind == "group"
+		containerI := nodes[i].Fixed || nodes[i].NodeType == "topic" || nodes[i].NodeType == "group"
+		containerJ := nodes[j].Fixed || nodes[j].NodeType == "topic" || nodes[j].NodeType == "group"
 		if containerI != containerJ {
 			return containerI
 		}
-		return nodes[i].ID < nodes[j].ID
+		return nodes[i].CanonicalNodeID < nodes[j].CanonicalNodeID
 	})
 }
 
@@ -456,6 +491,17 @@ func classifyTreeAuditEvidence(state liveAnalysisPayload, segments []domain.Tran
 		for _, sequenceNo := range item.EvidenceSequenceNos[1:] {
 			if roles[sequenceNo] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[sequenceNo].Text, state) {
 				roles[sequenceNo] = treeAuditEvidenceReference
+			}
+		}
+	}
+	// A server-owned reference_recap downgrade (change_evidence_role applier,
+	// ai_tree_audit_validator.go) takes priority over every heuristic above:
+	// it is the audit's own explicit, previously-validated correction and
+	// must stick across snapshots until something else revises it.
+	for _, item := range state.Items {
+		for _, ref := range item.EvidenceRoles {
+			if ref.Role == liveEvidenceReferenceRecap {
+				roles[ref.SequenceNo] = treeAuditEvidenceReference
 			}
 		}
 	}

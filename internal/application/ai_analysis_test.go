@@ -1046,7 +1046,7 @@ func TestMeetingFinalizationCallsFinalTreeReviewDeployment(t *testing.T) {
 	config.FinalMaxInputChars = 12000
 	config.TaskModels.TreeAudit = "tree-audit-mini"
 	config.TaskModels.FinalTreeReview = "final-review-mini"
-	config.TreeAudit = application.TreeAuditConfig{Enabled: true, Mode: domain.MeetingTreeAuditShadow}
+	config.TreeAudit = application.TreeAuditConfig{Enabled: true}
 	auditRepository := &fakeMeetingTreeAuditRepository{}
 	service := application.NewMeetingAnalysisService(repository, &fakeAnalysisTranscriptRepository{segments: finalSegmentsThrough(24)}, &fakeAnalysisSessionRepository{}, completer, config)
 	service.SetMeetingTreeAuditRepository(auditRepository)

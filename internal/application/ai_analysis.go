@@ -65,7 +65,8 @@ const liveAnalysisSystemPrompt = "あなたは日本語の会議分析アシス�
 // 保存済みfinal transcriptの履歴evidence規則。v9 = evidence-grounded
 // resolutionUpdates and bidirectional reopen deltas; resolvedIds is legacy.
 // v10 = model clientKey references and server-owned persistent item IDs.
-const liveAnalysisPromptVersion = "v10"
+// v11 = 対応事項・action itemをcanonical TODOへ一本化。
+const liveAnalysisPromptVersion = "v11"
 
 const liveAnalysisSchemaDescription = `{
   "summary": "議論全体のこれまでの要約(毎回全文を出力、400字程度まで)",
@@ -106,6 +107,7 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - 新しい発言に新規の論点・懸念・質問・決定事項・TODOが含まれる場合は、必ず対応するitemを出力してください。
 - 確認済みの回答・事実はfactにしてください。質問や懸念への回答を新しいtodoへ言い換えないでください。
 - questionは回答・情報を求める問い、open_issueは未確定の制約・決める必要がある事項、todoは具体的な実施動作です。未決定という状態だけをtodoにしないでください。todoは原則として動作・担当者・期限・完了条件のいずれかを含めてください。
+- 「対応事項」「アクションアイテム」「次の作業」はすべてkind=todoとして扱い、同じ実施動作を別種のitemや別IDへ重複して出力しないでください。
 - 同じ話題でも「基準は何か」(question)、「基準が未確定」(open_issue)、「気象データを確認する」(todo)は別の意味なので、同じitemへ統合しないでください。同じgroupへ分類して関係を表現してください。
 - 1つの発言に決定事項と未決定事項など複数の意味が含まれる場合は、意味ごとに別itemへ分けてください。逆に、複数発言が同じ論点の言い換え・回答・まとめである場合は、新規itemを増やさず既存idを更新してください。
 - 発言に明示されていないリスク・質問・作業を推測で追加しないでください。短い会議をsegment単位で機械的に細分化せず、独立して追跡すべき結論・未解決事項・作業だけをitemにしてください。
@@ -1810,7 +1812,7 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 	reorganizationStatus := "skipped"
 	if s.config.TreeAudit.active() {
 		model = s.config.modelNameFor(aiTaskFinalTreeReview)
-		reorganizationStatus = "tree_audit_" + string(s.config.TreeAudit.Mode)
+		reorganizationStatus = "tree_audit"
 	} else if s.completer != nil {
 		fallbackReason := strings.TrimSpace(s.config.TreeAuditUnavailableReason)
 		if fallbackReason == "" {
@@ -2832,6 +2834,14 @@ type liveAnalysisItem struct {
 	// RelatedAgendaIDs is a server-owned secondary relation used by
 	// cross-cutting agenda views. It never creates a second parent edge.
 	RelatedAgendaIDs []string `json:"relatedAgendaIds,omitempty"`
+	// Inactive and MergedIntoID are server-owned tree-auditor provenance
+	// (ai_tree_audit_validator.go deactivate_item/merge_items appliers). The
+	// item entry is kept for audit/history even after its tree node is
+	// removed: Inactive marks a deactivated (duplicate/superseded/recap-only)
+	// item, MergedIntoID points at the surviving item ID a merge folded it
+	// into. Neither field changes ClassificationStatus or other metadata.
+	Inactive     bool   `json:"inactive,omitempty"`
+	MergedIntoID string `json:"mergedIntoId,omitempty"`
 }
 
 // UnmarshalJSON isolates malformed items instead of allowing one item to
@@ -3188,6 +3198,8 @@ func mergeLiveAnalysisItems(previous, diff []liveAnalysisItem, updates map[strin
 				item.ReopenedAtVersion = previousItem.ReopenedAtVersion
 				item.ReopenEvidenceSequenceNos = previousItem.ReopenEvidenceSequenceNos
 				item.ReopenReason = previousItem.ReopenReason
+				item.Inactive = previousItem.Inactive
+				item.MergedIntoID = previousItem.MergedIntoID
 				merged[at] = item
 				continue
 			}

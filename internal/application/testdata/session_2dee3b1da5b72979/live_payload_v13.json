@@ -1,0 +1,993 @@
+{
+ "tree": {
+  "edges": [
+   {
+    "source": "root",
+    "target": "agenda-1"
+   },
+   {
+    "source": "root",
+    "target": "agenda-2"
+   },
+   {
+    "source": "root",
+    "target": "agenda-3"
+   },
+   {
+    "source": "root",
+    "target": "topic-unclassified"
+   },
+   {
+    "source": "root",
+    "target": "candidate-73edc40ca0ec"
+   },
+   {
+    "source": "root",
+    "target": "candidate-e781af10c938"
+   },
+   {
+    "source": "root",
+    "target": "candidate-58e094611bf0"
+   },
+   {
+    "source": "agenda-1",
+    "target": "group-31f2f258eeba"
+   },
+   {
+    "source": "candidate-58e094611bf0",
+    "target": "group-a7fab20c0cd1"
+   },
+   {
+    "source": "agenda-1",
+    "target": "item-fact-6d8483cd2f76"
+   },
+   {
+    "source": "group-31f2f258eeba",
+    "target": "item-fact-accef11cdf9c"
+   },
+   {
+    "source": "agenda-1",
+    "target": "item-fact-7cf2a1cc7e52"
+   },
+   {
+    "source": "topic-unclassified",
+    "target": "item-fact-6a4e61602240"
+   },
+   {
+    "source": "candidate-73edc40ca0ec",
+    "target": "item-issue-bb1bae5962cc"
+   },
+   {
+    "source": "candidate-73edc40ca0ec",
+    "target": "item-todo-0c3bd0fe2053"
+   },
+   {
+    "source": "group-31f2f258eeba",
+    "target": "item-question-93304b326d67"
+   },
+   {
+    "source": "group-31f2f258eeba",
+    "target": "item-todo-58ca6b112b46"
+   },
+   {
+    "source": "agenda-2",
+    "target": "item-todo-022b4ebae323"
+   },
+   {
+    "source": "topic-unclassified",
+    "target": "open-issue-auto-dde3edac015b"
+   },
+   {
+    "source": "agenda-1",
+    "target": "item-fact-cf0173c73118"
+   },
+   {
+    "source": "candidate-e781af10c938",
+    "target": "item-todo-605e737781ec"
+   },
+   {
+    "source": "candidate-e781af10c938",
+    "target": "item-decision-b9335ac1c4af"
+   },
+   {
+    "source": "agenda-2",
+    "target": "item-todo-d0b16bcfcc55"
+   },
+   {
+    "source": "group-a7fab20c0cd1",
+    "target": "item-todo-411dc20edd85"
+   },
+   {
+    "source": "group-a7fab20c0cd1",
+    "target": "item-todo-e06241373431"
+   },
+   {
+    "source": "topic-unclassified",
+    "target": "item-todo-7f68ebf40ed9"
+   }
+  ],
+  "nodes": [
+   {
+    "id": "root",
+    "kind": "topic",
+    "label": "名古屋支社ネットワーク障害の振り返りと再",
+    "origin": "system",
+    "description": "名古屋支社で発生した社内ネットワーク障害について、影響範囲、直接原因、復旧対応を整理し、再発防止策と次回までの対応を明確にする。"
+   },
+   {
+    "id": "agenda-1",
+    "kind": "topic",
+    "label": "障害の影響範囲と発生時刻",
+    "origin": "agenda",
+    "parentId": "root",
+    "agendaRole": "primary"
+   },
+   {
+    "id": "agenda-2",
+    "kind": "topic",
+    "label": "原因調査と復旧対応",
+    "origin": "agenda",
+    "parentId": "root",
+    "agendaRole": "primary"
+   },
+   {
+    "id": "agenda-3",
+    "kind": "topic",
+    "label": "再発防止策",
+    "origin": "agenda",
+    "parentId": "root",
+    "agendaRole": "primary"
+   },
+   {
+    "id": "topic-unclassified",
+    "kind": "topic",
+    "label": "追加論点",
+    "origin": "system",
+    "parentId": "root"
+   },
+   {
+    "id": "candidate-73edc40ca0ec",
+    "kind": "topic",
+    "label": "技術的原因の特定",
+    "origin": "dynamic",
+    "parentId": "root",
+    "description": "交換機のポート設定とVLAN構成の整合性を検証する新たな論点",
+    "modelTopicIds": [
+     "topic-6"
+    ]
+   },
+   {
+    "id": "candidate-e781af10c938",
+    "kind": "topic",
+    "label": "運用・VLAN整備（新規）",
+    "origin": "dynamic",
+    "parentId": "root",
+    "description": "新しい運用・VLAN整備に関する未確定事項の整理開始",
+    "modelTopicIds": [
+     "topic-6ocean",
+     "topic-ops-vlan"
+    ]
+   },
+   {
+    "id": "candidate-58e094611bf0",
+    "kind": "topic",
+    "label": "リモート接続リスク",
+    "origin": "dynamic",
+    "parentId": "root",
+    "description": "VPN証明書期限の更新に伴うリモート接続への影響を検討する新規トピック",
+    "modelTopicIds": [
+     "topic-candidate-58e094611bf0",
+     "topic-remote-access-risk"
+    ]
+   },
+   {
+    "id": "group-31f2f258eeba",
+    "kind": "group",
+    "label": "この設定漏れが障害の直接原因か確定できる",
+    "origin": "rule",
+    "parentId": "agenda-1",
+    "relatedItemIds": [
+     "item-fact-accef11cdf9c",
+     "item-todo-58ca6b112b46",
+     "item-question-93304b326d67"
+    ],
+    "createdAtVersion": 6,
+    "updatedAtVersion": 6
+   },
+   {
+    "id": "group-a7fab20c0cd1",
+    "kind": "group",
+    "label": "VPN証明書更新を新規対応として管理",
+    "origin": "rule",
+    "parentId": "candidate-58e094611bf0",
+    "relatedItemIds": [
+     "item-todo-411dc20edd85",
+     "item-todo-e06241373431"
+    ],
+    "createdAtVersion": 11,
+    "updatedAtVersion": 11
+   },
+   {
+    "id": "item-fact-6d8483cd2f76",
+    "kind": "fact",
+    "label": "障害発生の報告と時刻",
+    "status": "open",
+    "parentId": "agenda-1",
+    "description": "本日午前9時20分ごろ、名古屋支社の3階を中心に社内ネットワークへ接続できないという報告がありました。",
+    "relatedItemIds": [
+     "item-fact-6d8483cd2f76"
+    ]
+   },
+   {
+    "id": "item-fact-accef11cdf9c",
+    "kind": "fact",
+    "label": "影響範囲の新たな確認",
+    "status": "open",
+    "parentId": "group-31f2f258eeba",
+    "description": "2階の一部で通信遅延が発生していたことを確認。影響は有線LAN、車内無線LAN、ファイルサーバー、社内システムで確認済み。",
+    "relatedItemIds": [
+     "item-fact-accef11cdf9c"
+    ]
+   },
+   {
+    "id": "item-fact-7cf2a1cc7e52",
+    "kind": "fact",
+    "label": "インターネット接続は完全停止ではない",
+    "status": "open",
+    "parentId": "agenda-1",
+    "description": "一部端末は接続でき、他は接続不能な状態が継続していた。",
+    "relatedItemIds": [
+     "item-fact-7cf2a1cc7e52"
+    ]
+   },
+   {
+    "id": "item-fact-6a4e61602240",
+    "kind": "fact",
+    "label": "ルーター/ファイアウォールは異常なし",
+    "status": "open",
+    "parentId": "topic-unclassified",
+    "description": "障害発生後の初動で確認したが、明確な異常は見られなかった。",
+    "relatedItemIds": [
+     "item-fact-6a4e61602240"
+    ]
+   },
+   {
+    "id": "item-issue-bb1bae5962cc",
+    "kind": "issue",
+    "label": "3階スイッチのVLAN設定不一致",
+    "status": "open",
+    "parentId": "candidate-73edc40ca0ec",
+    "description": "前日夜に交換した3階スイッチのvlan20/vlan30の通信が不安定。上位スイッチへの接続ポートが本来のトランクポートではなくアクセスポートとなっていた。原因特定には監視ログの補完と設定見直しが必要",
+    "relatedItemIds": [
+     "item-issue-bb1bae5962cc"
+    ]
+   },
+   {
+    "id": "item-todo-0c3bd0fe2053",
+    "kind": "todo",
+    "label": "vLAN30の漏れ設定を確認し修正する",
+    "status": "open",
+    "parentId": "candidate-73edc40ca0ec",
+    "description": "3階交換後のトランク設定においてvLAN30が許可リストから漏れていた点を再確認し、正しいVLANの許可リストを適用する。完了条件: vlan30が正常にトランク経由で通信可能となる。",
+    "relatedItemIds": [
+     "item-todo-0c3bd0fe2053"
+    ]
+   },
+   {
+    "id": "item-question-93304b326d67",
+    "kind": "question",
+    "label": "この設定漏れが障害の直接原因か確定できるか",
+    "status": "open",
+    "parentId": "group-31f2f258eeba",
+    "description": "現時点で設定漏れが最有力の候補。追加の監視ログとトラフィック分析で因果関係を確定する必要がある。",
+    "relatedItemIds": [
+     "item-question-93304b326d67"
+    ]
+   },
+   {
+    "id": "item-todo-58ca6b112b46",
+    "kind": "todo",
+    "label": "2階の通信影響がVLAN設定だけで説明可能かを確認",
+    "status": "updated",
+    "parentId": "group-31f2f258eeba",
+    "description": "2階での影響範囲がVLAN設定だけで説明できるか現時点で未解決。調査を継続する。",
+    "relatedItemIds": [
+     "item-todo-58ca6b112b46"
+    ]
+   },
+   {
+    "id": "item-todo-022b4ebae323",
+    "kind": "todo",
+    "label": "午後の補給対応の手順を再確認・修正",
+    "status": "open",
+    "parentId": "agenda-2",
+    "description": "午前9時52分の給水地切り戻しの後、新しいスイッチのトランク設定と許可欄を修正したが、その後の影響範囲に再発防止の観点で問題がないか再確認する。",
+    "relatedItemIds": [
+     "item-todo-022b4ebae323"
+    ]
+   },
+   {
+    "id": "open-issue-auto-dde3edac015b",
+    "kind": "open_issue",
+    "label": "この点は未確定の調査事項として残しています",
+    "status": "open",
+    "parentId": "topic-unclassified",
+    "description": "この点は未解決の調査事項として残しています",
+    "relatedItemIds": [
+     "open-issue-auto-dde3edac015b"
+    ]
+   },
+   {
+    "id": "item-fact-cf0173c73118",
+    "kind": "fact",
+    "label": "有線/無線ファイルサーバー接続の回復確認",
+    "status": "open",
+    "parentId": "agenda-1",
+    "description": "午前10時5分に有線LAN・無線LAN・ファイルサーバーへの接続が正常になったことを確認。",
+    "relatedItemIds": [
+     "item-fact-cf0173c73118"
+    ]
+   },
+   {
+    "id": "item-todo-605e737781ec",
+    "kind": "todo",
+    "label": "VLANごとの疎通確認チェックリスト作成",
+    "status": "updated",
+    "parentId": "candidate-e781af10c938",
+    "description": "交換前後でVLANごとの疎通確認を実施するチェックリストを作成する。",
+    "relatedItemIds": [
+     "item-todo-605e737781ec"
+    ]
+   },
+   {
+    "id": "item-decision-b9335ac1c4af",
+    "kind": "decision",
+    "label": "次回機器交換への適用検討の決定",
+    "status": "open",
+    "parentId": "candidate-e781af10c938",
+    "description": "山下耀翔の発言を受け、農業分野を次回の機器交換に適用することを決定する。",
+    "relatedItemIds": [
+     "item-decision-b9335ac1c4af"
+    ]
+   },
+   {
+    "id": "item-todo-d0b16bcfcc55",
+    "kind": "todo",
+    "label": "vlan単位の疎通確認を監視項目へ追加",
+    "status": "open",
+    "parentId": "agenda-2",
+    "description": "2階以降の影響検証の前提として、vLANごとの疎通状況を検知する監視項目を追加する。監視間隔と通知条件は次回までに検討・決定。",
+    "relatedItemIds": [
+     "item-todo-d0b16bcfcc55"
+    ]
+   },
+   {
+    "id": "item-todo-411dc20edd85",
+    "kind": "todo",
+    "label": "VPN装置の証明書期限の確認と更新方針の決定",
+    "status": "open",
+    "parentId": "group-a7fab20c0cd1",
+    "description": "VPN機器の証明書が来月末に期限切れとの報告。更新手順と影響範囲の確認を実施。担当者未定。期限は今後設定。",
+    "relatedItemIds": [
+     "item-todo-411dc20edd85"
+    ]
+   },
+   {
+    "id": "item-todo-e06241373431",
+    "kind": "todo",
+    "label": "今週中に証明書更新手順と作業可能日を確認",
+    "status": "updated",
+    "parentId": "group-a7fab20c0cd1",
+    "description": "高橋さんに証明書の更新手順と作業可能日を今週中に確認してもらいます。",
+    "relatedItemIds": [
+     "item-todo-e06241373431"
+    ]
+   },
+   {
+    "id": "item-todo-7f68ebf40ed9",
+    "kind": "todo",
+    "label": "vlan30の許可設定漏れの検証と修正",
+    "status": "open",
+    "parentId": "topic-unclassified",
+    "description": "3階スイッチのVLAN設定漏れを再確認し、必要な修正を実施。旧スイッチへの切り戻しと新スイッチのトランク設定の整合を確認する。",
+    "relatedItemIds": [
+     "item-todo-7f68ebf40ed9"
+    ]
+   }
+  ]
+ },
+ "items": [
+  {
+   "id": "item-fact-6d8483cd2f76",
+   "body": "本日午前9時20分ごろ、名古屋支社の3階を中心に社内ネットワークへ接続できないという報告がありました。",
+   "kind": "fact",
+   "title": "障害発生の報告と時刻",
+   "status": "open",
+   "severity": "low",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 2
+    }
+   ],
+   "propositionKey": "prop-14e6ad593010",
+   "assignmentReason": "agenda-1: 障害の影響範囲と発生時刻に該当",
+   "assignmentSource": "model",
+   "evidenceSequenceNos": [
+    2
+   ],
+   "assignmentConfidence": 0.9,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-fact-accef11cdf9c",
+   "body": "2階の一部で通信遅延が発生していたことを確認。影響は有線LAN、車内無線LAN、ファイルサーバー、社内システムで確認済み。",
+   "kind": "fact",
+   "title": "影響範囲の新たな確認",
+   "status": "open",
+   "severity": "low",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 3
+    }
+   ],
+   "propositionKey": "prop-2fa777d09488",
+   "assignmentReason": "agenda-1: 障害の影響範囲と発生時刻へ関連",
+   "assignmentSource": "model",
+   "evidenceSequenceNos": [
+    3
+   ],
+   "assignmentConfidence": 0.6,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-fact-7cf2a1cc7e52",
+   "body": "一部端末は接続でき、他は接続不能な状態が継続していた。",
+   "kind": "fact",
+   "title": "インターネット接続は完全停止ではない",
+   "status": "open",
+   "severity": "low",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 4
+    }
+   ],
+   "propositionKey": "prop-655f9bab958c",
+   "assignmentReason": "発生時刻と接続状況に関する新情報は agenda-1 の影響範囲/発生時刻に関連",
+   "assignmentSource": "model",
+   "evidenceSequenceNos": [
+    4
+   ],
+   "assignmentConfidence": 0.6,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-fact-6a4e61602240",
+   "body": "障害発生後の初動で確認したが、明確な異常は見られなかった。",
+   "kind": "fact",
+   "title": "ルーター/ファイアウォールは異常なし",
+   "status": "open",
+   "severity": "low",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 5
+    }
+   ],
+   "propositionKey": "prop-36c63d050399",
+   "evidenceSequenceNos": [
+    5
+   ],
+   "classificationStatus": "unclassified"
+  },
+  {
+   "id": "item-issue-bb1bae5962cc",
+   "body": "前日夜に交換した3階スイッチのvlan20/vlan30の通信が不安定。上位スイッチへの接続ポートが本来のトランクポートではなくアクセスポートとなっていた。原因特定には監視ログの補完と設定見直しが必要。",
+   "kind": "issue",
+   "title": "3階スイッチのVLAN設定不一致",
+   "status": "open",
+   "severity": "high",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 6
+    },
+    {
+     "role": "primary",
+     "sequenceNo": 7
+    }
+   ],
+   "propositionKey": "prop-be3b304687bd",
+   "assignmentReason": "新情報は原因特定の方向性を示すため",
+   "assignmentSource": "rule",
+   "evidenceSequenceNos": [
+    6,
+    7
+   ],
+   "assignmentConfidence": 0.8,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-todo-0c3bd0fe2053",
+   "body": "3階交換後のトランク設定においてvLAN30が許可リストから漏れていた点を再確認し、正しいVLANの許可リストを適用する。完了条件: vlan30が正常にトランク経由で通信可能となる。",
+   "kind": "todo",
+   "title": "vLAN30の漏れ設定を確認し修正する",
+   "status": "open",
+   "severity": "high",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 9
+    }
+   ],
+   "propositionKey": "prop-e31043b6c591",
+   "assignmentReason": "3階スイッチのVLAN設定不一致に直接関連する実務課題として分類",
+   "assignmentSource": "rule",
+   "relatedAgendaIds": [
+    "agenda-4"
+   ],
+   "evidenceSequenceNos": [
+    9
+   ],
+   "assignmentConfidence": 0.6,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-question-93304b326d67",
+   "body": "現時点で設定漏れが最有力の候補。追加の監視ログとトラフィック分析で因果関係を確定する必要がある。",
+   "kind": "question",
+   "title": "この設定漏れが障害の直接原因か確定できるか",
+   "status": "open",
+   "severity": "high",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 9
+    }
+   ],
+   "propositionKey": "prop-feaa80357b6d",
+   "assignmentSource": "rule",
+   "evidenceSequenceNos": [
+    9
+   ],
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-todo-58ca6b112b46",
+   "body": "2階での影響範囲がVLAN設定だけで説明できるか現時点で未解決。調査を継続する。",
+   "kind": "todo",
+   "title": "2階の通信影響がVLAN設定だけで説明可能かを確認",
+   "status": "updated",
+   "severity": "medium",
+   "clientKey": "item-todo-0438d0f1d028",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 10
+    },
+    {
+     "role": "reference_recap",
+     "sequenceNo": 28
+    }
+   ],
+   "propositionKey": "prop-1c856a6ccc79",
+   "assignmentReason": "影響範囲の追加検証に関するtodoの分類",
+   "assignmentSource": "model",
+   "relatedAgendaIds": [
+    "agenda-4"
+   ],
+   "evidenceSequenceNos": [
+    10,
+    28
+   ],
+   "assignmentConfidence": 0.6,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-todo-022b4ebae323",
+   "body": "午前9時52分の給水地切り戻しの後、新しいスイッチのトランク設定と許可欄を修正したが、その後の影響範囲に再発防止の観点で問題がないか再確認する。",
+   "kind": "todo",
+   "title": "午後の補給対応の手順を再確認・修正",
+   "status": "open",
+   "severity": "low",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 11
+    }
+   ],
+   "propositionKey": "prop-5b044f2b2987",
+   "assignmentReason": "補給対応の再確認を復旧対応の関連事項として分類",
+   "assignmentSource": "model",
+   "relatedAgendaIds": [
+    "agenda-4"
+   ],
+   "evidenceSequenceNos": [
+    11
+   ],
+   "assignmentConfidence": 0.6,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "open-issue-auto-dde3edac015b",
+   "body": "この点は未解決の調査事項として残しています",
+   "kind": "open_issue",
+   "title": "この点は未確定の調査事項として残しています",
+   "status": "open",
+   "severity": "medium",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 10
+    }
+   ],
+   "propositionKey": "prop-5fe2cf898bbd",
+   "assignmentReason": "server unresolved candidate",
+   "assignmentSource": "model",
+   "evidenceSequenceNos": [
+    10
+   ],
+   "assignmentConfidence": 0.6,
+   "classificationStatus": "unclassified"
+  },
+  {
+   "id": "item-fact-cf0173c73118",
+   "body": "午前10時5分に有線LAN・無線LAN・ファイルサーバーへの接続が正常になったことを確認。",
+   "kind": "fact",
+   "title": "有線/無線ファイルサーバー接続の回復確認",
+   "status": "open",
+   "severity": "low",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 12
+    }
+   ],
+   "propositionKey": "prop-b0b752ae338e",
+   "assignmentReason": "影響範囲と復旧の関連性を示すファクトを関連付け",
+   "assignmentSource": "model",
+   "evidenceSequenceNos": [
+    12
+   ],
+   "assignmentConfidence": 0.6,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-todo-605e737781ec",
+   "body": "交換前後でVLANごとの疎通確認を実施するチェックリストを作成する。",
+   "kind": "todo",
+   "title": "VLANごとの疎通確認チェックリスト作成",
+   "status": "updated",
+   "severity": "medium",
+   "clientKey": "item-todo-9ceb15ccc5fd",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 13
+    },
+    {
+     "role": "primary",
+     "sequenceNo": 14
+    },
+    {
+     "role": "reference_recap",
+     "sequenceNo": 27
+    }
+   ],
+   "propositionKey": "prop-dc8a75e37d50",
+   "assignmentSource": "rule",
+   "relatedAgendaIds": [
+    "agenda-4"
+   ],
+   "evidenceSequenceNos": [
+    13,
+    14,
+    27
+   ],
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-decision-b9335ac1c4af",
+   "body": "山下耀翔の発言を受け、農業分野を次回の機器交換に適用することを決定する。",
+   "kind": "decision",
+   "title": "次回機器交換への適用検討の決定",
+   "status": "open",
+   "severity": "medium",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 15
+    }
+   ],
+   "propositionKey": "prop-dbbf92552253",
+   "assignmentReason": "次回機器交換適用の事前検討に紐づく新規トピック",
+   "assignmentSource": "rule",
+   "evidenceSequenceNos": [
+    15
+   ],
+   "assignmentConfidence": 0.45,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-todo-d0b16bcfcc55",
+   "body": "2階以降の影響検証の前提として、vLANごとの疎通状況を検知する監視項目を追加する。監視間隔と通知条件は次回までに検討・決定。",
+   "kind": "todo",
+   "title": "vlan単位の疎通確認を監視項目へ追加",
+   "status": "open",
+   "severity": "high",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 18
+    },
+    {
+     "role": "primary",
+     "sequenceNo": 19
+    }
+   ],
+   "propositionKey": "prop-13f69409be08",
+   "assignmentReason": "監視拡張は原因調査/復旧対応の進行と直接関係があるため、agenda-2に近い",
+   "assignmentSource": "model",
+   "relatedAgendaIds": [
+    "agenda-4"
+   ],
+   "evidenceSequenceNos": [
+    18,
+    19
+   ],
+   "assignmentConfidence": 0.75,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-todo-411dc20edd85",
+   "body": "VPN機器の証明書が来月末に期限切れとの報告。更新手順と影響範囲の確認を実施。担当者未定。期限は今後設定。",
+   "kind": "todo",
+   "title": "VPN装置の証明書期限の確認と更新方針の決定",
+   "status": "open",
+   "severity": "low",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 21
+    }
+   ],
+   "propositionKey": "prop-5c2ed2d86e3e",
+   "assignmentReason": "item evidence belongs to explicit no-agenda span",
+   "assignmentSource": "rule",
+   "relatedAgendaIds": [
+    "agenda-4"
+   ],
+   "evidenceSequenceNos": [
+    21
+   ],
+   "assignmentConfidence": 1,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-todo-e06241373431",
+   "body": "高橋さんに証明書の更新手順と作業可能日を今週中に確認してもらいます。",
+   "kind": "todo",
+   "title": "今週中に証明書更新手順と作業可能日を確認",
+   "status": "updated",
+   "severity": "low",
+   "clientKey": "item-todo-150987cfc059",
+   "evidenceRoles": [
+    {
+     "role": "primary",
+     "sequenceNo": 23
+    },
+    {
+     "role": "primary",
+     "sequenceNo": 24
+    },
+    {
+     "role": "reference_recap",
+     "sequenceNo": 29
+    }
+   ],
+   "propositionKey": "prop-14ed9b1d3430",
+   "assignmentReason": "item evidence belongs to explicit no-agenda span",
+   "assignmentSource": "rule",
+   "relatedAgendaIds": [
+    "agenda-4"
+   ],
+   "evidenceSequenceNos": [
+    23,
+    24,
+    29
+   ],
+   "assignmentConfidence": 1,
+   "classificationStatus": "assigned"
+  },
+  {
+   "id": "item-todo-7f68ebf40ed9",
+   "body": "3階スイッチのVLAN設定漏れを再確認し、必要な修正を実施。旧スイッチへの切り戻しと新スイッチのトランク設定の整合を確認する。",
+   "kind": "todo",
+   "title": "vlan30の許可設定漏れの検証と修正",
+   "status": "open",
+   "severity": "high",
+   "evidenceRoles": [
+    {
+     "role": "correction",
+     "sequenceNo": 26
+    }
+   ],
+   "propositionKey": "prop-b2fc36800cf2",
+   "assignmentReason": "item evidence belongs to explicit no-agenda span",
+   "assignmentSource": "no_agenda_span",
+   "candidateTopicId": "candidate-ed1e9e672609",
+   "relatedAgendaIds": [
+    "agenda-4"
+   ],
+   "evidenceSequenceNos": [
+    26
+   ],
+   "assignmentConfidence": 1,
+   "classificationStatus": "tentative"
+  }
+ ],
+ "summary": "名古屋支社障害の振り返りの進捗確認と新規作業の割り当て。3階スイッチVLAN不一致の仮説を踏まえ、チェックリスト作成と設定差分確認、遅延原因の未解決事項継続、VPN証明書の更新を新規課題として扱う。今週/来週の担当者と期限の整理を発表者と佐藤に割り当て。",
+ "treeHash": "85195f860de756a9",
+ "edgeCount": 26,
+ "nodeCount": 27,
+ "payloadKind": "full_snapshot",
+ "treeChanges": {
+  "treeVersion": 13,
+  "updatedNodeIds": [
+   "item-todo-58ca6b112b46",
+   "item-todo-605e737781ec",
+   "item-todo-e06241373431"
+  ]
+ },
+ "treeVersion": 13,
+ "currentTopic": "障害原因の切り分けと復旧対応の完了状況、再発防止策の洗練",
+ "emergingTopics": [
+  {
+   "id": "candidate-ed1e9e672609",
+   "label": "技術的原因の統合",
+   "lastRound": 12,
+   "firstRound": 12,
+   "roundCount": 1,
+   "description": "VLAN設定漏れの再現性と影響範囲の再評価を行う新分類",
+   "modelTopicIds": [
+    "topic-unknown-1"
+   ],
+   "originItemIds": [
+    "item-todo-7f68ebf40ed9"
+   ],
+   "currentSubject": "技術的原因の統合 VLAN設定漏れの再現性と影響範囲の再評価を行う新分類",
+   "subjectHistory": [
+    "技術的原因の統合 VLAN設定漏れの再現性と影響範囲の再評価を行う新分類"
+   ],
+   "evidenceItemIds": [
+    "item-todo-7f68ebf40ed9"
+   ],
+   "originalSubject": "技術的原因の統合 VLAN設定漏れの再現性と影響範囲の再評価を行う新分類",
+   "originSequenceNos": [
+    26
+   ]
+  }
+ ],
+ "basedOnTreeVersion": 12,
+ "analyzedFinalSegments": [
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 1
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 2
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 3
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 4
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 5
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 6
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 7
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 8
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 9
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 10
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 11
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 12
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 13
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 14
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 15
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 16
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 17
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 18
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 19
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 20
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 21
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 22
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 23
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 24
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 25
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 26
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 27
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 28
+  },
+  {
+   "callId": "1d004d80-4c85-4cc0-9053-d3079a13991f",
+   "sequenceNo": 29
+  }
+ ],
+ "coveredThroughSequenceNo": 29
+}

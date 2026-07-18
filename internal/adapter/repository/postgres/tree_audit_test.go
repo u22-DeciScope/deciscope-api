@@ -36,8 +36,8 @@ func TestMeetingTreeAuditRepositoryPersistsHistoryAndAppliesCAS(t *testing.T) {
 	completed := now.Add(time.Second)
 	run := domain.MeetingTreeAuditRun{
 		ID: "audit-1", SessionID: "session_audit", BasedOnTreeVersion: 4,
-		ResultingTreeVersion: 5, Mode: domain.MeetingTreeAuditApplyHighConfidence,
-		TriggerReason: "test", TriggerClass: domain.MeetingTreeAuditTriggerNormal,
+		ResultingTreeVersion: 5,
+		TriggerReason:        "test", TriggerClass: domain.MeetingTreeAuditTriggerNormal,
 		Task: "tree_audit", Deployment: "mini-deployment", ProviderCalled: true,
 		Model: "gpt-5-mini", PromptVersion: "v1", SnapshotHash: "snapshot",
 		Status: domain.MeetingTreeAuditCompleted, Result: "applied",
@@ -80,7 +80,7 @@ func TestMeetingTreeAuditRepositoryPersistsHistoryAndAppliesCAS(t *testing.T) {
 // TestMeetingTreeAuditRunLifecycleOnPostgreSQL exercises the exact INSERT /
 // upsert paths that failed in session_497ed2b0aedf9dc6 with
 // "INSERT has more expressions than target columns" (SQLSTATE 42601):
-// migration 00011適用済みの実PostgreSQLに対し、shadow runのclaim INSERT、
+// migration 00011適用済みの実PostgreSQLに対し、audit runのclaim INSERT、
 // 冪等claim、raw input/response・findings・operations・validator保存、
 // disposition更新、provider error更新、final tree review保存、rollbackを検証する。
 func TestMeetingTreeAuditRunLifecycleOnPostgreSQL(t *testing.T) {
@@ -95,11 +95,11 @@ func TestMeetingTreeAuditRunLifecycleOnPostgreSQL(t *testing.T) {
 	}
 	repository := NewMeetingTreeAuditRepository(db)
 
-	// 1. shadow audit runのclaim INSERT(全カラム: raw input含む)。
+	// 1. audit runのclaim INSERT(全カラム: raw input含む)。
 	run := domain.MeetingTreeAuditRun{
-		ID: "audit-shadow-1", SessionID: "session_lifecycle", BasedOnTreeVersion: 11,
-		Mode: domain.MeetingTreeAuditShadow, TriggerReason: "semantic_anomaly,interval_versions",
-		TriggerClass: domain.MeetingTreeAuditTriggerHigh, Task: "tree_audit",
+		ID: "audit-run-1", SessionID: "session_lifecycle", BasedOnTreeVersion: 11,
+		TriggerReason: "semantic_anomaly,interval_versions",
+		TriggerClass:  domain.MeetingTreeAuditTriggerHigh, Task: "tree_audit",
 		Deployment: "ds-gpt-5-mini", PromptVersion: "v1", SnapshotHash: "snapshot-11",
 		Status: domain.MeetingTreeAuditRunning, Result: "running", Disposition: "none",
 		MeetingElapsedSeconds: 240,
@@ -114,38 +114,38 @@ func TestMeetingTreeAuditRunLifecycleOnPostgreSQL(t *testing.T) {
 	// 2. active claim: 同一(session, task, version, hash, prompt, deployment)の
 	//    running中は二重claimできない。
 	duplicate := run
-	duplicate.ID = "audit-shadow-1-dup"
+	duplicate.ID = "audit-run-1-dup"
 	if claimed, err := repository.TryStartMeetingTreeAuditRun(ctx, duplicate); err != nil || claimed {
 		t.Fatalf("duplicate claim=%t err=%v, want false claim without error", claimed, err)
 	}
 
 	// 3. provider呼び出しマーク + raw response・findings・operations・validator保存
-	//    + shadow disposition更新(ON CONFLICT DO UPDATE経路)。
+	//    + disposition更新(ON CONFLICT DO UPDATE経路)。
 	completed := now.Add(3 * time.Second)
 	run.ProviderCalled = true
 	run.Model = "gpt-5-mini-2025-08-07"
 	run.RawResponse = `{"findings":[]}`
 	run.Findings = json.RawMessage(`[{"type":"topic_outlier","severity":"medium"}]`)
 	run.Operations = json.RawMessage(`[{"op":"move_node","nodeId":"item-1"}]`)
-	run.ValidatorResult = json.RawMessage(`{"operationsWouldApply":1}`)
+	run.ValidatorResult = json.RawMessage(`{"operationsValid":1}`)
 	run.PromptTokens = 1200
 	run.CompletionTokens = 300
 	run.ElapsedMilliseconds = 2100
 	run.Status = domain.MeetingTreeAuditCompleted
-	run.Result = "shadow"
-	run.Disposition = "would_apply"
+	run.Result = "applied"
+	run.Disposition = "applied"
 	run.CompletedAt = &completed
 	if err := repository.SaveMeetingTreeAuditRun(ctx, run); err != nil {
-		t.Fatalf("SaveMeetingTreeAuditRun(shadow completed) error = %v", err)
+		t.Fatalf("SaveMeetingTreeAuditRun(completed) error = %v", err)
 	}
 	latest, err := repository.GetLatestMeetingTreeAuditRun(ctx, "session_lifecycle")
 	if err != nil {
 		t.Fatalf("GetLatestMeetingTreeAuditRun() error = %v", err)
 	}
-	if latest.ID != "audit-shadow-1" || latest.Result != "shadow" || latest.Disposition != "would_apply" ||
+	if latest.ID != "audit-run-1" || latest.Result != "applied" || latest.Disposition != "applied" ||
 		!latest.ProviderCalled || latest.RawResponse == "" || len(latest.Findings) == 0 ||
 		len(latest.Operations) == 0 || len(latest.ValidatorResult) == 0 || len(latest.InputPayload) == 0 {
-		t.Fatalf("latest shadow run = %+v, want persisted fields", latest)
+		t.Fatalf("latest audit run = %+v, want persisted fields", latest)
 	}
 	// disposition完了後は同一キーで再claimできる(部分uniqueはstatus=runningのみ)。
 	duplicate.CreatedAt = now.Add(4 * time.Second)
@@ -175,13 +175,13 @@ func TestMeetingTreeAuditRunLifecycleOnPostgreSQL(t *testing.T) {
 	finalDone := now.Add(10 * time.Second)
 	finalReview := domain.MeetingTreeAuditRun{
 		ID: "audit-final-1", SessionID: "session_lifecycle", BasedOnTreeVersion: 15,
-		Mode: domain.MeetingTreeAuditShadow, TriggerReason: "meeting_ended",
-		TriggerClass: domain.MeetingTreeAuditTriggerFinal, Task: "final_tree_review",
+		TriggerReason: "meeting_ended",
+		TriggerClass:  domain.MeetingTreeAuditTriggerFinal, Task: "final_tree_review",
 		Deployment: "ds-gpt-5-mini", Model: "gpt-5-mini-2025-08-07", PromptVersion: "v1",
 		SnapshotHash: "snapshot-15", Status: domain.MeetingTreeAuditCompleted,
-		Result: "shadow", Disposition: "would_apply", ProviderCalled: true,
+		Result: "no_safe_operations", Disposition: "rejected", ProviderCalled: true,
 		Findings: json.RawMessage(`[]`), Operations: json.RawMessage(`[]`),
-		ValidatorResult: json.RawMessage(`{"operationsWouldApply":0}`),
+		ValidatorResult: json.RawMessage(`{"operationsValid":0}`),
 		CreatedAt:       now.Add(8 * time.Second), CompletedAt: &finalDone,
 	}
 	if claimed, err := repository.TryStartMeetingTreeAuditRun(ctx, finalReview); err != nil || !claimed {
@@ -195,8 +195,8 @@ func TestMeetingTreeAuditRunLifecycleOnPostgreSQL(t *testing.T) {
 	suppressedAt := now.Add(12 * time.Second)
 	suppressed := domain.MeetingTreeAuditRun{
 		ID: "audit-suppressed-1", SessionID: "session_lifecycle", BasedOnTreeVersion: 16,
-		Mode: domain.MeetingTreeAuditShadow, TriggerReason: "interval_versions",
-		TriggerClass: domain.MeetingTreeAuditTriggerNormal, Task: "tree_audit",
+		TriggerReason: "interval_versions",
+		TriggerClass:  domain.MeetingTreeAuditTriggerNormal, Task: "tree_audit",
 		Deployment: "ds-gpt-5-mini", PromptVersion: "v1", SnapshotHash: "snapshot-16",
 		Status: domain.MeetingTreeAuditSkipped, Result: "rate_limited",
 		Disposition: "suppressed", SuppressionReason: "normal_hourly_limit",
@@ -214,7 +214,7 @@ func TestMeetingTreeAuditRunLifecycleOnPostgreSQL(t *testing.T) {
 	}
 	highCalls, err := repository.CountMeetingTreeAuditProviderCalls(ctx, "session_lifecycle", domain.MeetingTreeAuditTriggerHigh, time.Time{})
 	if err != nil || highCalls != 2 {
-		t.Fatalf("high provider calls = %d err=%v, want 2 (shadow + failed)", highCalls, err)
+		t.Fatalf("high provider calls = %d err=%v, want 2 (completed + failed)", highCalls, err)
 	}
 	// final_tree_reviewはprovider call制限の対象外。
 	finalCalls, err := repository.CountMeetingTreeAuditProviderCalls(ctx, "session_lifecycle", domain.MeetingTreeAuditTriggerFinal, time.Time{})

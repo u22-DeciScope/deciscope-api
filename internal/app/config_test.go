@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"deciscope-core-api/internal/application"
-	"deciscope-core-api/internal/domain"
 	"deciscope-core-api/internal/infrastructure/database"
 )
 
@@ -32,15 +31,15 @@ func TestAIConfigRoutesDeploymentsPerTaskAndFallsBackToShared(t *testing.T) {
 	}
 }
 
-func TestAIConfigTreeAuditDefaultsToDisabledShadow(t *testing.T) {
+func TestAIConfigTreeAuditDefaultsToEnabled(t *testing.T) {
 	t.Setenv("TREE_AUDIT_ENABLED", "")
 	t.Setenv("TREE_AUDIT_MODE", "")
 	config := aiConfigFromEnv()
-	if config.TreeAudit.Enabled {
-		t.Fatal("tree audit must require explicit enablement")
+	if !config.TreeAudit.Enabled {
+		t.Fatal("tree audit must be enabled by default")
 	}
-	if config.TreeAudit.Mode != domain.MeetingTreeAuditShadow {
-		t.Fatalf("tree audit mode = %q, want shadow", config.TreeAudit.Mode)
+	if config.TreeAuditModeDeprecated {
+		t.Fatal("TreeAuditModeDeprecated must be false when TREE_AUDIT_MODE is unset")
 	}
 	if config.TreeAudit.Interval != 5*time.Minute || config.TreeAudit.MinInterval != 5*time.Minute ||
 		config.TreeAudit.MaxRunsPerHour != 12 || config.TreeAudit.HighSeverityMinInterval != time.Minute ||
@@ -49,15 +48,24 @@ func TestAIConfigTreeAuditDefaultsToDisabledShadow(t *testing.T) {
 	}
 }
 
-func TestAIConfigTreeAuditReadsExplicitEnablement(t *testing.T) {
+// TREE_AUDIT_MODEはモード切替の廃止により無視される。設定してもTreeAuditの
+// 動作(enabled/scheduling)には影響せず、TreeAuditModeDeprecatedがtrueになる
+// だけであることを確認する。
+func TestAIConfigTreeAuditModeEnvIsDeprecatedAndDoesNotAffectBehavior(t *testing.T) {
 	t.Setenv("TREE_AUDIT_ENABLED", "true")
 	t.Setenv("TREE_AUDIT_MODE", "shadow")
 	config := aiConfigFromEnv()
 	if !config.TreeAudit.Enabled || config.TreeAuditEnabledInvalid {
 		t.Fatalf("tree audit enablement = enabled:%t invalid:%t", config.TreeAudit.Enabled, config.TreeAuditEnabledInvalid)
 	}
-	if config.TreeAudit.Mode != domain.MeetingTreeAuditShadow {
-		t.Fatalf("tree audit mode = %q, want shadow", config.TreeAudit.Mode)
+	if !config.TreeAuditModeDeprecated {
+		t.Fatal("TreeAuditModeDeprecated must be true when TREE_AUDIT_MODE is set")
+	}
+
+	t.Setenv("TREE_AUDIT_MODE", "unsafe")
+	config = aiConfigFromEnv()
+	if !config.TreeAudit.Enabled || !config.TreeAuditModeDeprecated {
+		t.Fatalf("an invalid TREE_AUDIT_MODE value must not disable tree audit: enabled=%t deprecated=%t", config.TreeAudit.Enabled, config.TreeAuditModeDeprecated)
 	}
 }
 
@@ -74,7 +82,7 @@ func TestAIConfigTreeAuditRejectsInvalidEnablement(t *testing.T) {
 
 func TestTreeAuditConfigurationRequiresDedicatedDeployments(t *testing.T) {
 	config := AIConfig{
-		TreeAudit: application.TreeAuditConfig{Enabled: true, Mode: domain.MeetingTreeAuditShadow},
+		TreeAudit: application.TreeAuditConfig{Enabled: true},
 	}
 	if got := treeAuditConfigurationIssue(config, true); got != "tree_audit_deployment_empty" {
 		t.Fatalf("missing tree audit deployment issue = %q", got)
@@ -102,16 +110,16 @@ func TestTreeAuditRepositoryIssueDistinguishesMigration(t *testing.T) {
 }
 
 func TestTreeAuditSchedulerRegistrationRequiresActiveConfigAndRepository(t *testing.T) {
-	config := application.TreeAuditConfig{Enabled: true, Mode: domain.MeetingTreeAuditShadow}
+	config := application.TreeAuditConfig{Enabled: true}
 	if !treeAuditSchedulerRegistered(config, true) {
 		t.Fatal("active tree audit with ready repository must register the scheduler")
 	}
 	if treeAuditSchedulerRegistered(config, false) {
 		t.Fatal("tree audit without a ready repository must not register the scheduler")
 	}
-	config.Mode = domain.MeetingTreeAuditOff
+	config.Enabled = false
 	if treeAuditSchedulerRegistered(config, true) {
-		t.Fatal("off mode must not register the scheduler")
+		t.Fatal("disabled tree audit must not register the scheduler")
 	}
 }
 

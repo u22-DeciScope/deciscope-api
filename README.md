@@ -98,8 +98,8 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - `AI_FINALIZATION_WAIT_TIMEOUT_SECONDS`: 実行中分析またはBot通知済み最終sequenceのDB到着を待つ上限。既定値は `10`
 - `AI_FINALIZATION_QUIET_PERIOD_MILLISECONDS`: drain情報を送らない旧Bot向けのDB静穏判定。既定値は `750`、最小値は `100`
 - `AI_FINAL_FLUSH_MAX_ATTEMPTS`: 終了時の未処理final抽出の最大試行回数。既定値は `3`
-- `TREE_AUDIT_ENABLED`: GPT-5-mini向け議論ツリー監査schedulerを有効化するか。既定値は`false`
-- `TREE_AUDIT_MODE`: `off` / `shadow` / `apply_high_confidence`。不正値・未設定時は安全な`shadow`
+- `TREE_AUDIT_ENABLED`: GPT-5-mini向け議論ツリー監査schedulerを有効化するか。既定値は`true`
+- `TREE_AUDIT_MODE`: deprecated and ignored(モード切替は廃止済み。`TREE_AUDIT_ENABLED`のみで制御)
 - `TREE_AUDIT_INTERVAL_VERSIONS`, `TREE_AUDIT_INTERVAL_SECONDS`, `TREE_AUDIT_MIN_INTERVAL_SECONDS`:
   version周期、時間周期、通常triggerのdebounce下限。既定値は順に`3`, `300`, `300`
 - `TREE_AUDIT_MAX_RUNS_PER_SESSION`, `TREE_AUDIT_MAX_RUNS_PER_HOUR`:
