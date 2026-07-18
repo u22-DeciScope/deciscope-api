@@ -18,6 +18,13 @@ func TestClassifyDiscourseAct(t *testing.T) {
 		{"次の話題へ移ります。", discourseTopicTransition},
 		{"では次の議題に移りましょう。", discourseTopicTransition},
 		{"以上でこの議題を終わります。", discourseTopicTransition},
+		{"ここで、アジェンダにはなかった別の問題があります。", discourseTopicTransition},
+		{"ここで、マジェンダにはなかった別の問題があります。", discourseTopicTransition},
+		{"追加の論点です。", discourseTopicTransition},
+		{"本題とは別ですが。", discourseTopicTransition},
+		{"少し話を変えます。", discourseTopicTransition},
+		{"では次に進みます。", discourseTopicTransition},
+		{"ここから別件です。", discourseTopicTransition},
 		{"会議を開始します。", discourseMeetingControl},
 		{"よろしくお願いします。", discourseMeetingControl},
 		{"お疲れ様でした。", discourseMeetingControl},
@@ -34,6 +41,67 @@ func TestClassifyDiscourseAct(t *testing.T) {
 		if got := classifyDiscourseAct(tc.text); got != tc.want {
 			t.Errorf("classifyDiscourseAct(%q) = %s, want %s", tc.text, got, tc.want)
 		}
+	}
+}
+
+func TestModelUtteranceRoleMarksParaphrasedTransitionWithoutSuppressingFollowingContent(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		17: "場面を切り替えましょう。",
+		18: "VPN証明書が来月末に期限切れになります。",
+	}, 17, 18)
+	timeline := classifyDiscourseTimelineWithModel(scope, []liveUtteranceRoleRef{
+		{SequenceNo: 17, Role: liveUtteranceDiscourseTransition},
+		{SequenceNo: 18, Role: liveUtteranceSubstantive},
+	})
+	if timeline.Roles[17] != liveEvidenceDiscourseOnly || timeline.Roles[18] != liveEvidencePrimary {
+		t.Fatalf("roles=%+v detected=%+v", timeline.Roles, timeline.DetectedRoles)
+	}
+}
+
+func TestAgendaExternalDiscourseTransitionStartsNoAgendaSpan(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		17: "ここで、アジェンダにはなかった別の問題があります。",
+		18: "VPN証明書が来月末に期限切れになります。",
+	}, 17, 18)
+	stats := &liveAnalysisTreeMergeStats{}
+	spans := detectAgendaContextSpans(scope, classificationFixtureContext(), stats)
+	if len(spans) != 1 || spans[0].Mode != agendaContextModeNoAgenda || spans[0].StartSequenceNo != 17 || stats.NoAgendaSpanCount != 1 {
+		t.Fatalf("spans=%+v stats=%+v", spans, stats)
+	}
+}
+
+func TestDiscourseTransitionProposalIsDroppedButFollowingSubstantiveItemSurvives(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		17: "ここで、別の問題があります。",
+		18: "VPN証明書が来月末に期限切れになり、リモート接続が停止する可能性があります。",
+	}, 17, 18)
+	diff := `{
+		"summary":"VPN証明書の確認","currentTopic":"VPN証明書",
+		"utteranceRoles":[
+			{"sequenceNo":17,"role":"discourse_transition"},
+			{"sequenceNo":18,"role":"substantive"}
+		],
+		"items":[
+			{"id":"item-meta","kind":"todo","severity":"medium","title":"別の問題の存在を確認","body":"追加論点","status":"open","evidenceSequenceNos":[17]},
+			{"id":"item-vpn-risk","kind":"risk","severity":"high","title":"VPN証明書が来月末に期限切れ","body":"リモート接続が停止する可能性","status":"open","evidenceSequenceNos":[18]}
+		],
+		"newTopics":[{"id":"topic-next","label":"次の話題です"}],
+		"assignments":[{"nodeId":"item-meta","parentTopicId":"topic-next","confidence":0.9,"reason":"model"}]
+	}`
+	stats := &liveAnalysisTreeMergeStats{}
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(diff, nil, nil, 1, []int64{17, 18}, scope, TreeClassificationConfig{}, stats)
+	if err != nil {
+		t.Fatalf("parse transition round: %v", err)
+	}
+	state := previousLiveAnalysisState(raw)
+	if itemByID(state.Items, "item-meta") != nil || itemByID(state.Items, "item-vpn-risk") == nil {
+		t.Fatalf("items=%+v", state.Items)
+	}
+	if len(state.EmergingTopics) != 0 {
+		t.Fatalf("transition-only candidate survived: %+v", state.EmergingTopics)
+	}
+	if stats.LowInformationItemsRejected != 1 || stats.DiscourseOnlyItemsRejected != 1 {
+		t.Fatalf("stats=%+v", stats)
 	}
 }
 

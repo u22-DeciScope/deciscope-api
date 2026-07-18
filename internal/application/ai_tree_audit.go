@@ -28,6 +28,58 @@ type treeAuditExecution struct {
 	ProviderCalled bool
 }
 
+// TreeAuditReplayResult is returned by the explicit replay/integration entry
+// point. It exposes aggregate safety results without exposing prompts or
+// credentials and uses the same provider, validator, transaction, and CAS
+// path as scheduled production audits.
+type TreeAuditReplayResult struct {
+	Payload                 json.RawMessage
+	BaseTreeVersion         int64
+	ResultTreeVersion       int64
+	AuditRunID              string
+	Result                  string
+	ResultClassification    domain.MeetingTreeAuditResultClassification
+	FindingsCount           int
+	OperationsProposed      int
+	OperationsCanonicalized int
+	OperationsValid         int
+	OperationsApplied       int
+	OperationsRejected      int
+	IntegrityValid          bool
+}
+
+// ReplayTreeAudit explicitly runs a normal applying audit against a supplied
+// persisted live snapshot. It is intentionally not wired to HTTP; the app
+// composition root uses it only from opt-in integration tests or a dedicated
+// operator CLI.
+func (s *MeetingAnalysisService) ReplayTreeAudit(ctx context.Context, sessionID string, payload json.RawMessage, version int64) (TreeAuditReplayResult, error) {
+	execution, err := s.runTreeAudit(ctx, sessionID, "manual_replay", aiTaskTreeAudit, payload, version, false)
+	result := TreeAuditReplayResult{
+		Payload: append(json.RawMessage(nil), execution.Payload...), BaseTreeVersion: version,
+		ResultTreeVersion: execution.Version, AuditRunID: execution.RunID, Result: execution.Result,
+	}
+	if s.auditRepo != nil {
+		if run, latestErr := s.auditRepo.GetLatestMeetingTreeAuditRun(ctx, sessionID); latestErr == nil && run != nil {
+			result.AuditRunID = run.ID
+			result.ResultClassification = run.ResultClassification
+			result.FindingsCount = auditJSONArrayLength(run.Findings)
+			result.OperationsProposed = run.OperationsProposed
+			result.OperationsCanonicalized = run.OperationsCanonicalized
+			result.OperationsValid = run.OperationsValid
+			result.OperationsApplied = run.OperationsApplied
+			result.OperationsRejected = run.OperationsRejected
+			var validator treeAuditValidatorResult
+			if json.Unmarshal(run.ValidatorResult, &validator) == nil {
+				result.IntegrityValid = validator.TreeIntegrityValid
+			}
+			if run.ResultingTreeVersion > 0 {
+				result.ResultTreeVersion = run.ResultingTreeVersion
+			}
+		}
+	}
+	return result, err
+}
+
 // treeAuditRepositoryFailureBackoff is the short delay applied after an audit
 // attempt that failed without calling the provider. It prevents a tight retry
 // loop against a failing repository without consuming provider rate limits.
@@ -332,6 +384,13 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		InputPayload:          boundedAuditJSON(snapshot.InputJSON, s.config.TreeAudit.MaxPersistedJSONBytes),
 		CreatedAt:             now,
 	}
+	// Non-audited terminal rows (for example rate limiting or provider
+	// failures) carry, but never increment, the session-scoped streak. This
+	// prevents an intervening skipped run from accidentally erasing the health
+	// signal used by the next completed audit.
+	if latest != nil && latest.SessionID == sessionID {
+		run.ConsecutiveUnappliedRuns = latest.ConsecutiveUnappliedRuns
+	}
 	claimed, err := s.auditRepo.TryStartMeetingTreeAuditRun(ctx, run)
 	if err != nil {
 		return execution, err
@@ -381,6 +440,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		run.Findings = boundedAuditJSON([]treeAuditFinding{}, s.config.TreeAudit.MaxPersistedJSONBytes)
 		run.Operations = boundedAuditJSON([]treeAuditOperation{}, s.config.TreeAudit.MaxPersistedJSONBytes)
 		run.CompletedAt = &completed
+		classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
 		if err := s.auditRepo.SaveMeetingTreeAuditRun(ctx, run); err != nil {
 			return execution, err
 		}
@@ -445,7 +505,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	canonicalizeTreeAuditResponse(response, state)
 	dry, validator := validateAndDryRunTreeAuditOperations(state, response.Operations, segments, mc, snapshot.EvidenceRoles, s.config.TreeAudit, runID, version+1, false)
 	validator.ParserElementsRejected = len(response.ParseRejections)
-	validator.OperationsCanonicalized = response.CanonicalizationCount
+	validator.OperationsCanonicalized = response.CanonicalizedOperationCount
 	parserOperationRejections := 0
 	for _, rejection := range response.ParseRejections {
 		if rejection.ElementType != "operation" {
@@ -467,9 +527,10 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	run.CompletedAt = &completed
 	run.Status = domain.MeetingTreeAuditCompleted
 	if validator.OperationsValid == 0 {
-		logTreeAuditDetails(sessionID, response, validator)
+		logTreeAuditDetails(sessionID, runID, response, validator)
 		run.Result = "no_safe_operations"
 		run.Disposition = "rejected"
+		classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
 		if err := s.auditRepo.SaveMeetingTreeAuditRun(ctx, run); err != nil {
 			return execution, err
 		}
@@ -485,6 +546,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 			run.ErrorCode = run.Result
 			run.ErrorMessage = truncateErrorMessage(ctx.Err(), 1000)
 		}
+		classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
 		if err := s.auditRepo.SaveMeetingTreeAuditRun(ctx, run); err != nil {
 			return execution, err
 		}
@@ -504,7 +566,8 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		run.Result = "stale_tree_version"
 		run.Disposition = "stale"
 		run.ValidatorResult = boundedAuditJSON(validator, s.config.TreeAudit.MaxPersistedJSONBytes)
-		logTreeAuditDetails(sessionID, response, validator)
+		classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
+		logTreeAuditDetails(sessionID, runID, response, validator)
 		if err := s.auditRepo.SaveMeetingTreeAuditRun(ctx, run); err != nil {
 			return execution, err
 		}
@@ -525,6 +588,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	run.Disposition = "applied"
 	run.ResultingTreeVersion = version + 1
 	run.ValidatorResult = boundedAuditJSON(validator, s.config.TreeAudit.MaxPersistedJSONBytes)
+	classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
 	saved, applied, applyErr := s.auditRepo.ApplyMeetingTreeAudit(ctx, run, version, domain.MeetingAIAnalysis{
 		SessionID: sessionID, Type: domain.MeetingAIAnalysisLive,
 		Status: domain.MeetingAIAnalysisCompleted, Version: version + 1,
@@ -545,7 +609,8 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		run.Disposition = "stale"
 		run.ResultingTreeVersion = 0
 		run.ValidatorResult = boundedAuditJSON(validator, s.config.TreeAudit.MaxPersistedJSONBytes)
-		logTreeAuditDetails(sessionID, response, validator)
+		classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
+		logTreeAuditDetails(sessionID, runID, response, validator)
 		if err := s.auditRepo.SaveMeetingTreeAuditRun(ctx, run); err != nil {
 			return execution, err
 		}
@@ -553,7 +618,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		return execution, nil
 	}
 	s.publishAnalysis(*saved)
-	logTreeAuditDetails(sessionID, response, validator)
+	logTreeAuditDetails(sessionID, runID, response, validator)
 	execution.Payload = auditedPayload
 	execution.Version = version + 1
 	execution.Applied = true
@@ -705,6 +770,95 @@ func shortAuditHash(value string) string {
 	return value
 }
 
+func classifyTreeAuditRun(run *domain.MeetingTreeAuditRun, previous *domain.MeetingTreeAuditRun, cfg TreeAuditConfig) {
+	if run == nil {
+		return
+	}
+	var validator treeAuditValidatorResult
+	if len(run.ValidatorResult) > 0 {
+		_ = json.Unmarshal(run.ValidatorResult, &validator)
+	}
+	findingCount := auditJSONArrayLength(run.Findings)
+	operationCount := auditJSONArrayLength(run.Operations)
+	if validator.OperationsProposed == 0 && operationCount > 0 {
+		validator.OperationsProposed = operationCount
+	}
+	run.OperationsProposed = validator.OperationsProposed
+	run.OperationsCanonicalized = validator.OperationsCanonicalized
+	run.OperationsValid = validator.OperationsValid
+	run.OperationsApplied = validator.OperationsApplied
+	run.OperationsRejected = validator.OperationsRejected
+	rejectionReasons := make(map[string]int)
+	for _, evaluation := range validator.Evaluations {
+		if !evaluation.Valid && strings.TrimSpace(evaluation.Reason) != "" {
+			rejectionReasons[evaluation.Reason]++
+		}
+	}
+	if len(rejectionReasons) > 0 {
+		run.RejectionReasons = boundedAuditJSON(rejectionReasons, cfg.normalized().MaxPersistedJSONBytes)
+	} else {
+		run.RejectionReasons = nil
+	}
+
+	classification := domain.MeetingTreeAuditResultClassification("")
+	auditedOutcome := run.ProviderCalled && run.Status == domain.MeetingTreeAuditCompleted
+	if run.Result == "no_anomalies" {
+		auditedOutcome = true
+	}
+	if auditedOutcome {
+		switch {
+		case run.OperationsApplied > 0 && run.ResultingTreeVersion > run.BasedOnTreeVersion:
+			classification = domain.MeetingTreeAuditResultApplied
+		case findingCount == 0 && run.OperationsProposed == 0:
+			classification = domain.MeetingTreeAuditResultClean
+		case findingCount > 0 && run.OperationsProposed == 0:
+			classification = domain.MeetingTreeAuditResultFindingsOnly
+		default:
+			classification = domain.MeetingTreeAuditResultRejected
+		}
+	}
+	run.ResultClassification = classification
+	previousConsecutive := 0
+	if previous != nil && previous.SessionID == run.SessionID {
+		previousConsecutive = previous.ConsecutiveUnappliedRuns
+	}
+	switch classification {
+	case domain.MeetingTreeAuditResultFindingsOnly, domain.MeetingTreeAuditResultRejected:
+		run.ConsecutiveUnappliedRuns = previousConsecutive + 1
+	case domain.MeetingTreeAuditResultClean, domain.MeetingTreeAuditResultApplied:
+		run.ConsecutiveUnappliedRuns = 0
+	default:
+		run.ConsecutiveUnappliedRuns = previousConsecutive
+	}
+
+	latestVersion := run.BasedOnTreeVersion
+	if run.ResultingTreeVersion > latestVersion {
+		latestVersion = run.ResultingTreeVersion
+	}
+	log.Printf("Tree audit result classified. auditRunId=%s sessionId=%s classification=%s findingsCount=%d operationsProposed=%d operationsCanonicalized=%d operationsValid=%d operationsApplied=%d operationsRejected=%d consecutiveUnappliedRuns=%d resultTreeVersion=%d",
+		run.ID, run.SessionID, classification, findingCount, run.OperationsProposed,
+		run.OperationsCanonicalized, run.OperationsValid, run.OperationsApplied,
+		run.OperationsRejected, run.ConsecutiveUnappliedRuns, run.ResultingTreeVersion)
+	threshold := cfg.normalized().UnappliedWarningThreshold
+	if run.ConsecutiveUnappliedRuns == threshold &&
+		(classification == domain.MeetingTreeAuditResultFindingsOnly || classification == domain.MeetingTreeAuditResultRejected) {
+		log.Printf("Tree audit findings remain unapplied. sessionId=%s consecutiveUnappliedAuditRuns=%d latestFindingsCount=%d latestOperationsProposed=%d latestRejectionReasons=%v latestTreeVersion=%d",
+			run.SessionID, run.ConsecutiveUnappliedRuns, findingCount,
+			run.OperationsProposed, rejectionReasons, latestVersion)
+	}
+}
+
+func auditJSONArrayLength(value json.RawMessage) int {
+	if len(value) == 0 {
+		return 0
+	}
+	var elements []json.RawMessage
+	if err := json.Unmarshal(value, &elements); err != nil {
+		return 0
+	}
+	return len(elements)
+}
+
 func logTreeAuditRun(run domain.MeetingTreeAuditRun, findingCount int, validator treeAuditValidatorResult) {
 	rejectionReasons := make(map[string]int)
 	for _, evaluation := range validator.Evaluations {
@@ -712,16 +866,16 @@ func logTreeAuditRun(run domain.MeetingTreeAuditRun, findingCount int, validator
 			rejectionReasons[evaluation.Reason]++
 		}
 	}
-	log.Printf("Tree audit completed. sessionId=%s auditRunId=%s triggerReason=%s basedOnTreeVersion=%d resultingTreeVersion=%d snapshotHash=%s deployment=%s model=%s promptVersion=%s status=%s result=%s disposition=%s elapsedMs=%d promptTokens=%d completionTokens=%d findingsCount=%d operationsProposed=%d operationsCanonicalized=%d operationsValid=%d operationsApplied=%d operationsRejected=%d rejectionReasons=%v integrityValid=%t",
+	log.Printf("Tree audit completed. sessionId=%s auditRunId=%s triggerReason=%s basedOnTreeVersion=%d resultingTreeVersion=%d snapshotHash=%s deployment=%s model=%s promptVersion=%s status=%s result=%s disposition=%s resultClassification=%s consecutiveUnappliedRuns=%d elapsedMs=%d promptTokens=%d completionTokens=%d findingsCount=%d operationsProposed=%d operationsCanonicalized=%d operationsValid=%d operationsApplied=%d operationsRejected=%d rejectionReasons=%v integrityValid=%t",
 		run.SessionID, run.ID, run.TriggerReason, run.BasedOnTreeVersion,
 		run.ResultingTreeVersion, shortAuditHash(run.SnapshotHash), run.Deployment,
-		run.Model, run.PromptVersion, run.Status, run.Result, run.Disposition, run.ElapsedMilliseconds,
+		run.Model, run.PromptVersion, run.Status, run.Result, run.Disposition, run.ResultClassification, run.ConsecutiveUnappliedRuns, run.ElapsedMilliseconds,
 		run.PromptTokens, run.CompletionTokens, findingCount, validator.OperationsProposed,
 		validator.OperationsCanonicalized, validator.OperationsValid, validator.OperationsApplied,
 		validator.OperationsRejected, rejectionReasons, validator.TreeIntegrityValid)
 }
 
-func logTreeAuditDetails(sessionID string, response *treeAuditResponse, validator treeAuditValidatorResult) {
+func logTreeAuditDetails(sessionID, auditRunID string, response *treeAuditResponse, validator treeAuditValidatorResult) {
 	byType := make(map[string]int)
 	bySeverity := make(map[string]int)
 	if response != nil {
@@ -736,17 +890,17 @@ func logTreeAuditDetails(sessionID string, response *treeAuditResponse, validato
 			rejected[evaluation.Reason]++
 		}
 	}
-	log.Printf("Tree audit findings. sessionId=%s findingCount=%d findingCountByType=%v highSeverityFindings=%d mediumSeverityFindings=%d lowSeverityFindings=%d",
-		sessionID, len(response.Findings), byType, bySeverity["high"], bySeverity["medium"], bySeverity["low"])
-	log.Printf("Tree audit operations. sessionId=%s operationsProposed=%d operationsValid=%d operationsApplied=%d operationsRejected=%d operationsRejectedByReason=%v staleOperationsRejected=%d parserElementsRejected=%d operationsCanonicalized=%d",
-		sessionID, validator.OperationsProposed, validator.OperationsValid, validator.OperationsApplied,
+	log.Printf("Tree audit findings. sessionId=%s auditRunId=%s findingCount=%d findingCountByType=%v highSeverityFindings=%d mediumSeverityFindings=%d lowSeverityFindings=%d",
+		sessionID, auditRunID, len(response.Findings), byType, bySeverity["high"], bySeverity["medium"], bySeverity["low"])
+	log.Printf("Tree audit operations. sessionId=%s auditRunId=%s operationsProposed=%d operationsValid=%d operationsApplied=%d operationsRejected=%d operationsRejectedByReason=%v staleOperationsRejected=%d parserElementsRejected=%d operationsCanonicalized=%d",
+		sessionID, auditRunID, validator.OperationsProposed, validator.OperationsValid, validator.OperationsApplied,
 		validator.OperationsRejected, rejected, validator.StaleOperationsRejected, validator.ParserElementsRejected, validator.OperationsCanonicalized)
-	log.Printf("Tree audit quality. sessionId=%s topicOutliersBefore=%d topicOutliersAfter=%d candidateFragmentationBefore=%d candidateFragmentationAfter=%d crossAgendaContaminationBefore=%d crossAgendaContaminationAfter=%d treeIntegrityValid=%t",
-		sessionID, validator.TopicOutliersBefore, validator.TopicOutliersAfter,
+	log.Printf("Tree audit quality. sessionId=%s auditRunId=%s topicOutliersBefore=%d topicOutliersAfter=%d candidateFragmentationBefore=%d candidateFragmentationAfter=%d crossAgendaContaminationBefore=%d crossAgendaContaminationAfter=%d treeIntegrityValid=%t",
+		sessionID, auditRunID, validator.TopicOutliersBefore, validator.TopicOutliersAfter,
 		validator.CandidateFragmentationBefore, validator.CandidateFragmentationAfter,
 		validator.CrossAgendaContaminationBefore, validator.CrossAgendaContaminationAfter,
 		validator.TreeIntegrityValid)
-	logTreeAuditOperationDetails(sessionID, response, validator)
+	logTreeAuditOperationDetails(sessionID, auditRunID, response, validator)
 }
 
 // logTreeAuditOperationDetails emits one operation-level log line per
@@ -755,7 +909,7 @@ func logTreeAuditDetails(sessionID string, response *treeAuditResponse, validato
 // effectiveConfidence, the validation result+category, and the rejection
 // reason. It never logs meeting transcript text, labels, or credentials -
 // only IDs and the validator's own decision fields.
-func logTreeAuditOperationDetails(sessionID string, response *treeAuditResponse, validator treeAuditValidatorResult) {
+func logTreeAuditOperationDetails(sessionID, auditRunID string, response *treeAuditResponse, validator treeAuditValidatorResult) {
 	byOperationID := make(map[string]treeAuditOperation)
 	if response != nil {
 		for _, operation := range response.Operations {
@@ -764,10 +918,11 @@ func logTreeAuditOperationDetails(sessionID string, response *treeAuditResponse,
 	}
 	for _, evaluation := range validator.Evaluations {
 		operation := byOperationID[evaluation.OperationID]
-		log.Printf("Tree audit operation. sessionId=%s operationId=%s operationType=%s target=%s fromParent=%s toParent=%s modelConfidence=%.2f effectiveConfidence=%.2f result=%s category=%s rejectionReason=%s",
-			sessionID, evaluation.OperationID, evaluation.Type, treeAuditOperationTargetLabel(operation),
+		log.Printf("Tree audit cleanup operation. sessionId=%s auditRunId=%s operationId=%s operationType=%s targetCanonical=%s fromParent=%s toParent=%s modelConfidence=%.2f effectiveConfidence=%.2f validationResult=%t applicationResult=%t result=%s category=%s rejectionReason=%s",
+			sessionID, auditRunID, evaluation.OperationID, evaluation.Type, treeAuditOperationTargetLabel(operation),
 			operation.FromParentCanonicalNodeID, operation.ToParentCanonicalNodeID,
-			evaluation.ModelConfidence, evaluation.EffectiveConfidence, evaluation.Result, evaluation.Category, evaluation.Reason)
+			evaluation.ModelConfidence, evaluation.EffectiveConfidence, evaluation.Valid, evaluation.Applied,
+			evaluation.Result, evaluation.Category, evaluation.Reason)
 	}
 }
 

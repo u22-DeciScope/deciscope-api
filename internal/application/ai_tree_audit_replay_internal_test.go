@@ -243,8 +243,8 @@ func TestSession2dee3b1da5b72979OfflineReplayAppliesSafeOperationsAndRejectsWeak
 	if run.ResultingTreeVersion != 14 {
 		t.Fatalf("run.ResultingTreeVersion = %d, want 14", run.ResultingTreeVersion)
 	}
-	if validator.OperationsProposed != 8 || validator.OperationsCanonicalized != 0 {
-		t.Fatalf("validator proposed/canonicalized = %d/%d, want 8/0", validator.OperationsProposed, validator.OperationsCanonicalized)
+	if validator.OperationsProposed != 8 || validator.OperationsCanonicalized != 8 {
+		t.Fatalf("validator proposed/canonicalized = %d/%d, want 8/8", validator.OperationsProposed, validator.OperationsCanonicalized)
 	}
 	if validator.OperationsApplied != 5 || validator.OperationsRejected != 3 {
 		t.Fatalf("validator applied/rejected = %d/%d, want 5/3: %+v", validator.OperationsApplied, validator.OperationsRejected, validator)

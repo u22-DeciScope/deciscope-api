@@ -36,7 +36,10 @@ func (r *MeetingTreeAuditRepository) CheckMeetingTreeAuditRepository(ctx context
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT trigger_class, disposition, suppression_reason, provider_called,
-			meeting_elapsed_seconds, input_payload, raw_response, error_code, error_message
+			meeting_elapsed_seconds, input_payload, raw_response, error_code, error_message,
+			result_classification, consecutive_unapplied_runs, operations_proposed,
+			operations_canonicalized, operations_valid, operations_applied,
+			operations_rejected, rejection_reasons
 		FROM meeting_tree_audit_runs
 		LIMIT 0
 	`)
@@ -127,7 +130,10 @@ const meetingTreeAuditSelect = `
 	SELECT id, session_id, based_on_tree_version,
 		COALESCE(resulting_tree_version, 0), trigger_reason, trigger_class, task,
 		COALESCE(deployment, ''), COALESCE(model, ''), prompt_version,
-		snapshot_hash, status, result, disposition, suppression_reason,
+		snapshot_hash, status, result, disposition, result_classification,
+		consecutive_unapplied_runs, operations_proposed, operations_canonicalized,
+		operations_valid, operations_applied, operations_rejected, rejection_reasons,
+		suppression_reason,
 		provider_called, meeting_elapsed_seconds, input_summary, input_payload,
 		raw_response, findings, operations,
 		validator_result, prompt_tokens, completion_tokens, elapsed_ms,
@@ -160,6 +166,10 @@ func writeMeetingTreeAuditRun(ctx context.Context, queryer meetingTreeAuditQuery
 	if err != nil {
 		return false, fmt.Errorf("encode tree audit validator result: %w", err)
 	}
+	rejectionReasons, err := nullableAuditJSON(run.RejectionReasons)
+	if err != nil {
+		return false, fmt.Errorf("encode tree audit rejection reasons: %w", err)
+	}
 	createdAt := run.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
@@ -172,6 +182,14 @@ func writeMeetingTreeAuditRun(ctx context.Context, queryer meetingTreeAuditQuery
 			resulting_tree_version=EXCLUDED.resulting_tree_version,
 			status=EXCLUDED.status, result=EXCLUDED.result,
 			disposition=EXCLUDED.disposition,
+			result_classification=EXCLUDED.result_classification,
+			consecutive_unapplied_runs=EXCLUDED.consecutive_unapplied_runs,
+			operations_proposed=EXCLUDED.operations_proposed,
+			operations_canonicalized=EXCLUDED.operations_canonicalized,
+			operations_valid=EXCLUDED.operations_valid,
+			operations_applied=EXCLUDED.operations_applied,
+			operations_rejected=EXCLUDED.operations_rejected,
+			rejection_reasons=EXCLUDED.rejection_reasons,
 			suppression_reason=EXCLUDED.suppression_reason,
 			provider_called=EXCLUDED.provider_called,
 			meeting_elapsed_seconds=EXCLUDED.meeting_elapsed_seconds,
@@ -194,18 +212,23 @@ func writeMeetingTreeAuditRun(ctx context.Context, queryer meetingTreeAuditQuery
 		INSERT INTO meeting_tree_audit_runs (
 			id, session_id, based_on_tree_version, resulting_tree_version,
 			trigger_reason, trigger_class, task, deployment, model, prompt_version,
-			snapshot_hash, status, result, disposition, suppression_reason,
+			snapshot_hash, status, result, disposition, result_classification,
+			consecutive_unapplied_runs, operations_proposed, operations_canonicalized,
+			operations_valid, operations_applied, operations_rejected, rejection_reasons,
+			suppression_reason,
 			provider_called, meeting_elapsed_seconds, input_summary, input_payload,
 			raw_response, findings, operations, validator_result,
 			prompt_tokens, completion_tokens, elapsed_ms, error_code, error_message,
 			created_at, completed_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
 	`+conflictClause, run.ID, run.SessionID, run.BasedOnTreeVersion, resultingVersion,
 		run.TriggerReason, string(run.TriggerClass), run.Task,
 		run.Deployment, run.Model, run.PromptVersion, run.SnapshotHash, string(run.Status),
-		run.Result, run.Disposition, run.SuppressionReason, run.ProviderCalled,
-		run.MeetingElapsedSeconds, input, inputPayload, run.RawResponse, findings,
-		operations, validator, run.PromptTokens, run.CompletionTokens,
+		run.Result, run.Disposition, string(run.ResultClassification), run.ConsecutiveUnappliedRuns,
+		run.OperationsProposed, run.OperationsCanonicalized, run.OperationsValid,
+		run.OperationsApplied, run.OperationsRejected, rejectionReasons, run.SuppressionReason,
+		run.ProviderCalled, run.MeetingElapsedSeconds, input, inputPayload, run.RawResponse,
+		findings, operations, validator, run.PromptTokens, run.CompletionTokens,
 		run.ElapsedMilliseconds, run.ErrorCode, run.ErrorMessage, createdAt.UTC(), run.CompletedAt)
 	if err != nil {
 		return false, fmt.Errorf("save meeting tree audit run: %w", err)
@@ -240,13 +263,16 @@ type meetingTreeAuditScanner interface {
 
 func scanMeetingTreeAuditRun(row meetingTreeAuditScanner) (*domain.MeetingTreeAuditRun, error) {
 	var run domain.MeetingTreeAuditRun
-	var status, triggerClass string
-	var input, inputPayload, findings, operations, validator []byte
+	var status, triggerClass, resultClassification string
+	var input, inputPayload, findings, operations, validator, rejectionReasons []byte
 	var completedAt sql.NullTime
 	err := row.Scan(&run.ID, &run.SessionID, &run.BasedOnTreeVersion,
 		&run.ResultingTreeVersion, &run.TriggerReason, &triggerClass,
 		&run.Task, &run.Deployment, &run.Model, &run.PromptVersion, &run.SnapshotHash,
-		&status, &run.Result, &run.Disposition, &run.SuppressionReason,
+		&status, &run.Result, &run.Disposition, &resultClassification,
+		&run.ConsecutiveUnappliedRuns, &run.OperationsProposed, &run.OperationsCanonicalized,
+		&run.OperationsValid, &run.OperationsApplied, &run.OperationsRejected, &rejectionReasons,
+		&run.SuppressionReason,
 		&run.ProviderCalled, &run.MeetingElapsedSeconds, &input, &inputPayload,
 		&run.RawResponse, &findings, &operations, &validator,
 		&run.PromptTokens, &run.CompletionTokens, &run.ElapsedMilliseconds,
@@ -259,11 +285,13 @@ func scanMeetingTreeAuditRun(row meetingTreeAuditScanner) (*domain.MeetingTreeAu
 	}
 	run.TriggerClass = domain.MeetingTreeAuditTriggerClass(triggerClass)
 	run.Status = domain.MeetingTreeAuditStatus(status)
+	run.ResultClassification = domain.MeetingTreeAuditResultClassification(resultClassification)
 	run.InputSummary = append(json.RawMessage(nil), input...)
 	run.InputPayload = append(json.RawMessage(nil), inputPayload...)
 	run.Findings = append(json.RawMessage(nil), findings...)
 	run.Operations = append(json.RawMessage(nil), operations...)
 	run.ValidatorResult = append(json.RawMessage(nil), validator...)
+	run.RejectionReasons = append(json.RawMessage(nil), rejectionReasons...)
 	run.CreatedAt = run.CreatedAt.UTC()
 	if completedAt.Valid {
 		completed := completedAt.Time.UTC()

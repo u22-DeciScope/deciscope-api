@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const treeAuditPromptVersion = "v3"
+const treeAuditPromptVersion = "v4"
 
 type TreeAuditFindingType string
 
@@ -47,6 +47,11 @@ const (
 	TreeAuditOrphanTentativeItem              TreeAuditFindingType = "orphan_tentative_item"
 	TreeAuditGenericTitle                     TreeAuditFindingType = "generic_title"
 	TreeAuditEvidenceFragmentation            TreeAuditFindingType = "evidence_fragmentation"
+	TreeAuditRecapOnlyItem                    TreeAuditFindingType = "recap_only_item"
+	TreeAuditDuplicateItem                    TreeAuditFindingType = "duplicate_item"
+	TreeAuditSupersededItem                   TreeAuditFindingType = "superseded_item"
+	TreeAuditEmptyGroup                       TreeAuditFindingType = "empty_group"
+	TreeAuditEmptyUnclassifiedContainer       TreeAuditFindingType = "empty_unclassified_container"
 )
 
 type TreeAuditOperationType string
@@ -116,12 +121,13 @@ type treeAuditOperation struct {
 }
 
 type treeAuditResponse struct {
-	BasedOnTreeVersion    int64                     `json:"basedOnTreeVersion"`
-	Summary               string                    `json:"summary"`
-	Findings              []treeAuditFinding        `json:"findings"`
-	Operations            []treeAuditOperation      `json:"operations"`
-	ParseRejections       []treeAuditParseRejection `json:"-"`
-	CanonicalizationCount int                       `json:"-"`
+	BasedOnTreeVersion          int64                     `json:"basedOnTreeVersion"`
+	Summary                     string                    `json:"summary"`
+	Findings                    []treeAuditFinding        `json:"findings"`
+	Operations                  []treeAuditOperation      `json:"operations"`
+	ParseRejections             []treeAuditParseRejection `json:"-"`
+	CanonicalizationCount       int                       `json:"-"`
+	CanonicalizedOperationCount int                       `json:"-"`
 }
 
 type treeAuditParseRejection struct {
@@ -222,6 +228,7 @@ type TreeAuditConfig struct {
 	RequiredImprovementMargin  float64
 	CohesionThreshold          float64
 	TentativeMaxVersions       int64
+	UnappliedWarningThreshold  int
 }
 
 func (c TreeAuditConfig) normalized() TreeAuditConfig {
@@ -279,6 +286,9 @@ func (c TreeAuditConfig) normalized() TreeAuditConfig {
 	if c.TentativeMaxVersions <= 0 {
 		c.TentativeMaxVersions = 3
 	}
+	if c.UnappliedWarningThreshold <= 0 {
+		c.UnappliedWarningThreshold = 3
+	}
 	return c
 }
 
@@ -306,7 +316,9 @@ func validTreeAuditFindingType(value TreeAuditFindingType) bool {
 		TreeAuditSemanticDuplicateSiblings, TreeAuditCrossKindDuplicateProposition,
 		TreeAuditMissingDynamicTopic, TreeAuditCandidateSubjectEvidenceMismatch,
 		TreeAuditRecapPromotedCandidate, TreeAuditOrphanTentativeItem,
-		TreeAuditGenericTitle, TreeAuditEvidenceFragmentation:
+		TreeAuditGenericTitle, TreeAuditEvidenceFragmentation,
+		TreeAuditRecapOnlyItem, TreeAuditDuplicateItem, TreeAuditSupersededItem,
+		TreeAuditEmptyGroup, TreeAuditEmptyUnclassifiedContainer:
 		return true
 	default:
 		return false

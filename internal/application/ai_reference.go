@@ -116,6 +116,7 @@ func itemReferenceResolver(previous, diff []liveAnalysisItem, legacyAliases map[
 	}
 	for i := range diff {
 		raw := modelItemReference(diff[i])
+		diff[i].modelReference = raw
 		if raw == "" {
 			continue
 		}

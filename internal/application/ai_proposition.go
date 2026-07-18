@@ -17,6 +17,9 @@ func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discour
 	}
 	primary := make([]liveAnalysisItem, 0, len(state.Items))
 	for _, item := range state.Items {
+		if item.Inactive || item.MergedIntoID != "" {
+			continue
+		}
 		if !evidenceIsReferenceOnly(item.EvidenceSequenceNos, timeline) && !lowInformationDecisionItem(item) {
 			primary = append(primary, item)
 		}
@@ -25,8 +28,17 @@ func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discour
 	remap := make(map[string]string)
 	removed := make(map[string]struct{})
 	for _, item := range state.Items {
+		// Auditor-deactivated/merged records are deliberately retained outside
+		// the active tree for history and tombstone semantic matching. Historical
+		// discourse repair may remove their tree nodes, but must not erase the
+		// durable inactive item on a later live round.
+		if item.Inactive || item.MergedIntoID != "" {
+			kept = append(kept, item)
+			continue
+		}
 		if lowInformationDecisionItem(item) {
 			removed[item.ID] = struct{}{}
+			addItemTombstone(state, item, "low_information", "", "live_repair", "", state.TreeVersion, state.TreeVersion)
 			if stats != nil {
 				stats.LowInformationDecisionsRejected++
 			}
@@ -35,12 +47,18 @@ func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discour
 		if evidenceIsReferenceOnly(item.EvidenceSequenceNos, timeline) {
 			if at, score := bestPropositionMatch(primary, item); at >= 0 && score >= 0.12 && primary[at].ID != item.ID {
 				remap[item.ID] = primary[at].ID
+				addItemTombstone(state, item, "merged", primary[at].ID, "live_repair", "", state.TreeVersion, state.TreeVersion)
 				if stats != nil {
 					stats.ReferenceRecapItemsMerged++
 				}
 				continue
 			}
 			removed[item.ID] = struct{}{}
+			reason := "recap_only"
+			if evidenceOnlyHasRoles(item.EvidenceSequenceNos, timeline, liveEvidenceDiscourseOnly) {
+				reason = "discourse_only"
+			}
+			addItemTombstone(state, item, reason, "", "live_repair", "", state.TreeVersion, state.TreeVersion)
 			if stats != nil {
 				stats.ReferenceRecapItemsRejected++
 			}
@@ -365,7 +383,7 @@ func contentEvidenceItems(items []liveAnalysisItem, timeline discourseTimeline) 
 // canonicalizePropositionItems folds cross-kind surface forms into one
 // proposition. The retained kind represents the proposition state; question,
 // resolution-condition and next-action wording is preserved as attributes.
-func canonicalizePropositionItems(state *liveAnalysisPayload, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats) map[string]string {
+func canonicalizePropositionItems(state *liveAnalysisPayload, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats, treeVersion int64) map[string]string {
 	if state == nil || len(state.Items) < 2 {
 		if state != nil {
 			stampPropositionMetadata(state.Items)
@@ -389,6 +407,7 @@ func canonicalizePropositionItems(state *liveAnalysisPayload, timeline discourse
 		canonical, companion := chooseCanonicalPropositionItem(kept[matchedAt], item)
 		canonical = mergePropositionAttributes(canonical, companion)
 		remap[companion.ID] = canonical.ID
+		addItemTombstone(state, companion, "merged", canonical.ID, "semantic_merge", "", treeVersion-1, treeVersion)
 		kept[matchedAt] = canonical
 		if stats != nil {
 			if canonical.Kind != companion.Kind {

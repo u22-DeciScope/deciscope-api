@@ -291,4 +291,5 @@ func canonicalizeTreeAuditResponse(response *treeAuditResponse, state liveAnalys
 		validOperations = append(validOperations, updated)
 	}
 	response.Operations = validOperations
+	response.CanonicalizedOperationCount = len(validOperations)
 }

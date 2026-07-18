@@ -28,10 +28,20 @@ const (
 )
 
 var (
-	agendaTransitionPattern = regexp.MustCompile(`(?:^|[。！？!?\s])(?:まず|続いて|次に|ここからは|最後に)|(?:について(?:確認|検討|議論)(?:します|する)|の議題に移(?:ります|る)|へ移(?:ります|る))`)
-	externalTopicPattern    = regexp.MustCompile(`(?:アジェンダ|議題)(?:に|で)?(?:は)?(?:ありません|なかった|外)|新しい(?:報告|論点|調査課題)`)
-	explicitNoAgendaPattern = regexp.MustCompile(`(?:アジェンダ|議題)(?:に|で)?(?:は)?(?:ありません|なかった|外)`)
+	agendaTransitionPattern           = regexp.MustCompile(`(?:^|[。！？!?\s])(?:まず|続いて|次に|ここからは|最後に)|(?:について(?:確認|検討|議論)(?:します|する)|の議題に移(?:ります|る)|へ移(?:ります|る))`)
+	externalTopicPattern              = regexp.MustCompile(`(?:[アマ]ジェンダ|議題)(?:に|で)?(?:は)?(?:ありません|なかった|外)|新しい(?:報告|論点|調査課題)`)
+	explicitNoAgendaPattern           = regexp.MustCompile(`(?:[アマ]ジェンダ|議題)(?:に|で)?(?:は)?(?:ありません|なかった|外)`)
+	externalTransitionSelectorPattern = regexp.MustCompile(`(?i)(?:別|追加|本題外|アジェンダ外|議題外|another|additional|separate)`)
 )
+
+func isExplicitNoAgendaTransition(text string) bool {
+	if explicitNoAgendaPattern.MatchString(text) {
+		return true
+	}
+	normalized := normalizeDiscourseText(text)
+	return structurallyDiscourseTransition(normalized) &&
+		externalTransitionSelectorPattern.MatchString(strings.ToLower(normalized))
+}
 
 func agendaTransitionTarget(text string, mc *meetingContext) (string, float64) {
 	if mc == nil {
@@ -77,8 +87,8 @@ func detectAgendaContextSpans(scope liveEvidenceScope, mc *meetingContext, stats
 		if text == "" {
 			continue
 		}
-		externalTopic := externalTopicPattern.MatchString(text)
-		if !explicitNoAgendaPattern.MatchString(text) && !agendaTransitionPattern.MatchString(text) {
+		externalTopic := externalTopicPattern.MatchString(text) || isExplicitNoAgendaTransition(text)
+		if !externalTopic && !agendaTransitionPattern.MatchString(text) {
 			continue
 		}
 		agendaID, confidence := agendaTransitionTarget(text, mc)

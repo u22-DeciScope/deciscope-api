@@ -52,7 +52,7 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 			continue
 		}
 		isMoveType := treeAuditOperationIsMoveType(operation.Type)
-		if isMoveType && treeAuditManualEditProtectedOperation(operation, dry) {
+		if treeAuditManualEditProtectedOperation(operation, dry) {
 			reject("manual_edit_protected")
 			continue
 		}
@@ -601,6 +601,7 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		for _, id := range targetIDs[1:] {
 			removeNodeIDs[id] = struct{}{}
 			if at, ok := itemIndex[id]; ok {
+				addItemTombstone(state, state.Items[at], "merged", survivor.ID, "tree_auditor", runID, resultingVersion-1, resultingVersion)
 				state.Items[at].MergedIntoID = survivor.ID
 			}
 		}
@@ -675,6 +676,9 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			grounds = lowInformationDecisionItem(item)
 		}
 		if !grounds {
+			grounds = treeAuditLowInformationItem(item, segmentText, evidenceRoles)
+		}
+		if !grounds {
 			for _, sibling := range state.Items {
 				if sibling.ID == item.ID {
 					continue
@@ -695,6 +699,8 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		if !grounds {
 			return 0, 0, "deactivate_grounds_not_verified"
 		}
+		tombstoneReason := treeAuditDeactivationTombstoneReason(item, operation, segmentText, evidenceRoles)
+		addItemTombstone(state, item, tombstoneReason, "", "tree_auditor", runID, resultingVersion-1, resultingVersion, node.ParentID)
 		state.Tree.Nodes = append(state.Tree.Nodes[:nodeAt], state.Tree.Nodes[nodeAt+1:]...)
 		state.Items[itemAt].Inactive = true
 		rebuildTreeAuditEdges(state.Tree)
@@ -979,9 +985,9 @@ func treeAuditIsManualChangeSource(source string) bool {
 	return normalized == "user" || strings.HasPrefix(normalized, "manual")
 }
 
-// treeAuditManualEditProtectedOperation reports whether a move-type
-// operation's target (or, for fold_candidate_into_topic, any of its target
-// items) currently carries a manual/user LastParentChangeSource. It is
+// treeAuditManualEditProtectedOperation reports whether an applicable
+// operation's target (or, for fold_candidate_into_topic, any target item)
+// currently carries a manual/user LastParentChangeSource. It is
 // checked before any confidence bonus is computed, so a manual edit cannot
 // be overridden regardless of modelConfidence.
 func treeAuditManualEditProtectedOperation(operation treeAuditOperation, state liveAnalysisPayload) bool {
@@ -993,10 +999,18 @@ func treeAuditManualEditProtectedOperation(operation treeAuditOperation, state l
 		return node != nil && treeAuditIsManualChangeSource(node.LastParentChangeSource)
 	}
 	switch operation.Type {
-	case TreeAuditMoveItem, TreeAuditRestorePreviousParent:
+	case TreeAuditMoveItem, TreeAuditRestorePreviousParent, TreeAuditDeactivateItem,
+		TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription:
 		return isManual(operation.TargetCanonicalItemID)
-	case TreeAuditMoveNode:
+	case TreeAuditMoveNode, TreeAuditRenameGroup, TreeAuditRemoveEmptyGroup:
 		return isManual(operation.TargetCanonicalNodeID)
+	case TreeAuditMergeItems:
+		for _, id := range operation.TargetCanonicalItemIDs {
+			if isManual(id) {
+				return true
+			}
+		}
+		return false
 	case TreeAuditFoldCandidateIntoTopic:
 		targetIDs := operation.TargetCanonicalItemIDs
 		if len(targetIDs) == 0 {
@@ -1381,20 +1395,23 @@ func cloneLiveAnalysisPayload(value liveAnalysisPayload) liveAnalysisPayload {
 }
 
 // treeAuditRemovableEmptyContainerKind reports whether node is a container
-// kind that a childless state makes safely deletable: an actual "group"
-// node, or a promoted dynamic topic (kind=topic, origin=dynamic) that is not
-// root, not the system unclassified bucket, and not the action_summary
-// agenda. Fixed agenda topics (origin=agenda) are never dynamic, so they are
-// already excluded by the origin check alone; the explicit root/
-// topic-unclassified/action_summary exclusions are kept for clarity and to
-// match design brief D5/9.2 exactly. remove_empty_group's own applier and
+// kind that a childless state makes safely deletable: a non-manual group, a
+// promoted dynamic topic, or the synthetic system unclassified bucket.
+// Fixed agenda topics (origin=agenda), root, action_summary, and manually
+// changed containers are excluded. remove_empty_group's own applier and
 // treeAuditCascadePruneEmptyContainers both use this single definition.
 func treeAuditRemovableEmptyContainerKind(node liveAnalysisTreeNode) bool {
+	if treeAuditIsManualChangeSource(node.LastParentChangeSource) {
+		return false
+	}
 	if node.Kind == "group" {
 		return true
 	}
+	if node.Kind == "topic" && node.ID == treeUnclassifiedTopicID {
+		return node.Origin == topicOriginSystem
+	}
 	return node.Kind == "topic" && node.Origin == topicOriginDynamic &&
-		node.ID != treeRootNodeID && node.ID != treeUnclassifiedTopicID && node.AgendaRole != agendaRoleActionSummary
+		node.ID != treeRootNodeID && node.AgendaRole != agendaRoleActionSummary
 }
 
 // treeAuditCascadeRemoveEmptyAncestors removes nodeID from tree if it is
@@ -1686,6 +1703,51 @@ func treeAuditItemsMergeable(a, b liveAnalysisItem) bool {
 		return true
 	}
 	return false
+}
+
+func treeAuditLowInformationItem(item liveAnalysisItem, segmentText map[int64]string, evidenceRoles map[int64]treeAuditEvidenceRole) bool {
+	if metaOnlyLiveItemText(item.Title + " " + item.Body) {
+		return true
+	}
+	scope := liveEvidenceScope{
+		Allowed: make(map[int64]struct{}), CurrentRound: make(map[int64]struct{}),
+		TranscriptText: make(map[int64]string), Segments: make(map[int64]domain.TranscriptSegment),
+	}
+	timeline := discourseTimeline{Roles: make(map[int64]liveEvidenceRole), DetectedRoles: make(map[int64]liveUtteranceRole)}
+	for sequenceNo, text := range segmentText {
+		scope.Allowed[sequenceNo] = struct{}{}
+		scope.TranscriptText[sequenceNo] = text
+		if sequenceNo > scope.CoveredThrough {
+			scope.CoveredThrough = sequenceNo
+		}
+		switch evidenceRoles[sequenceNo] {
+		case treeAuditEvidenceReference:
+			timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
+			timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
+		case treeAuditEvidencePrimary:
+			timeline.Roles[sequenceNo] = liveEvidencePrimary
+			timeline.DetectedRoles[sequenceNo] = liveUtteranceSubstantive
+		default:
+			timeline.Roles[sequenceNo] = liveEvidenceSupporting
+		}
+	}
+	reason, _ := validateLiveItemInformation(item, false, timeline, scope)
+	return reason != ""
+}
+
+func treeAuditDeactivationTombstoneReason(item liveAnalysisItem, operation treeAuditOperation, segmentText map[int64]string, evidenceRoles map[int64]treeAuditEvidenceRole) string {
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		if classifyDiscourseAct(segmentText[sequenceNo]) == discourseTopicTransition || classifyDiscourseAct(segmentText[sequenceNo]) == discourseMeetingControl || classifyDiscourseAct(segmentText[sequenceNo]) == discourseFiller {
+			return "discourse_only"
+		}
+	}
+	if metaOnlyLiveItemText(item.Title+" "+item.Body) || treeAuditLowInformationItem(item, segmentText, evidenceRoles) {
+		return "low_information"
+	}
+	if allTreeAuditEvidenceReference(item.EvidenceSequenceNos, evidenceRoles) {
+		return "recap_only"
+	}
+	return operation.Reason
 }
 
 // treeAuditMergeTargetsConnected reports whether every item in items is

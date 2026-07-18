@@ -42,7 +42,7 @@ finding/operationの一部だけが非canonical IDや無効dependencyを含む�
 
 ## Operationの分類
 
-v3 schemaは23種のoperation typeを認識します。サーバーが実際に適用しうる
+v4 schemaは23種のoperation typeを認識します。サーバーが実際に適用しうる
 **applicable**は次の15種です。
 
 `move_item`, `restore_previous_parent`, `move_node`, `merge_items`,
@@ -95,9 +95,11 @@ survivor優先で欠落させません。被統合itemはtreeから除去され�
 
 ### deactivate_item
 
-重複・recap/reference-only・discourse-only(会話制御発話)・低情報
-decisionのいずれかをサーバー側で再検証できた場合のみtreeから除去し、
-`inactive:true`を記録します。モデルの主張のみでは適用されません。
+重複・superseded・recap/reference-only・discourse-only(会話制御発話)・
+kindごとの独立した命題を持たないlow-information itemのいずれかを
+サーバー側で再検証できた場合のみtreeから除去し、`inactive:true`を
+記録します。モデルの主張のみでは適用されません。手動編集済みの対象は
+`manual_edit_protected`で拒否し、適用時にはsession内tombstoneも作成します。
 
 ### assign_item_to_candidate / change_evidence_role
 
@@ -121,9 +123,10 @@ candidateを非活性化します。deactivate_candidateはroundCount<=1の
 candidateを無条件で、それ以外は他条件を満たした場合のみ非活性化します。
 rename_groupはlabelの意味的cohesionが悪化しない場合のみ適用されます。
 
-`remove_empty_group`は、子が0件のgroup、または子が0件になった
-昇格済みdynamic topic(fixed agenda・root・action_summary以外)を削除
-します。子が1件以上残っている場合は`group_not_empty`で拒否され、
+`remove_empty_group`は、子が0件のgroup、子が0件になった昇格済みdynamic
+topic、または空のsystem生成`topic-unclassified`(fixed agenda・root・
+action_summary以外)を削除します。子が1件以上残っている場合は
+`group_not_empty`で拒否され、
 削除対象として不適格なnode(未知ID、group/dynamic topic以外、fixed
 agenda・root・action_summary)は`unknown_or_immutable_container`で
 拒否されます。
@@ -137,12 +140,12 @@ operationは`tree_integrity_rejected`で拒否されてしまいます。
 これを避けるため、operation単位のvalidationはoperation適用直後・
 integrity再検証の直前に、**空になったcontainerのcascade自動整理**を
 行います。あるoperationの結果、親子関係が変わった(除去または再親化
-された)nodeの旧親について、そのnodeがgroup、または子0件になった
-昇格済みdynamic topic(fixed agenda・root・action_summary・
-topic-unclassified以外、remove_empty_groupと同じ対象定義)であり、
+された)nodeの旧親について、そのnodeがgroup、子0件になった
+昇格済みdynamic topic、または空のsystem生成`topic-unclassified`
+(fixed agenda・root・action_summary以外、remove_empty_groupと同じ対象定義)であり、
 かつ子が0件であれば、そのnodeをtreeから除去します。除去後にその
-node自身の親も同条件を満たせばcascadeでさらに上位へ除去を続けます
-(topic-unclassifiedは決して対象になりません)。この自動整理は、その
+node自身の親も同条件を満たせばcascadeでさらに上位へ除去を続けます。
+この自動整理は、その
 operationが実際に子を取り除いたcontainer系列だけに限定され、無関係な
 既存containerへは波及しません(監査開始時に`validateTreeIntegrity`済み
 のため、そもそも無関係な空containerは存在しないはずです)。ライブ
@@ -173,8 +176,9 @@ tree側のID存在チェックは行いません。canonicalizationは、parse�
 6. どの規則でも解決できない場合は`unresolved_canonical_id`で拒否する
 
 解決できないfinding/operationはそれ単体だけが除外され、応答全体は
-破棄されません。置換件数は`operationsCanonicalized`として
-`validator_result`に記録されます。JSON envelope・version不一致・
+破棄されません。canonicalizationを通過してvalidatorへ渡ったoperation件数は
+`operationsCanonicalized`として`validator_result`に記録されます
+(別名置換そのものの件数はresponse内で別管理)。JSON envelope・version不一致・
 上限違反などレスポンス全体の安全性を判定できない場合だけ
 `invalid_schema`になります。
 
@@ -302,6 +306,43 @@ groupに関するfindingの増減はそのまま検出されます。除外はfi
 `fold_candidate_into_topic`にも同じgeneric-parent margin半減補正
 (design D4)が適用されます。固定agendaへの復帰が主な経路です。
 
+## Live生成前gateとtombstone
+
+live extraction v12は各final発言を`substantive`、`correction`、`recap`、
+`discourse_transition`、`filler`へ分類します。モデル分類に加え、サーバーは
+話題選択語・会議上のメタ対象・遷移述語の組合せ、具体的な対象・期限・担当・
+判断の有無、前後のevidenceを使って決定論的に再分類します。
+`discourse_transition`はno-agenda span開始には使えますが、表示itemやcandidate
+にはなりません。保存前のlow-information validatorはkind、title/body、
+evidence role、担当・期限、decision/correction marker、前後発言を確認し、
+独立した命題を持たない新規itemを拒否します。transcript文脈を持たない
+historical replayでは推測で削除せず、audit-time validatorへ委ねます。
+
+監査の`deactivate_item`、`merge_items`、およびlive semantic mergeで除外した
+itemは、live payloadの`itemTombstones`へsession scopeで保存します。各entryは
+canonical item ID、proposition key、semantic key hash、evidence fingerprint、
+candidate alias、理由、merge先、source/audit versionを持ち、item本文は複製
+しません。次のlive mergeより前に照合し、同じitem/candidateの再active化を
+防ぎます。明示reopen、実質的に異なる命題、correction、新しい担当・期限・
+数値情報、またはmerge先のinactive化は再openを許可し、理由とversionを
+tombstoneへ記録します。
+
+## 結果分類と未適用警告
+
+完了したaudit runは`clean`(finding 0 / proposal 0)、`findings_only`
+(findingあり / proposal 0)、`rejected`(proposalあり / applied 0)、`applied`
+(appliedあり / tree version更新)の4種類に分類します。既存のrun result
+(`partial_success`等)はそのまま保持し、分類は別columnへ保存します。
+同一sessionの`findings_only`/`rejected`連続数もrunごとに保存し、`clean`または
+`applied`で0へ戻します。skipped/failed runは連続数を増やさず、その値を
+引き継ぐため、rate limitを挟んでも検知が失われません。session scopeなので
+別sessionは常に0から始まります。
+
+`TREE_AUDIT_UNAPPLIED_WARNING_THRESHOLD`(既定3)への到達時だけ
+`Tree audit findings remain unapplied.`を出し、同じstreakの4回目以降では
+繰り返しません。runには分類、連続数、proposed/canonicalized/valid/applied/
+rejected件数、rejection reason集計、resulting versionを永続化します。
+
 ## Scheduling
 
 live auditは同一sessionでsingle-flightです。監査中の複数triggerはpending
@@ -353,6 +394,31 @@ finalization/tree snapshotの`finalTreeReviewFailed`と`degraded`で観測でき
 順序は常に`final flush → final_tree_review → final tree snapshot → final summary`
 です。
 
+## 実GPT-5-mini統合テスト
+
+`internal/app/TestRealTreeAuditGPT5Mini`は通常実行ではskipされる明示実行専用
+testです。`RUN_REAL_AI_INTEGRATION_TESTS=true`、
+`DATABASE_REAL_AI_TEST_URL`、Azure OpenAI endpoint/key、
+`AZURE_OPENAI_TREE_AUDIT_DEPLOYMENT`がすべて必要です。DB URLはdatabase名が
+`_test`、`_integration`、`_real_ai_test`のいずれかで終わらなければ、接続前に
+拒否します。testはそのbase test DB上にさらに一意なdatabaseを作成し、全migration、
+fixture投入、実provider、canonicalization、validator、transaction/CAS、tree integrity
+確認までを通した後、その一時databaseだけをdropします。通常の`DATABASE_URL`は
+読みません。
+
+PowerShellでの実行例:
+
+```powershell
+$env:RUN_REAL_AI_INTEGRATION_TESTS='true'
+$env:DATABASE_REAL_AI_TEST_URL='postgres://user:password@localhost/deciscope_real_ai_test'
+$env:AZURE_OPENAI_TREE_AUDIT_DEPLOYMENT='ds-gpt-5-mini'
+go test ./internal/app -run TestRealTreeAuditGPT5Mini -count=1 -v
+```
+
+response schemaとprompt versionは固定し、retryは最大2回です。失敗ログにはrun ID、
+aggregate finding/operation件数、version、integrity、test database名だけを出し、
+credential、prompt全文、transcript全文は出しません。
+
 ## Replay history
 
 `meeting_tree_audit_runs`はrunごとに、session/run ID、based/resulting
@@ -362,7 +428,9 @@ finding、operation、validator結果(`operationsProposed`,
 `operationsCanonicalized`, `operationsValid`, `operationsApplied`,
 `operationsRejected`等)、disposition、heuristic metrics、token usage、
 elapsed、error code/message、provider call有無、抑制理由、会議経過秒を
-保存します。入力は`TREE_AUDIT_MAX_INPUT_TOKENS`で制限済みで、保存JSONは
+保存します。さらに`result_classification`、`consecutive_unapplied_runs`、
+operation件数列、`rejection_reasons`を検索可能な列として保存します。
+入力は`TREE_AUDIT_MAX_INPUT_TOKENS`で制限済みで、保存JSONは
 既定256 KiBに制限されます。同じsnapshotでもprompt versionまたはdeployment
 を変更するか、運用ツールから`manual_replay` triggerを明示すれば将来の
 再評価が可能です。通常schedulerが偶発的に同じ入力を再送することはありません。

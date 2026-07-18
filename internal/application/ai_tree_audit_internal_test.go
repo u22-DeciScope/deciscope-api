@@ -171,7 +171,111 @@ func TestTreeAuditAppliesWhenEnabledAndPersistsRunDetails(t *testing.T) {
 	}
 }
 
-// partialSuccessAuditResponse (design brief D5/14.6) returns a v3 response
+func TestTreeAuditFakeProviderCleansDiscourseItemAndPreventsResurrection(t *testing.T) {
+	const sessionID = "session_tree_audit_discourse_cleanup"
+	state := liveAnalysisPayload{
+		Summary: "VPN証明書対応", CurrentTopic: "VPN証明書の期限切れ対応", TreeVersion: 4,
+		CoveredThroughSequenceNo: 3,
+		Items: []liveAnalysisItem{
+			{ID: "item-risk-vpn", Kind: "risk", Severity: "high", Title: "VPN証明書が来月末に期限切れ", Body: "リモート接続不能の可能性", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{2}},
+			{ID: "item-todo-vpn", Kind: "todo", Severity: "high", Title: "VPN証明書の更新手順を確認", Body: "高橋さんが今週中に確認する", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{3}},
+			{ClientKey: "legacy-discourse-alias", ID: "item-discourse", Kind: "todo", Severity: "medium", Title: "別の問題の存在を確認", Body: "アジェンダ外の別問題があるとの紹介", Status: "open", ClassificationStatus: classificationUnclassified, AssignmentConfidence: .4, EvidenceSequenceNos: []int64{1}},
+		},
+		Tree: &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+			{ID: treeRootNodeID, Kind: "topic", Label: "障害振り返り", Origin: topicOriginSystem},
+			{ID: "agenda-impact", Kind: "topic", ParentID: treeRootNodeID, Label: "影響範囲", Origin: topicOriginAgenda},
+			{ID: "topic-vpn", Kind: "topic", ParentID: treeRootNodeID, Label: "VPN証明書の期限切れ対応", Origin: topicOriginDynamic},
+			{ID: "group-additional", Kind: "group", ParentID: treeRootNodeID, Label: "追加論点", Origin: "rule"},
+			{ID: "item-risk-vpn", Kind: "risk", ParentID: "topic-vpn", Label: "VPN証明書が来月末に期限切れ", Status: "open"},
+			{ID: "item-todo-vpn", Kind: "todo", ParentID: "topic-vpn", Label: "VPN証明書の更新手順を確認", Status: "open"},
+			{ID: "item-discourse", Kind: "todo", ParentID: "group-additional", Label: "別の問題の存在を確認", Status: "open"},
+		}},
+	}
+	rebuildTreeAuditEdges(state.Tree)
+	payload, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments := []domain.TranscriptSegment{
+		{SessionID: sessionID, SequenceNo: 1, Text: "ここで、アジェンダにはなかった別の問題があります。", IsFinal: true},
+		{SessionID: sessionID, SequenceNo: 2, Text: "VPN証明書が来月末に期限切れで、リモート接続ができなくなる可能性があります。", IsFinal: true},
+		{SessionID: sessionID, SequenceNo: 3, Text: "高橋さんに今週中に更新手順を確認してもらいます。", IsFinal: true},
+	}
+	analysisRepo := &internalAuditAnalysisRepository{store: map[string]domain.MeetingAIAnalysis{
+		sessionID: {SessionID: sessionID, Type: domain.MeetingAIAnalysisLive, Status: domain.MeetingAIAnalysisCompleted, Version: 4, Payload: payload, SegmentCount: len(segments)},
+	}}
+	auditRepo := &internalAuditRepository{analysis: analysisRepo}
+	response := `{
+  "basedOnTreeVersion":4,
+  "summary":"談話的な導入だけのitemを除去",
+  "findings":[{"findingId":"finding-discourse","type":"discourse_only_item","severity":"high","nodeIds":["legacy-discourse-alias"],"currentParentIds":["group-additional"],"relatedNodeIds":[],"evidenceSequenceNos":[1],"reason":"独立命題を持たない話題転換","confidence":0.99}],
+  "operations":[{"operationId":"deactivate-discourse","type":"deactivate_item","targetCanonicalItemId":"legacy-discourse-alias","targetCanonicalNodeId":"","targetCanonicalItemIds":[],"targetCandidateId":"","fromParentCanonicalNodeId":"","toParentCanonicalNodeId":"","label":"","reason":"discourse_only_item","confidence":0.99,"evidenceSequenceNos":[1],"dependsOnOperationIds":[]}]
+}`
+	completer := &internalAuditCompleter{content: response}
+	service := NewMeetingAnalysisService(analysisRepo, internalAuditTranscriptRepository{segments: segments}, nil, completer, MeetingAnalysisConfig{
+		Enabled: true, LiveEnabled: true, Model: "shared", TaskModels: AITaskModels{TreeAudit: "tree-audit-mini"},
+		TreeAudit: TreeAuditConfig{Enabled: true, MinInterval: time.Millisecond, Timeout: time.Second, UnappliedWarningThreshold: 2},
+	})
+	service.SetMeetingTreeAuditRepository(auditRepo)
+	execution, err := service.runTreeAudit(context.Background(), sessionID, "manual_replay", aiTaskTreeAudit, payload, 4, false)
+	if err != nil {
+		t.Fatalf("runTreeAudit() error = %v", err)
+	}
+	if !execution.Applied || execution.Version != 5 {
+		t.Fatalf("execution = %+v", execution)
+	}
+	audited := previousLiveAnalysisState(execution.Payload)
+	if treeNodeByID(audited.Tree, "item-discourse") != nil || treeNodeByID(audited.Tree, "group-additional") != nil {
+		t.Fatalf("discourse cleanup did not remove item/group: %+v", audited.Tree.Nodes)
+	}
+	if treeNodeByID(audited.Tree, "topic-vpn") == nil || treeNodeByID(audited.Tree, "item-risk-vpn") == nil || treeNodeByID(audited.Tree, "item-todo-vpn") == nil || treeNodeByID(audited.Tree, "agenda-impact") == nil {
+		t.Fatalf("valid VPN/fixed nodes were removed: %+v", audited.Tree.Nodes)
+	}
+	if len(audited.ItemTombstones) == 0 || audited.ItemTombstones[0].Reason != "discourse_only" {
+		t.Fatalf("tombstones = %+v", audited.ItemTombstones)
+	}
+	run := auditRepo.latest()
+	if run == nil || run.ResultClassification != domain.MeetingTreeAuditResultApplied || run.OperationsProposed != 1 || run.OperationsCanonicalized != 1 || run.OperationsValid != 1 || run.OperationsApplied != 1 || run.ResultingTreeVersion != 5 {
+		t.Fatalf("classified audit run = %+v", run)
+	}
+
+	resurrection := `{
+  "summary":"VPN証明書対応","currentTopic":"VPN証明書の期限切れ対応","resolvedIds":[],"resolutionUpdates":[],
+  "utteranceRoles":[{"sequenceNo":1,"role":"discourse_transition"}],
+  "items":[{"clientKey":"same-discourse-item","kind":"todo","severity":"medium","title":"別の問題の存在を確認","body":"アジェンダ外の別問題があるとの紹介","status":"open","evidenceSequenceNos":[1]}],
+  "newTopics":[{"id":"topic-additional","label":"追加論点","description":"別件"}],
+  "assignments":[{"nodeId":"same-discourse-item","parentTopicId":"topic-additional","confidence":0.8,"reason":"別件"}]
+}`
+	scope := evidenceScopeFromTexts(map[int64]string{1: segments[0].Text, 2: segments[1].Text, 3: segments[2].Text}, 1, 2, 3)
+	stats := &liveAnalysisTreeMergeStats{}
+	nextPayload, err := parseAndMergeLiveAnalysisPayloadWithEvidence(resurrection, execution.Payload, nil, 6, []int64{1}, scope, TreeClassificationConfig{}, stats)
+	if err != nil {
+		t.Fatalf("merge resurrection round: %v", err)
+	}
+	next := previousLiveAnalysisState(nextPayload)
+	if treeNodeByID(next.Tree, "item-discourse") != nil {
+		t.Fatalf("deactivated item returned to the active tree: items=%+v nodes=%+v", next.Items, next.Tree.Nodes)
+	}
+	retained := itemByID(next.Items, "item-discourse")
+	if retained == nil || !retained.Inactive {
+		t.Fatalf("deactivated item audit history was not retained as inactive: items=%+v", next.Items)
+	}
+	for _, node := range next.Tree.Nodes {
+		if node.Label == "追加論点" {
+			t.Fatalf("empty cleanup container resurrected: %+v", node)
+		}
+	}
+	for _, candidate := range next.EmergingTopics {
+		if candidate.Label == "追加論点" {
+			t.Fatalf("cleanup candidate resurrected: %+v", candidate)
+		}
+	}
+	if stats.ItemResurrectionPrevented != 1 {
+		t.Fatalf("tombstone did not block the next live-version resurrection: %+v", stats)
+	}
+}
+
+// partialSuccessAuditResponse (design brief D5/14.6) returns a v4 response
 // with two structurally valid operations (a known-good move_item and a
 // known-good deactivate_candidate) plus one operation whose target item ID
 // does not exist in the tree at all. The bogus ID never resolves during
@@ -1239,11 +1343,10 @@ func TestTreeAuditCascadePruneRemovesEmptyGroupAndCascadesToParentTopic(t *testi
 	}
 }
 
-// TestTreeAuditCascadePruneNeverRemovesTopicUnclassified covers the cascade's
-// guard rail: topic-unclassified (kind=topic, origin=system) is never a
-// removable container kind, so emptying it (by moving its only child
-// elsewhere) must leave it in place rather than pruning it away.
-func TestTreeAuditCascadePruneNeverRemovesTopicUnclassified(t *testing.T) {
+// TestTreeAuditCascadePruneRemovesEmptyTopicUnclassified verifies that the
+// synthetic unclassified bucket is removed after its final child moves to a
+// grounded topic. Fixed agenda and root nodes remain protected elsewhere.
+func TestTreeAuditCascadePruneRemovesEmptyTopicUnclassified(t *testing.T) {
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
 	roles := classifyTreeAuditEvidence(state, segments)
@@ -1259,8 +1362,8 @@ func TestTreeAuditCascadePruneNeverRemovesTopicUnclassified(t *testing.T) {
 		t.Fatalf("validator result = %+v", result)
 	}
 	unclassified := treeNodeByID(dry.Tree, treeUnclassifiedTopicID)
-	if unclassified == nil {
-		t.Fatal("topic-unclassified must never be pruned by the cascade, even when it has zero children")
+	if unclassified != nil {
+		t.Fatalf("empty topic-unclassified must be pruned by the cascade: %+v", unclassified)
 	}
 	for _, node := range dry.Tree.Nodes {
 		if node.ParentID == treeUnclassifiedTopicID {
@@ -1413,6 +1516,26 @@ func TestTreeAuditDeactivateItemAppliesOnDuplicateGrounds(t *testing.T) {
 	item := findItemByID(dry.Items, "item-todo-dup-b")
 	if item == nil || !item.Inactive {
 		t.Fatalf("deactivated item = %+v", item)
+	}
+}
+
+func TestTreeAuditDeactivateItemRejectsManualEditEvenWithDuplicateGrounds(t *testing.T) {
+	payload, segments, mc := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	state.Items = append(state.Items,
+		liveAnalysisItem{ID: "item-manual-dup-a", Kind: "todo", Title: "VPN証明書の更新", Body: "VPN証明書を更新する", Status: "open", EvidenceSequenceNos: []int64{22}},
+		liveAnalysisItem{ID: "item-manual-dup-b", Kind: "todo", Title: "VPN証明書の更新", Body: "VPN証明書を新しくする", Status: "open", EvidenceSequenceNos: []int64{24}},
+	)
+	state.Tree.Nodes = append(state.Tree.Nodes,
+		liveAnalysisTreeNode{ID: "item-manual-dup-a", Kind: "todo", ParentID: "candidate-info-public", Label: "VPN証明書の更新", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-manual-dup-b", Kind: "todo", ParentID: "candidate-info-public", Label: "VPN証明書の更新", Status: "open", LastParentChangeSource: "manual"},
+	)
+	rebuildTreeAuditEdges(state.Tree)
+	roles := classifyTreeAuditEvidence(state, segments)
+	operation := treeAuditOperation{OperationID: "op-manual-deactivate", Type: TreeAuditDeactivateItem, TargetCanonicalItemID: "item-manual-dup-b", Confidence: 0.99, Reason: "duplicate_item"}
+	_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-manual-deactivate", 13, true)
+	if result.OperationsValid != 0 || len(result.Evaluations) != 1 || result.Evaluations[0].Reason != "manual_edit_protected" {
+		t.Fatalf("manual edit rejection = %+v", result.Evaluations)
 	}
 }
 

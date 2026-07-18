@@ -304,9 +304,22 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 	}
 
 	containers := make([]liveAnalysisTreeNode, 0)
+	childCounts := make(map[string]int, len(state.Tree.Nodes))
+	for _, node := range state.Tree.Nodes {
+		if node.ParentID != "" {
+			childCounts[node.ParentID]++
+		}
+	}
 	for _, node := range state.Tree.Nodes {
 		if node.Kind == "topic" && node.ID != treeRootNodeID && node.ID != treeUnclassifiedTopicID {
 			containers = append(containers, node)
+		}
+		if childCounts[node.ID] == 0 && treeAuditRemovableEmptyContainerKind(node) {
+			findingType := TreeAuditEmptyGroup
+			if node.ID == treeUnclassifiedTopicID {
+				findingType = TreeAuditEmptyUnclassifiedContainer
+			}
+			add(treeAuditPrecheckFinding{Type: findingType, NodeIDs: []string{node.ID}, Reason: "container has no active child", Score: 1})
 		}
 	}
 	for _, node := range state.Tree.Nodes {
@@ -321,8 +334,12 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 		if isDiscourseOnlyItem(item.Title, item.Body) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditDiscourseOnlyItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "meeting-control speech was persisted as a discussion item", Score: 1})
 		}
+		if treeAuditLowInformationItem(item, nil, roles) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditLowInformationItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "item has no independently actionable or factual proposition", Score: 1})
+		}
 		if allTreeAuditEvidenceReference(item.EvidenceSequenceNos, roles) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditRecapReferenceContamination, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "independent item is grounded only in recap/reference evidence", Score: 0.95})
+			add(treeAuditPrecheckFinding{Type: TreeAuditRecapOnlyItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "item has no primary evidence outside recap or discourse control", Score: 0.95})
 		}
 		currentScore := semanticItemSimilarity(itemText, containerText(node.ParentID))
 		bestID, bestScore := "", currentScore
@@ -412,6 +429,7 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 			if leftTop == rightTop {
 				if matched, score := sameKindSemanticDuplicate(state.Items[i], state.Items[j]); matched {
 					add(treeAuditPrecheckFinding{Type: TreeAuditSemanticDuplicateSibling, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "same-kind sibling nodes represent the same proposition", Score: score})
+					add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateItem, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "active sibling items duplicate one proposition", Score: score})
 				} else if sameCanonicalProposition(state.Items[i], state.Items[j]) {
 					add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateCrossKindProposition, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "cross-kind sibling nodes represent one canonical proposition", Score: 0.9})
 				}

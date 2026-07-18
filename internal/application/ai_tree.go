@@ -363,11 +363,16 @@ func rebuildDiscussionTree(
 	// Detail nodes are upserted 1:1 from the merged items, so every card has
 	// a matching tree node and vice versa. Nodes from previous rounds whose
 	// item was evicted by the item cap survive as-is.
-	itemIDs := liveAnalysisItemIDSet(items)
+	itemIDs := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		if item.ID == "" || item.Status == "dismissed" {
+		if item.ID == "" || item.Status == "dismissed" || item.Inactive || item.MergedIntoID != "" {
+			if item.ID != "" {
+				delete(details, item.ID)
+				delete(parents, item.ID)
+			}
 			continue
 		}
+		itemIDs[item.ID] = struct{}{}
 		if _, collision := topics[item.ID]; collision {
 			if stats != nil {
 				stats.CrossKindIDCollisions++
