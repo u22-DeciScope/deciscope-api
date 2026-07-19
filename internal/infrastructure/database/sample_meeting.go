@@ -123,7 +123,7 @@ func (s *SampleMeetingSeeder) CreateSampleMeeting(ctx context.Context, workspace
 	// 議論ツリー (tree.update)。ライブ分析v2と同じ最新形式に合わせる:
 	// - 階層構造(root topic → 大分類topic → 個別ノード)
 	// - 各ノードに status / description / relatedItemIds を持たせる
-	// - 対応する分析カード(items)とはノードidを共有する(todoはツリーではissueで表現)
+	// - 対応する分析カード(items)とはノードid・kind・subtypeを共有する
 	treePayload := `{"version":1,"mode":"snapshot",` + sampleTreeNodesEdgesJSON + `}`
 	// 分析カード (analysis.delta)。ライブ分析v2のitemsと同じ語彙(kind/severity/status)。
 	// linked_segment_ids は上で生成した transcript の event_id を参照する。
@@ -131,7 +131,7 @@ func (s *SampleMeetingSeeder) CreateSampleMeeting(ctx context.Context, workspace
 		`{"items":[`+
 			`{"op":"add","item":{"id":"issue-target-scope","kind":"issue","severity":"high","title":"値上げ対象顧客の範囲","body":"値上げ対象をエンタープライズ顧客に限定するか全体にするかの論点。エンタープライズ限定で合意した。","status":"resolved","linked_segment_ids":["%s"]}},`+
 			`{"op":"add","item":{"id":"risk-smb-churn","kind":"risk","severity":"medium","title":"中小顧客の解約リスク","body":"中小顧客への値上げは解約につながる懸念。今回は据え置きとして回避した。","status":"resolved","linked_segment_ids":["%s"]}},`+
-			`{"op":"add","item":{"id":"question-renewal-timing","kind":"question","severity":"medium","title":"契約更新タイミングのばらつき","body":"顧客ごとに契約更新月が異なり一斉適用が難しい。更新月にあわせた段階適用で対応する。","status":"resolved","linked_segment_ids":["%s"]}},`+
+			`{"op":"add","item":{"id":"question-renewal-timing","kind":"issue","subtype":"question","severity":"medium","title":"契約更新タイミングのばらつき","body":"顧客ごとに契約更新月が異なり一斉適用が難しい。更新月にあわせた段階適用で対応する。","status":"resolved","linked_segment_ids":["%s"]}},`+
 			`{"op":"add","item":{"id":"decision-ent-repricing","kind":"decision","severity":"high","title":"ENTは更新月から8%%値上げ・中小は据え置き","body":"エンタープライズ顧客は契約更新月から8%%値上げし、中小顧客は当面据え置きとする。","status":"open","linked_segment_ids":["%s"]}},`+
 			`{"op":"add","item":{"id":"todo-customer-list","kind":"todo","severity":"medium","title":"対象顧客リストの展開","body":"値上げ対象顧客リストを作成して共有する(担当: 佐藤、今週中)。","status":"open","linked_segment_ids":["%s"]}},`+
 			`{"op":"add","item":{"id":"risk-revenue-timing","kind":"risk","severity":"low","title":"値上げ効果の発現遅延","body":"更新月ごとの段階適用のため、値上げ効果が全顧客に行き渡るまで最長1年かかる。","status":"open","linked_segment_ids":["%s"]}}`+
@@ -194,7 +194,7 @@ const sampleTreeNodesEdgesJSON = `"nodes":[` +
 	`{"id":"risk-smb-churn","kind":"risk","label":"中小顧客の解約リスク","status":"resolved","description":"中小への値上げは解約リスクが高い。据え置きで回避。","relatedItemIds":["risk-smb-churn"]},` +
 	`{"id":"decision-ent-repricing","kind":"decision","label":"ENT8%値上げ・中小据え置き","status":"open","description":"エンタープライズは更新月から8%値上げ、中小は据え置きで決定。","relatedItemIds":["decision-ent-repricing"]},` +
 	`{"id":"todo-customer-list","kind":"issue","label":"対象顧客リストの展開","status":"open","description":"値上げ対象顧客リストを今週中に作成・共有(担当: 佐藤)。","relatedItemIds":["todo-customer-list"]},` +
-	`{"id":"question-renewal-timing","kind":"question","label":"更新タイミングのばらつき","status":"resolved","description":"契約更新月が顧客ごとに異なる。更新月にあわせ段階適用で解決。","relatedItemIds":["question-renewal-timing"]},` +
+	`{"id":"question-renewal-timing","kind":"issue","subtype":"question","label":"更新タイミングのばらつき","status":"resolved","description":"契約更新月が顧客ごとに異なる。更新月にあわせ段階適用で解決。","relatedItemIds":["question-renewal-timing"]},` +
 	`{"id":"risk-revenue-timing","kind":"risk","label":"値上げ効果の発現遅延","status":"open","description":"段階適用のため効果が全顧客に及ぶまで最長1年。","relatedItemIds":["risk-revenue-timing"]}` +
 	`],"edges":[` +
 	`{"id":"e-root-scope","source":"topic-root","target":"topic-scope"},` +
@@ -215,7 +215,7 @@ const sampleLiveAnalysisPayload = `{` +
 	`"items":[` +
 	`{"id":"issue-target-scope","kind":"issue","severity":"high","title":"値上げ対象顧客の範囲","body":"値上げ対象をエンタープライズ顧客に限定するか全体にするかの論点。エンタープライズ限定で合意した。","status":"resolved"},` +
 	`{"id":"risk-smb-churn","kind":"risk","severity":"medium","title":"中小顧客の解約リスク","body":"中小顧客への値上げは解約につながる懸念。今回は据え置きとして回避した。","status":"resolved"},` +
-	`{"id":"question-renewal-timing","kind":"question","severity":"medium","title":"契約更新タイミングのばらつき","body":"顧客ごとに契約更新月が異なり一斉適用が難しい。更新月にあわせた段階適用で対応する。","status":"resolved"},` +
+	`{"id":"question-renewal-timing","kind":"issue","subtype":"question","severity":"medium","title":"契約更新タイミングのばらつき","body":"顧客ごとに契約更新月が異なり一斉適用が難しい。更新月にあわせた段階適用で対応する。","status":"resolved"},` +
 	`{"id":"decision-ent-repricing","kind":"decision","severity":"high","title":"ENTは更新月から8%値上げ・中小は据え置き","body":"エンタープライズ顧客は契約更新月から8%値上げし、中小顧客は当面据え置きとする。","status":"open"},` +
 	`{"id":"todo-customer-list","kind":"todo","severity":"medium","title":"対象顧客リストの展開","body":"値上げ対象顧客リストを作成して共有する(担当: 佐藤、今週中)。","status":"open"},` +
 	`{"id":"risk-revenue-timing","kind":"risk","severity":"low","title":"値上げ効果の発現遅延","body":"更新月ごとの段階適用のため、値上げ効果が全顧客に行き渡るまで最長1年かかる。","status":"open"}` +

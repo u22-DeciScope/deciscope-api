@@ -502,15 +502,14 @@ func evidenceRoleIsReference(sequenceNo int64, timeline discourseTimeline) bool 
 }
 
 func crossKindPropositionCompatible(a, b string) bool {
-	if a == b {
-		return false
-	}
-	allowed := map[string]bool{"question": true, "open_issue": true, "issue": true, "todo": true}
-	return allowed[a] && allowed[b]
+	// Confirmation/question/investigation issues and their execution TODOs
+	// remain independently actionable and independently resolvable. Their
+	// relation is represented by the shared group, not by destructive merge.
+	return false
 }
 
 func sameKindSequentialProposition(a, b liveAnalysisItem) (bool, float64) {
-	if a.Kind != b.Kind || (a.Kind != "question" && a.Kind != "open_issue" && a.Kind != "issue" && a.Kind != "todo") {
+	if !sameSemanticClassification(a, b) || (a.Kind != "issue" && a.Kind != "todo") {
 		return false, 0
 	}
 	leftNumbers, rightNumbers := numericSignature(a.Title+" "+a.Body), numericSignature(b.Title+" "+b.Body)
@@ -525,12 +524,10 @@ func sameKindSequentialProposition(a, b liveAnalysisItem) (bool, float64) {
 func chooseCanonicalPropositionItem(a, b liveAnalysisItem) (liveAnalysisItem, liveAnalysisItem) {
 	priority := func(item liveAnalysisItem) int {
 		switch item.Kind {
-		case "open_issue", "issue":
+		case "issue":
 			return 5
 		case "todo":
 			return 4
-		case "question":
-			return 3
 		case "risk":
 			return 2
 		default:
@@ -549,10 +546,10 @@ func mergePropositionAttributes(canonical, companion liveAnalysisItem) liveAnaly
 	canonical.RelatedQuestions = appendUniqueText(canonical.RelatedQuestions, companion.RelatedQuestions...)
 	canonical.ResolutionConditions = appendUniqueText(canonical.ResolutionConditions, companion.ResolutionConditions...)
 	canonical.NextActions = appendUniqueText(canonical.NextActions, companion.NextActions...)
-	switch companion.Kind {
-	case "question":
+	switch {
+	case companion.Kind == "issue" && companion.Subtype == issueSubtypeQuestion:
 		canonical.RelatedQuestions = appendUniqueText(canonical.RelatedQuestions, companion.Title)
-	case "todo":
+	case companion.Kind == "todo":
 		canonical.NextActions = appendUniqueText(canonical.NextActions, firstNonEmptyTrimmed(companion.Title, companion.Body))
 	}
 	if strings.Contains(companion.Body, "してから") || strings.Contains(companion.Body, "確認後") || strings.Contains(companion.Body, "条件") {

@@ -122,7 +122,8 @@ transcript.partial
       "op": "add",
       "item": {
         "id": "an_001",
-        "kind": "question",
+        "kind": "issue",
+        "subtype": "question",
         "severity": "medium",
         "title": "対象顧客の確認",
         "body": "価格改定の対象顧客がまだ明確ではありません。",
@@ -134,7 +135,8 @@ transcript.partial
 }
 ```
 
-現在の mock レポート生成では、`kind` が `issue`, `risk`, `question` の item を Markdown に反映します。
+現在のmockレポート生成では、`decision`を決定事項へ、未解決の`risk`と
+`issue`（subtypeを含む）をリスク・未解決事項へMarkdown出力します。
 
 ### tree.update
 
@@ -158,7 +160,12 @@ transcript.partial
 
 議論構造ツリーを画面に反映するためのイベントです。
 
-ノードの `kind` は `topic` / `group` / `issue` / `open_issue` / `question` / `risk` / `fact` / `decision` / `todo` を使います。`group` はAIアシスタントカードではなく、agenda/dynamic topic配下で2件以上のdetail itemをまとめる表示専用の中間ノードです。フロントエンドの議論ツリー（`DiscussionTree`）はこの語彙で色分けします。
+ノードの `kind` は `topic` / `group` / `issue` / `risk` / `fact` / `decision` /
+`todo` を使います。`issue` は `subtype`（`discussion` / `confirmation` / `question` /
+`investigation`）で意味を細分化し、`status`（`open` / `updated` / `resolved`）とは分離します。
+`group` はAIアシスタントカードではなく、agenda/dynamic topic配下で2件以上のdetail itemを
+まとめる表示専用の中間ノードです。フロントエンドの議論ツリー（`DiscussionTree`）は
+この語彙で色分けします。
 
 live analysisのcanonical構造は通常 `root → topic → group → subgroup → detail`（soft limit 4）です。十分な直接detailがある場合だけgroupをもう1段追加でき、hard limit 5を超えません。detailはtopic/group直下に置けますが、別detailの親にはできません。各nodeの表示親は`parentId`で一意に決まり、`edges`は`parentId`から導出されます。一子groupは2 version連続で不足した場合に平坦化し、ライブ更新の作成・削除振動を抑えます。
 

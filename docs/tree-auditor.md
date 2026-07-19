@@ -42,11 +42,12 @@ finding/operationの一部だけが非canonical IDや無効dependencyを含む�
 
 ## Operationの分類
 
-v4 schemaは23種のoperation typeを認識します。サーバーが実際に適用しうる
-**applicable**は次の15種です。
+v5 schemaは25種のoperation typeを認識します。サーバーが実際に適用しうる
+**applicable**は次の17種です。
 
 `move_item`, `restore_previous_parent`, `move_node`, `merge_items`,
 `rewrite_item`, `rewrite_item_title`, `rewrite_item_description`,
+`reclassify_kind`, `reclassify_subtype`,
 `deactivate_item`, `assign_item_to_candidate`, `change_evidence_role`,
 `create_topic_from_candidate`, `fold_candidate_into_topic`,
 `deactivate_candidate`, `rename_group`, `remove_empty_group`
@@ -81,8 +82,8 @@ fixed agenda・root・action_summaryは対象にも移動先にもできませ�
 
 2件以上の現存itemを1件へ統合します。統合可能な組は既存の
 `sameKindSemanticDuplicate`/`sameCanonicalProposition`判定、または連結された
-重複グラフで判定します。decisionと未決定種別(todo/issue/question)の統合は
-canonical propositionが明確な場合のみ許可されます。survivorは指定順の
+重複グラフで判定します。decision/todo/riskや、issueの異なるsubtypeは
+別命題として保持し、同じ意味分類かつcanonical propositionが明確な場合のみ統合します。survivorは指定順の
 先頭itemで、evidenceは和集合、assignee/deadline/statusなど非空フィールドは
 survivor優先で欠落させません。被統合itemはtreeから除去されますが、
 `Items[]`には`mergedIntoId`付きで残ります。
@@ -93,13 +94,23 @@ survivor優先で欠落させません。被統合itemはtreeから除去され�
 場合のみ書き換えを許可します。kindの変更やevidenceにない固有名詞・期限・
 担当者の追加は認めません。
 
+### reclassify_kind / reclassify_subtype
+
+`kind`（`issue | risk | fact | decision | todo`）とissueの`subtype`
+（`discussion | confirmation | question | investigation`）を、statusやツリー階層とは
+独立して修正します。primary evidenceが必須で、decision/TODO/riskへの変更またはそれらからの
+自動変更は保護されます。適用時はitemと対応tree nodeを同時に更新します。
+
 ### deactivate_item
 
 重複・superseded・recap/reference-only・discourse-only(会話制御発話)・
 kindごとの独立した命題を持たないlow-information itemのいずれかを
 サーバー側で再検証できた場合のみtreeから除去し、`inactive:true`を
 記録します。モデルの主張のみでは適用されません。手動編集済みの対象は
-`manual_edit_protected`で拒否し、適用時にはsession内tombstoneも作成します。
+`manual_edit_protected`で拒否します。decision/TODO/risk、tentative、直近生成、子を持つ、
+他ノードから参照されるitemは保護されます。またrewriteまたはmergeで回復できる場合は
+`rewrite_preferred` / `merge_preferred`でdeactivateを拒否します。適用時には
+`suppressionReason`とsession内tombstoneを作成します。
 
 ### assign_item_to_candidate / change_evidence_role
 

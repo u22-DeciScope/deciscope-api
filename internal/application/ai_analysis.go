@@ -66,8 +66,9 @@ const liveAnalysisSystemPrompt = "あなたは日本語の会議分析アシス�
 // resolutionUpdates and bidirectional reopen deltas; resolvedIds is legacy.
 // v10 = model clientKey references and server-owned persistent item IDs.
 // v11 = 対応事項・action itemをcanonical TODOへ一本化。v12 = utterance
-// roleを明示し、談話的なtopic transitionと表示itemを分離。
-const liveAnalysisPromptVersion = "v12"
+// roleを明示し、談話的なtopic transitionと表示itemを分離。v13 = issueの
+// subtypeとstatusを分離し、open_issue/questionをcanonical issueへ統合。
+const liveAnalysisPromptVersion = "v13"
 
 const liveAnalysisSchemaDescription = `{
   "summary": "議論全体のこれまでの要約(毎回全文を出力、400字程度まで)",
@@ -90,7 +91,8 @@ const liveAnalysisSchemaDescription = `{
   "items": [
     {
       "clientKey": "このラウンド内の参照キー。既存itemは提示されたcanonical id、新規itemは意味を表す英小文字・数字・ハイフン",
-      "kind": "issue | open_issue | question | risk | fact | decision | todo",
+      "kind": "issue | risk | fact | decision | todo",
+      "subtype": "discussion | confirmation | question | investigation (kind=issueのみ)",
       "severity": "low | medium | high",
       "title": "カード見出し(25字程度まで)",
       "body": "1〜2文の説明。todoで担当者や期限が分かる場合はここに含める",
@@ -115,16 +117,19 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - itemのkindがtodoからdecisionへ変わっても既存canonical idをclientKeyに使ってください。assignments.nodeIdにはitems[].clientKey、resolutionUpdates.itemIdには既存canonical idを空白・大文字小文字を含め完全一致で指定してください。
 - 新しい発言に新規の論点・懸念・質問・決定事項・TODOが含まれる場合は、必ず対応するitemを出力してください。
 - 確認済みの回答・事実はfactにしてください。質問や懸念への回答を新しいtodoへ言い換えないでください。
-- questionは回答・情報を求める問い、open_issueは未確定の制約・決める必要がある事項、todoは具体的な実施動作です。未決定という状態だけをtodoにしないでください。todoは原則として動作・担当者・期限・完了条件のいずれかを含めてください。
+- 通常の論点・確認事項・質問・調査事項はすべてkind=issueとし、subtypeをそれぞれdiscussion/confirmation/question/investigationにしてください。未解決はkindではなくstatus=openです。open_issue、question、confirmation、investigation、resolvedをkindにしてはいけません。
+- 確認事項は「何を確認すべきか」、todoは「誰かが何を実行するか」です。同じ話題から両方を作ってよいですが、一方へ統合しないでください。todoは原則として動作・担当者・期限・完了条件のいずれかを含めてください。
 - 「対応事項」「アクションアイテム」「次の作業」はすべてkind=todoとして扱い、同じ実施動作を別種のitemや別IDへ重複して出力しないでください。
-- 同じ話題でも「基準は何か」(question)、「基準が未確定」(open_issue)、「気象データを確認する」(todo)は別の意味なので、同じitemへ統合しないでください。同じgroupへ分類して関係を表現してください。
+- 同じ話題でも「基準は何か」(issue/question)、「基準が未確定」(issue/discussion)、「気象データを確認する」(todo)は別の意味なので、同じitemへ統合しないでください。同じgroupへ分類して関係を表現してください。
 - 1つの発言に決定事項と未決定事項など複数の意味が含まれる場合は、意味ごとに別itemへ分けてください。逆に、複数発言が同じ論点の言い換え・回答・まとめである場合は、新規itemを増やさず既存idを更新してください。
 - 発言に明示されていないリスク・質問・作業を推測で追加しないでください。短い会議をsegment単位で機械的に細分化せず、独立して追跡すべき結論・未解決事項・作業だけをitemにしてください。
 - 終盤のまとめ発言は新規itemを作る理由ではありません。対応する既存itemを同じidで更新し、evidenceSequenceNosへまとめ発言のsequenceNoを追加してください。
+- 「この点」「本件」「それ」「上記」だけで対象を表すタイトルや、「引き続き確認が必要」「以上をまとめる」のような状態語・進行発言だけのタイトルを作らないでください。ノード単体で対象と命題が分かる具体的なタイトルにしてください。
+- 1つの抽象表現へ複数の具体的命題を潰さず、それぞれ別itemにしてください。対象がまだ復元できない途中発言は削除を指示せず、後続発言で具体化できるようissueとして保持してください。
 - evidenceSequenceNosには、そのitemを直接裏付ける保存済みfinal発言のsequenceNoだけをJSON整数(number、引用符なし)で入れてください。新規itemは原則このラウンドの発言、既存itemの更新では前回状態に既にある過去sequenceとこのラウンドの発言を指定できます。"123"のような文字列、小数、未来・別論点のsequenceNoを入れないでください。
 - 新しく追加するitemはstatusを"open"に、既存itemを更新した場合はstatusを"updated"にしてください。item.statusを状態遷移命令に使わず、解決・再オープンはresolutionUpdatesだけで提案してください。
-- 新しい発言によって解消されたquestion/open_issue/issue/risk、または完了したtodoだけをstatus="resolved"のresolutionUpdatesへ入れてください。対象itemと意味が一致し、「解決済み」「対応可能」「決定した」等の明示的な根拠をevidenceSequenceNosへ指定してください。decisionが出た、別の話題へ移った、recapに現れなかった、という理由だけでは解決にしないでください。
-- 「未解決」「未決定」「次回検討」「再検討」と明示された既存itemはstatus="open"のresolutionUpdatesで再オープンしてください。終盤のrecapでは広い新規todoを作らず、対応する既存question/open_issueへopen更新を提案してください。
+- 新しい発言によって解消されたissue/risk、または完了したtodoだけをstatus="resolved"のresolutionUpdatesへ入れてください。対象itemと意味が一致し、「解決済み」「回答済み」「対応可能」「完了」等の明示的な根拠をevidenceSequenceNosへ指定してください。decisionが出た、別の話題へ移った、recapに現れなかった、という理由だけでは解決にしないでください。
+- 「未解決」「未決定」「次回検討」「再検討」と明示された既存itemはstatus="open"のresolutionUpdatesで再オープンしてください。終盤のrecapでは広い新規todoを作らず、対応する既存issueへopen更新を提案してください。
 - decisionとfactはresolutionUpdatesへ入れてはいけません。該当が無ければresolutionUpdatesは空配列にしてください。resolvedIdsは後方互換専用なので常に空配列にしてください。
 - 解決済みのitemは削除せず残してください。再度議論が始まった場合も既存idを使ってください。
 - ツリーのノードとエッジはサーバーがitemsとassignmentsから構築します。tree/nodes/edgesを出力してはいけません。
@@ -182,14 +187,15 @@ const liveAnalysisResponseJSONSchema = `{
         "additionalProperties": false,
         "properties": {
           "clientKey": {"type": "string"},
-          "kind": {"type": "string", "enum": ["issue", "open_issue", "question", "risk", "fact", "decision", "todo"]},
+          "kind": {"type": "string", "enum": ["issue", "risk", "fact", "decision", "todo"]},
+          "subtype": {"type": "string", "enum": ["discussion", "confirmation", "question", "investigation", ""]},
           "severity": {"type": "string", "enum": ["low", "medium", "high"]},
           "title": {"type": "string"},
           "body": {"type": "string"},
           "status": {"type": "string", "enum": ["open", "updated", "resolved"]},
           "evidenceSequenceNos": {"type": "array", "items": {"type": "integer"}}
         },
-        "required": ["clientKey", "kind", "severity", "title", "body", "status", "evidenceSequenceNos"]
+        "required": ["clientKey", "kind", "subtype", "severity", "title", "body", "status", "evidenceSequenceNos"]
       }
     },
     "newTopics": {
@@ -901,8 +907,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited, treeStats.DiscourseOnlyItemsRejected, treeStats.DiscourseOnlyCandidatesRejected, treeStats.CandidateSubjectIncoherentDeferred, treeStats.CandidateSubjectMutationRejected, treeStats.CandidateSubjectsSplit)
 	log.Printf("Live no-agenda candidate lifecycle. sessionId=%s version=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v staleAgendaFallbackRejected=%d fixedAgendaAssignmentRejectedByNoAgendaSpan=%d candidateSubjectKey=%v candidateIdsMerged=%d companionCandidateInherited=%d crossKindCandidateInherited=%d dynamicTopicPromoted=%d promotedItemIds=%v promotedItemsRemainingOutsideTopic=%d",
 		sessionID, newVersion, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.StaleAgendaFallbackRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, uniqueNonEmptyIDs(treeStats.CandidateSubjectKeys), treeStats.CandidateIDsMerged, treeStats.CompanionCandidateInherited, treeStats.CrossKindCandidateInherited, treeStats.DynamicTopicsPromoted, uniqueNonEmptyIDs(treeStats.PromotedItemIDs), treeStats.PromotedItemsRemainingOutsideTopic)
-	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d propositionItemsMerged=%d recapMerged=%d referenceRecapItemsMerged=%d referenceRecapItemsRejected=%d referenceRecapTopicProposalsRejected=%d lowInformationDecisionsRejected=%d lowInformationItemsRejected=%d itemResurrectionPrevented=%d",
-		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.PropositionItemsMerged, treeStats.RecapMerged, treeStats.ReferenceRecapItemsMerged, treeStats.ReferenceRecapItemsRejected, treeStats.ReferenceRecapTopicProposalsRejected, treeStats.LowInformationDecisionsRejected, treeStats.LowInformationItemsRejected, treeStats.ItemResurrectionPrevented)
+	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d propositionItemsMerged=%d recapMerged=%d referenceRecapItemsMerged=%d referenceRecapItemsRejected=%d referenceRecapTopicProposalsRejected=%d lowInformationDecisionsRejected=%d lowInformationItemsRejected=%d lowInformationItemsRewritten=%d lowInformationItemsSplit=%d lowInformationTentativeRetained=%d semanticKindMigrations=%d semanticSubtypeMigrations=%d itemResurrectionPrevented=%d",
+		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.PropositionItemsMerged, treeStats.RecapMerged, treeStats.ReferenceRecapItemsMerged, treeStats.ReferenceRecapItemsRejected, treeStats.ReferenceRecapTopicProposalsRejected, treeStats.LowInformationDecisionsRejected, treeStats.LowInformationItemsRejected, treeStats.LowInformationItemsRewritten, treeStats.LowInformationItemsSplit, treeStats.LowInformationTentativeRetained, treeStats.SemanticKindMigrations, treeStats.SemanticSubtypeMigrations, treeStats.ItemResurrectionPrevented)
 	noAgendaStarts := make(map[int64]struct{}, len(treeStats.NoAgendaSpanStartSequences))
 	for _, sequenceNo := range treeStats.NoAgendaSpanStartSequences {
 		noAgendaStarts[sequenceNo] = struct{}{}
@@ -927,10 +933,10 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.ExplicitClosureCandidates, treeStats.ClosureTargetsFound, treeStats.ClosureTargetsNotFound, resolutionAudit.Requested, resolutionAudit.RequestedOpen, resolutionAudit.RequestedResolved, resolutionAudit.Applied, resolutionAudit.AppliedOpen, resolutionAudit.AppliedResolved, resolutionAudit.AppliedReopen, resolutionAudit.AppliedNoop, resolutionAudit.Rejected, resolutionAudit.RejectedNoTarget, resolutionAudit.RejectedNoEvidence, resolutionAudit.RejectedSemanticMismatch, resolutionAudit.RejectedNoExplicitClosure, resolutionAudit.RejectedContradicted)
 	log.Printf("Live agenda context. sessionId=%s version=%d activeAgendaSpanCount=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v staleAgendaFallbackRejected=%d agendaTransitionDetected=%t agendaTransitionCount=%d",
 		sessionID, newVersion, treeStats.ActiveAgendaSpanCount, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.StaleAgendaFallbackRejected, len(treeStats.AgendaTransitions) > 0, len(treeStats.AgendaTransitions))
-	log.Printf("Live item lifecycle counts. sessionId=%s version=%d questionCount=%d openQuestionCount=%d resolvedQuestionCount=%d openIssueCount=%d openOpenIssueCount=%d resolvedOpenIssueCount=%d todoCount=%d activeTodoCount=%d completedTodoCount=%d decisionCount=%d factCount=%d riskCount=%d openRiskCount=%d resolvedRiskCount=%d",
+	log.Printf("Live item lifecycle counts. sessionId=%s version=%d issueCount=%d openIssueCount=%d resolvedIssueCount=%d discussionIssueCount=%d confirmationIssueCount=%d questionIssueCount=%d investigationIssueCount=%d todoCount=%d activeTodoCount=%d completedTodoCount=%d decisionCount=%d factCount=%d riskCount=%d openRiskCount=%d resolvedRiskCount=%d",
 		sessionID, newVersion,
-		stats.KindCounts["question"], stats.KindCounts["question"]-stats.ResolvedKindCounts["question"], stats.ResolvedKindCounts["question"],
-		stats.KindCounts["open_issue"], stats.KindCounts["open_issue"]-stats.ResolvedKindCounts["open_issue"], stats.ResolvedKindCounts["open_issue"],
+		stats.KindCounts["issue"], stats.KindCounts["issue"]-stats.ResolvedKindCounts["issue"], stats.ResolvedKindCounts["issue"],
+		stats.SubtypeCounts[issueSubtypeDiscussion], stats.SubtypeCounts[issueSubtypeConfirmation], stats.SubtypeCounts[issueSubtypeQuestion], stats.SubtypeCounts[issueSubtypeInvestigation],
 		stats.KindCounts["todo"], stats.KindCounts["todo"]-stats.ResolvedKindCounts["todo"], stats.ResolvedKindCounts["todo"],
 		stats.KindCounts["decision"], stats.KindCounts["fact"], stats.KindCounts["risk"], stats.KindCounts["risk"]-stats.ResolvedKindCounts["risk"], stats.ResolvedKindCounts["risk"])
 	log.Printf("Live reference integrity. sessionId=%s version=%d reservedItemIdsRejected=%d reservedItemIdsRemapped=%d duplicateNodeIdsDetected=%d crossKindIdCollisions=%d selfParentRejected=%d kindMutationRejected=%d fixedAgendaMutationRejected=%d invalidParentKindRejected=%d treePayloadRejected=%d previousTreePreserved=%d unknownAssignmentIds=%d aliasResolvedAssignmentIds=%d unknownResolvedIds=%d aliasResolvedResolvedIds=%d unknownGroupEvidenceIds=%d unknownEmergingEvidenceIds=%d aliasResolvedTreeOperationIds=%d",
@@ -2110,21 +2116,37 @@ func sanitizeTreeSnapshotForDelivery(analysis, live *domain.MeetingAIAnalysis, m
 	if err := json.Unmarshal(analysis.Payload, &snapshot); err != nil {
 		return analysis
 	}
+	migrated := 0
+	if snapshot.Tree != nil {
+		for index := range snapshot.Tree.Nodes {
+			node := &snapshot.Tree.Nodes[index]
+			if node.Kind == "topic" || node.Kind == "group" {
+				continue
+			}
+			kind, subtype, status, changed := normalizeSemanticClassification(node.Kind, node.Subtype, node.Status)
+			node.Kind, node.Subtype, node.Status = kind, subtype, status
+			if changed {
+				migrated++
+			}
+		}
+	}
 	integrity := validateTreeIntegrity(snapshot.Tree, nil, mc)
-	if integrity.Valid {
+	if integrity.Valid && migrated == 0 {
 		return analysis
 	}
-	var safeTree *liveAnalysisTree
-	if live != nil {
-		safeTree = previousLiveAnalysisState(live.Payload).Tree
+	if !integrity.Valid {
+		var safeTree *liveAnalysisTree
+		if live != nil {
+			safeTree = previousLiveAnalysisState(live.Payload).Tree
+		}
+		if !validateTreeIntegrity(safeTree, nil, mc).Valid {
+			safeTree = fixedAgendaSkeleton(mc)
+		}
+		snapshot.Tree = safeTree
+		snapshot.Degraded = true
+		snapshot.DegradedReason = "legacy_tree_repaired_for_delivery"
+		snapshot.TreeIntegrity = &integrity
 	}
-	if !validateTreeIntegrity(safeTree, nil, mc).Valid {
-		safeTree = fixedAgendaSkeleton(mc)
-	}
-	snapshot.Tree = safeTree
-	snapshot.Degraded = true
-	snapshot.DegradedReason = "legacy_tree_repaired_for_delivery"
-	snapshot.TreeIntegrity = &integrity
 	payload, err := json.Marshal(snapshot)
 	if err != nil {
 		return analysis
@@ -2834,10 +2856,15 @@ type liveAnalysisItem struct {
 	ClientKey string `json:"clientKey,omitempty"`
 	ID        string `json:"id"`
 	Kind      string `json:"kind"`
+	Subtype   string `json:"subtype,omitempty"`
 	Severity  string `json:"severity"`
 	Title     string `json:"title"`
 	Body      string `json:"body"`
 	Status    string `json:"status"`
+	// InformationStatus is server-owned and records whether an otherwise
+	// meaningful issue still needs a later utterance/audit to resolve an
+	// anaphoric subject. It is independent from open/resolved lifecycle.
+	InformationStatus string `json:"informationStatus,omitempty"`
 
 	// 以下はサーバーが決める分類メタデータ(ai_tree_classification.go)。モデル
 	// 出力に同名フィールドがあっても normalizeLiveAnalysisItems が消去する。
@@ -2884,8 +2911,9 @@ type liveAnalysisItem struct {
 	// removed: Inactive marks a deactivated (duplicate/superseded/recap-only)
 	// item, MergedIntoID points at the surviving item ID a merge folded it
 	// into. Neither field changes ClassificationStatus or other metadata.
-	Inactive     bool   `json:"inactive,omitempty"`
-	MergedIntoID string `json:"mergedIntoId,omitempty"`
+	Inactive          bool   `json:"inactive,omitempty"`
+	MergedIntoID      string `json:"mergedIntoId,omitempty"`
+	SuppressionReason string `json:"suppressionReason,omitempty"`
 }
 
 // UnmarshalJSON isolates malformed items instead of allowing one item to
@@ -3040,8 +3068,9 @@ type liveAnalysisTreeChanges struct {
 }
 
 type liveAnalysisTreeNode struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Subtype string `json:"subtype,omitempty"`
 	// ParentID is the single display parent of the node ("" only for the
 	// root). It is the canonical parent; Edges are derived from it.
 	ParentID       string   `json:"parentId,omitempty"`
@@ -3086,7 +3115,7 @@ func (p liveAnalysisPayload) isEmpty() bool {
 
 func validLiveAnalysisItemKind(kind string) bool {
 	switch kind {
-	case "issue", "open_issue", "question", "risk", "fact", "decision", "todo":
+	case "issue", "risk", "fact", "decision", "todo":
 		return true
 	default:
 		return false
@@ -3098,7 +3127,7 @@ func validLiveAnalysisTreeNodeKind(kind string) bool {
 	// "todo" はitemsと同様にツリーでも正式なkind。以前はツリー側の語彙に無く
 	// "issue"へ変換していたため、AIアシスタントカードで「TODO」のitemが
 	// 議論ツリーでは「論点」と表示される不一致が起きていた。
-	case "topic", "group", "issue", "open_issue", "question", "risk", "fact", "decision", "todo":
+	case "topic", "group", "issue", "risk", "fact", "decision", "todo":
 		return true
 	default:
 		return false
@@ -3149,10 +3178,21 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, stats ...*liveAnalysis
 	for _, item := range items {
 		item.ID = strings.TrimSpace(item.ID)
 		item.Kind = strings.ToLower(strings.TrimSpace(item.Kind))
+		item.Subtype = strings.ToLower(strings.TrimSpace(item.Subtype))
 		item.Severity = strings.ToLower(strings.TrimSpace(item.Severity))
 		item.Title = strings.TrimSpace(item.Title)
 		item.Body = strings.TrimSpace(item.Body)
 		item.Status = strings.ToLower(strings.TrimSpace(item.Status))
+		originalKind, originalSubtype := item.Kind, item.Subtype
+		item.Kind, item.Subtype, item.Status, _ = normalizeSemanticClassification(item.Kind, item.Subtype, item.Status)
+		if mergeStats != nil {
+			if item.Kind != originalKind {
+				mergeStats.SemanticKindMigrations++
+			}
+			if item.Subtype != originalSubtype {
+				mergeStats.SemanticSubtypeMigrations++
+			}
+		}
 		// 分類メタデータはサーバー専有。モデルがitemに直接埋め込んできても
 		// 採用しない(assignmentsチャネル経由の提案だけを検証して反映する)。
 		item.ClassificationStatus = ""
@@ -3168,6 +3208,8 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, stats ...*liveAnalysis
 		item.NextActions = nil
 		item.Inactive = false
 		item.MergedIntoID = ""
+		item.SuppressionReason = ""
+		item.InformationStatus = ""
 		if item.Title == "" && item.Body == "" {
 			continue
 		}
@@ -3426,6 +3468,11 @@ type liveAnalysisTreeMergeStats struct {
 	ReferenceRecapTopicProposalsRejected int
 	LowInformationDecisionsRejected      int
 	LowInformationItemsRejected          int
+	LowInformationItemsRewritten         int
+	LowInformationItemsSplit             int
+	LowInformationTentativeRetained      int
+	SemanticKindMigrations               int
+	SemanticSubtypeMigrations            int
 	LowInformationRejections             []liveItemRejection
 	DiscourseTransitions                 []discourseTimelineTransition
 	ItemResurrectionPrevented            int
@@ -3554,8 +3601,9 @@ func (s *liveAnalysisTreeMergeStats) droppedNodeReasons() string {
 // remains only as a defensive default (normalizeLiveAnalysisItems already
 // restricts item.Kind to the known item vocabulary by the time this runs).
 func liveAnalysisTreeNodeKindForItem(itemKind string) string {
-	if validLiveAnalysisTreeNodeKind(itemKind) {
-		return itemKind
+	canonical, _, _, _ := normalizeSemanticClassification(itemKind, "", "")
+	if validLiveAnalysisTreeNodeKind(canonical) {
+		return canonical
 	}
 	return "issue"
 }
@@ -3687,6 +3735,7 @@ func previousLiveAnalysisState(previousPayload json.RawMessage) liveAnalysisPayl
 	}
 	previous.Summary = strings.TrimSpace(previous.Summary)
 	previous.CurrentTopic = strings.TrimSpace(previous.CurrentTopic)
+	normalizePersistedSemanticClassifications(&previous)
 	return previous
 }
 
@@ -3784,10 +3833,11 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	assignments := diff.Assignments
 	modelItems := append([]liveAnalysisItem(nil), diff.Items...)
 	diffItems, newTopics, assignments := convertLegacyTreeDiff(diff.Tree, diff.Items, newTopics, assignments, requestedResolvedIDs, treeStats)
-	resolver := itemReferenceResolver(previous.Items, diffItems, legacyIDRemap, treeStats)
-	requestedResolutionUpdates = append(requestedResolutionUpdates, legacyResolutionUpdates(requestedResolvedIDs, diffItems)...)
 	diffItems = normalizeLiveAnalysisItems(diffItems, treeStats)
 	normalizeItemEvidenceSequenceNosWithScope(diffItems, evidenceScope, treeStats)
+	diffItems, assignments = repairLowInformationIssueItems(previous.Items, diffItems, assignments, timeline, evidenceScope, treeStats)
+	resolver := itemReferenceResolver(previous.Items, diffItems, legacyIDRemap, treeStats)
+	requestedResolutionUpdates = append(requestedResolutionUpdates, legacyResolutionUpdates(requestedResolvedIDs, diffItems)...)
 	diffItems, assignments = filterTombstoneResurrections(&previous, diffItems, assignments, requestedResolutionUpdates, evidenceScope, treeVersion, treeStats)
 	diffItems = filterLowInformationLiveItems(previous.Items, diffItems, timeline, evidenceScope, treeStats)
 	diffItems = filterReferenceRecapDiff(previous.Items, diffItems, roundSeqNos, timeline, treeStats)
@@ -4277,6 +4327,7 @@ func convertLegacyTreeDiff(tree *liveAnalysisTree, items []liveAnalysisItem, new
 		items = append(items, liveAnalysisItem{
 			ID:       node.ID,
 			Kind:     node.Kind,
+			Subtype:  node.Subtype,
 			Severity: "medium",
 			Title:    node.Label,
 			Body:     strings.TrimSpace(node.Description),
@@ -4308,7 +4359,7 @@ func deduplicateExistingLiveState(state *liveAnalysisPayload, stats *liveAnalysi
 		matchedAt, bestScore := -1, 0.0
 		recap := issueRecapPattern.MatchString(item.Title + " " + item.Body)
 		for at := range kept {
-			if !compatibleDuplicateKinds(kept[at].Kind, item.Kind) {
+			if !sameSemanticClassification(kept[at], item) {
 				continue
 			}
 			if recap {
@@ -4388,6 +4439,12 @@ func mergeDuplicateLiveItem(canonical, update liveAnalysisItem) liveAnalysisItem
 	}
 	if update.Status != "" {
 		canonical.Status = update.Status
+	}
+	if update.Subtype != "" {
+		canonical.Subtype = update.Subtype
+	}
+	if update.InformationStatus != "" {
+		canonical.InformationStatus = update.InformationStatus
 	}
 	canonical.RelatedAgendaIDs = uniqueNonEmptyIDs(append(canonical.RelatedAgendaIDs, update.RelatedAgendaIDs...))
 	// A known primary assignment outranks a tentative duplicate proposal.
@@ -4548,12 +4605,8 @@ func itemsSemanticallyEquivalent(a, b liveAnalysisItem) bool {
 	return matched
 }
 
-func compatibleDuplicateKinds(a, b string) bool {
-	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
-}
-
 func sameKindSemanticDuplicate(a, b liveAnalysisItem) (bool, float64) {
-	if !compatibleDuplicateKinds(a.Kind, b.Kind) {
+	if !sameSemanticClassification(a, b) {
 		return false, 0
 	}
 	if key := normalizeForMatch(a.Title); key != "" && key == normalizeForMatch(b.Title) {
@@ -4613,12 +4666,8 @@ func itemKindPriority(kind string) int {
 		return 6
 	case "todo":
 		return 5
-	case "question":
-		return 4
-	case "open_issue":
-		return 4
 	case "issue":
-		return 3
+		return 4
 	case "risk":
 		return 2
 	case "fact":
@@ -4636,12 +4685,14 @@ type liveAnalysisPayloadStats struct {
 	TotalNodes    int
 	ResolvedNodes int
 	// 分類状態別のitem数と未昇格候補数(集計ログ用)。
-	AssignedItems      int
-	TentativeItems     int
-	UnclassifiedItems  int
-	EmergingCandidates int
-	KindCounts         map[string]int
-	ResolvedKindCounts map[string]int
+	AssignedItems         int
+	TentativeItems        int
+	UnclassifiedItems     int
+	EmergingCandidates    int
+	KindCounts            map[string]int
+	ResolvedKindCounts    map[string]int
+	SubtypeCounts         map[string]int
+	ResolvedSubtypeCounts map[string]int
 }
 
 // countLiveAnalysisPayloadStats re-parses an already-merged payload to count
@@ -4649,7 +4700,10 @@ type liveAnalysisPayloadStats struct {
 // threading extra return values through parseAndMergeLiveAnalysisPayload
 // because the counts are only needed for the completion log line.
 func countLiveAnalysisPayloadStats(payload json.RawMessage) liveAnalysisPayloadStats {
-	stats := liveAnalysisPayloadStats{KindCounts: make(map[string]int), ResolvedKindCounts: make(map[string]int)}
+	stats := liveAnalysisPayloadStats{
+		KindCounts: make(map[string]int), ResolvedKindCounts: make(map[string]int),
+		SubtypeCounts: make(map[string]int), ResolvedSubtypeCounts: make(map[string]int),
+	}
 	if len(payload) == 0 {
 		return stats
 	}
@@ -4660,9 +4714,15 @@ func countLiveAnalysisPayloadStats(payload json.RawMessage) liveAnalysisPayloadS
 	stats.TotalItems = len(parsed.Items)
 	for _, item := range parsed.Items {
 		stats.KindCounts[item.Kind]++
+		if item.Kind == "issue" {
+			stats.SubtypeCounts[item.Subtype]++
+		}
 		if item.Status == "resolved" {
 			stats.ResolvedItems++
 			stats.ResolvedKindCounts[item.Kind]++
+			if item.Kind == "issue" {
+				stats.ResolvedSubtypeCounts[item.Subtype]++
+			}
 		}
 		switch item.ClassificationStatus {
 		case classificationAssigned:

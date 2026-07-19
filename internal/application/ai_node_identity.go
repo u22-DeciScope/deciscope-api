@@ -48,10 +48,10 @@ func reservedItemID(id string) bool {
 	return false
 }
 
-func itemIDKind(kind string) string {
-	kind = strings.ToLower(strings.TrimSpace(kind))
-	if kind == "open_issue" {
-		return "open-issue"
+func itemIDKind(item liveAnalysisItem) string {
+	kind, subtype, _, _ := normalizeSemanticClassification(item.Kind, item.Subtype, item.Status)
+	if kind == "issue" {
+		return "issue-" + strings.ReplaceAll(subtype, "_", "-")
 	}
 	if validLiveAnalysisItemKind(kind) {
 		return kind
@@ -66,8 +66,9 @@ func serverGeneratedItemID(item liveAnalysisItem) string {
 	if subject == "" {
 		subject = canonicalReferenceKey(modelItemReference(item))
 	}
-	sum := sha256.Sum256([]byte(itemIDKind(item.Kind) + "\x00" + subject))
-	return "item-" + itemIDKind(item.Kind) + "-" + hex.EncodeToString(sum[:6])
+	idKind := itemIDKind(item)
+	sum := sha256.Sum256([]byte(idKind + "\x00" + subject))
+	return "item-" + idKind + "-" + hex.EncodeToString(sum[:6])
 }
 
 func recordItemIdentity(stats *liveAnalysisTreeMergeStats, evaluation itemIdentityEvaluation) {
@@ -176,7 +177,7 @@ func mergeIDRemaps(remaps ...map[string]string) map[string]string {
 func legacySemanticIdentityMatch(previous []liveAnalysisItem, candidate liveAnalysisItem) string {
 	bestID, bestScore := "", 0.0
 	for _, existing := range previous {
-		sameKind := strings.EqualFold(existing.Kind, candidate.Kind)
+		sameKind := sameSemanticClassification(existing, candidate)
 		kindTransition := (existing.Kind == "todo" && candidate.Kind == "decision") || (existing.Kind == "decision" && candidate.Kind == "todo")
 		if !sameKind && !kindTransition {
 			continue

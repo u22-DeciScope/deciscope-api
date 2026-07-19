@@ -185,7 +185,7 @@ func TestIssueCandidateReconciliationSeparatesKinds(t *testing.T) {
 		{name: "question", text: "強風日の基準風速は何m/sにするべきですか。", question: 1},
 		{name: "open", text: "強風日の基準風速はまだ決まっていません。", openIssue: 1},
 		{name: "todo", text: "次回までに過去5年間の気象データを確認します。", modelItem: `{"id":"todo-weather","kind":"todo","severity":"medium","title":"気象データを確認","body":"次回までに確認する","status":"open","evidenceSequenceNos":[1]}`, todo: 1},
-		{name: "mixed", text: "基準風速はまだ決まっていません。何m/sにするか判断するため、次回までに気象データを確認します。", modelItem: `{"id":"todo-weather","kind":"todo","severity":"medium","title":"気象データを確認","body":"次回までに確認する","status":"open","evidenceSequenceNos":[1]}`, question: 0, openIssue: 1, todo: 1},
+		{name: "mixed", text: "基準風速はまだ決まっていません。何m/sにするか判断するため、次回までに気象データを確認します。", modelItem: `{"id":"todo-weather","kind":"todo","severity":"medium","title":"気象データを確認","body":"次回までに確認する","status":"open","evidenceSequenceNos":[1]}`, question: 1, openIssue: 1, todo: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -203,9 +203,14 @@ func TestIssueCandidateReconciliationSeparatesKinds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			state := previousLiveAnalysisState(raw)
 			counts := livePayloadItemKindCounts(raw)
-			if counts["question"] != tt.question || counts["open_issue"] != tt.openIssue || counts["todo"] != tt.todo || counts["decision"] != 0 {
-				t.Fatalf("counts=%v", counts)
+			subtypes := map[string]int{}
+			for _, item := range state.Items {
+				subtypes[item.Subtype]++
+			}
+			if counts["issue"] != tt.question+tt.openIssue || subtypes[issueSubtypeQuestion] != tt.question || subtypes[issueSubtypeDiscussion] != tt.openIssue || counts["todo"] != tt.todo || counts["decision"] != 0 {
+				t.Fatalf("counts=%v subtypes=%v items=%+v", counts, subtypes, state.Items)
 			}
 		})
 	}
@@ -230,9 +235,9 @@ func TestDecisionResolvesExistingQuestionIssueAndTodoWithoutChangingKinds(t *tes
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	for _, expected := range []struct{ id, kind string }{{"question-wind", "question"}, {"open-wind", "open_issue"}, {"todo-weather", "todo"}} {
+	for _, expected := range []struct{ id, kind, subtype string }{{"question-wind", "issue", issueSubtypeQuestion}, {"open-wind", "issue", issueSubtypeDiscussion}, {"todo-weather", "todo", ""}} {
 		item := findItemByID(state.Items, expected.id)
-		if item == nil || item.Kind != expected.kind || item.Status != "resolved" {
+		if item == nil || item.Kind != expected.kind || item.Subtype != expected.subtype || item.Status != "resolved" {
 			t.Fatalf("item %s=%+v", expected.id, item)
 		}
 	}
@@ -257,7 +262,7 @@ func TestSemanticGroupingCreatesStableIssueGroup(t *testing.T) {
 	}
 	state := previousLiveAnalysisState(raw)
 	health := computeTreeHealth(state.Tree)
-	if len(state.Items) != 1 || state.Items[0].Kind != "open_issue" || len(state.Items[0].RelatedQuestions) != 1 || len(state.Items[0].NextActions) != 1 {
+	if len(state.Items) != 3 || findItemByID(state.Items, "question-wind").Subtype != issueSubtypeQuestion || findItemByID(state.Items, "open-wind").Subtype != issueSubtypeDiscussion || findItemByID(state.Items, "todo-weather") == nil {
 		t.Fatalf("canonical proposition=%+v health=%+v", state.Items, health)
 	}
 	next, err := parseAndMergeLiveAnalysisPayload(`{"summary":"次","currentTopic":"騒音","resolvedIds":[],"items":[],"newTopics":[],"assignments":[]}`, raw, mc, 3, nil, TreeClassificationConfig{})
@@ -333,7 +338,7 @@ func TestSameKindSemanticDedupMergesResidentTodoButKeepsQuestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.Items) != 1 || livePayloadItemKindCounts(raw)["todo"] != 1 || len(state.Items[0].RelatedQuestions) != 1 {
+	if len(state.Items) != 2 || livePayloadItemKindCounts(raw)["todo"] != 1 || livePayloadItemKindCounts(raw)["issue"] != 1 {
 		t.Fatalf("items=%+v", state.Items)
 	}
 	todo := findItemByID(state.Items, "todo-tbd-public")
@@ -398,13 +403,15 @@ func TestCompanionItemsBecomeCanonicalPropositionAndInheritPrimaryTopic(t *testi
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.Items) != 1 || state.Items[0].Kind != "open_issue" || len(state.Items[0].RelatedQuestions) != 1 || len(state.Items[0].NextActions) != 1 {
+	if len(state.Items) != 3 || findItemByID(state.Items, "question-date").Subtype != issueSubtypeQuestion || findItemByID(state.Items, "open-date").Subtype != issueSubtypeDiscussion || findItemByID(state.Items, "todo-date") == nil {
 		t.Fatalf("canonical proposition=%+v", state.Items)
 	}
-	if got := itemTopicID(state.Tree, state.Items[0].ID); got != "agenda-3" {
-		t.Fatalf("canonical topic=%q tree=%+v", got, state.Tree)
+	for _, id := range []string{"question-date", "open-date", "todo-date"} {
+		if got := itemTopicID(state.Tree, id); got != "agenda-3" {
+			t.Fatalf("item %s topic=%q tree=%+v", id, got, state.Tree)
+		}
 	}
-	if stats.CrossKindClustered < 2 || stats.PropositionItemsMerged < 2 {
+	if stats.PropositionItemsMerged != 0 {
 		t.Fatalf("stats=%+v", stats)
 	}
 }
@@ -443,7 +450,7 @@ func TestActionSummaryProjectionSelectsTodoOrUnmatchedOpenIssue(t *testing.T) {
 			t.Fatalf("non-representative %s=%+v", id, item)
 		}
 	}
-	if stats.ActiveTodoReferences != 1 || stats.CompletedTodoExcluded != 1 || stats.ClusteredReferences != 1 {
+	if stats.ActiveTodoReferences != 1 || stats.CompletedTodoExcluded != 1 || stats.ClusteredReferences != 2 {
 		t.Fatalf("stats=%+v", stats)
 	}
 }
@@ -468,10 +475,10 @@ func TestTentativeCandidatePromotesAtomicallyAfterStableVersions(t *testing.T) {
 	}
 	state := previousLiveAnalysisState(raw)
 	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
-	if len(state.EmergingTopics) != 0 || itemTopicID(state.Tree, "todo-plant") != dynamicID || findItemByID(state.Items, "question-plant") != nil {
+	if len(state.EmergingTopics) != 0 || itemTopicID(state.Tree, "todo-plant") != dynamicID || itemTopicID(state.Tree, "question-plant") != dynamicID {
 		t.Fatalf("state=%+v", state)
 	}
-	if stats.PromotedItemsReparented != 1 || state.TreeChanges == nil || len(state.TreeChanges.ReparentedNodeIDs) != 1 {
+	if stats.PromotedItemsReparented != 2 || state.TreeChanges == nil || len(state.TreeChanges.ReparentedNodeIDs) != 2 {
 		t.Fatalf("stats=%+v changes=%+v", stats, state.TreeChanges)
 	}
 }
@@ -550,7 +557,7 @@ func TestSession04e9dec1aaa164b3ReplayAcceptance(t *testing.T) {
 	}
 	state := previousLiveAnalysisState(raw)
 	counts := livePayloadItemKindCounts(raw)
-	if counts["decision"] < 3 || counts["open_issue"] < 1 || counts["todo"] < 2 {
+	if counts["decision"] < 3 || counts["issue"] < 1 || counts["todo"] < 2 {
 		t.Fatalf("kind counts=%v items=%+v", counts, state.Items)
 	}
 	for _, item := range state.Items {
@@ -576,7 +583,7 @@ func TestSession04e9dec1aaa164b3ReplayAcceptance(t *testing.T) {
 		}
 	}
 	t.Logf("session_04e9 replay: items=%d decisions=%d questions=%d openIssues=%d todos=%d risks=%d groups=%d nestedGroups=%d maxDepth=%d unknownAssignments=%d unknownResolved=%d agendaCounts=%v",
-		len(state.Items), counts["decision"], counts["question"], counts["open_issue"], counts["todo"], counts["risk"], health.GroupCount, health.NestedGroupCount, treeDepthOf(state.Tree), stats.UnknownAssignmentIDs, stats.UnknownResolvedIDs, agendaCounts)
+		len(state.Items), counts["decision"], 0, counts["issue"], counts["todo"], counts["risk"], health.GroupCount, health.NestedGroupCount, treeDepthOf(state.Tree), stats.UnknownAssignmentIDs, stats.UnknownResolvedIDs, agendaCounts)
 	t.Logf("session_04e9 replay unclassified=%v", unclassified)
 }
 

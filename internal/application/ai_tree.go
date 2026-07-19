@@ -389,13 +389,15 @@ func rebuildDiscussionTree(
 		}
 		node, exists := details[item.ID]
 		if !exists {
-			node = liveAnalysisTreeNode{ID: item.ID}
+			node = liveAnalysisTreeNode{ID: item.ID, CreatedAtVersion: round}
 			if stats != nil {
 				stats.SynthesizedNodes++
 			}
 		}
 		node.Kind = liveAnalysisTreeNodeKindForItem(item.Kind)
+		node.Subtype = item.Subtype
 		node.Label = truncateRunes(item.Title, 40)
+		node.UpdatedAtVersion = round
 		if body := truncateRunes(strings.TrimSpace(item.Body), liveAnalysisTreeDescriptionMaxRunes); body != "" {
 			node.Description = body
 		}
@@ -1523,7 +1525,7 @@ func createSemanticDiscussionGroups(items []liveAnalysisItem, topics map[string]
 			}
 			if item, ok := itemByID[id]; ok {
 				switch item.Kind {
-				case "question", "open_issue", "issue", "risk", "todo", "decision", "fact":
+				case "issue", "risk", "todo", "decision", "fact":
 				default:
 					decisionBase.ExcludedByKind++
 					continue
@@ -1664,7 +1666,7 @@ func semanticGroupAnchor(items []liveAnalysisItem) liveAnalysisItem {
 	if len(items) == 0 {
 		return liveAnalysisItem{}
 	}
-	priority := map[string]int{"issue": 0, "risk": 1, "open_issue": 2, "question": 3, "decision": 4, "todo": 5, "fact": 6}
+	priority := map[string]int{"issue": 0, "risk": 1, "decision": 4, "todo": 5, "fact": 6}
 	best := items[0]
 	for _, item := range items[1:] {
 		bestPriority, ok := priority[best.Kind]
@@ -1977,6 +1979,10 @@ func syncRelatedAgendaIDs(items []liveAnalysisItem, mc *meetingContext, tree *li
 	if len(statsValues) > 0 {
 		stats = statsValues[0]
 	}
+	// Direct callers may provide a pre-migration payload. Keep this projection
+	// backward compatible even when it is used outside the main merge path.
+	compatibilityState := liveAnalysisPayload{Items: items, Tree: tree}
+	normalizePersistedSemanticClassifications(&compatibilityState)
 	actionSummaryIDs := mc.actionSummaryAgendaIDs()
 	logicalActionSummaryID := mc.logicalActionSummaryAgendaID()
 	if stats != nil {
@@ -2058,7 +2064,7 @@ func syncRelatedAgendaIDs(items []liveAnalysisItem, mc *meetingContext, tree *li
 	}
 	representatives = append(representatives, activeTodos...)
 	for i := range items {
-		if items[i].Status == "resolved" || items[i].Kind != "open_issue" || items[i].ClassificationStatus == classificationUnclassified {
+		if items[i].Status == "resolved" || items[i].Kind != "issue" || items[i].ClassificationStatus == classificationUnclassified {
 			continue
 		}
 		if stats != nil {
@@ -2700,6 +2706,12 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 		treeVersion = versions[0]
 	}
 	nodes, parents, relations := treeStateFromPayloadTree(tree)
+	for index := range nodes {
+		if nodes[index].Kind == "topic" || nodes[index].Kind == "group" {
+			continue
+		}
+		nodes[index].Kind, nodes[index].Subtype, nodes[index].Status, _ = normalizeSemanticClassification(nodes[index].Kind, nodes[index].Subtype, nodes[index].Status)
+	}
 	topicOrder, groupOrder, detailOrder := []string{}, []string{}, []string{}
 	topics := make(map[string]liveAnalysisTreeNode)
 	groups := make(map[string]liveAnalysisTreeNode)

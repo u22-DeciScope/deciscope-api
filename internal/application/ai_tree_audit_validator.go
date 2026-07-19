@@ -12,6 +12,9 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 	cfg = cfg.normalized()
 	dry := cloneLiveAnalysisPayload(original)
 	result := treeAuditValidatorResult{OperationsProposed: len(operations)}
+	if original.Tree != nil {
+		result.NodeCountBefore = len(original.Tree.Nodes)
+	}
 	accepted := make(map[string]bool, len(operations))
 	segmentText := make(map[int64]string, len(segments))
 	for _, segment := range segments {
@@ -20,6 +23,7 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 	beforeFindings := deterministicTreeAuditPrecheck(original, mc, evidenceRoles, cfg)
 	beforeQuality := auditHeuristicDefectCount(beforeFindings)
 	result.HeuristicDefectCountBefore = beforeQuality
+	result.LowInformationItemsBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditLowInformationItem, TreeAuditLowInformationTitle, TreeAuditStatusOnlyNode, TreeAuditAnaphoraWithoutReferent)
 	result.TopicOutliersBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditTopicOutlier, TreeAuditSubjectMismatch)
 	result.CandidateFragmentationBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditCandidateFragmentation)
 	result.CrossAgendaContaminationBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditCrossAgendaContamination)
@@ -136,6 +140,16 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 		result.OperationsValid++
 		if markApplied {
 			result.OperationsApplied++
+			switch operation.Type {
+			case TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription:
+				result.RewritesApplied++
+			case TreeAuditMergeItems:
+				result.MergesApplied++
+			case TreeAuditReclassifyKind, TreeAuditReclassifySubtype:
+				result.ReclassificationsApplied++
+			case TreeAuditDeactivateItem:
+				result.DeactivationsApplied++
+			}
 		}
 		result.Evaluations = append(result.Evaluations, evaluation)
 	}
@@ -146,6 +160,10 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 	result.CandidateFragmentationAfter = countTreeAuditPrechecks(afterFindings, TreeAuditCandidateFragmentation)
 	result.CrossAgendaContaminationAfter = countTreeAuditPrechecks(afterFindings, TreeAuditCrossAgendaContamination)
 	result.HeuristicDefectCountAfter = auditHeuristicDefectCount(afterFindings)
+	result.LowInformationItemsAfter = countTreeAuditPrechecks(afterFindings, TreeAuditLowInformationItem, TreeAuditLowInformationTitle, TreeAuditStatusOnlyNode, TreeAuditAnaphoraWithoutReferent)
+	if dry.Tree != nil {
+		result.NodeCountAfter = len(dry.Tree.Nodes)
+	}
 	if result.OperationsValid > 0 {
 		dry.TreeVersion = resultingVersion
 		dry.ChangeSource = "tree_auditor"
@@ -184,6 +202,7 @@ func treeAuditOperationClassification(operationType TreeAuditOperationType) tree
 	switch operationType {
 	case TreeAuditMoveItem, TreeAuditRestorePreviousParent, TreeAuditMoveNode,
 		TreeAuditMergeItems, TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
+		TreeAuditReclassifyKind, TreeAuditReclassifySubtype,
 		TreeAuditDeactivateItem, TreeAuditAssignItemToCandidate, TreeAuditChangeEvidenceRole,
 		TreeAuditCreateTopicFromCandidate, TreeAuditFoldCandidateIntoTopic,
 		TreeAuditDeactivateCandidate, TreeAuditRenameGroup, TreeAuditRemoveEmptyGroup:
@@ -657,6 +676,69 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		state.Tree.Nodes[nodeAt].UpdatedAtVersion = resultingVersion
 		return 0, 1, ""
 
+	case TreeAuditReclassifyKind, TreeAuditReclassifySubtype:
+		nodeAt, nodeExists := nodeIndex[operation.TargetCanonicalItemID]
+		itemAt, itemExists := itemIndex[operation.TargetCanonicalItemID]
+		if !nodeExists || !itemExists {
+			return 0, 0, "unknown_target_item"
+		}
+		item := state.Items[itemAt]
+		node := state.Tree.Nodes[nodeAt]
+		if node.Kind == "topic" || node.Kind == "group" || node.ID == treeRootNodeID {
+			return 0, 0, "target_kind_not_reclassifiable"
+		}
+		if len(operation.EvidenceSequenceNos) == 0 || allTreeAuditEvidenceReference(operation.EvidenceSequenceNos, evidenceRoles) {
+			return 0, 0, "primary_evidence_required"
+		}
+		var evidenceText strings.Builder
+		for _, sequenceNo := range operation.EvidenceSequenceNos {
+			text, exists := segmentText[sequenceNo]
+			if !exists || evidenceRoles[sequenceNo] == treeAuditEvidenceReference {
+				continue
+			}
+			evidenceText.WriteString(" ")
+			evidenceText.WriteString(text)
+		}
+		if strings.TrimSpace(evidenceText.String()) == "" {
+			return 0, 0, "primary_evidence_required"
+		}
+		requestedKind := item.Kind
+		if operation.Type == TreeAuditReclassifyKind {
+			requestedKind = strings.ToLower(strings.TrimSpace(operation.Kind))
+		}
+		requestedSubtype := strings.ToLower(strings.TrimSpace(operation.Subtype))
+		requestedKind, requestedSubtype, _, _ = normalizeSemanticClassification(requestedKind, requestedSubtype, item.Status)
+		if !validLiveAnalysisItemKind(requestedKind) {
+			return 0, 0, "invalid_semantic_kind"
+		}
+		if operation.Type == TreeAuditReclassifySubtype {
+			if item.Kind != "issue" || !validIssueSubtype(requestedSubtype) {
+				return 0, 0, "invalid_issue_subtype"
+			}
+			requestedKind = "issue"
+		} else if requestedKind != item.Kind {
+			if item.Kind == "decision" || item.Kind == "todo" || item.Kind == "risk" || requestedKind == "decision" || requestedKind == "todo" || requestedKind == "risk" {
+				return 0, 0, "protected_semantic_kind"
+			}
+			text := evidenceText.String()
+			supported := requestedKind == "issue" && (openIssueMarkerPattern.MatchString(text) || lowInformationQuestionPattern.MatchString(text) || confirmationStatementPattern.MatchString(text))
+			if requestedKind == "fact" {
+				supported = lowInformationAssertionPattern.MatchString(text) && !openIssueMarkerPattern.MatchString(text) && !lowInformationQuestionPattern.MatchString(text)
+			}
+			if !supported {
+				return 0, 0, "semantic_reclassification_not_grounded"
+			}
+		}
+		state.Items[itemAt].Kind = requestedKind
+		state.Items[itemAt].Subtype = requestedSubtype
+		state.Items[itemAt].InformationStatus = informationStatusGrounded
+		repairNonResolvableStatus(&state.Items[itemAt])
+		state.Tree.Nodes[nodeAt].Kind = requestedKind
+		state.Tree.Nodes[nodeAt].Subtype = requestedSubtype
+		state.Tree.Nodes[nodeAt].Status = state.Items[itemAt].Status
+		state.Tree.Nodes[nodeAt].UpdatedAtVersion = resultingVersion
+		return 0, 1, ""
+
 	case TreeAuditDeactivateItem:
 		nodeAt, nodeExists := nodeIndex[operation.TargetCanonicalItemID]
 		itemAt, itemExists := itemIndex[operation.TargetCanonicalItemID]
@@ -668,6 +750,50 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			return 0, 0, "target_kind_not_deactivatable"
 		}
 		item := state.Items[itemAt]
+		// Low-information cleanup is deliberately narrower than duplicate
+		// merge. Decisions, TODOs and risks are never auto-hidden solely due to
+		// wording quality; they remain visible for human correction.
+		switch item.Kind {
+		case "decision", "todo", "risk":
+			return 0, 0, "protected_semantic_kind"
+		}
+		if item.InformationStatus == informationStatusTentative {
+			return 0, 0, "tentative_item_protected"
+		}
+		if node.CreatedAtVersion > 0 && resultingVersion-node.CreatedAtVersion < cfg.TentativeMaxVersions {
+			return 0, 0, "item_too_recent"
+		}
+		for _, candidateNode := range state.Tree.Nodes {
+			if candidateNode.ParentID == node.ID {
+				return 0, 0, "item_has_children"
+			}
+			if candidateNode.ID != node.ID && containsExactString(candidateNode.RelatedItemIDs, node.ID) {
+				return 0, 0, "item_is_referenced"
+			}
+		}
+		for _, relation := range state.Tree.Relations {
+			if relation.Source == node.ID || relation.Target == node.ID {
+				return 0, 0, "item_is_referenced"
+			}
+		}
+		// Repair priority is rewrite -> merge -> deactivate. A recoverable
+		// referent stays on the same canonical item even when a superficially
+		// similar sibling exists; only an unrecoverable duplicate is merged.
+		repairScope := liveEvidenceScope{TranscriptText: segmentText}
+		if item.Kind == "issue" && issueTextNeedsReferent(item.Title+" "+item.Body) && nearestConcreteIssueEvidence(item, repairScope) != "" {
+			return 0, 0, "rewrite_preferred"
+		}
+		for _, sibling := range state.Items {
+			if sibling.ID == item.ID {
+				continue
+			}
+			if _, siblingActive := nodeIndex[sibling.ID]; !siblingActive {
+				continue
+			}
+			if matched, _ := sameKindSemanticDuplicate(item, sibling); matched || sameCanonicalProposition(item, sibling) {
+				return 0, 0, "merge_preferred"
+			}
+		}
 		grounds := allTreeAuditEvidenceReference(item.EvidenceSequenceNos, evidenceRoles)
 		if !grounds {
 			grounds = isDiscourseOnlyItem(item.Title, item.Body)
@@ -679,30 +805,13 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			grounds = treeAuditLowInformationItem(item, segmentText, evidenceRoles)
 		}
 		if !grounds {
-			for _, sibling := range state.Items {
-				if sibling.ID == item.ID {
-					continue
-				}
-				if _, siblingActive := nodeIndex[sibling.ID]; !siblingActive {
-					continue
-				}
-				if matched, _ := sameKindSemanticDuplicate(item, sibling); matched {
-					grounds = true
-					break
-				}
-				if sameCanonicalProposition(item, sibling) {
-					grounds = true
-					break
-				}
-			}
-		}
-		if !grounds {
 			return 0, 0, "deactivate_grounds_not_verified"
 		}
 		tombstoneReason := treeAuditDeactivationTombstoneReason(item, operation, segmentText, evidenceRoles)
 		addItemTombstone(state, item, tombstoneReason, "", "tree_auditor", runID, resultingVersion-1, resultingVersion, node.ParentID)
 		state.Tree.Nodes = append(state.Tree.Nodes[:nodeAt], state.Tree.Nodes[nodeAt+1:]...)
 		state.Items[itemAt].Inactive = true
+		state.Items[itemAt].SuppressionReason = tombstoneReason
 		rebuildTreeAuditEdges(state.Tree)
 		return 0, 1, ""
 
@@ -1000,7 +1109,8 @@ func treeAuditManualEditProtectedOperation(operation treeAuditOperation, state l
 	}
 	switch operation.Type {
 	case TreeAuditMoveItem, TreeAuditRestorePreviousParent, TreeAuditDeactivateItem,
-		TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription:
+		TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
+		TreeAuditReclassifyKind, TreeAuditReclassifySubtype:
 		return isManual(operation.TargetCanonicalItemID)
 	case TreeAuditMoveNode, TreeAuditRenameGroup, TreeAuditRemoveEmptyGroup:
 		return isManual(operation.TargetCanonicalNodeID)
@@ -1796,6 +1906,9 @@ func mergeTreeAuditItemAttributes(canonical, companion liveAnalysisItem) liveAna
 	canonical.ResolutionConditions = appendUniqueText(canonical.ResolutionConditions, companion.ResolutionConditions...)
 	canonical.NextActions = appendUniqueText(canonical.NextActions, companion.NextActions...)
 	canonical.RelatedAgendaIDs = uniqueNonEmptyIDs(append(canonical.RelatedAgendaIDs, companion.RelatedAgendaIDs...))
+	if canonical.InformationStatus != informationStatusGrounded && companion.InformationStatus == informationStatusGrounded {
+		canonical.InformationStatus = informationStatusGrounded
+	}
 	if canonical.Status != "resolved" && companion.Status == "resolved" {
 		canonical.Status = companion.Status
 	}

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const treeAuditPromptVersion = "v4"
+const treeAuditPromptVersion = "v5"
 
 type TreeAuditFindingType string
 
@@ -52,6 +52,14 @@ const (
 	TreeAuditSupersededItem                   TreeAuditFindingType = "superseded_item"
 	TreeAuditEmptyGroup                       TreeAuditFindingType = "empty_group"
 	TreeAuditEmptyUnclassifiedContainer       TreeAuditFindingType = "empty_unclassified_container"
+	TreeAuditLowInformationTitle              TreeAuditFindingType = "low_information_title"
+	TreeAuditStatusOnlyNode                   TreeAuditFindingType = "status_only_node"
+	TreeAuditAnaphoraWithoutReferent          TreeAuditFindingType = "anaphora_without_referent"
+	TreeAuditMetaUtteranceNode                TreeAuditFindingType = "meta_utterance_node"
+	TreeAuditMultiplePropositionsCollapsed    TreeAuditFindingType = "multiple_propositions_collapsed"
+	TreeAuditDuplicateOrParaphrase            TreeAuditFindingType = "duplicate_or_paraphrase"
+	TreeAuditSubtypeMismatch                  TreeAuditFindingType = "subtype_mismatch"
+	TreeAuditSemanticKindMismatch             TreeAuditFindingType = "semantic_kind_mismatch"
 )
 
 type TreeAuditOperationType string
@@ -79,6 +87,8 @@ const (
 	TreeAuditMergeFragmentedUtterances TreeAuditOperationType = "merge_fragmented_utterances"
 	TreeAuditRewriteItemTitle          TreeAuditOperationType = "rewrite_item_title"
 	TreeAuditRewriteItemDescription    TreeAuditOperationType = "rewrite_item_description"
+	TreeAuditReclassifyKind            TreeAuditOperationType = "reclassify_kind"
+	TreeAuditReclassifySubtype         TreeAuditOperationType = "reclassify_subtype"
 	// TreeAuditMoveNode moves a topic/group container node to a new parent
 	// (root/topic/group). See treeAuditOperationClassification and its
 	// applier in applyOneTreeAuditOperation.
@@ -114,6 +124,8 @@ type treeAuditOperation struct {
 	FromParentCanonicalNodeID string                 `json:"fromParentCanonicalNodeId"`
 	ToParentCanonicalNodeID   string                 `json:"toParentCanonicalNodeId"`
 	Label                     string                 `json:"label"`
+	Kind                      string                 `json:"kind"`
+	Subtype                   string                 `json:"subtype"`
 	Reason                    string                 `json:"reason"`
 	Confidence                float64                `json:"confidence"`
 	EvidenceSequenceNos       []int64                `json:"evidenceSequenceNos"`
@@ -178,6 +190,14 @@ type treeAuditValidatorResult struct {
 	CrossAgendaContaminationAfter  int                            `json:"crossAgendaContaminationAfter"`
 	HeuristicDefectCountBefore     int                            `json:"heuristicDefectCountBefore"`
 	HeuristicDefectCountAfter      int                            `json:"heuristicDefectCountAfter"`
+	LowInformationItemsBefore      int                            `json:"lowInformationItemsBefore"`
+	LowInformationItemsAfter       int                            `json:"lowInformationItemsAfter"`
+	NodeCountBefore                int                            `json:"nodeCountBefore"`
+	NodeCountAfter                 int                            `json:"nodeCountAfter"`
+	RewritesApplied                int                            `json:"rewritesApplied"`
+	MergesApplied                  int                            `json:"mergesApplied"`
+	ReclassificationsApplied       int                            `json:"reclassificationsApplied"`
+	DeactivationsApplied           int                            `json:"deactivationsApplied"`
 	ParserElementsRejected         int                            `json:"parserElementsRejected"`
 	OperationsCanonicalized        int                            `json:"operationsCanonicalized"`
 }
@@ -318,7 +338,11 @@ func validTreeAuditFindingType(value TreeAuditFindingType) bool {
 		TreeAuditRecapPromotedCandidate, TreeAuditOrphanTentativeItem,
 		TreeAuditGenericTitle, TreeAuditEvidenceFragmentation,
 		TreeAuditRecapOnlyItem, TreeAuditDuplicateItem, TreeAuditSupersededItem,
-		TreeAuditEmptyGroup, TreeAuditEmptyUnclassifiedContainer:
+		TreeAuditEmptyGroup, TreeAuditEmptyUnclassifiedContainer,
+		TreeAuditLowInformationTitle, TreeAuditStatusOnlyNode,
+		TreeAuditAnaphoraWithoutReferent, TreeAuditMetaUtteranceNode,
+		TreeAuditMultiplePropositionsCollapsed, TreeAuditDuplicateOrParaphrase,
+		TreeAuditSubtypeMismatch, TreeAuditSemanticKindMismatch:
 		return true
 	default:
 		return false
@@ -337,7 +361,8 @@ func validTreeAuditOperationType(value TreeAuditOperationType) bool {
 		TreeAuditSplitCandidate, TreeAuditCreateTopicFromCandidate,
 		TreeAuditAssignItemToCandidate, TreeAuditChangeEvidenceRole,
 		TreeAuditMergeFragmentedUtterances, TreeAuditRewriteItemTitle,
-		TreeAuditRewriteItemDescription, TreeAuditMoveNode:
+		TreeAuditRewriteItemDescription, TreeAuditReclassifyKind,
+		TreeAuditReclassifySubtype, TreeAuditMoveNode:
 		return true
 	default:
 		return false

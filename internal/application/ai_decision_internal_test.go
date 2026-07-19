@@ -99,7 +99,7 @@ func TestMixedSegmentProducesDecisionAndUnresolvedItem(t *testing.T) {
 	for _, item := range state.Items {
 		counts[item.Kind]++
 	}
-	if counts["decision"] != 1 || counts["question"] != 1 || len(state.Items) != 2 {
+	if counts["decision"] != 1 || counts["issue"] != 1 || len(state.Items) != 2 || findItemByID(state.Items, "question-wind-speed").Subtype != issueSubtypeQuestion {
 		t.Fatalf("counts=%v items=%+v", counts, state.Items)
 	}
 }
@@ -153,7 +153,7 @@ func TestTodoTransitionsToDecisionWithoutDuplicateCard(t *testing.T) {
 	}
 }
 
-func TestSameRoundQuestionAndTodoBecomeOneCanonicalProposition(t *testing.T) {
+func TestSameRoundQuestionAndTodoRemainIndependentCanonicalPropositions(t *testing.T) {
 	diff := `{"summary":"更新","currentTopic":"鳥類","resolvedIds":[],"items":[{"id":"question-sites","kind":"question","severity":"medium","title":"追加観測地点の設置基準を決める","body":"基準は何か","status":"open"},{"id":"todo-sites","kind":"todo","severity":"high","title":"追加観測地点の設置基準を決める","body":"風向と鳥の経路から基準を決める","status":"open"}],"assignments":[{"nodeId":"question-sites","parentTopicId":"agenda-1","confidence":0.9},{"nodeId":"todo-sites","parentTopicId":"agenda-1","confidence":0.9}]}`
 	stats := &liveAnalysisTreeMergeStats{}
 	raw, err := parseAndMergeLiveAnalysisPayload(diff, nil, &meetingContext{Agenda: []agendaItem{{ID: "agenda-1", Title: "鳥類", Order: 1}}}, 1, []int64{1}, TreeClassificationConfig{}, stats)
@@ -161,10 +161,12 @@ func TestSameRoundQuestionAndTodoBecomeOneCanonicalProposition(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.Items) != 1 || state.Items[0].Kind != "todo" || len(state.Items[0].RelatedQuestions) != 1 {
+	question := findItemByID(state.Items, "question-sites")
+	todo := findItemByID(state.Items, "todo-sites")
+	if len(state.Items) != 2 || question == nil || question.Kind != "issue" || question.Subtype != issueSubtypeQuestion || todo == nil || todo.Kind != "todo" {
 		t.Fatalf("items=%+v", state.Items)
 	}
-	if stats.PropositionItemsMerged != 1 {
+	if stats.PropositionItemsMerged != 0 {
 		t.Fatalf("propositionItemsMerged=%d", stats.PropositionItemsMerged)
 	}
 }

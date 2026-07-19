@@ -43,6 +43,9 @@ type treeAuditSnapshotNode struct {
 	Dynamic                  bool                   `json:"dynamic"`
 	Tentative                bool                   `json:"tentative"`
 	Status                   string                 `json:"status,omitempty"`
+	Subtype                  string                 `json:"subtype,omitempty"`
+	InformationStatus        string                 `json:"informationStatus,omitempty"`
+	CreatedAtVersion         int64                  `json:"createdAtVersion,omitempty"`
 	ClassificationConfidence float64                `json:"classificationConfidence,omitempty"`
 	AssignmentReason         string                 `json:"assignmentReason,omitempty"`
 	CandidateTopicID         string                 `json:"candidateTopicId,omitempty"`
@@ -115,6 +118,9 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 			Dynamic:                  node.Origin == topicOriginDynamic,
 			Tentative:                item.ClassificationStatus == classificationTentative,
 			Status:                   firstNonEmptyTrimmed(node.Status, item.Status),
+			Subtype:                  firstNonEmptyTrimmed(node.Subtype, item.Subtype),
+			InformationStatus:        item.InformationStatus,
+			CreatedAtVersion:         node.CreatedAtVersion,
 			ClassificationConfidence: item.AssignmentConfidence,
 			AssignmentReason:         item.AssignmentReason,
 			CandidateTopicID:         item.CandidateTopicID,
@@ -333,9 +339,27 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 		}
 		if isDiscourseOnlyItem(item.Title, item.Body) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditDiscourseOnlyItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "meeting-control speech was persisted as a discussion item", Score: 1})
+			add(treeAuditPrecheckFinding{Type: TreeAuditMetaUtteranceNode, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "meeting-control utterance was promoted into a semantic node", Score: 1})
 		}
 		if treeAuditLowInformationItem(item, nil, roles) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditLowInformationItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "item has no independently actionable or factual proposition", Score: 1})
+			add(treeAuditPrecheckFinding{Type: TreeAuditLowInformationTitle, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "title does not identify an independently understandable subject and proposition", Score: 1})
+		}
+		if issueTextNeedsReferent(item.Title+" "+item.Body) && issueAnaphoraPattern.MatchString(item.Title+" "+item.Body) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditAnaphoraWithoutReferent, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "anaphoric item text does not name its referent", Score: 1})
+		} else if item.Kind == "issue" && metaOnlyLiveItemText(item.Title+" "+item.Body) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditStatusOnlyNode, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "node expresses only discussion state without a concrete subject", Score: 1})
+		}
+		if item.Kind == "issue" && len(splitCollapsedOpenIssueStatement(item.Title+" "+item.Body)) > 1 {
+			add(treeAuditPrecheckFinding{Type: TreeAuditMultiplePropositionsCollapsed, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "multiple independent issue propositions were collapsed into one node", Score: 1})
+		}
+		if item.Kind == "issue" {
+			inferred := inferIssueSubtype(item.Title+" "+item.Body, item.Subtype)
+			if inferred != item.Subtype && validIssueSubtype(inferred) {
+				add(treeAuditPrecheckFinding{Type: TreeAuditSubtypeMismatch, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "issue subtype conflicts with the proposition wording", Score: 0.85})
+			}
+		} else if item.Kind == "fact" && (openIssueMarkerPattern.MatchString(itemText) || lowInformationQuestionPattern.MatchString(itemText)) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditSemanticKindMismatch, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "open issue proposition is classified as fact", Score: 0.9})
 		}
 		if allTreeAuditEvidenceReference(item.EvidenceSequenceNos, roles) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditRecapReferenceContamination, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "independent item is grounded only in recap/reference evidence", Score: 0.95})
@@ -430,6 +454,7 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 				if matched, score := sameKindSemanticDuplicate(state.Items[i], state.Items[j]); matched {
 					add(treeAuditPrecheckFinding{Type: TreeAuditSemanticDuplicateSibling, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "same-kind sibling nodes represent the same proposition", Score: score})
 					add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateItem, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "active sibling items duplicate one proposition", Score: score})
+					add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateOrParaphrase, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "sibling nodes duplicate or paraphrase one proposition", Score: score})
 				} else if sameCanonicalProposition(state.Items[i], state.Items[j]) {
 					add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateCrossKindProposition, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "cross-kind sibling nodes represent one canonical proposition", Score: 0.9})
 				}

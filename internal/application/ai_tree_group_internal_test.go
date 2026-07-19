@@ -371,14 +371,16 @@ func TestSession83c10700ReplayRepairsDecisionsGroupsAndActionSummary(t *testing.
 	}
 	state := previousLiveAnalysisState(raw)
 	kinds := map[string]int{}
+	subtypes := map[string]int{}
 	resolvedCount := 0
 	for _, item := range state.Items {
 		kinds[item.Kind]++
+		subtypes[item.Subtype]++
 		if item.Status == "resolved" {
 			resolvedCount++
 		}
 	}
-	if kinds["decision"] < 3 || kinds["question"] != 0 || kinds["open_issue"] != 1 || resolvedCount != 1 || len(state.Items) > 10 {
+	if kinds["decision"] < 3 || kinds["issue"] != 2 || subtypes[issueSubtypeQuestion] != 1 || subtypes[issueSubtypeDiscussion] != 1 || resolvedCount != 1 || len(state.Items) > 10 {
 		t.Fatalf("kinds=%v itemCount=%d items=%+v resolutions=%+v", kinds, len(state.Items), state.Items, mergeStats.ResolutionDecisions)
 	}
 	noiseGroupID := stableGroupID("agenda-2", "夜間測定")
@@ -408,7 +410,7 @@ func TestSession83c10700ReplayRepairsDecisionsGroupsAndActionSummary(t *testing.
 			actionReferences++
 		}
 	}
-	t.Logf("replay metrics: decisions=%d resolved=%d todos=%d questions=%d openIssues=%d items=%d groups=%d maxDepth=%d maxTopicChildren=%d actionReferences=%d operationsApplied=%d", kinds["decision"], resolvedCount, kinds["todo"], kinds["question"], kinds["open_issue"], len(state.Items), health.GroupCount, treeDepthOf(reorganized), health.MaxTopicChildren, actionReferences, applied)
+	t.Logf("replay metrics: decisions=%d resolved=%d todos=%d questionIssues=%d discussionIssues=%d items=%d groups=%d maxDepth=%d maxTopicChildren=%d actionReferences=%d operationsApplied=%d", kinds["decision"], resolvedCount, kinds["todo"], subtypes[issueSubtypeQuestion], subtypes[issueSubtypeDiscussion], len(state.Items), health.GroupCount, treeDepthOf(reorganized), health.MaxTopicChildren, actionReferences, applied)
 	encoded, err := json.Marshal(state)
 	if err != nil || len(encoded) == 0 {
 		t.Fatalf("marshal replay state: %v", err)

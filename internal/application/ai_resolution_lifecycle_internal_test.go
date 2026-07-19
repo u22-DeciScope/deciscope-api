@@ -56,7 +56,7 @@ func TestResolutionUpdatesApplyOnlyGroundedItemAndRejectMassLegacy(t *testing.T)
 	}
 }
 
-func TestIssueRecapReopensExistingQuestionAndOpenIssue(t *testing.T) {
+func TestIssueRecapReopensExistingQuestionAndDiscussionIssue(t *testing.T) {
 	previous := liveAnalysisPayload{Items: []liveAnalysisItem{
 		{ID: "question-wind", Kind: "question", Severity: "high", Title: "強風日の風速基準は何m/sか", Body: "基準風速を決める", Status: "resolved", ResolvedAtVersion: 4},
 		{ID: "open-wind", Kind: "open_issue", Severity: "high", Title: "強風日の風速基準が未決定", Body: "基準風速を決める必要がある", Status: "resolved", ResolvedAtVersion: 4},
@@ -79,12 +79,14 @@ func TestIssueRecapReopensExistingQuestionAndOpenIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.Items) != 1 {
+	if len(state.Items) != 2 {
 		t.Fatalf("recap created duplicate items: %+v", state.Items)
 	}
-	item := findItemByID(state.Items, "open-wind")
-	if item == nil || item.Status != "open" || item.ReopenedAtVersion != 5 || !equalInt64s(item.ReopenEvidenceSequenceNos, []int64{35}) || len(item.RelatedQuestions) != 1 {
-		t.Fatalf("reopened canonical issue=%+v", item)
+	for _, expected := range []struct{ id, subtype string }{{"question-wind", issueSubtypeQuestion}, {"open-wind", issueSubtypeDiscussion}} {
+		item := findItemByID(state.Items, expected.id)
+		if item == nil || item.Kind != "issue" || item.Subtype != expected.subtype || item.Status != "open" || item.ReopenedAtVersion != 5 || !equalInt64s(item.ReopenEvidenceSequenceNos, []int64{35}) {
+			t.Fatalf("reopened issue %s=%+v", expected.id, item)
+		}
 	}
 }
 
@@ -276,9 +278,9 @@ func TestSession0f1ade26ee8babedDeterministicReplay(t *testing.T) {
 			t.Fatalf("item %s must remain open/active: %+v", id, item)
 		}
 	}
-	for _, id := range []string{"open-wind", "open-date"} {
-		if item := findItemByID(state.Items, id); item == nil || len(item.NextActions) == 0 {
-			t.Fatalf("canonical issue %s lost next action: %+v", id, item)
+	for _, pair := range [][2]string{{"open-wind", "todo-weather"}, {"open-date", "todo-date"}} {
+		if issue, todo := findItemByID(state.Items, pair[0]), findItemByID(state.Items, pair[1]); issue == nil || issue.Kind != "issue" || issue.Subtype != issueSubtypeDiscussion || todo == nil || todo.Kind != "todo" {
+			t.Fatalf("issue/TODO independence lost: issue=%+v todo=%+v", issue, todo)
 		}
 	}
 	if item := findItemByID(state.Items, "question-count"); item == nil || item.Status != "resolved" {

@@ -288,8 +288,8 @@ func TestSession2dee3b1da5b72979OfflineReplayAppliesSafeOperationsAndRejectsWeak
 	if got := byOp["op-3"].Reason; got != "parent_stickiness_margin" {
 		t.Fatalf("op-3 reason = %q, want parent_stickiness_margin (destination candidate-73edc40ca0ec is a dynamic topic, not a fixed agenda, so the fixed-agenda-return exemption does not apply, and similarity 0.085 falls just short of the halved 0.09 margin)", got)
 	}
-	if got := byOp["op-8"].Reason; got != "deactivate_grounds_not_verified" {
-		t.Fatalf("op-8 reason = %q, want deactivate_grounds_not_verified (this open_issue's text does not meet the narrow isDiscourseOnlyItem definition)", got)
+	if got := byOp["op-8"].Reason; got != "rewrite_preferred" {
+		t.Fatalf("op-8 reason = %q, want rewrite_preferred (a concrete evidence-backed rewrite must precede deactivation)", got)
 	}
 	if got := byOp["op-9"].Reason; got != "below_effective_confidence_threshold" && got != "parent_stickiness_margin" {
 		t.Fatalf("op-9 reason = %q, want below_effective_confidence_threshold or parent_stickiness_margin (must never pass at modelConfidence 0.65 with no structural corroboration)", got)

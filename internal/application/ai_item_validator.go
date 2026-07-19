@@ -44,6 +44,15 @@ func filterLowInformationLiveItems(previous, diff []liveAnalysisItem, timeline d
 	kept := make([]liveAnalysisItem, 0, len(diff))
 	for _, item := range diff {
 		_, updatesExisting := previousIDs[item.ID]
+		if item.Kind == "issue" && item.InformationStatus == informationStatusTentative &&
+			!isDiscourseOnlyItem(item.Title, item.Body) &&
+			!evidenceOnlyHasRoles(item.EvidenceSequenceNos, timeline, liveEvidenceDiscourseOnly) {
+			kept = append(kept, item)
+			if stats != nil {
+				stats.LowInformationTentativeRetained++
+			}
+			continue
+		}
 		reason, role := validateLiveItemInformation(item, updatesExisting, timeline, scope)
 		if reason == "" {
 			kept = append(kept, item)
@@ -102,15 +111,14 @@ func validateLiveItemInformation(item liveAnalysisItem, updatesExisting bool, ti
 		if !specific && !lowInformationAssertionPattern.MatchString(text) && !contextual {
 			return "low_information", role
 		}
-	case "question":
-		if !lowInformationQuestionPattern.MatchString(text) && !specific && !contextual {
-			return "low_information", role
-		}
 	case "risk":
 		if !specific && !lowInformationRiskPattern.MatchString(text) && !contextual {
 			return "low_information", role
 		}
-	case "issue", "open_issue":
+	case "issue":
+		if item.Subtype == issueSubtypeQuestion && !lowInformationQuestionPattern.MatchString(text) && !specific && !contextual {
+			return "low_information", role
+		}
 		if !specific && !contextual {
 			return "low_information", role
 		}

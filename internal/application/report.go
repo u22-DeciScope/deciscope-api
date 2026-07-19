@@ -54,6 +54,7 @@ func (s *Service) BuildMarkdownReport(ctx context.Context, meetingID string) (st
 		}
 		for _, item := range delta.Items {
 			if item.Op == "add" || item.Op == "update" {
+				item.Item.Kind, item.Item.Subtype, item.Item.Status, _ = normalizeSemanticClassification(item.Item.Kind, item.Item.Subtype, item.Item.Status)
 				cards = append(cards, item.Item)
 			}
 		}
@@ -69,13 +70,13 @@ func (s *Service) BuildMarkdownReport(ctx context.Context, meetingID string) (st
 		fmt.Fprintf(&b, "This mock report was generated from %d final transcript segments. It is deterministic and does not call any external LLM or cloud service.\n\n", len(segments))
 	}
 	b.WriteString("## Decisions\n\n")
-	writeCardsByKind(&b, cards, "issue")
+	writeCardsByKind(&b, cards, "decision")
 	if len(cards) == 0 {
 		b.WriteString("- No structured analysis cards were generated yet.\n")
 	}
 	b.WriteString("\n## Risks And Open Questions\n\n")
-	wrote := writeCardsByKind(&b, cards, "risk")
-	wrote = writeCardsByKind(&b, cards, "question") || wrote
+	wrote := writeOpenCardsByKind(&b, cards, "risk")
+	wrote = writeOpenCardsByKind(&b, cards, "issue") || wrote
 	if !wrote {
 		b.WriteString("- No risks or questions were detected in the local fixture.\n")
 	}
@@ -89,6 +90,7 @@ func (s *Service) BuildMarkdownReport(ctx context.Context, meetingID string) (st
 type analysisCard struct {
 	ID       string `json:"id"`
 	Kind     string `json:"kind"`
+	Subtype  string `json:"subtype,omitempty"`
 	Severity string `json:"severity"`
 	Title    string `json:"title"`
 	Body     string `json:"body"`
@@ -99,9 +101,28 @@ func writeCardsByKind(b *strings.Builder, cards []analysisCard, kind string) boo
 	wrote := false
 	for _, card := range cards {
 		if card.Kind == kind {
-			fmt.Fprintf(b, "- **%s** (%s/%s): %s\n", card.Title, card.Kind, card.Severity, card.Body)
+			writeAnalysisCard(b, card)
 			wrote = true
 		}
 	}
 	return wrote
+}
+
+func writeOpenCardsByKind(b *strings.Builder, cards []analysisCard, kind string) bool {
+	wrote := false
+	for _, card := range cards {
+		if card.Kind == kind && card.Status != "resolved" {
+			writeAnalysisCard(b, card)
+			wrote = true
+		}
+	}
+	return wrote
+}
+
+func writeAnalysisCard(b *strings.Builder, card analysisCard) {
+	classification := card.Kind
+	if card.Subtype != "" {
+		classification += "/" + card.Subtype
+	}
+	fmt.Fprintf(b, "- **%s** (%s/%s): %s\n", card.Title, classification, card.Severity, card.Body)
 }

@@ -118,12 +118,18 @@ func TestSession85dcefa3f7f785d7OfflineQualityReplay(t *testing.T) {
 		}
 	}
 	strongWindItems := 0
+	strongWindSubtypes := map[string]int{}
+	strongWindTodos := 0
 	for _, item := range after.Items {
 		if strings.Contains(item.Title+item.Body, "強風") {
 			strongWindItems++
+			strongWindSubtypes[item.Subtype]++
+			if item.Kind == "todo" {
+				strongWindTodos++
+			}
 		}
 	}
-	if strongWindItems != 1 {
+	if strongWindItems != 3 || strongWindSubtypes[issueSubtypeQuestion] != 1 || strongWindSubtypes[issueSubtypeDiscussion] != 1 || strongWindTodos != 1 {
 		t.Fatalf("strong-wind canonical items=%d items=%+v", strongWindItems, after.Items)
 	}
 	plantTopicID := ""

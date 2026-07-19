@@ -895,10 +895,14 @@ func logTreeAuditDetails(sessionID, auditRunID string, response *treeAuditRespon
 	log.Printf("Tree audit operations. sessionId=%s auditRunId=%s operationsProposed=%d operationsValid=%d operationsApplied=%d operationsRejected=%d operationsRejectedByReason=%v staleOperationsRejected=%d parserElementsRejected=%d operationsCanonicalized=%d",
 		sessionID, auditRunID, validator.OperationsProposed, validator.OperationsValid, validator.OperationsApplied,
 		validator.OperationsRejected, rejected, validator.StaleOperationsRejected, validator.ParserElementsRejected, validator.OperationsCanonicalized)
-	log.Printf("Tree audit quality. sessionId=%s auditRunId=%s topicOutliersBefore=%d topicOutliersAfter=%d candidateFragmentationBefore=%d candidateFragmentationAfter=%d crossAgendaContaminationBefore=%d crossAgendaContaminationAfter=%d treeIntegrityValid=%t",
+	log.Printf("Tree audit quality. sessionId=%s auditRunId=%s topicOutliersBefore=%d topicOutliersAfter=%d candidateFragmentationBefore=%d candidateFragmentationAfter=%d crossAgendaContaminationBefore=%d crossAgendaContaminationAfter=%d nodeCountBefore=%d nodeCountAfter=%d lowInformationItemsBefore=%d lowInformationItemsAfter=%d rewritesApplied=%d mergesApplied=%d reclassificationsApplied=%d deactivationsApplied=%d fixedAgendaMutationsRejected=%d treeIntegrityValid=%t",
 		sessionID, auditRunID, validator.TopicOutliersBefore, validator.TopicOutliersAfter,
 		validator.CandidateFragmentationBefore, validator.CandidateFragmentationAfter,
 		validator.CrossAgendaContaminationBefore, validator.CrossAgendaContaminationAfter,
+		validator.NodeCountBefore, validator.NodeCountAfter,
+		validator.LowInformationItemsBefore, validator.LowInformationItemsAfter,
+		validator.RewritesApplied, validator.MergesApplied, validator.ReclassificationsApplied, validator.DeactivationsApplied,
+		rejected["fixed_agenda_immutable"],
 		validator.TreeIntegrityValid)
 	logTreeAuditOperationDetails(sessionID, auditRunID, response, validator)
 }

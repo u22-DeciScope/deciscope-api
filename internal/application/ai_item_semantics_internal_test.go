@@ -8,19 +8,20 @@ import (
 func TestQuestionOpenIssueTodoSemanticFixtures(t *testing.T) {
 	mc := &meetingContext{Agenda: []agendaItem{{ID: "agenda-1", Title: "強風日の条件", Order: 1}}}
 	tests := []struct {
-		name string
-		diff string
-		want map[string]int
+		name         string
+		diff         string
+		want         map[string]int
+		wantSubtypes map[string]int
 	}{
 		{
 			name: "question only",
 			diff: `{"summary":"質問","items":[{"id":"question-threshold","kind":"question","severity":"medium","title":"強風日の基準風速は何m/sか","body":"基準値への回答が必要","status":"open"}],"assignments":[{"nodeId":"question-threshold","parentTopicId":"agenda-1","confidence":0.9}]}`,
-			want: map[string]int{"question": 1},
+			want: map[string]int{"issue": 1}, wantSubtypes: map[string]int{issueSubtypeQuestion: 1},
 		},
 		{
 			name: "open issue only",
 			diff: `{"summary":"未解決","items":[{"id":"open-threshold","kind":"open_issue","severity":"high","title":"強風日の基準風速が未確定","body":"決める必要がある","status":"open"}],"assignments":[{"nodeId":"open-threshold","parentTopicId":"agenda-1","confidence":0.9}]}`,
-			want: map[string]int{"open_issue": 1},
+			want: map[string]int{"issue": 1}, wantSubtypes: map[string]int{issueSubtypeDiscussion: 1},
 		},
 		{
 			name: "todo only",
@@ -30,7 +31,7 @@ func TestQuestionOpenIssueTodoSemanticFixtures(t *testing.T) {
 		{
 			name: "open issue and todo",
 			diff: `{"summary":"混在","items":[{"id":"open-threshold","kind":"open_issue","severity":"high","title":"強風日の基準風速が未確定","body":"決める必要がある","status":"open"},{"id":"todo-weather","kind":"todo","severity":"high","title":"気象データを確認する","body":"次回までに確認する","status":"open"}],"assignments":[{"nodeId":"open-threshold","parentTopicId":"agenda-1","confidence":0.9},{"nodeId":"todo-weather","parentTopicId":"agenda-1","confidence":0.9}]}`,
-			want: map[string]int{"open_issue": 1, "todo": 1},
+			want: map[string]int{"issue": 1, "todo": 1}, wantSubtypes: map[string]int{issueSubtypeDiscussion: 1},
 		},
 	}
 	for _, test := range tests {
@@ -41,8 +42,12 @@ func TestQuestionOpenIssueTodoSemanticFixtures(t *testing.T) {
 			}
 			state := previousLiveAnalysisState(raw)
 			got := make(map[string]int)
+			gotSubtypes := make(map[string]int)
 			for _, item := range state.Items {
 				got[item.Kind]++
+				if item.Subtype != "" {
+					gotSubtypes[item.Subtype]++
+				}
 			}
 			for kind, count := range test.want {
 				if got[kind] != count {
@@ -51,6 +56,11 @@ func TestQuestionOpenIssueTodoSemanticFixtures(t *testing.T) {
 			}
 			if len(state.Items) != totalKindCount(test.want) {
 				t.Fatalf("unexpected item kinds=%v", got)
+			}
+			for subtype, count := range test.wantSubtypes {
+				if gotSubtypes[subtype] != count {
+					t.Fatalf("subtype counts=%v want %v items=%+v", gotSubtypes, test.wantSubtypes, state.Items)
+				}
 			}
 		})
 	}
@@ -70,16 +80,16 @@ func TestResolvedCanonicalIssueAndTodoRemainSeparateFromDecisionAndRecap(t *test
 		t.Fatal(err)
 	}
 	state2 := previousLiveAnalysisState(raw2)
-	if len(state2.Items) != 3 || itemByID(state2.Items, "decision-threshold").Kind != "decision" {
+	if len(state2.Items) != 4 || itemByID(state2.Items, "decision-threshold").Kind != "decision" {
 		t.Fatalf("items=%+v", state2.Items)
 	}
-	for _, id := range []string{"open-threshold", "todo-weather"} {
+	for _, id := range []string{"question-threshold", "open-threshold", "todo-weather"} {
 		if item := itemByID(state2.Items, id); item == nil || item.Status != "resolved" {
 			t.Fatalf("resolved item %s=%+v", id, item)
 		}
 	}
-	if issue := itemByID(state2.Items, "open-threshold"); issue == nil || len(issue.RelatedQuestions) != 1 || itemByID(state2.Items, "question-threshold") != nil {
-		t.Fatalf("canonical issue=%+v items=%+v", issue, state2.Items)
+	if question, issue := itemByID(state2.Items, "question-threshold"), itemByID(state2.Items, "open-threshold"); question == nil || question.Subtype != issueSubtypeQuestion || issue == nil || issue.Subtype != issueSubtypeDiscussion {
+		t.Fatalf("independent issues question=%+v discussion=%+v items=%+v", question, issue, state2.Items)
 	}
 
 	previous, _ := json.Marshal(state2)
@@ -90,7 +100,7 @@ func TestResolvedCanonicalIssueAndTodoRemainSeparateFromDecisionAndRecap(t *test
 	}
 	state3 := previousLiveAnalysisState(raw3)
 	decision := itemByID(state3.Items, "decision-threshold")
-	if len(state3.Items) != 3 || decision == nil || len(decision.EvidenceSequenceNos) != 2 {
+	if len(state3.Items) != 4 || decision == nil || len(decision.EvidenceSequenceNos) != 2 {
 		t.Fatalf("recap items=%+v", state3.Items)
 	}
 }

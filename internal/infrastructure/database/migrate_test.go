@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 )
@@ -117,5 +118,73 @@ func TestMigration00013UpgradesExistingAuditRowsAndCanReapply(t *testing.T) {
 	}
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate() after 00013 reapply error = %v", err)
+	}
+}
+
+func TestMigration00014NormalizesLegacyIssueKindsIdempotently(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_TEST_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db, err := Open(ctx, Config{URL: databaseURL})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("Migrate() initial error = %v", err)
+	}
+	const sessionID = "session_migration_00014"
+	if _, err := db.ExecContext(ctx, `DELETE FROM meeting_session_ai_analyses WHERE session_id=$1`, sessionID); err != nil {
+		t.Fatalf("clear migration fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM meeting_session_ai_analyses WHERE session_id=$1`, sessionID)
+	})
+	legacyPayload, err := json.Marshal(map[string]any{
+		"items": []map[string]any{
+			{"id": "open-1", "kind": "open_issue", "status": "open", "evidenceSequenceNos": []int64{4}},
+			{"id": "question-1", "kind": "question", "status": "resolved", "evidenceSequenceNos": []int64{5}},
+			{"id": "todo-1", "kind": "todo", "status": "open", "evidenceSequenceNos": []int64{6}},
+		},
+		"tree": map[string]any{"nodes": []map[string]any{
+			{"id": "root", "kind": "topic"},
+			{"id": "open-1", "kind": "open_issue", "status": "open"},
+			{"id": "question-1", "kind": "question", "status": "resolved"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal legacy analysis: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO meeting_session_ai_analyses (session_id, analysis_type, status, version, payload)
+		VALUES ($1, 'live', 'completed', 7, $2)
+	`, sessionID, legacyPayload); err != nil {
+		t.Fatalf("seed legacy analysis: %v", err)
+	}
+	upSQL, err := migrationFiles.ReadFile("migrations/postgres/00014_issue_subtypes.up.sql")
+	if err != nil {
+		t.Fatalf("read 00014 up migration: %v", err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := db.ExecContext(ctx, string(upSQL)); err != nil {
+			t.Fatalf("apply 00014 attempt %d: %v", attempt, err)
+		}
+	}
+	var openKind, openSubtype, questionKind, questionSubtype, questionStatus, todoKind, openNodeSubtype string
+	var openID string
+	var evidence int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT payload #>> '{items,0,id}', payload #>> '{items,0,kind}', payload #>> '{items,0,subtype}',
+			(payload #> '{items,0,evidenceSequenceNos,0}')::bigint,
+			payload #>> '{items,1,kind}', payload #>> '{items,1,subtype}', payload #>> '{items,1,status}',
+			payload #>> '{items,2,kind}', payload #>> '{tree,nodes,1,subtype}'
+		FROM meeting_session_ai_analyses WHERE session_id=$1 AND analysis_type='live'
+	`, sessionID).Scan(&openID, &openKind, &openSubtype, &evidence, &questionKind, &questionSubtype, &questionStatus, &todoKind, &openNodeSubtype); err != nil {
+		t.Fatalf("read normalized analysis: %v", err)
+	}
+	if openID != "open-1" || evidence != 4 || openKind != "issue" || openSubtype != "discussion" || questionKind != "issue" || questionSubtype != "question" || questionStatus != "resolved" || todoKind != "todo" || openNodeSubtype != "discussion" {
+		t.Fatalf("normalized values id=%q evidence=%d open=%s/%s question=%s/%s/%s todo=%s nodeSubtype=%s", openID, evidence, openKind, openSubtype, questionKind, questionSubtype, questionStatus, todoKind, openNodeSubtype)
 	}
 }
