@@ -799,7 +799,7 @@ func TestParseAgendaItemsHandlesBulletsAndDedup(t *testing.T) {
 	}
 }
 
-func TestMergeBuildsInitialAgendaSkeleton(t *testing.T) {
+func TestMergeMaterializesOnlyDiscussedAgenda(t *testing.T) {
 	mc := fixtureMeetingContext()
 	diff := `{"summary":"開始","currentTopic":"文字起こし精度","items":[{"id":"q-open","kind":"question","severity":"low","title":"最初の質問","body":"","status":"open"}],"assignments":[{"nodeId":"q-open","parentTopicId":"agenda-1","confidence":0.9,"reason":""}]}`
 	merged := mergeForTestWithContext(t, diff, nil, mc)
@@ -808,14 +808,20 @@ func TestMergeBuildsInitialAgendaSkeleton(t *testing.T) {
 	if root == nil || root.Label != "定例会議" || !strings.Contains(root.Description, "品質を確認") {
 		t.Fatalf("root = %+v, want label/description from meeting context", root)
 	}
-	for _, id := range []string{"agenda-1", "agenda-2", "agenda-3"} {
-		topic := treeNodeByID(merged.Tree, id)
-		if topic == nil || topic.Kind != "topic" || topic.ParentID != treeRootNodeID {
-			t.Fatalf("agenda topic %s = %+v, want present under root", id, topic)
+	topic := agendaTopicNodeByRef(merged.Tree, "agenda-1")
+	if topic == nil || topic.Kind != "topic" || topic.ParentID != treeRootNodeID || !containsExactString(topic.AgendaRefs, "agenda-1") {
+		t.Fatalf("materialized agenda topic = %+v", topic)
+	}
+	for _, id := range []string{"agenda-2", "agenda-3"} {
+		if topic := agendaTopicNodeByRef(merged.Tree, id); topic != nil {
+			t.Fatalf("undiscussed agenda topic %s must stay planned, got %+v", id, topic)
 		}
 	}
+	if len(merged.AgendaAnchors) != 3 || merged.AgendaAnchors[0].Status != agendaStatusDiscussed || merged.AgendaAnchors[1].Status != agendaStatusPlanned || merged.AgendaAnchors[2].Status != agendaStatusPlanned {
+		t.Fatalf("agenda anchors = %+v", merged.AgendaAnchors)
+	}
 	node := treeNodeByID(merged.Tree, "q-open")
-	if node == nil || node.ParentID != "agenda-1" {
+	if node == nil || node.ParentID != topic.ID {
 		t.Fatalf("node = %+v, want classified into agenda-1", node)
 	}
 	// 未分類topicは子が無い限り生成されない。
@@ -847,9 +853,9 @@ func TestMergeClassifiesFixtureUtterancesAcrossAgendaTopics(t *testing.T) {
 	merged := mergeForTestWithContext(t, diff, nil, mc)
 	assertTreeInvariants(t, merged.Tree)
 	wants := map[string]string{
-		"risk-speaker-id":     "agenda-1",
-		"risk-dup-cards":      "agenda-2",
-		"todo-model-compare":  "agenda-3",
+		"risk-speaker-id":     agendaTopicNodeByRef(merged.Tree, "agenda-1").ID,
+		"risk-dup-cards":      agendaTopicNodeByRef(merged.Tree, "agenda-2").ID,
+		"todo-model-compare":  agendaTopicNodeByRef(merged.Tree, "agenda-3").ID,
 		"issue-report-format": treeUnclassifiedTopicID,
 	}
 	parentCounts := map[string]int{}

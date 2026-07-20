@@ -17,7 +17,7 @@ enabled時は常に次の経路を通ります。分岐はありません。
 
 1. snapshot取得(圧縮済み、`TREE_AUDIT_MAX_*`で上限)
 2. 既存`validateTreeIntegrity`によるduplicate/self-parent/cycle/orphan/
-   empty group/fixed agenda/depth等の構造検証(不正ならAIを呼ばず終了)
+   empty group/agenda reference/depth等の構造検証(不正ならAIを呼ばず終了)
 3. title・description・candidate・evidence・parent metadataを使う
    deterministic semantic precheck
 4. 圧縮snapshotを使うGPT tree audit / final tree review呼び出し
@@ -42,7 +42,7 @@ finding/operationの一部だけが非canonical IDや無効dependencyを含む�
 
 ## Operationの分類
 
-v5 schemaは25種のoperation typeを認識します。サーバーが実際に適用しうる
+v6 schemaは25種のoperation typeとagenda lifecycle findingを認識します。サーバーが実際に適用しうる
 **applicable**は次の17種です。
 
 `move_item`, `restore_previous_parent`, `move_node`, `merge_items`,
@@ -63,16 +63,20 @@ applicableなoperationも、個別の安全条件(confidence、parent一致、ev
 cycle、depth、subject整合等)を満たさなければ`unsafe`カテゴリとして拒否
 されます。拒否理由(`reason`)は具体的な文字列(例:
 `parent_stickiness_margin`, `reference_evidence_only`,
-`fixed_agenda_immutable`, `cycle_target_descendant`,
+`root_immutable`, `cycle_target_descendant`,
 `recap_only_candidate`, `deactivate_grounds_not_verified`,
 `dependency_rejected`, `unresolved_canonical_id`, `ambiguous_alias`)で
 記録され、`unsupported`/`unsafe`という2値だけがカテゴリとして
 `validator_result`に残ります。
 
+監査snapshotの`agendaIds`は論理agenda recordの参照IDです。tree operationの
+対象・移動先には`nodes[].canonicalNodeId`の`topic-*` IDを使い、agenda IDを
+node IDとして指定しません。agendaとの対応はnodeの`agendaRefs`で解決します。
+
 ### move_node
 
 topic/group container nodeを新しい親(root/topic/group)へ移動します。
-fixed agenda・root・action_summaryは対象にも移動先にもできません。
+agenda anchor自体は不変ですが、`agendaRefs`付きmaterialized topicは通常topicと同様に移動できます。root・action_summaryは対象にできません。
 自身の子孫への移動(cycle)は禁止され、移動後の部分木がtreeの最大深さを
 超えないことを検証します。移動元・移動先のsubject整合(部分木テキストと
 移動先系列の類似度が現状以上、または現在の親がgeneric/unclassified)も
@@ -123,7 +127,7 @@ evidenceに実在する必要があります)。降格は次回以降のevidence
 ### create_topic_from_candidate
 
 未昇格・非inactive・非recap-onlyのcandidateを、そのIDのままroot直下の
-dynamic topicへ昇格させます。既存の動的topicや固定agendaと意味的に
+dynamic topicへ昇格させます。既存の動的topicやagenda anchorと意味的に
 重複する場合は拒否され(`duplicate_topic`/`should_fold_into_fixed_agenda`)、
 fold_candidate_into_topicや既存agendaへの割当が推奨されます。
 
@@ -135,11 +139,10 @@ candidateを無条件で、それ以外は他条件を満たした場合のみ�
 rename_groupはlabelの意味的cohesionが悪化しない場合のみ適用されます。
 
 `remove_empty_group`は、子が0件のgroup、子が0件になった昇格済みdynamic
-topic、または空のsystem生成`topic-unclassified`(fixed agenda・root・
-action_summary以外)を削除します。子が1件以上残っている場合は
+topic、または空のsystem生成`topic-unclassified`(root・action_summary以外)を削除します。空のagenda materialized topicはdeterministic lifecycle処理がdematerializeします。子が1件以上残っている場合は
 `group_not_empty`で拒否され、
-削除対象として不適格なnode(未知ID、group/dynamic topic以外、fixed
-agenda・root・action_summary)は`unknown_or_immutable_container`で
+削除対象として不適格なnode(未知ID、group/dynamic topic以外、agenda
+materialized topic・root・action_summary)は`unknown_or_immutable_container`で
 拒否されます。
 
 `validateTreeIntegrity`は「group」kindのnodeが子0件になることを恒久的な
@@ -153,7 +156,7 @@ integrity再検証の直前に、**空になったcontainerのcascade自動整�
 行います。あるoperationの結果、親子関係が変わった(除去または再親化
 された)nodeの旧親について、そのnodeがgroup、子0件になった
 昇格済みdynamic topic、または空のsystem生成`topic-unclassified`
-(fixed agenda・root・action_summary以外、remove_empty_groupと同じ対象定義)であり、
+(agenda materialized topic・root・action_summary以外、remove_empty_groupと同じ対象定義)であり、
 かつ子が0件であれば、そのnodeをtreeから除去します。除去後にその
 node自身の親も同条件を満たせばcascadeでさらに上位へ除去を続けます。
 この自動整理は、その
@@ -219,8 +222,9 @@ bonusは`modelConfidence >= 0.60`の場合のみ付与され、1件あたり+0.0
   `candidate_should_fold_into_existing_topic`のfindingを既に検出、
   または`reference_evidence_reparent`(対象の直近の親変更自体が
   reference/recap証拠のみによるもの)を検出している
-- **fixedAgendaMatchBonus** (+0.05): 移動先の系列に固定agendaの祖先が
-  存在し、item本文と固定agendaのタイトル(および移動先系列のテキスト)に
+- **fixedAgendaMatchBonus** (+0.05、互換名): 移動先の系列に
+  `agendaRefs`付きmaterialized topicの祖先が存在し、item本文とagenda anchorの
+  タイトル(および移動先系列のテキスト)に
   共有主題語があり、移動先とのscoreがcohesion閾値以上
 
 penaltyは無条件に適用されます。
@@ -265,31 +269,29 @@ precheck該当)、または現在の親が`topic-unclassified`の場合は免除
 このほかの検証(fromParent一致・evidence role・cycle・depth・cross-agenda・
 tree integrity等)はすべて維持されます。
 
-**固定アジェンダ復帰の例外**(`move_item`/`restore_previous_parent`):
+**materializedアジェンダ復帰の例外**(`move_item`/`restore_previous_parent`):
 次を**すべて**満たす場合、`parent_stickiness_margin`と
 `recent_parent_change_sticky`の両方を免除します。
 
-- 移動先(`toParentCanonicalNodeId`)に固定agenda祖先が存在する
+- 移動先(`toParentCanonicalNodeId`)にagendaRefs付きtopic祖先が存在する
   (action_summaryを除く)
-- 現在の親(`fromParentCanonicalNodeId`)に固定agenda祖先が**存在しない**
+- 現在の親(`fromParentCanonicalNodeId`)にagendaRefs付きtopic祖先が**存在しない**
   (dynamic topic・topic-unclassified・その配下のgroup)
 - 現在の親がtopic-unclassified、genericなlabel、または現在scoreが
   cohesion閾値未満(stickinessが守るべき「凝集した正しい親」ではない)
 
-「再発防止策」のような短い固定agendaラベルは、item本文とのbigram類似が
-ほぼ0になりやすく、通常のsimilarityベースのmarginでは固定agendaへの
+「再発防止策」のような短いmaterialized topicラベルは、item本文とのbigram類似が
+ほぼ0になりやすく、通常のsimilarityベースのmarginではagenda topicへの
 復帰を構造的に検証できません。effective confidenceの閾値自体は変えず、
-このピンポイントな状況でだけmarginを免除します。fromParentに固定agenda
-祖先が無いことが条件のため、別の固定agenda配下からの移動(agenda間移動)
-はこの例外の対象に自然となりません(`cross_fixed_agenda_boundary`は
-引き続き独立して働きます)。fromParent一致・primary evidence・evidence
+このピンポイントな状況でだけmarginを免除します。agenda topic間の移動も
+一律禁止せず、通常のsubject改善・evidence条件で判定します。fromParent一致・primary evidence・evidence
 binding・depth・per-operation integrity・heuristic非悪化・manual保護等の
 他の検証はすべて維持されます。
 
 **非悪化ゲートの対称除外**: `heuristic_structural_quality_worsened`
 (deterministic precheckによるtree全体の不整合件数の非悪化ゲート)は、
 本来operationがtreeの他の部分へ与える副作用を防ぐためのものです。しかし
-固定agendaへ復帰したitem自身は、移動先の短い固定agendaラベルよりtree内の
+agenda topicへ復帰したitem自身は、移動先の短いtopicラベルよりtree内の
 別のcontainerの方が(たとえ僅差でも)高スコアと判定されることがあり、
 これは`subject_mismatch`/`cross_agenda_contamination`の自己参照的な
 findingとして計上されます(現在の親がagenda originになった場合、この
@@ -298,13 +300,13 @@ findingとして計上されます(現在の親がagenda originになった場�
 が構造的には正しい配置」を、非悪化ゲートが表層類似で二重に拒否評価して
 いるにすぎません。
 
-このため、fixed-agenda-return例外が成立したoperationに限り、非悪化ゲートは
+このため、materialized-agenda-return例外が成立したoperationに限り、非悪化ゲートは
 「移動対象item**のみ**を指す(他のnodeを含まない)`subject_mismatch`・
 `cross_agenda_contamination`finding」を、operation適用前後の両方の件数
 から対称に除外して比較します。対称除外である点が重要です。移動前に
 同itemへ既に発火していたfindingも同様に除外するため、除外は「このitem
 自身の表層類似判定を一時的に無視する」だけであり、他のnode・candidate・
-groupに関するfindingの増減はそのまま検出されます。除外はfixed-agenda-return
+groupに関するfindingの増減はそのまま検出されます。除外はmaterialized-agenda-return
 例外が成立したoperationにのみ適用され、それ以外のoperationの非悪化判定は
 一切変更していません。バッチ内の次operationの判定に使う残存件数(累積値)は
 除外なしの実件数で更新されるため、対称除外は「このoperation単体の合否
@@ -315,11 +317,11 @@ groupに関するfindingの増減はそのまま検出されます。除外はfi
 状況証拠が揃った場合にだけ、その状況に応じた調整を一度だけ適用します。
 
 `fold_candidate_into_topic`にも同じgeneric-parent margin半減補正
-(design D4)が適用されます。固定agendaへの復帰が主な経路です。
+(design D4)が適用されます。materialized agenda topicへの復帰が主な経路です。
 
 ## Live生成前gateとtombstone
 
-live extraction v12は各final発言を`substantive`、`correction`、`recap`、
+live extraction v14は各final発言を`substantive`、`correction`、`recap`、
 `discourse_transition`、`filler`へ分類します。モデル分類に加え、サーバーは
 話題選択語・会議上のメタ対象・遷移述語の組合せ、具体的な対象・期限・担当・
 判断の有無、前後のevidenceを使って決定論的に再分類します。
@@ -390,7 +392,7 @@ context再確認とDB CASより遅延responseは適用されません。
 
 `TREE_AUDIT_MAX_NODES`, `TREE_AUDIT_MAX_RECENT_SEGMENTS`,
 `TREE_AUDIT_MAX_EVIDENCE_SEGMENTS`, `TREE_AUDIT_MAX_INPUT_TOKENS`で入力を
-制限します。上限時はfixed agenda、precheck対象、最近変更されたnodeを優先し、
+制限します。上限時はagendaRefs付きtopic、precheck対象、最近変更されたnodeを優先し、
 evidence発話の前後を含めます。全文transcriptはライブ監査へ無条件送信しません。
 final reviewだけは保存済みtranscriptを広く読み、同じ上限付きsnapshotへ
 圧縮します。
@@ -402,8 +404,16 @@ tree snapshotとsummaryを保存します。reviewのtimeout・schema failure・
 provider failure時も最後の正常live treeで継続し、
 finalization/tree snapshotの`finalTreeReviewFailed`と`degraded`で観測できます。
 
-順序は常に`final flush → final_tree_review → final tree snapshot → final summary`
-です。
+順序は常に`final flush → final_tree_review → deterministic agenda lifecycle
+(空topic整理・not_discussed確定) → final tree snapshot → final summary`です。
+
+agenda lifecycleのintegrityは、tree node数ではなく`agendaRecordCount` /
+`agendaRecordsPreserved`、agenda/node ID名前空間、`agendaRefs`と
+`materializedTopicIds`の双方向参照、unknown/orphan/duplicate、旧agenda ID edge、
+空のmaterialized topic、root到達性を検証します。ライブと最終snapshotのログにはmaterialize /
+merge / rename / reparent / dematerialize、assignment結果、空topicとdynamic overlapの
+before/after、`agendaTopicIdCollisions`、`agendaNodeIdNamespaceValid`、
+`orphanMaterializedTopicIds`、`agendaReferenceIntegrityValid`、`treeIntegrityValid`を記録します。
 
 ## 実GPT-5-mini統合テスト
 

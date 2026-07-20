@@ -107,6 +107,8 @@ func (s *MeetingAnalysisService) considerTreeAudit(ctx context.Context, sessionI
 func treeAuditConditionalTriggerReasons(previousPayload, payload json.RawMessage, mc *meetingContext, cfg TreeAuditConfig) []string {
 	previous := previousLiveAnalysisState(previousPayload)
 	current := previousLiveAnalysisState(payload)
+	normalizeLegacyAgendaTopicIDs(&previous, mc, nil)
+	normalizeLegacyAgendaTopicIDs(&current, mc, nil)
 	var reasons []string
 	if current.TreeChanges != nil {
 		if len(current.TreeChanges.NewNodeIDs) > 0 {
@@ -343,6 +345,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		return execution, fmt.Errorf("load tree audit transcript: %w", err)
 	}
 	mc := s.sessionMeetingContext(ctx, sessionID)
+	normalizeLegacyAgendaTopicIDs(&state, mc, nil)
 	snapshot, err := buildTreeAuditSnapshot(sessionID, payload, segments, mc, s.config.TreeAudit)
 	if err != nil {
 		return execution, err

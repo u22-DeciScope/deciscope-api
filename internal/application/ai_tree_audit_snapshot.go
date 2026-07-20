@@ -18,10 +18,11 @@ type treeAuditSnapshot struct {
 	CoverageThroughSequenceNo int64                        `json:"coverageThroughSequenceNo"`
 	Nodes                     []treeAuditSnapshotNode      `json:"nodes"`
 	Candidates                []treeAuditSnapshotCandidate `json:"candidates"`
-	// AgendaIDs lists the stable canonical node IDs of the fixed pre-meeting
-	// agenda topics (root excluded). Operations may use them anywhere a
-	// canonical node ID is expected.
-	AgendaIDs []string `json:"agendaIds"`
+	// AgendaIDs lists logical pre-meeting agenda-record IDs. They are reference
+	// values only and must never be used where an operation expects a canonical
+	// tree-node ID; concrete topic IDs are in AgendaAnchors.MaterializedTopicIDs.
+	AgendaIDs     []string                        `json:"agendaIds"`
+	AgendaAnchors []treeAuditSnapshotAgendaAnchor `json:"agendaAnchors"`
 	// ValidParentCanonicalNodeIDs lists the existing topic/group container
 	// node IDs an operation may use as a toParent (action_summary agenda
 	// excluded).
@@ -51,6 +52,16 @@ type treeAuditSnapshotNode struct {
 	CandidateTopicID         string                 `json:"candidateTopicId,omitempty"`
 	EvidenceSequenceNos      []int64                `json:"evidenceSequenceNos,omitempty"`
 	EvidenceRoles            []treeAuditEvidenceRef `json:"evidenceRoles,omitempty"`
+	AgendaRefs               []string               `json:"agendaRefs,omitempty"`
+	MergedFromNodeIDs        []string               `json:"mergedFromNodeIds,omitempty"`
+	AgendaSplitGroupID       string                 `json:"agendaSplitGroupId,omitempty"`
+}
+
+type treeAuditSnapshotAgendaAnchor struct {
+	AgendaID             string   `json:"agendaId"`
+	OriginalTitle        string   `json:"originalTitle"`
+	Status               string   `json:"status"`
+	MaterializedTopicIDs []string `json:"materializedTopicIds"`
 }
 
 type treeAuditEvidenceRef struct {
@@ -85,6 +96,7 @@ type treeAuditSnapshotBuild struct {
 func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments []domain.TranscriptSegment, mc *meetingContext, cfg TreeAuditConfig) (treeAuditSnapshotBuild, error) {
 	cfg = cfg.normalized()
 	state := previousLiveAnalysisState(payload)
+	normalizeLegacyAgendaTopicIDs(&state, mc, nil)
 	if state.Tree == nil || len(state.Tree.Nodes) == 0 || state.TreeVersion <= 0 {
 		return treeAuditSnapshotBuild{}, fmt.Errorf("tree audit snapshot requires a non-empty versioned tree")
 	}
@@ -114,7 +126,7 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 			CanonicalNodeID: node.ID, NodeType: node.Kind, Title: node.Label,
 			Description:              firstNonEmptyTrimmed(node.Description, item.Body),
 			ParentCanonicalNodeID:    node.ParentID,
-			Fixed:                    node.ID == treeRootNodeID || node.Origin == topicOriginAgenda,
+			Fixed:                    node.ID == treeRootNodeID,
 			Dynamic:                  node.Origin == topicOriginDynamic,
 			Tentative:                item.ClassificationStatus == classificationTentative,
 			Status:                   firstNonEmptyTrimmed(node.Status, item.Status),
@@ -126,10 +138,10 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 			CandidateTopicID:         item.CandidateTopicID,
 			EvidenceSequenceNos:      append([]int64(nil), item.EvidenceSequenceNos...),
 			EvidenceRoles:            refs,
+			AgendaRefs:               append([]string(nil), node.AgendaRefs...),
+			MergedFromNodeIDs:        append([]string(nil), node.MergedFromNodeIDs...),
+			AgendaSplitGroupID:       node.AgendaSplitGroupID,
 		})
-		if node.Origin == topicOriginAgenda {
-			agendaIDs = append(agendaIDs, node.ID)
-		}
 		if (node.Kind == "topic" || node.Kind == "group") && node.ID != treeRootNodeID && node.AgendaRole != agendaRoleActionSummary {
 			validParentIDs = append(validParentIDs, node.ID)
 		}
@@ -139,6 +151,11 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 	// so it belongs in the advisory validParentCanonicalNodeIds list even
 	// though the loop above deliberately excludes it from itself.
 	validParentIDs = append(validParentIDs, treeRootNodeID)
+	anchors := make([]treeAuditSnapshotAgendaAnchor, 0, len(state.AgendaAnchors))
+	for _, anchor := range reconcileAgendaAnchors(state.AgendaAnchors, mc, state.Tree, state.Items, state.TreeVersion, false) {
+		agendaIDs = append(agendaIDs, anchor.AgendaID)
+		anchors = append(anchors, treeAuditSnapshotAgendaAnchor{AgendaID: anchor.AgendaID, OriginalTitle: anchor.OriginalTitle, Status: anchor.Status, MaterializedTopicIDs: append([]string(nil), anchor.MaterializedTopicIDs...)})
+	}
 	candidates := make([]treeAuditSnapshotCandidate, 0, len(state.EmergingTopics))
 	for _, candidate := range state.EmergingTopics {
 		snapshotCandidate := treeAuditSnapshotCandidate{
@@ -157,7 +174,7 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 		SessionID: sessionID, TreeVersion: state.TreeVersion,
 		CoverageThroughSequenceNo: state.CoveredThroughSequenceNo,
 		Nodes:                     nodes, Candidates: candidates, RecentTreeChanges: state.TreeChanges,
-		AgendaIDs: agendaIDs, ValidParentCanonicalNodeIDs: validParentIDs,
+		AgendaIDs: agendaIDs, AgendaAnchors: anchors, ValidParentCanonicalNodeIDs: validParentIDs,
 		PrecheckFindings: precheck, EvidenceSegments: evidence,
 		RecentTranscript: recent, Compressed: compressed,
 	}
@@ -241,10 +258,10 @@ func selectTreeAuditNodes(state liveAnalysisPayload, findings []treeAuditPrechec
 	}
 	nodes := append([]liveAnalysisTreeNode(nil), state.Tree.Nodes...)
 	sort.SliceStable(nodes, func(i, j int) bool {
-		fixedI := nodes[i].ID == treeRootNodeID || nodes[i].Origin == topicOriginAgenda
-		fixedJ := nodes[j].ID == treeRootNodeID || nodes[j].Origin == topicOriginAgenda
-		if fixedI != fixedJ {
-			return fixedI
+		anchorLinkedI := nodes[i].ID == treeRootNodeID || len(nodes[i].AgendaRefs) > 0 || nodes[i].Origin == topicOriginAgenda
+		anchorLinkedJ := nodes[j].ID == treeRootNodeID || len(nodes[j].AgendaRefs) > 0 || nodes[j].Origin == topicOriginAgenda
+		if anchorLinkedI != anchorLinkedJ {
+			return anchorLinkedI
 		}
 		if priority[nodes[i].ID] != priority[nodes[j].ID] {
 			return priority[nodes[i].ID] > priority[nodes[j].ID]
@@ -255,6 +272,7 @@ func selectTreeAuditNodes(state liveAnalysisPayload, findings []treeAuditPrechec
 }
 
 func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContext, roles map[int64]treeAuditEvidenceRole, cfg TreeAuditConfig) []treeAuditPrecheckFinding {
+	normalizeLegacyAgendaTopicIDs(&state, mc, nil)
 	cfg = cfg.normalized()
 	if state.Tree == nil {
 		return nil
@@ -326,6 +344,64 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 				findingType = TreeAuditEmptyUnclassifiedContainer
 			}
 			add(treeAuditPrecheckFinding{Type: findingType, NodeIDs: []string{node.ID}, Reason: "container has no active child", Score: 1})
+		}
+	}
+	// Agenda lifecycle findings are computed from canonical records/references,
+	// not from title prefixes. They are included even when the model later
+	// returns no operations, making final-review gaps observable.
+	agendaIntegrity := validateTreeIntegrity(state.Tree, state.Items, mc)
+	for _, topicID := range agendaIntegrity.EmptyAgendaTopicIDs {
+		add(treeAuditPrecheckFinding{Type: TreeAuditPlannedAgendaWithoutEvidence, NodeIDs: []string{topicID}, Reason: "agenda topic exists without grounded child evidence", Score: 1})
+		add(treeAuditPrecheckFinding{Type: TreeAuditEmptyAgendaTopic, NodeIDs: []string{topicID}, Reason: "materialized agenda topic has no active child", Score: 1})
+		add(treeAuditPrecheckFinding{Type: TreeAuditAgendaTopicShouldDematerialize, NodeIDs: []string{topicID}, Reason: "empty agenda topic should return to its logical planned record", Score: 1})
+	}
+	for _, agendaID := range agendaIntegrity.DuplicateAgendaMaterializations {
+		add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateAgendaMaterialization, RelatedNodeIDs: []string{agendaID}, Reason: "one agenda record is materialized by multiple topics", Score: 1})
+	}
+	records := agendaRecordMap(mc)
+	materializedByAgenda := make(map[string]bool, len(records))
+	for _, node := range state.Tree.Nodes {
+		if node.Kind != "topic" {
+			continue
+		}
+		refs := topicAgendaRefs(node, records)
+		for _, agendaID := range refs {
+			materializedByAgenda[agendaID] = true
+		}
+		if node.Origin == topicOriginAgenda && len(refs) == 0 {
+			add(treeAuditPrecheckFinding{Type: TreeAuditTopicWithoutActiveAgendaRef, NodeIDs: []string{node.ID}, Reason: "agenda-origin topic has no active agenda reference", Score: 1})
+		}
+	}
+	// Inspect the persisted lifecycle state before reconciliation. Reconciliation
+	// intentionally derives the current status from the tree and would otherwise
+	// turn a corrupt "discussed but missing topic" record back into planned,
+	// hiding exactly the inconsistency the audit is expected to report.
+	for _, anchor := range state.AgendaAnchors {
+		record, exists := records[anchor.AgendaID]
+		if !exists || effectiveAgendaRole(record.Role, record.Title, "") == agendaRoleActionSummary {
+			continue
+		}
+		if anchor.Status == agendaStatusDiscussed && !materializedByAgenda[anchor.AgendaID] {
+			add(treeAuditPrecheckFinding{Type: TreeAuditDiscussedAgendaMissingTopic, RelatedNodeIDs: []string{anchor.AgendaID}, Reason: "persisted discussed agenda record has no materialized topic", Score: 1})
+		}
+	}
+	anchors := reconcileAgendaAnchors(state.AgendaAnchors, mc, state.Tree, state.Items, state.TreeVersion, false)
+	for _, anchor := range anchors {
+		if anchor.Status == agendaStatusDiscussed && len(anchor.MaterializedTopicIDs) == 0 {
+			add(treeAuditPrecheckFinding{Type: TreeAuditDiscussedAgendaMissingTopic, RelatedNodeIDs: []string{anchor.AgendaID}, Reason: "discussed agenda record has no materialized topic", Score: 1})
+		}
+	}
+	for _, agendaTopic := range containers {
+		if len(topicAgendaRefs(agendaTopic, records)) == 0 {
+			continue
+		}
+		for _, dynamicTopic := range containers {
+			if dynamicTopic.ID == agendaTopic.ID || dynamicTopic.Origin != topicOriginDynamic {
+				continue
+			}
+			if semanticItemSimilarity(agendaTopic.Label+" "+agendaTopic.Description, dynamicTopic.Label+" "+dynamicTopic.Description) >= 0.72 {
+				add(treeAuditPrecheckFinding{Type: TreeAuditAgendaTopicShouldMergeDynamic, NodeIDs: []string{agendaTopic.ID, dynamicTopic.ID}, Reason: "agenda and dynamic topics represent the same concrete discussion", Score: 0.9})
+			}
 		}
 	}
 	for _, node := range state.Tree.Nodes {
@@ -481,6 +557,9 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 func inferredAgendaForTopic(topic liveAnalysisTreeNode, mc *meetingContext) string {
 	if mc == nil || topic.ID == "" {
 		return ""
+	}
+	if refs := topicAgendaRefs(topic, agendaRecordMap(mc)); len(refs) > 0 {
+		return refs[0]
 	}
 	bestID, best := "", 0.0
 	for _, agenda := range mc.Agenda {

@@ -55,7 +55,8 @@ func TestLiveMergeKeepsCanonicalIDAcrossDecisionPromotionAndReferences(t *testin
 	if len(state.Items) != 1 || state.Items[0].ID != canonicalID || state.Items[0].Kind != "decision" || state.Items[0].Status == "resolved" {
 		t.Fatalf("items=%+v", state.Items)
 	}
-	if parentOf(state.Tree, canonicalID) != "agenda-3" {
+	agendaTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	if agendaTopic == nil || parentOf(state.Tree, canonicalID) != agendaTopic.ID {
 		t.Fatalf("parent=%s tree=%+v", parentOf(state.Tree, canonicalID), state.Tree)
 	}
 	if secondStats.UnknownAssignmentIDs != 0 || secondStats.UnknownResolvedIDs != 0 {
@@ -296,7 +297,9 @@ func TestActionSummaryAssignmentSelectsSemanticPrimaryAgenda(t *testing.T) {
 	}
 	state := previousLiveAnalysisState(raw)
 	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
-	if itemTopicID(state.Tree, "todo-meeting-date") != "agenda-3" || itemTopicID(state.Tree, "todo-wind") != "agenda-2" || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
+	meetingTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	windTopic := agendaTopicNodeByRef(state.Tree, "agenda-2")
+	if meetingTopic == nil || windTopic == nil || itemTopicID(state.Tree, "todo-meeting-date") != meetingTopic.ID || itemTopicID(state.Tree, "todo-wind") != windTopic.ID || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
 		t.Fatalf("parents: meeting=%s wind=%s wetland=%s", parentOf(state.Tree, "todo-meeting-date"), parentOf(state.Tree, "todo-wind"), parentOf(state.Tree, "todo-wetland"))
 	}
 	for _, id := range []string{"todo-meeting-date", "todo-wind", "todo-wetland"} {
@@ -310,12 +313,12 @@ func TestActionSummaryAssignmentSelectsSemanticPrimaryAgenda(t *testing.T) {
 func TestTreeOperationResolvesLegacyItemAliases(t *testing.T) {
 	tree := &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
 		{ID: treeRootNodeID, Kind: "topic", Label: "会議"},
-		{ID: "agenda-3", Kind: "topic", ParentID: treeRootNodeID, Label: "資料"},
-		{ID: "todo- Residents-doc-publicity-01", Kind: "todo", ParentID: "agenda-3", Label: "公開"},
-		{ID: "todo-date", Kind: "todo", ParentID: "agenda-3", Label: "日程"},
+		{ID: "topic-materialized-agenda-3", Kind: "topic", ParentID: treeRootNodeID, Label: "資料"},
+		{ID: "todo- Residents-doc-publicity-01", Kind: "todo", ParentID: "topic-materialized-agenda-3", Label: "公開"},
+		{ID: "todo-date", Kind: "todo", ParentID: "topic-materialized-agenda-3", Label: "日程"},
 	}}
 	stats := &liveAnalysisTreeMergeStats{}
-	reorganized, applied := applyTreeOperations(tree, nil, []treeOperation{{Type: "create_group", ParentID: "agenda-3", Label: "住民向け対応", EvidenceItemIDs: []string{"todo-Residents-doc-publicity-01", "todo-date"}}}, TreeClassificationConfig{}, stats, 2)
+	reorganized, applied := applyTreeOperations(tree, nil, []treeOperation{{Type: "create_group", ParentID: "topic-materialized-agenda-3", Label: "住民向け対応", EvidenceItemIDs: []string{"todo-Residents-doc-publicity-01", "todo-date"}}}, TreeClassificationConfig{}, stats, 2)
 	if applied != 1 || stats.AliasResolvedTreeOperationIDs == 0 || stats.UnknownGroupEvidenceIDs != 0 || computeTreeHealth(reorganized).GroupCount != 1 {
 		t.Fatalf("applied=%d stats=%+v tree=%+v", applied, stats, reorganized)
 	}
@@ -407,7 +410,8 @@ func TestCompanionItemsBecomeCanonicalPropositionAndInheritPrimaryTopic(t *testi
 		t.Fatalf("canonical proposition=%+v", state.Items)
 	}
 	for _, id := range []string{"question-date", "open-date", "todo-date"} {
-		if got := itemTopicID(state.Tree, id); got != "agenda-3" {
+		agendaTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+		if got := itemTopicID(state.Tree, id); agendaTopic == nil || got != agendaTopic.ID {
 			t.Fatalf("item %s topic=%q tree=%+v", id, got, state.Tree)
 		}
 	}
@@ -568,7 +572,8 @@ func TestSession04e9dec1aaa164b3ReplayAcceptance(t *testing.T) {
 	residentID := "todo-residents-doc-publicity-01"
 	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
 	meetingDate := findItemByTitlePart(state.Items, "開催日")
-	if itemTopicID(state.Tree, residentID) != "agenda-3" || meetingDate == nil || itemTopicID(state.Tree, meetingDate.ID) != "agenda-3" || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
+	residentTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	if residentTopic == nil || itemTopicID(state.Tree, residentID) != residentTopic.ID || meetingDate == nil || itemTopicID(state.Tree, meetingDate.ID) != residentTopic.ID || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
 		t.Fatalf("parents resident=%s meeting=%+v wetland=%s", parentOf(state.Tree, residentID), meetingDate, parentOf(state.Tree, "todo-wetland"))
 	}
 	health := computeTreeHealth(state.Tree)

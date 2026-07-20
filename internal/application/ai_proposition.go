@@ -3,6 +3,7 @@ package application
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log"
 	"sort"
 	"strings"
 )
@@ -88,10 +89,11 @@ func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discour
 	return remap
 }
 
-// repairMixedEmergingCandidates folds evidence that clearly belongs to a
-// fixed agenda and splits the remaining unrelated subject clusters. It runs
-// before normal candidate promotion, so a coherent multi-round cluster can be
-// promoted without weakening the configured promotion thresholds.
+// repairMixedEmergingCandidates folds evidence that clearly belongs to an
+// agenda anchor and splits the remaining unrelated subject clusters. An
+// anchor topic is materialized here only for grounded, non-no-agenda evidence.
+// It runs before normal candidate promotion, so a coherent multi-round cluster
+// can be promoted without weakening the configured promotion thresholds.
 func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContext, round int64, stats *liveAnalysisTreeMergeStats) {
 	if state == nil || len(state.EmergingTopics) == 0 {
 		return
@@ -100,6 +102,7 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 	for i := range state.Items {
 		itemByID[state.Items[i].ID] = &state.Items[i]
 	}
+	records := agendaRecordMap(mc)
 	setParent := func(itemID, parentID string) {
 		if state.Tree == nil {
 			return
@@ -113,7 +116,7 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 		}
 	}
 	bestAgenda := func(item liveAnalysisItem) string {
-		if mc == nil {
+		if mc == nil || item.AssignmentSource == assignmentSourceNoAgendaSpan {
 			return ""
 		}
 		itemText := item.Title + " " + item.Body
@@ -147,8 +150,16 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 				if companionNode == nil {
 					continue
 				}
-				agendaID := treeAuditFixedAgendaAncestor(companionNode.ParentID, state.Tree)
-				if agendaID == "" {
+				agendaTopicID := treeAuditFixedAgendaAncestor(companionNode.ParentID, state.Tree)
+				if agendaTopicID == "" {
+					continue
+				}
+				agendaTopic := liveTreeNodeByID(state.Tree, agendaTopicID)
+				if agendaTopic == nil {
+					continue
+				}
+				refs := topicAgendaRefs(*agendaTopic, records)
+				if len(refs) == 0 {
 					continue
 				}
 				companionText := companion.Title + " " + companion.Body
@@ -158,7 +169,7 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 					continue
 				}
 				if score > bestScore {
-					bestID, bestScore = agendaID, score
+					bestID, bestScore = refs[0], score
 				}
 			}
 			if bestScore < 0.12 {
@@ -166,6 +177,55 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 			}
 		}
 		return bestID
+	}
+	materializedTopicForAgenda := func(agendaID string) string {
+		if state.Tree == nil {
+			return ""
+		}
+		for _, node := range state.Tree.Nodes {
+			if node.Kind == "topic" && containsExactString(topicAgendaRefs(node, records), agendaID) {
+				return node.ID
+			}
+		}
+		return ""
+	}
+	ensureAgendaTopic := func(agendaID string, item *liveAnalysisItem) string {
+		if topicID := materializedTopicForAgenda(agendaID); topicID != "" {
+			return topicID
+		}
+		agenda, exists := records[agendaID]
+		if !exists || item == nil || state.Tree == nil || liveTreeNodeByID(state.Tree, treeRootNodeID) == nil {
+			return ""
+		}
+		topics := make(map[string]liveAnalysisTreeNode)
+		for _, node := range state.Tree.Nodes {
+			if node.Kind == "topic" {
+				topics[node.ID] = node
+			}
+		}
+		topicID, reused := availableAgendaTopicID(agendaID, topics, records)
+		label := truncateRunes(strings.TrimSpace(item.Title), liveAnalysisTopicLabelMaxRunes)
+		if label == "" {
+			label = agenda.Title
+		}
+		state.Tree.Nodes = append(state.Tree.Nodes, liveAnalysisTreeNode{
+			ID: topicID, Kind: "topic", ParentID: treeRootNodeID,
+			Label: label, Description: truncateRunes(strings.TrimSpace(item.Body), liveAnalysisTreeDescriptionMaxRunes),
+			Origin: topicOriginAgenda, AgendaRole: agendaRolePrimary,
+			AgendaRefs: []string{agendaID}, Materialized: true,
+			CreatedAtVersion: round, UpdatedAtVersion: round,
+		})
+		log.Printf("Agenda topic materialized by candidate repair. agendaId=%s materializedTopicId=%s agendaTopicIdReused=%t agendaTopicIdCollision=%t", agendaID, topicID, reused, agendaID == topicID)
+		if stats != nil {
+			stats.AgendaTopicsMaterialized++
+			if reused {
+				stats.AgendaTopicIDsReused++
+			}
+			if agendaID == topicID {
+				stats.AgendaTopicIDCollisions++
+			}
+		}
+		return topicID
 	}
 	var repaired []emergingTopicCandidate
 	for _, candidate := range state.EmergingTopics {
@@ -181,11 +241,16 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 				continue
 			}
 			if agendaID := bestAgenda(*item); agendaID != "" {
+				topicID := ensureAgendaTopic(agendaID, item)
+				if topicID == "" {
+					remaining = append(remaining, itemID)
+					continue
+				}
 				item.ClassificationStatus = classificationAssigned
 				item.CandidateTopicID = ""
 				item.AssignmentSource = "candidate_subject_repair"
-				item.AssignmentReason = "candidate evidence matches fixed agenda subject"
-				setParent(item.ID, agendaID)
+				item.AssignmentReason = "candidate evidence matches agenda anchor subject"
+				setParent(item.ID, topicID)
 				if stats != nil {
 					stats.CandidateFoldedIntoAgenda++
 				}

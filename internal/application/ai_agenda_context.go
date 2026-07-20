@@ -196,13 +196,38 @@ func treeItemTopic(tree *liveAnalysisTree, itemID string) string {
 // Active spans outrank model/semantic fallback for new or server-corrected
 // items. A stable model-assigned canonical parent is retained; this preserves
 // hysteresis while still repairing the observed semantic miscorrection.
-func applyAgendaContextAssignments(assignments []treeAssignment, newTopics []liveAnalysisTreeNode, previousTree *liveAnalysisTree, items, changed []liveAnalysisItem, priorCandidates []emergingTopicCandidate, spans []agendaContextSpan, stats *liveAnalysisTreeMergeStats) ([]treeAssignment, []liveAnalysisTreeNode) {
+func applyAgendaContextAssignments(assignments []treeAssignment, newTopics []liveAnalysisTreeNode, previousTree *liveAnalysisTree, items, changed []liveAnalysisItem, priorCandidates []emergingTopicCandidate, spans []agendaContextSpan, mc *meetingContext, stats *liveAnalysisTreeMergeStats) ([]treeAssignment, []liveAnalysisTreeNode) {
 	if len(spans) == 0 || len(changed) == 0 {
 		return assignments, newTopics
 	}
 	itemByID := make(map[string]liveAnalysisItem, len(items))
 	for _, item := range items {
 		itemByID[item.ID] = item
+	}
+	agendaIDs := make(map[string]struct{})
+	for agendaID := range agendaRecordMap(mc) {
+		agendaIDs[agendaID] = struct{}{}
+	}
+	for _, span := range spans {
+		if span.AgendaID != "" {
+			agendaIDs[span.AgendaID] = struct{}{}
+		}
+	}
+	isAgendaID := func(id string) bool {
+		id = strings.TrimSpace(id)
+		_, exists := agendaIDs[id]
+		return exists
+	}
+	isMaterializedAgendaTopic := func(id string) bool {
+		if previousTree == nil {
+			return false
+		}
+		for _, node := range previousTree.Nodes {
+			if node.ID == id && node.Kind == "topic" {
+				return node.Origin == topicOriginAgenda || node.Origin == topicOriginMixed || len(node.AgendaRefs) > 0
+			}
+		}
+		return false
 	}
 	// One explicit no-agenda transition represents a subject context until the
 	// next explicit transition. Pick one durable candidate anchor per span and
@@ -310,13 +335,14 @@ func applyAgendaContextAssignments(assignments []treeAssignment, newTopics []liv
 				}
 			}
 			current := treeItemTopic(previousTree, item.ID)
-			if current != "" && current != treeUnclassifiedTopicID && !strings.HasPrefix(current, agendaTopicIDPrefix) {
+			currentIsAgenda := isMaterializedAgendaTopic(current)
+			if current != "" && current != treeUnclassifiedTopicID && !currentIsAgenda {
 				// A promoted dynamic topic is durable. A later recap inside the
 				// no-agenda context may update evidence, but must not stage it again.
 				continue
 			}
-			if strings.HasPrefix(current, agendaTopicIDPrefix) && merged.AssignmentSource != assignmentSourceActiveSpan && merged.AssignmentSource != assignmentSourceRule && merged.AssignmentSource != assignmentSourceFallback {
-				// Existing fixed-agenda items mentioned in a cross-topic recap retain
+			if currentIsAgenda && merged.AssignmentSource != assignmentSourceActiveSpan && merged.AssignmentSource != assignmentSourceRule && merged.AssignmentSource != assignmentSourceFallback {
+				// Existing agenda-linked items mentioned in a cross-topic recap retain
 				// their stable parent. The no-agenda override repairs only stale
 				// active-span/fallback placement.
 				continue
@@ -328,7 +354,7 @@ func applyAgendaContextAssignments(assignments []treeAssignment, newTopics []liv
 				}
 			}
 			for _, proposed := range assignments {
-				if proposed.nodeID() == item.ID && strings.HasPrefix(strings.TrimSpace(proposed.ParentTopicID), agendaTopicIDPrefix) && stats != nil {
+				if proposed.nodeID() == item.ID && isAgendaID(proposed.ParentTopicID) && stats != nil {
 					stats.StaleAgendaFallbackRejected++
 					stats.FixedAgendaAssignmentRejectedByNoAgendaSpan++
 				}

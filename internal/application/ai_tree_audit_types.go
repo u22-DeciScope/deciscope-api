@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const treeAuditPromptVersion = "v5"
+const treeAuditPromptVersion = "v6"
 
 type TreeAuditFindingType string
 
@@ -60,6 +60,13 @@ const (
 	TreeAuditDuplicateOrParaphrase            TreeAuditFindingType = "duplicate_or_paraphrase"
 	TreeAuditSubtypeMismatch                  TreeAuditFindingType = "subtype_mismatch"
 	TreeAuditSemanticKindMismatch             TreeAuditFindingType = "semantic_kind_mismatch"
+	TreeAuditPlannedAgendaWithoutEvidence     TreeAuditFindingType = "planned_agenda_materialized_without_evidence"
+	TreeAuditDiscussedAgendaMissingTopic      TreeAuditFindingType = "discussed_agenda_missing_topic"
+	TreeAuditTopicWithoutActiveAgendaRef      TreeAuditFindingType = "materialized_topic_without_active_agenda_ref"
+	TreeAuditDuplicateAgendaMaterialization   TreeAuditFindingType = "duplicate_agenda_materialization"
+	TreeAuditEmptyAgendaTopic                 TreeAuditFindingType = "empty_agenda_topic"
+	TreeAuditAgendaTopicShouldMergeDynamic    TreeAuditFindingType = "agenda_topic_should_merge_with_dynamic_topic"
+	TreeAuditAgendaTopicShouldDematerialize   TreeAuditFindingType = "agenda_topic_should_dematerialize"
 )
 
 type TreeAuditOperationType string
@@ -343,6 +350,11 @@ func validTreeAuditFindingType(value TreeAuditFindingType) bool {
 		TreeAuditAnaphoraWithoutReferent, TreeAuditMetaUtteranceNode,
 		TreeAuditMultiplePropositionsCollapsed, TreeAuditDuplicateOrParaphrase,
 		TreeAuditSubtypeMismatch, TreeAuditSemanticKindMismatch:
+		fallthrough
+	case TreeAuditPlannedAgendaWithoutEvidence, TreeAuditDiscussedAgendaMissingTopic,
+		TreeAuditTopicWithoutActiveAgendaRef, TreeAuditDuplicateAgendaMaterialization,
+		TreeAuditEmptyAgendaTopic, TreeAuditAgendaTopicShouldMergeDynamic,
+		TreeAuditAgendaTopicShouldDematerialize:
 		return true
 	default:
 		return false

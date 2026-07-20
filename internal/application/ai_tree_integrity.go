@@ -8,33 +8,54 @@ import (
 // treeIntegrityDiagnostics is safe to persist and expose. It contains only
 // machine IDs and counters, never transcript or item text.
 type treeIntegrityDiagnostics struct {
-	Valid                      bool     `json:"valid"`
-	DuplicateNodeIDs           []string `json:"duplicateNodeIds,omitempty"`
-	CrossKindIDCollisions      []string `json:"crossKindIdCollisions,omitempty"`
-	ReservedItemIDs            []string `json:"reservedItemIds,omitempty"`
-	DuplicateItemIDs           []string `json:"duplicateItemIds,omitempty"`
-	SelfParentNodeIDs          []string `json:"selfParentNodeIds,omitempty"`
-	OrphanNodeIDs              []string `json:"orphanNodeIds,omitempty"`
-	CycleNodeIDs               []string `json:"cycleNodeIds,omitempty"`
-	InvalidParentKindNodeIDs   []string `json:"invalidParentKindNodeIds,omitempty"`
-	RootDirectDetailNodeIDs    []string `json:"rootDirectDetailNodeIds,omitempty"`
-	MissingFixedAgendaIDs      []string `json:"missingFixedAgendaIds,omitempty"`
-	MovedFixedAgendaIDs        []string `json:"movedFixedAgendaIds,omitempty"`
-	FixedAgendaKindMismatchIDs []string `json:"fixedAgendaKindMismatchIds,omitempty"`
-	RenamedFixedAgendaIDs      []string `json:"renamedFixedAgendaIds,omitempty"`
-	ActionSummaryTreeNodeIDs   []string `json:"actionSummaryTreeNodeIds,omitempty"`
-	InvalidKindNodeIDs         []string `json:"invalidKindNodeIds,omitempty"`
-	EmptyGroupNodeIDs          []string `json:"emptyGroupNodeIds,omitempty"`
-	SingleChildGroupNodeIDs    []string `json:"singleChildGroupNodeIds,omitempty"`
-	HardDepthNodeIDs           []string `json:"hardDepthNodeIds,omitempty"`
-	ExpectedFixedAgendaCount   int      `json:"expectedFixedAgendaCount"`
-	ActualFixedAgendaCount     int      `json:"actualFixedAgendaCount"`
-	RootCount                  int      `json:"rootCount"`
-	EdgeCountMismatch          bool     `json:"edgeCountMismatch,omitempty"`
-	EdgeParentMismatch         bool     `json:"edgeParentMismatch,omitempty"`
+	Valid                           bool     `json:"valid"`
+	DuplicateNodeIDs                []string `json:"duplicateNodeIds,omitempty"`
+	CrossKindIDCollisions           []string `json:"crossKindIdCollisions,omitempty"`
+	ReservedItemIDs                 []string `json:"reservedItemIds,omitempty"`
+	DuplicateItemIDs                []string `json:"duplicateItemIds,omitempty"`
+	SelfParentNodeIDs               []string `json:"selfParentNodeIds,omitempty"`
+	OrphanNodeIDs                   []string `json:"orphanNodeIds,omitempty"`
+	CycleNodeIDs                    []string `json:"cycleNodeIds,omitempty"`
+	InvalidParentKindNodeIDs        []string `json:"invalidParentKindNodeIds,omitempty"`
+	RootDirectDetailNodeIDs         []string `json:"rootDirectDetailNodeIds,omitempty"`
+	MissingFixedAgendaIDs           []string `json:"missingFixedAgendaIds,omitempty"`
+	MovedFixedAgendaIDs             []string `json:"movedFixedAgendaIds,omitempty"`
+	FixedAgendaKindMismatchIDs      []string `json:"fixedAgendaKindMismatchIds,omitempty"`
+	RenamedFixedAgendaIDs           []string `json:"renamedFixedAgendaIds,omitempty"`
+	ActionSummaryTreeNodeIDs        []string `json:"actionSummaryTreeNodeIds,omitempty"`
+	InvalidKindNodeIDs              []string `json:"invalidKindNodeIds,omitempty"`
+	EmptyGroupNodeIDs               []string `json:"emptyGroupNodeIds,omitempty"`
+	SingleChildGroupNodeIDs         []string `json:"singleChildGroupNodeIds,omitempty"`
+	HardDepthNodeIDs                []string `json:"hardDepthNodeIds,omitempty"`
+	ExpectedFixedAgendaCount        int      `json:"expectedFixedAgendaCount"`
+	ActualFixedAgendaCount          int      `json:"actualFixedAgendaCount"`
+	RootCount                       int      `json:"rootCount"`
+	EdgeCountMismatch               bool     `json:"edgeCountMismatch,omitempty"`
+	EdgeParentMismatch              bool     `json:"edgeParentMismatch,omitempty"`
+	AgendaRecordCount               int      `json:"agendaRecordCount"`
+	AgendaRecordsPreserved          int      `json:"agendaRecordsPreserved"`
+	AgendaRecordIntegrityValid      bool     `json:"agendaRecordIntegrityValid"`
+	MissingAgendaRecordIDs          []string `json:"missingAgendaRecordIds,omitempty"`
+	DuplicateAgendaRecordIDs        []string `json:"duplicateAgendaRecordIds,omitempty"`
+	MutatedAgendaRecordIDs          []string `json:"mutatedAgendaRecordIds,omitempty"`
+	PlannedAgendaCount              int      `json:"plannedAgendaCount"`
+	MaterializedAgendaCount         int      `json:"materializedAgendaCount"`
+	DiscussedAgendaCount            int      `json:"discussedAgendaCount"`
+	MergedAgendaCount               int      `json:"mergedAgendaCount"`
+	NotDiscussedAgendaCount         int      `json:"notDiscussedAgendaCount"`
+	AgendaReferenceIntegrityValid   bool     `json:"agendaReferenceIntegrityValid"`
+	AgendaNodeIDNamespaceValid      bool     `json:"agendaNodeIdNamespaceValid"`
+	AgendaTopicIDCollisions         []string `json:"agendaTopicIdCollisions,omitempty"`
+	UnknownAgendaRefs               []string `json:"unknownAgendaRefs,omitempty"`
+	OrphanAgendaRefs                []string `json:"orphanAgendaRefs,omitempty"`
+	OrphanMaterializedTopicIDs      []string `json:"orphanMaterializedTopicIds,omitempty"`
+	AgendaMaterializationMismatches []string `json:"agendaMaterializationMismatches,omitempty"`
+	LegacyAgendaEdgeNodeIDs         []string `json:"legacyAgendaEdgeNodeIds,omitempty"`
+	DuplicateAgendaMaterializations []string `json:"duplicateAgendaMaterializations,omitempty"`
+	EmptyAgendaTopicIDs             []string `json:"emptyAgendaTopicIds,omitempty"`
 }
 
-func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc *meetingContext) treeIntegrityDiagnostics {
+func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc *meetingContext, anchorValues ...[]agendaAnchor) treeIntegrityDiagnostics {
 	d := treeIntegrityDiagnostics{}
 	primaryAgenda := make(map[string]agendaItem)
 	actionAgenda := make(map[string]struct{})
@@ -47,7 +68,48 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 			primaryAgenda[agenda.ID] = agenda
 		}
 	}
-	d.ExpectedFixedAgendaCount = len(primaryAgenda)
+	d.AgendaRecordCount = len(primaryAgenda) + len(actionAgenda)
+	d.AgendaRecordsPreserved = d.AgendaRecordCount
+	d.AgendaRecordIntegrityValid = true
+	d.AgendaReferenceIntegrityValid = true
+	d.AgendaNodeIDNamespaceValid = true
+	anchorTopicIDs := make(map[string]map[string]struct{})
+	anchorsProvided := len(anchorValues) > 0
+	if len(anchorValues) > 0 {
+		d.AgendaRecordsPreserved = 0
+		expected := agendaRecordMap(mc)
+		seen := make(map[string]struct{}, len(anchorValues[0]))
+		for _, anchor := range anchorValues[0] {
+			record, exists := expected[anchor.AgendaID]
+			if !exists {
+				d.MutatedAgendaRecordIDs = append(d.MutatedAgendaRecordIDs, anchor.AgendaID)
+				continue
+			}
+			if _, duplicate := seen[anchor.AgendaID]; duplicate {
+				d.DuplicateAgendaRecordIDs = append(d.DuplicateAgendaRecordIDs, anchor.AgendaID)
+				continue
+			}
+			seen[anchor.AgendaID] = struct{}{}
+			materialized := make(map[string]struct{}, len(anchor.MaterializedTopicIDs))
+			for _, topicID := range anchor.MaterializedTopicIDs {
+				if topicID = strings.TrimSpace(topicID); topicID != "" {
+					materialized[topicID] = struct{}{}
+				}
+			}
+			anchorTopicIDs[anchor.AgendaID] = materialized
+			if anchor.OriginalTitle != record.Title || anchor.Order != record.Order || effectiveAgendaRole(anchor.Role, anchor.OriginalTitle, "") != effectiveAgendaRole(record.Role, record.Title, "") {
+				d.MutatedAgendaRecordIDs = append(d.MutatedAgendaRecordIDs, anchor.AgendaID)
+				continue
+			}
+			d.AgendaRecordsPreserved++
+		}
+		for id := range expected {
+			if _, exists := seen[id]; !exists {
+				d.MissingAgendaRecordIDs = append(d.MissingAgendaRecordIDs, id)
+			}
+		}
+		d.AgendaRecordIntegrityValid = d.AgendaRecordsPreserved == d.AgendaRecordCount && len(d.MissingAgendaRecordIDs) == 0 && len(d.DuplicateAgendaRecordIDs) == 0 && len(d.MutatedAgendaRecordIDs) == 0
+	}
 
 	itemIDs := make(map[string]string, len(items))
 	for _, item := range items {
@@ -66,16 +128,15 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 	}
 
 	if tree == nil {
-		for id := range primaryAgenda {
-			d.MissingFixedAgendaIDs = append(d.MissingFixedAgendaIDs, id)
-		}
+		d.PlannedAgendaCount = len(primaryAgenda)
 		sortTreeIntegrityDiagnostics(&d)
-		d.Valid = len(primaryAgenda) == 0 && len(items) == 0
+		d.Valid = len(items) == 0
 		return d
 	}
 
 	nodes := make(map[string]liveAnalysisTreeNode, len(tree.Nodes))
 	firstKinds := make(map[string]string, len(tree.Nodes))
+	agendaTopics := make(map[string][]string)
 	for _, node := range tree.Nodes {
 		id := strings.TrimSpace(node.ID)
 		if id == treeRootNodeID {
@@ -90,11 +151,52 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 		}
 		firstKinds[id] = node.Kind
 		nodes[id] = node
+		if _, collides := agendaRecordMap(mc)[id]; collides || strings.HasPrefix(strings.ToLower(id), agendaIDPrefix) {
+			d.AgendaTopicIDCollisions = append(d.AgendaTopicIDCollisions, id)
+		}
 		if !validLiveAnalysisTreeNodeKind(node.Kind) {
 			d.InvalidKindNodeIDs = append(d.InvalidKindNodeIDs, id)
 		}
 		if _, action := actionAgenda[id]; action {
 			d.ActionSummaryTreeNodeIDs = append(d.ActionSummaryTreeNodeIDs, id)
+		}
+		for _, ref := range node.AgendaRefs {
+			ref = strings.TrimSpace(ref)
+			if _, primary := primaryAgenda[ref]; !primary {
+				if _, action := actionAgenda[ref]; action {
+					d.ActionSummaryTreeNodeIDs = append(d.ActionSummaryTreeNodeIDs, id)
+				} else {
+					d.UnknownAgendaRefs = append(d.UnknownAgendaRefs, ref)
+				}
+				continue
+			}
+			if node.Kind != "topic" {
+				d.OrphanAgendaRefs = append(d.OrphanAgendaRefs, id+":"+ref)
+				continue
+			}
+			agendaTopics[ref] = append(agendaTopics[ref], id)
+		}
+	}
+	d.AgendaNodeIDNamespaceValid = len(d.AgendaTopicIDCollisions) == 0
+	if anchorsProvided {
+		for agendaID, topicIDs := range anchorTopicIDs {
+			for topicID := range topicIDs {
+				node, exists := nodes[topicID]
+				if !exists || node.Kind != "topic" {
+					d.OrphanMaterializedTopicIDs = append(d.OrphanMaterializedTopicIDs, topicID)
+					continue
+				}
+				if !containsExactString(topicAgendaRefs(node, agendaRecordMap(mc)), agendaID) {
+					d.AgendaMaterializationMismatches = append(d.AgendaMaterializationMismatches, agendaID+":"+topicID)
+				}
+			}
+		}
+		for agendaID, topicIDs := range agendaTopics {
+			for _, topicID := range uniqueNonEmptyIDs(topicIDs) {
+				if _, linked := anchorTopicIDs[agendaID][topicID]; !linked {
+					d.AgendaMaterializationMismatches = append(d.AgendaMaterializationMismatches, agendaID+":"+topicID)
+				}
+			}
 		}
 	}
 	for id, itemKind := range itemIDs {
@@ -103,21 +205,39 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 		}
 	}
 
-	for id, agenda := range primaryAgenda {
-		node, exists := nodes[id]
-		if !exists {
-			d.MissingFixedAgendaIDs = append(d.MissingFixedAgendaIDs, id)
+	for id := range primaryAgenda {
+		topicIDs := uniqueNonEmptyIDs(agendaTopics[id])
+		if len(topicIDs) == 0 {
+			d.PlannedAgendaCount++
 			continue
 		}
-		d.ActualFixedAgendaCount++
-		if node.Kind != "topic" || node.Origin != topicOriginAgenda {
-			d.FixedAgendaKindMismatchIDs = append(d.FixedAgendaKindMismatchIDs, id)
+		d.MaterializedAgendaCount++
+		if len(topicIDs) > 1 {
+			splitGroupID := ""
+			intentionalSplit := true
+			for _, topicID := range topicIDs {
+				groupID := strings.TrimSpace(nodes[topicID].AgendaSplitGroupID)
+				if groupID == "" {
+					intentionalSplit = false
+					break
+				}
+				if splitGroupID == "" {
+					splitGroupID = groupID
+				} else if splitGroupID != groupID {
+					intentionalSplit = false
+					break
+				}
+			}
+			if !intentionalSplit {
+				d.DuplicateAgendaMaterializations = append(d.DuplicateAgendaMaterializations, id)
+			}
 		}
-		if node.ParentID != treeRootNodeID {
-			d.MovedFixedAgendaIDs = append(d.MovedFixedAgendaIDs, id)
-		}
-		if node.Label != agenda.Title {
-			d.RenamedFixedAgendaIDs = append(d.RenamedFixedAgendaIDs, id)
+		for _, topicID := range topicIDs {
+			topic := nodes[topicID]
+			if topic.Origin == topicOriginMixed || len(topic.AgendaRefs) > 1 || len(topic.MergedFromNodeIDs) > 0 {
+				d.MergedAgendaCount++
+				break
+			}
 		}
 	}
 
@@ -139,7 +259,7 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 		}
 		switch node.Kind {
 		case "topic":
-			if node.ParentID != treeRootNodeID {
+			if parent.Kind != "topic" {
 				d.InvalidParentKindNodeIDs = append(d.InvalidParentKindNodeIDs, id)
 			}
 		case "group":
@@ -162,7 +282,17 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 			childCounts[node.ParentID]++
 		}
 	}
+	discussedAgendaIDs := make(map[string]struct{})
 	for id, node := range nodes {
+		if node.Kind == "topic" && len(topicAgendaRefs(node, agendaRecordMap(mc))) > 0 {
+			if childCounts[id] == 0 {
+				d.EmptyAgendaTopicIDs = append(d.EmptyAgendaTopicIDs, id)
+			} else {
+				for _, agendaID := range topicAgendaRefs(node, agendaRecordMap(mc)) {
+					discussedAgendaIDs[agendaID] = struct{}{}
+				}
+			}
+		}
 		if node.Kind != "group" {
 			continue
 		}
@@ -175,6 +305,7 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 			d.SingleChildGroupNodeIDs = append(d.SingleChildGroupNodeIDs, id)
 		}
 	}
+	d.DiscussedAgendaCount = len(discussedAgendaIDs)
 
 	// Parent chains are authoritative; detect cycles independently of edges.
 	for start := range nodes {
@@ -208,6 +339,11 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 	}
 	seenTargets := make(map[string]struct{}, len(tree.Edges))
 	for _, edge := range tree.Edges {
+		for _, endpoint := range []string{strings.TrimSpace(edge.Source), strings.TrimSpace(edge.Target)} {
+			if strings.HasPrefix(strings.ToLower(endpoint), agendaIDPrefix) {
+				d.LegacyAgendaEdgeNodeIDs = append(d.LegacyAgendaEdgeNodeIDs, endpoint)
+			}
+		}
 		key := strings.TrimSpace(edge.Source) + "\x00" + strings.TrimSpace(edge.Target)
 		if _, ok := expectedEdges[key]; !ok {
 			d.EdgeParentMismatch = true
@@ -222,14 +358,16 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 	}
 
 	sortTreeIntegrityDiagnostics(&d)
+	d.AgendaNodeIDNamespaceValid = len(d.AgendaTopicIDCollisions) == 0 && len(d.LegacyAgendaEdgeNodeIDs) == 0
+	d.AgendaReferenceIntegrityValid = len(d.UnknownAgendaRefs) == 0 && len(d.OrphanAgendaRefs) == 0 &&
+		len(d.OrphanMaterializedTopicIDs) == 0 && len(d.AgendaMaterializationMismatches) == 0 &&
+		len(d.DuplicateAgendaMaterializations) == 0 && len(d.ActionSummaryTreeNodeIDs) == 0 && d.AgendaNodeIDNamespaceValid
 	d.Valid = d.RootCount == 1 && !d.EdgeCountMismatch && !d.EdgeParentMismatch &&
 		len(d.DuplicateNodeIDs) == 0 && len(d.CrossKindIDCollisions) == 0 &&
 		len(d.ReservedItemIDs) == 0 && len(d.DuplicateItemIDs) == 0 &&
 		len(d.SelfParentNodeIDs) == 0 && len(d.OrphanNodeIDs) == 0 && len(d.CycleNodeIDs) == 0 &&
 		len(d.InvalidParentKindNodeIDs) == 0 && len(d.RootDirectDetailNodeIDs) == 0 &&
-		len(d.MissingFixedAgendaIDs) == 0 && len(d.MovedFixedAgendaIDs) == 0 &&
-		len(d.FixedAgendaKindMismatchIDs) == 0 && len(d.RenamedFixedAgendaIDs) == 0 &&
-		len(d.ActionSummaryTreeNodeIDs) == 0 && len(d.InvalidKindNodeIDs) == 0 &&
+		d.AgendaRecordIntegrityValid && d.AgendaReferenceIntegrityValid && d.AgendaNodeIDNamespaceValid && len(d.InvalidKindNodeIDs) == 0 &&
 		len(d.EmptyGroupNodeIDs) == 0 && len(d.HardDepthNodeIDs) == 0
 	return d
 }
@@ -244,6 +382,9 @@ func sortTreeIntegrityDiagnostics(d *treeIntegrityDiagnostics) {
 		&d.RootDirectDetailNodeIDs, &d.MissingFixedAgendaIDs, &d.MovedFixedAgendaIDs,
 		&d.FixedAgendaKindMismatchIDs, &d.RenamedFixedAgendaIDs, &d.ActionSummaryTreeNodeIDs,
 		&d.InvalidKindNodeIDs, &d.EmptyGroupNodeIDs, &d.SingleChildGroupNodeIDs, &d.HardDepthNodeIDs,
+		&d.AgendaTopicIDCollisions, &d.UnknownAgendaRefs, &d.OrphanAgendaRefs, &d.OrphanMaterializedTopicIDs,
+		&d.AgendaMaterializationMismatches, &d.LegacyAgendaEdgeNodeIDs, &d.DuplicateAgendaMaterializations, &d.EmptyAgendaTopicIDs,
+		&d.MissingAgendaRecordIDs, &d.DuplicateAgendaRecordIDs, &d.MutatedAgendaRecordIDs,
 	}
 	for _, value := range values {
 		*value = uniqueNonEmptyIDs(*value)
@@ -251,20 +392,15 @@ func sortTreeIntegrityDiagnostics(d *treeIntegrityDiagnostics) {
 	}
 }
 
-func fixedAgendaSkeleton(mc *meetingContext) *liveAnalysisTree {
+func discussionTreeSkeleton(mc *meetingContext) *liveAnalysisTree {
 	root := liveAnalysisTreeNode{ID: treeRootNodeID, Kind: "topic", Label: mc.rootLabel(), Description: mc.rootDescription(), Origin: topicOriginSystem}
-	nodes := []liveAnalysisTreeNode{root}
-	edges := make([]liveAnalysisTreeEdge, 0)
-	if mc != nil {
-		for _, agenda := range mc.Agenda {
-			if effectiveAgendaRole(agenda.Role, agenda.Title, "") == agendaRoleActionSummary {
-				continue
-			}
-			nodes = append(nodes, liveAnalysisTreeNode{ID: agenda.ID, Kind: "topic", ParentID: treeRootNodeID, Label: agenda.Title, Origin: topicOriginAgenda, AgendaRole: agendaRolePrimary})
-			edges = append(edges, liveAnalysisTreeEdge{Source: treeRootNodeID, Target: agenda.ID})
-		}
-	}
-	return &liveAnalysisTree{Nodes: nodes, Edges: edges}
+	return &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{root}, Edges: []liveAnalysisTreeEdge{}}
+}
+
+// fixedAgendaSkeleton is retained only as a source-compatible test/helper
+// alias for older call sites. It no longer creates agenda topics.
+func fixedAgendaSkeleton(mc *meetingContext) *liveAnalysisTree {
+	return discussionTreeSkeleton(mc)
 }
 
 func applyTreeIntegrityStats(stats *liveAnalysisTreeMergeStats, diagnostics treeIntegrityDiagnostics) {
@@ -281,6 +417,23 @@ func applyTreeIntegrityStats(stats *liveAnalysisTreeMergeStats, diagnostics tree
 	stats.FixedAgendaMoved += len(diagnostics.MovedFixedAgendaIDs)
 	stats.FixedAgendaRemoved += len(diagnostics.MissingFixedAgendaIDs)
 	stats.FixedAgendaKindChanged += len(diagnostics.FixedAgendaKindMismatchIDs)
+	stats.AgendaRecordCount = diagnostics.AgendaRecordCount
+	stats.AgendaRecordsPreserved = diagnostics.AgendaRecordsPreserved
+	stats.AgendaRecordIntegrityValid = diagnostics.AgendaRecordIntegrityValid
+	stats.PlannedAgendaCount = diagnostics.PlannedAgendaCount
+	stats.MaterializedAgendaCount = diagnostics.MaterializedAgendaCount
+	stats.DiscussedAgendaCount = diagnostics.DiscussedAgendaCount
+	stats.MergedAgendaCount = diagnostics.MergedAgendaCount
+	stats.NotDiscussedAgendaCount = diagnostics.NotDiscussedAgendaCount
+	stats.UnknownAgendaReferences = len(diagnostics.UnknownAgendaRefs)
+	stats.OrphanAgendaReferences = len(diagnostics.OrphanAgendaRefs)
+	stats.OrphanMaterializedTopicIDs = len(diagnostics.OrphanMaterializedTopicIDs)
+	stats.AgendaTopicIDCollisions += len(diagnostics.AgendaTopicIDCollisions)
+	stats.AgendaNodeIDNamespaceValid = diagnostics.AgendaNodeIDNamespaceValid
+	stats.AgendaReferenceIntegrityValid = diagnostics.AgendaReferenceIntegrityValid
+	stats.TreeIntegrityValid = diagnostics.Valid
+	stats.DuplicateAgendaMaterializations = len(diagnostics.DuplicateAgendaMaterializations)
+	stats.EmptyAgendaTopicsRejected = len(diagnostics.EmptyAgendaTopicIDs)
 }
 
 func preserveTreeOnIntegrityFailure(candidate, previous *liveAnalysisTree, currentItems, previousItems []liveAnalysisItem, mc *meetingContext, stats *liveAnalysisTreeMergeStats) (*liveAnalysisTree, treeIntegrityDiagnostics, bool) {
@@ -299,5 +452,5 @@ func preserveTreeOnIntegrityFailure(candidate, previous *liveAnalysisTree, curre
 		}
 		return previous, diagnostics, true
 	}
-	return fixedAgendaSkeleton(mc), diagnostics, true
+	return discussionTreeSkeleton(mc), diagnostics, true
 }

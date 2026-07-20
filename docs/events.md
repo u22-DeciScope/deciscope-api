@@ -146,12 +146,14 @@ transcript.partial
   "mode": "snapshot",
   "nodes": [
     {
-      "id": "n_topic_price",
+      "id": "topic-price-stable",
       "kind": "topic",
       "label": "価格改定",
       "status": "open",
       "description": "価格改定の対象と時期について整理している。",
-      "relatedItemIds": ["an_001"]
+      "relatedItemIds": ["an_001"],
+      "agendaRefs": ["agenda-1"],
+      "materialized": true
     }
   ],
   "edges": []
@@ -167,7 +169,9 @@ transcript.partial
 まとめる表示専用の中間ノードです。フロントエンドの議論ツリー（`DiscussionTree`）は
 この語彙で色分けします。
 
-live analysisのcanonical構造は通常 `root → topic → group → subgroup → detail`（soft limit 4）です。十分な直接detailがある場合だけgroupをもう1段追加でき、hard limit 5を超えません。detailはtopic/group直下に置けますが、別detailの親にはできません。各nodeの表示親は`parentId`で一意に決まり、`edges`は`parentId`から導出されます。一子groupは2 version連続で不足した場合に平坦化し、ライブ更新の作成・削除振動を抑えます。
+live analysisのcanonical構造は通常 `root → topic → group → subgroup → detail`（soft limit 4）です。materialized/dynamic topicは必要に応じて別topic配下へreparentできます。十分な直接detailがある場合だけgroupをもう1段追加でき、hard limit 5を超えません。detailはtopic/group直下に置けますが、別detailの親にはできません。各nodeの表示親は`parentId`で一意に決まり、`edges`は`parentId`から導出されます。一子groupは2 version連続で不足した場合に平坦化し、ライブ更新の作成・削除振動を抑えます。
+
+会議前アジェンダは`agendaAnchors`に独立した論理記録として保持され、`planned` / `materialized` / `discussed` / `merged` / `not_discussed`のstatusを持ちます。アジェンダ入力だけではtopicを作りません。根拠itemがある場合だけ、agenda IDとは異なる安定した`topic-*` node IDでtopicをmaterializeします。topic側の`agendaRefs`とanchor側の`materializedTopicIds`が双方向の関連を表し、ID値の一致や`agenda-` prefixは関連判定に使いません。`mergedFromNodeIds`はtopic統合履歴、`materialized`は明示的な表示状態です。一つのagendaを複数topicへ意図的に分割した場合だけ、各topicは同じ`agendaSplitGroupId`を持ちます。この明示情報がない複数materializeはintegrity違反です。会議終了時に未議論anchorは`not_discussed`となり、空のmaterialized topicは除去されます。
 
 `status` は任意で、live analysis では `open` / `updated` / `resolved` を使います。`description` はノード内容を短く説明する任意フィールド、`relatedItemIds` は関連する `analysis.delta` / live analysis `items` のid配列です。live analysisでは存在しないitem idはサーバー側で除外されますが、解消済みitem idは `resolved` カードへの関連として保持されます。
 

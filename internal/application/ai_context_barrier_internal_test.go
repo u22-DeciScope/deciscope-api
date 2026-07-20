@@ -201,7 +201,8 @@ func TestFallbackContextUpgradeAddsActionSummaryRelationWithoutDuplicatingItem(t
 	if len(state.Items[0].EvidenceSequenceNos) != 2 {
 		t.Fatalf("evidence=%v", state.Items[0].EvidenceSequenceNos)
 	}
-	if node := treeNodeByID(state.Tree, "todo-weather"); node == nil || node.ParentID != "agenda-1" {
+	agendaTopic := agendaTopicNodeByRef(state.Tree, "agenda-1")
+	if node := treeNodeByID(state.Tree, "todo-weather"); node == nil || agendaTopic == nil || node.ParentID != agendaTopic.ID {
 		t.Fatalf("canonical item node=%+v", node)
 	}
 }

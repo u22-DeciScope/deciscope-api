@@ -10,6 +10,20 @@ import (
 
 func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operations []treeAuditOperation, segments []domain.TranscriptSegment, mc *meetingContext, evidenceRoles map[int64]treeAuditEvidenceRole, cfg TreeAuditConfig, runID string, resultingVersion int64, markApplied bool) (liveAnalysisPayload, treeAuditValidatorResult) {
 	cfg = cfg.normalized()
+	legacyAgendaTopicRemap := normalizeLegacyAgendaTopicIDs(&original, mc, nil)
+	if len(legacyAgendaTopicRemap) > 0 {
+		for index := range operations {
+			if canonical := legacyAgendaTopicRemap[strings.TrimSpace(operations[index].TargetCanonicalNodeID)]; canonical != "" {
+				operations[index].TargetCanonicalNodeID = canonical
+			}
+			if canonical := legacyAgendaTopicRemap[strings.TrimSpace(operations[index].FromParentCanonicalNodeID)]; canonical != "" {
+				operations[index].FromParentCanonicalNodeID = canonical
+			}
+			if canonical := legacyAgendaTopicRemap[strings.TrimSpace(operations[index].ToParentCanonicalNodeID)]; canonical != "" {
+				operations[index].ToParentCanonicalNodeID = canonical
+			}
+		}
+	}
 	dry := cloneLiveAnalysisPayload(original)
 	result := treeAuditValidatorResult{OperationsProposed: len(operations)}
 	if original.Tree != nil {
@@ -176,6 +190,7 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 		dry.TreeChanges.Source = "tree_auditor"
 		dry.TreeChanges.AuditRunID = runID
 	}
+	dry.AgendaAnchors = reconcileAgendaAnchors(dry.AgendaAnchors, mc, dry.Tree, dry.Items, dry.TreeVersion, false)
 	return dry, result
 }
 
@@ -264,8 +279,8 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 	case TreeAuditMoveItem, TreeAuditRestorePreviousParent:
 		nodeAt, nodeExists := nodeIndex[operation.TargetCanonicalItemID]
 		itemAt, itemExists := itemIndex[operation.TargetCanonicalItemID]
-		if nodeExists && !itemExists && (state.Tree.Nodes[nodeAt].ID == treeRootNodeID || state.Tree.Nodes[nodeAt].Origin == topicOriginAgenda) {
-			return 0, 0, "fixed_agenda_immutable"
+		if nodeExists && !itemExists && state.Tree.Nodes[nodeAt].ID == treeRootNodeID {
+			return 0, 0, "root_immutable"
 		}
 		if !nodeExists || !itemExists {
 			return 0, 0, "unknown_target_node"
@@ -368,9 +383,6 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		if newScore-currentScore < margin && !redundantGroupFlattenExempt && !fixedAgendaReturnExempt {
 			return currentScore, newScore, "parent_stickiness_margin"
 		}
-		if fromFixedAgenda != "" && toFixedAgenda != "" && fromFixedAgenda != toFixedAgenda {
-			return currentScore, newScore, "cross_fixed_agenda_boundary"
-		}
 		if treeAuditDepthFromParent(operation.ToParentCanonicalNodeID, state.Tree)+1 > treeHardMaxDepth {
 			return currentScore, newScore, "hard_depth_limit"
 		}
@@ -393,8 +405,8 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			return 0, 0, "unknown_target_node"
 		}
 		target := state.Tree.Nodes[targetAt]
-		if target.ID == treeRootNodeID || target.Origin == topicOriginAgenda {
-			return 0, 0, "fixed_agenda_immutable"
+		if target.ID == treeRootNodeID {
+			return 0, 0, "root_immutable"
 		}
 		if target.Kind != "topic" && target.Kind != "group" {
 			return 0, 0, "target_kind_not_movable_container"
@@ -439,11 +451,6 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			if !exempt {
 				return 0, 0, "recent_parent_change_sticky"
 			}
-		}
-		fromAgenda := treeAuditFixedAgendaAncestor(operation.FromParentCanonicalNodeID, state.Tree)
-		toAgenda := treeAuditFixedAgendaAncestor(toID, state.Tree)
-		if fromAgenda != "" && toAgenda != "" && fromAgenda != toAgenda {
-			return 0, 0, "cross_fixed_agenda_boundary"
 		}
 		if treeAuditDepthFromParent(toID, state.Tree)+1+treeAuditSubtreeHeight(operation.TargetCanonicalNodeID, state.Tree) > treeHardMaxDepth {
 			return 0, 0, "hard_depth_limit"
@@ -940,10 +947,10 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		label := strings.TrimSpace(candidate.Label)
 		candidateText := label + " " + candidate.Description
 		for _, node := range state.Tree.Nodes {
-			// Fixed agenda topics are checked separately below against
-			// mc.Agenda (reason "should_fold_into_fixed_agenda"); this loop
+			// Materialized agenda topics are checked separately below against
+			// mc.Agenda (the legacy reason remains "should_fold_into_fixed_agenda"); this loop
 			// only guards against duplicating an existing dynamic topic.
-			if node.Kind != "topic" || node.ID == treeRootNodeID || node.ID == treeUnclassifiedTopicID || node.Origin == topicOriginAgenda {
+			if node.Kind != "topic" || node.ID == treeRootNodeID || node.ID == treeUnclassifiedTopicID || node.Origin == topicOriginAgenda || node.Origin == topicOriginMixed || len(node.AgendaRefs) > 0 {
 				continue
 			}
 			topicText := node.Label + " " + node.Description
@@ -1340,8 +1347,9 @@ func treeAuditPrecheckAgrees(findings []treeAuditPrecheckFinding, targetIDs []st
 	return false
 }
 
-// treeAuditFixedAgendaMatches implements fixedAgendaMatchBonus (design D4):
-// the destination has a fixed-agenda ancestor, the destination's own
+// treeAuditFixedAgendaMatches implements the compatibility-named
+// fixedAgendaMatchBonus (design D4): the destination has an agenda-linked
+// materialized topic ancestor, the destination's own
 // cohesion with subjectText already clears CohesionThreshold, and the
 // destination lineage text (which includes the fixed agenda ancestor's own
 // label, since it is literally an ancestor node) shares a subject term with
@@ -1350,13 +1358,18 @@ func treeAuditFixedAgendaMatches(destinationID, subjectText string, newScore flo
 	if destinationID == "" || mc == nil {
 		return false
 	}
-	agendaID := treeAuditFixedAgendaAncestor(destinationID, tree)
-	if agendaID == "" || newScore < cfg.CohesionThreshold {
+	agendaTopicID := treeAuditFixedAgendaAncestor(destinationID, tree)
+	if agendaTopicID == "" || newScore < cfg.CohesionThreshold {
 		return false
 	}
 	destinationText := treeAuditParentChainText(tree, destinationID)
+	agendaTopic := liveTreeNodeByID(tree, agendaTopicID)
+	if agendaTopic == nil {
+		return false
+	}
+	refs := topicAgendaRefs(*agendaTopic, agendaRecordMap(mc))
 	for _, agenda := range mc.Agenda {
-		if agenda.ID != agendaID {
+		if !containsExactString(refs, agenda.ID) {
 			continue
 		}
 		return sharedTreeAuditSubjectTerm(subjectText, agenda.Title+" "+destinationText)
@@ -1673,7 +1686,7 @@ func treeAuditFixedAgendaAncestor(id string, tree *liveAnalysisTree) string {
 		if !exists {
 			return ""
 		}
-		if node.Origin == topicOriginAgenda && node.AgendaRole != agendaRoleActionSummary {
+		if node.Kind == "topic" && node.AgendaRole != agendaRoleActionSummary && (node.Origin == topicOriginAgenda || node.Origin == topicOriginMixed || len(node.AgendaRefs) > 0) {
 			return node.ID
 		}
 		id = node.ParentID
