@@ -45,12 +45,21 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 	for _, operation := range operations {
 		evaluation := treeAuditValidatorEvaluation{OperationID: operation.OperationID, Type: operation.Type, Result: "rejected", ModelConfidence: operation.Confidence}
 		classification := treeAuditOperationClassification(operation.Type)
+		// riskClass drives both the Category label (populated for every
+		// evaluation, not only on rejection - see
+		// treeAuditValidatorEvaluation's comment) and the confidence gate
+		// below. It is computed once against dry, the state immediately
+		// before this operation, since the destructive-escalation rules
+		// (merge_items touching a decision item, reclassify_kind moving a
+		// decision/todo/risk item) both depend on the target's current
+		// kind.
+		riskClass := treeAuditEffectiveRiskClass(operation, dry)
 		reject := func(reason string) {
 			evaluation.Reason = reason
 			if classification == treeAuditOperationUnsupported {
 				evaluation.Category = "unsupported"
 			} else {
-				evaluation.Category = "unsafe"
+				evaluation.Category = string(riskClass)
 			}
 			result.Evaluations = append(result.Evaluations, evaluation)
 		}
@@ -84,7 +93,7 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 			effectiveConfidence = treeAuditEffectiveConfidence(operation, dry, beforeFindings, evidenceRoles, segmentText, mc, cfg)
 		}
 		evaluation.EffectiveConfidence = effectiveConfidence
-		if effectiveConfidence < cfg.HighConfidenceThreshold {
+		if effectiveConfidence < treeAuditRiskConfidenceThreshold(riskClass, cfg) {
 			reject("below_effective_confidence_threshold")
 			continue
 		}
@@ -149,6 +158,7 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 		beforeQuality = afterQuality
 		accepted[operation.OperationID] = true
 		evaluation.Result = "validated"
+		evaluation.Category = string(riskClass)
 		evaluation.Valid = true
 		evaluation.Applied = markApplied
 		result.OperationsValid++
@@ -232,6 +242,95 @@ func treeAuditOperationClassification(operationType TreeAuditOperationType) tree
 // truth for the applicable/unsupported split.
 func treeAuditOperationSupported(operationType TreeAuditOperationType) bool {
 	return treeAuditOperationClassification(operationType) == treeAuditOperationApplicable
+}
+
+// treeAuditOperationRiskClass returns operationType's baseline risk tier
+// (treeAuditRiskClass): "safe" for operations that only rewrite/reclassify/
+// relabel/assign within their existing structural position, "moderate" for
+// operations that move or fold structure, and "destructive" for the one
+// operation type (deactivate_item) that removes an item from the live tree
+// outright. This is the type-level baseline only -
+// validateAndDryRunTreeAuditOperations further escalates specific
+// operations to destructive via treeAuditEffectiveRiskClass regardless of
+// this baseline. Only classifications reachable via
+// treeAuditOperationClassification's applicable branch are meaningful here;
+// unsupported operation types are always rejected before a risk class is
+// used for gating (Category reports "unsupported" for those instead).
+func treeAuditOperationRiskClass(operationType TreeAuditOperationType) treeAuditRiskClass {
+	switch operationType {
+	case TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
+		TreeAuditReclassifySubtype, TreeAuditChangeEvidenceRole, TreeAuditRenameGroup,
+		TreeAuditRemoveEmptyGroup, TreeAuditAssignItemToCandidate:
+		return treeAuditRiskSafe
+	case TreeAuditMoveItem, TreeAuditRestorePreviousParent, TreeAuditMoveNode,
+		TreeAuditFoldCandidateIntoTopic, TreeAuditCreateTopicFromCandidate,
+		TreeAuditDeactivateCandidate, TreeAuditMergeItems, TreeAuditReclassifyKind:
+		return treeAuditRiskModerate
+	default:
+		// TreeAuditDeactivateItem, and defensively any other/future
+		// applicable type not yet triaged above, defaults to the strictest
+		// tier rather than silently under-gating it.
+		return treeAuditRiskDestructive
+	}
+}
+
+// treeAuditEffectiveRiskClass returns operation's risk class after the two
+// destructive-escalation rules on top of treeAuditOperationRiskClass's
+// baseline, evaluated against state (the tree/items immediately before this
+// operation applies):
+//   - merge_items is escalated to destructive when any of its target items
+//     currently has Kind "decision".
+//   - reclassify_kind is escalated to destructive when the target item's
+//     current Kind is "decision", "todo", or "risk" and the operation
+//     requests a different kind.
+//
+// Both rules tighten the confidence gate to match protections
+// applyOneTreeAuditOperation's own appliers already enforce structurally
+// (reclassify_kind's protected_semantic_kind branch already refuses to
+// move a decision/todo/risk item to a different kind outright; merge_items
+// only reaches a decision-kind item at all through the narrow
+// sameCanonicalProposition/PropositionKey paths) - this is defense in
+// depth at the confidence-gate layer, not a relaxation of those checks.
+func treeAuditEffectiveRiskClass(operation treeAuditOperation, state liveAnalysisPayload) treeAuditRiskClass {
+	risk := treeAuditOperationRiskClass(operation.Type)
+	switch operation.Type {
+	case TreeAuditMergeItems:
+		for _, id := range operation.TargetCanonicalItemIDs {
+			if item := findItemByID(state.Items, id); item != nil && item.Kind == "decision" {
+				return treeAuditRiskDestructive
+			}
+		}
+	case TreeAuditReclassifyKind:
+		if item := findItemByID(state.Items, operation.TargetCanonicalItemID); item != nil {
+			requestedKind := strings.ToLower(strings.TrimSpace(operation.Kind))
+			switch item.Kind {
+			case "decision", "todo", "risk":
+				if requestedKind != item.Kind {
+					return treeAuditRiskDestructive
+				}
+			}
+		}
+	}
+	return risk
+}
+
+// treeAuditRiskConfidenceThreshold derives risk's confidence gate from
+// cfg.HighConfidenceThreshold (HCT, default 0.90): safe = HCT-0.20,
+// moderate = HCT-0.10, destructive = HCT unchanged. The derived threshold
+// is never clamped below 0.50 regardless of how low HCT itself is
+// configured.
+func treeAuditRiskConfidenceThreshold(risk treeAuditRiskClass, cfg TreeAuditConfig) float64 {
+	threshold := cfg.HighConfidenceThreshold
+	switch risk {
+	case treeAuditRiskSafe:
+		threshold -= 0.20
+	case treeAuditRiskModerate:
+		threshold -= 0.10
+	}
+	if threshold < 0.50 {
+		threshold = 0.50
+	}
+	return threshold
 }
 
 func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditOperation, segmentText map[int64]string, evidenceRoles map[int64]treeAuditEvidenceRole, mc *meetingContext, cfg TreeAuditConfig, runID string, resultingVersion int64, beforeFindings []treeAuditPrecheckFinding) (float64, float64, string) {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,7 +69,10 @@ const liveAnalysisSystemPrompt = "あなたは日本語の会議分析アシス�
 // v11 = 対応事項・action itemをcanonical TODOへ一本化。v12 = utterance
 // roleを明示し、談話的なtopic transitionと表示itemを分離。v13 = issueの
 // subtypeとstatusを分離し、open_issue/questionをcanonical issueへ統合。
-const liveAnalysisPromptVersion = "v14"
+// v14の次のv15では、将来の悪影響への懸念を原因推定と区別してkind=riskへ
+// 抽出する規則、risk/issue/todoの併存を明示する規則、および「正常になった」
+// 「復旧した」「疎通を確認した」を明示的closure根拠に含める規則を追加した。
+const liveAnalysisPromptVersion = "v15"
 
 const liveAnalysisSchemaDescription = `{
   "summary": "議論全体のこれまでの要約(毎回全文を出力、400字程度まで)",
@@ -120,6 +124,8 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - 通常の論点・確認事項・質問・調査事項はすべてkind=issueとし、subtypeをそれぞれdiscussion/confirmation/question/investigationにしてください。未解決はkindではなくstatus=openです。open_issue、question、confirmation、investigation、resolvedをkindにしてはいけません。
 - 確認事項は「何を確認すべきか」、todoは「誰かが何を実行するか」です。同じ話題から両方を作ってよいですが、一方へ統合しないでください。todoは原則として動作・担当者・期限・完了条件のいずれかを含めてください。
 - 「対応事項」「アクションアイテム」「次の作業」はすべてkind=todoとして扱い、同じ実施動作を別種のitemや別IDへ重複して出力しないでください。
+- 発言に『〜すると/放置すると〜の可能性がある』『〜おそれがある』『〜しかねない』のような、将来の悪影響への懸念が明示されている場合は、kind=riskのitemを作ってください。原因の推定(「〜が原因である可能性が高い」)はriskではありません。
+- 同じ発言や近接する発言から、risk(悪影響の可能性)と、それに対処するtodo(誰かが実行する作業)やissue(設計・検討論点)は、命題が異なるならそれぞれ別itemとして併存させてください。同じ命題を種類だけ変えて重複させてはいけません。
 - 同じ話題でも「基準は何か」(issue/question)、「基準が未確定」(issue/discussion)、「気象データを確認する」(todo)は別の意味なので、同じitemへ統合しないでください。同じgroupへ分類して関係を表現してください。
 - 1つの発言に決定事項と未決定事項など複数の意味が含まれる場合は、意味ごとに別itemへ分けてください。逆に、複数発言が同じ論点の言い換え・回答・まとめである場合は、新規itemを増やさず既存idを更新してください。
 - 発言に明示されていないリスク・質問・作業を推測で追加しないでください。短い会議をsegment単位で機械的に細分化せず、独立して追跡すべき結論・未解決事項・作業だけをitemにしてください。
@@ -128,7 +134,7 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - 1つの抽象表現へ複数の具体的命題を潰さず、それぞれ別itemにしてください。対象がまだ復元できない途中発言は削除を指示せず、後続発言で具体化できるようissueとして保持してください。
 - evidenceSequenceNosには、そのitemを直接裏付ける保存済みfinal発言のsequenceNoだけをJSON整数(number、引用符なし)で入れてください。新規itemは原則このラウンドの発言、既存itemの更新では前回状態に既にある過去sequenceとこのラウンドの発言を指定できます。"123"のような文字列、小数、未来・別論点のsequenceNoを入れないでください。
 - 新しく追加するitemはstatusを"open"に、既存itemを更新した場合はstatusを"updated"にしてください。item.statusを状態遷移命令に使わず、解決・再オープンはresolutionUpdatesだけで提案してください。
-- 新しい発言によって解消されたissue/risk、または完了したtodoだけをstatus="resolved"のresolutionUpdatesへ入れてください。対象itemと意味が一致し、「解決済み」「回答済み」「対応可能」「完了」等の明示的な根拠をevidenceSequenceNosへ指定してください。decisionが出た、別の話題へ移った、recapに現れなかった、という理由だけでは解決にしないでください。
+- 新しい発言によって解消されたissue/risk、または完了したtodoだけをstatus="resolved"のresolutionUpdatesへ入れてください。対象itemと意味が一致し、「解決済み」「回答済み」「対応可能」「完了」「正常になった」「復旧した」「疎通を確認した」等の明示的な根拠をevidenceSequenceNosへ指定してください。decisionが出た、別の話題へ移った、recapに現れなかった、という理由だけでは解決にしないでください。障害の復旧はその障害・接続issueをresolvedにできますが、原因調査・再発防止のissue/todoは自動でresolvedにしないでください。
 - 「未解決」「未決定」「次回検討」「再検討」と明示された既存itemはstatus="open"のresolutionUpdatesで再オープンしてください。終盤のrecapでは広い新規todoを作らず、対応する既存issueへopen更新を提案してください。
 - decisionとfactはresolutionUpdatesへ入れてはいけません。該当が無ければresolutionUpdatesは空配列にしてください。resolvedIdsは後方互換専用なので常に空配列にしてください。
 - 解決済みのitemは削除せず残してください。再度議論が始まった場合も既存idを使ってください。
@@ -933,12 +939,12 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.ExplicitClosureCandidates, treeStats.ClosureTargetsFound, treeStats.ClosureTargetsNotFound, resolutionAudit.Requested, resolutionAudit.RequestedOpen, resolutionAudit.RequestedResolved, resolutionAudit.Applied, resolutionAudit.AppliedOpen, resolutionAudit.AppliedResolved, resolutionAudit.AppliedReopen, resolutionAudit.AppliedNoop, resolutionAudit.Rejected, resolutionAudit.RejectedNoTarget, resolutionAudit.RejectedNoEvidence, resolutionAudit.RejectedSemanticMismatch, resolutionAudit.RejectedNoExplicitClosure, resolutionAudit.RejectedContradicted)
 	log.Printf("Live agenda context. sessionId=%s version=%d activeAgendaSpanCount=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v staleAgendaFallbackRejected=%d agendaTransitionDetected=%t agendaTransitionCount=%d",
 		sessionID, newVersion, treeStats.ActiveAgendaSpanCount, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.StaleAgendaFallbackRejected, len(treeStats.AgendaTransitions) > 0, len(treeStats.AgendaTransitions))
-	log.Printf("Live item lifecycle counts. sessionId=%s version=%d issueCount=%d openIssueCount=%d resolvedIssueCount=%d discussionIssueCount=%d confirmationIssueCount=%d questionIssueCount=%d investigationIssueCount=%d todoCount=%d activeTodoCount=%d completedTodoCount=%d decisionCount=%d factCount=%d riskCount=%d openRiskCount=%d resolvedRiskCount=%d",
+	log.Printf("Live item lifecycle counts. sessionId=%s version=%d issueCount=%d openIssueCount=%d resolvedIssueCount=%d discussionIssueCount=%d confirmationIssueCount=%d questionIssueCount=%d investigationIssueCount=%d todoCount=%d activeTodoCount=%d completedTodoCount=%d decisionCount=%d factCount=%d riskCount=%d openRiskCount=%d resolvedRiskCount=%d riskItemsSynthesized=%d",
 		sessionID, newVersion,
 		stats.KindCounts["issue"], stats.KindCounts["issue"]-stats.ResolvedKindCounts["issue"], stats.ResolvedKindCounts["issue"],
 		stats.SubtypeCounts[issueSubtypeDiscussion], stats.SubtypeCounts[issueSubtypeConfirmation], stats.SubtypeCounts[issueSubtypeQuestion], stats.SubtypeCounts[issueSubtypeInvestigation],
 		stats.KindCounts["todo"], stats.KindCounts["todo"]-stats.ResolvedKindCounts["todo"], stats.ResolvedKindCounts["todo"],
-		stats.KindCounts["decision"], stats.KindCounts["fact"], stats.KindCounts["risk"], stats.KindCounts["risk"]-stats.ResolvedKindCounts["risk"], stats.ResolvedKindCounts["risk"])
+		stats.KindCounts["decision"], stats.KindCounts["fact"], stats.KindCounts["risk"], stats.KindCounts["risk"]-stats.ResolvedKindCounts["risk"], stats.ResolvedKindCounts["risk"], treeStats.RiskItemsSynthesized)
 	log.Printf("Live reference integrity. sessionId=%s version=%d reservedItemIdsRejected=%d reservedItemIdsRemapped=%d duplicateNodeIdsDetected=%d crossKindIdCollisions=%d selfParentRejected=%d kindMutationRejected=%d fixedAgendaMutationRejected=%d invalidParentKindRejected=%d treePayloadRejected=%d previousTreePreserved=%d unknownAssignmentIds=%d aliasResolvedAssignmentIds=%d unknownResolvedIds=%d aliasResolvedResolvedIds=%d unknownGroupEvidenceIds=%d unknownEmergingEvidenceIds=%d aliasResolvedTreeOperationIds=%d",
 		sessionID, newVersion, treeStats.ReservedItemIDsRejected, treeStats.ReservedItemIDsRemapped, treeStats.DuplicateNodeIDsDetected, treeStats.CrossKindIDCollisions, treeStats.SelfParentRejected, treeStats.KindMutationRejected, treeStats.FixedAgendaMutationRejected, treeStats.InvalidParentKindRejected, treeStats.TreePayloadRejected, treeStats.PreviousTreePreserved, treeStats.UnknownAssignmentIDs, treeStats.AliasResolvedAssignmentIDs, treeStats.UnknownResolvedIDs, treeStats.AliasResolvedResolvedIDs, treeStats.UnknownGroupEvidenceIDs, treeStats.UnknownEmergingEvidenceIDs, treeStats.AliasResolvedTreeOperationIDs)
 	agendaAssignmentsAccepted, agendaAssignmentsDeferred, agendaAssignmentsRejected := summarizeAgendaAssignmentOutcomes(treeStats.AssignmentDecisions)
@@ -952,9 +958,9 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	// 旧ラベル rootChildren= は実際にはtopic総数を出しており誤読を招いたため
 	// topics= に改める。分類の集計値(assigned/tentative/unclassified等)も
 	// ここへ足し、項目単位の判定は下で1件ずつ出す。
-	log.Printf("Live AI analysis tree metrics. sessionId=%s newNodeIds=%d updatedNodeIds=%d synthesizedNodes=%d unclassifiedRescues=%d reparentedNodes=%d duplicateItemsMerged=%d relatedAgendaReferences=%d groupsCreated=%d groupsFlattened=%d totalNodes=%d totalEdges=%d topicCount=%d groupCount=%d nestedGroupCount=%d detailItemCount=%d maxDepth=%d averageDepth=%.2f maxChildren=%d maxChildrenParentId=%s maxGroupChildren=%d maxGroupId=%s averageBranchingFactor=%.2f flatTopicCount=%d singleChildGroupCount=%d needsReorganization=%t assignedItems=%d tentativeItems=%d unclassifiedItems=%d emergingCandidates=%d dynamicTopicsPromoted=%d",
+	log.Printf("Live AI analysis tree metrics. sessionId=%s newNodeIds=%d updatedNodeIds=%d synthesizedNodes=%d unclassifiedRescues=%d reparentedNodes=%d duplicateItemsMerged=%d siblingDuplicateItemsMerged=%d relatedAgendaReferences=%d groupsCreated=%d groupsFlattened=%d totalNodes=%d totalEdges=%d topicCount=%d groupCount=%d nestedGroupCount=%d detailItemCount=%d maxDepth=%d averageDepth=%.2f maxChildren=%d maxChildrenParentId=%s maxGroupChildren=%d maxGroupId=%s averageBranchingFactor=%.2f flatTopicCount=%d singleChildGroupCount=%d needsReorganization=%t assignedItems=%d tentativeItems=%d unclassifiedItems=%d emergingCandidates=%d dynamicTopicsPromoted=%d",
 		sessionID, treeStats.DiffNewNodes, treeStats.DiffUpdatedNodes,
-		treeStats.SynthesizedNodes, treeStats.OrphanRescuedEdges, treeStats.ReparentedNodes, treeStats.DuplicateItemsMerged, relatedAgendaReferences,
+		treeStats.SynthesizedNodes, treeStats.OrphanRescuedEdges, treeStats.ReparentedNodes, treeStats.DuplicateItemsMerged, treeStats.SiblingDuplicateItemsMerged, relatedAgendaReferences,
 		treeStats.GroupsCreated, treeStats.GroupsFlattened, stats.TotalNodes, treeStats.TotalEdges, treeHealth.TopicCount, treeHealth.GroupCount, treeHealth.NestedGroupCount, treeHealth.DetailCount, treeStats.MaxDepth, treeHealth.AverageDepth, treeHealth.MaxChildren, treeHealth.MaxChildrenParentID, treeHealth.MaxGroupChildren, treeHealth.MaxGroupID, treeHealth.AverageBranchingFactor, treeHealth.FlatTopicCount, treeHealth.SingleChildGroupCount, treeStats.FlatTreeDetected,
 		stats.AssignedItems, stats.TentativeItems, stats.UnclassifiedItems, stats.EmergingCandidates, treeStats.DynamicTopicsPromoted)
 	log.Printf("Live group diagnostics. sessionId=%s version=%d groupCandidates=%d groupsCreated=%d groupsSkipped=%d groupSkipReasons=%v groupsFlattened=%d nestedGroupCount=%d",
@@ -1969,7 +1975,14 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 	}
 	agendaCounts := summarizeAgendaAnchorStatuses(previous.AgendaAnchors)
 	finalHealth := computeTreeHealth(tree)
-	log.Printf("Final tree snapshot persisted. sessionId=%s treeVersion=%d nodes=%d edges=%d coveredThroughSequenceNo=%d segmentCount=%d agendaRecordCount=%d agendaRecordsPreserved=%d plannedAgendaCount=%d materializedAgendaCount=%d discussedAgendaCount=%d mergedAgendaCount=%d notDiscussedAgendaCount=%d agendaReferenceIntegrityValid=%t agendaNodeIdNamespaceValid=%t agendaTopicIdCollisions=%d unknownAgendaRefs=%d orphanAgendaRefs=%d orphanMaterializedTopicIds=%d duplicateAgendaMaterializations=%d emptyAgendaTopicsAfter=%d treeIntegrityValid=%t needsReorganization=%t reorganizationReasons=%v reorganizationMetrics=%q", sessionID, liveVersion, len(tree.Nodes), len(tree.Edges), coveredThrough, segmentCount, integrity.AgendaRecordCount, integrity.AgendaRecordsPreserved, agendaCounts[agendaStatusPlanned], integrity.MaterializedAgendaCount, agendaCounts[agendaStatusDiscussed], agendaCounts[agendaStatusMerged], agendaCounts[agendaStatusNotDiscussed], integrity.AgendaReferenceIntegrityValid, integrity.AgendaNodeIDNamespaceValid, len(integrity.AgendaTopicIDCollisions), len(integrity.UnknownAgendaRefs), len(integrity.OrphanAgendaRefs), len(integrity.OrphanMaterializedTopicIDs), len(integrity.DuplicateAgendaMaterializations), len(integrity.EmptyAgendaTopicIDs), integrity.Valid, finalHealth.needsReorganization(), finalHealth.reorganizationReasons(), finalHealth.String())
+	// plannedAgendaCount/discussedAgendaCount/notDiscussedAgendaCount here are
+	// anchor-status counts (summarizeAgendaAnchorStatuses counts each anchor's
+	// exclusive Status), which is a different derivation from the tree-derived
+	// PlannedAgendaCount/DiscussedAgendaCount/NotDiscussedAgendaCount fields
+	// logged by "Live agenda anchor lifecycle" (counted from tree topic
+	// children in validateTreeIntegrity). The anchorStatus* prefix keeps the
+	// two same-named-but-differently-derived counters from being confused.
+	log.Printf("Final tree snapshot persisted. sessionId=%s treeVersion=%d nodes=%d edges=%d coveredThroughSequenceNo=%d segmentCount=%d agendaRecordCount=%d agendaRecordsPreserved=%d anchorStatusPlannedCount=%d materializedAgendaCount=%d anchorStatusDiscussedCount=%d mergedAgendaCount=%d anchorStatusNotDiscussedCount=%d agendaReferenceIntegrityValid=%t agendaNodeIdNamespaceValid=%t agendaTopicIdCollisions=%d unknownAgendaRefs=%d orphanAgendaRefs=%d orphanMaterializedTopicIds=%d duplicateAgendaMaterializations=%d emptyAgendaTopicsAfter=%d treeIntegrityValid=%t needsReorganization=%t reorganizationReasons=%v reorganizationMetrics=%q", sessionID, liveVersion, len(tree.Nodes), len(tree.Edges), coveredThrough, segmentCount, integrity.AgendaRecordCount, integrity.AgendaRecordsPreserved, agendaCounts[agendaStatusPlanned], integrity.MaterializedAgendaCount, agendaCounts[agendaStatusDiscussed], agendaCounts[agendaStatusMerged], agendaCounts[agendaStatusNotDiscussed], integrity.AgendaReferenceIntegrityValid, integrity.AgendaNodeIDNamespaceValid, len(integrity.AgendaTopicIDCollisions), len(integrity.UnknownAgendaRefs), len(integrity.OrphanAgendaRefs), len(integrity.OrphanMaterializedTopicIDs), len(integrity.DuplicateAgendaMaterializations), len(integrity.EmptyAgendaTopicIDs), integrity.Valid, finalHealth.needsReorganization(), finalHealth.reorganizationReasons(), finalHealth.String())
 	return true
 }
 
@@ -3563,6 +3576,11 @@ type liveAnalysisTreeMergeStats struct {
 	// DuplicateItemsMerged counts exact/semantic duplicate proposals folded
 	// into an existing canonical item in this round.
 	DuplicateItemsMerged int
+	// SiblingDuplicateItemsMerged is the subset of DuplicateItemsMerged folded
+	// specifically by sameSubjectSiblingDuplicate (same parent, same numbered
+	// subject, evidence distance <= 3) rather than by sameKindSemanticDuplicate
+	// or sameKindSequentialProposition.
+	SiblingDuplicateItemsMerged int
 	// Same-kind dedup diagnostics deliberately exclude cross-kind discussion
 	// companions. A question/open_issue/todo cluster remains separate canonical
 	// items even when it is rendered as one action-summary row.
@@ -3633,20 +3651,24 @@ type liveAnalysisTreeMergeStats struct {
 	ExplicitClosureCandidates                   int
 	ClosureTargetsFound                         int
 	ClosureTargetsNotFound                      int
-	ActiveAgendaSpanCount                       int
-	AgendaTransitions                           []agendaTransitionEvaluation
-	ReorganizeOperations                        []treeOperationEvaluation
-	ReorganizeProposed                          int
-	ReorganizeApplied                           int
-	ReorganizeNoop                              int
-	ReorganizeRejected                          int
-	ReorganizeInvalid                           int
-	GroupsCreated                               int
-	GroupsFlattened                             int
-	GroupCandidates                             int
-	GroupsSkipped                               int
-	GroupSkipReasons                            map[string]int
-	GroupDecisions                              []groupCandidateDecision
+	// RiskItemsSynthesized counts kind=risk items synthesizeExplicitRiskItems
+	// created deterministically from explicit future-adverse-impact wording
+	// the model itself did not extract this round.
+	RiskItemsSynthesized  int
+	ActiveAgendaSpanCount int
+	AgendaTransitions     []agendaTransitionEvaluation
+	ReorganizeOperations  []treeOperationEvaluation
+	ReorganizeProposed    int
+	ReorganizeApplied     int
+	ReorganizeNoop        int
+	ReorganizeRejected    int
+	ReorganizeInvalid     int
+	GroupsCreated         int
+	GroupsFlattened       int
+	GroupCandidates       int
+	GroupsSkipped         int
+	GroupSkipReasons      map[string]int
+	GroupDecisions        []groupCandidateDecision
 }
 
 type itemLifecycleEvaluation struct {
@@ -3974,6 +3996,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	}
 	var closureUpdates []resolutionUpdate
 	diffItems, closureUpdates = synthesizeExplicitClosureUpdates(previous.Items, diffItems, evidenceScope, treeStats)
+	diffItems = append(diffItems, synthesizeExplicitRiskItems(previous.Items, diffItems, evidenceScope, timeline, treeStats)...)
 	for _, item := range diffItems {
 		resolver.add(item.ID, item.ID)
 	}
@@ -4478,8 +4501,10 @@ func deduplicateExistingLiveState(state *liveAnalysisPayload, stats *liveAnalysi
 	}
 	kept := make([]liveAnalysisItem, 0, len(state.Items))
 	remap := make(map[string]string)
+	parentOf := siblingDuplicateParentIndex(state.Tree)
 	for _, item := range state.Items {
 		matchedAt, bestScore := -1, 0.0
+		matchedViaSibling := false
 		recap := issueRecapPattern.MatchString(item.Title + " " + item.Body)
 		for at := range kept {
 			if !sameSemanticClassification(kept[at], item) {
@@ -4493,11 +4518,16 @@ func deduplicateExistingLiveState(state *liveAnalysisPayload, stats *liveAnalysi
 				continue
 			}
 			matched, score := sameKindSemanticDuplicate(kept[at], item)
+			via := false
 			if !matched {
 				matched, score = sameKindSequentialProposition(kept[at], item)
 			}
+			if !matched {
+				matched, score = sameSubjectSiblingDuplicate(kept[at], item, parentOf)
+				via = matched
+			}
 			if matched && score > bestScore {
-				matchedAt, bestScore = at, score
+				matchedAt, bestScore, matchedViaSibling = at, score, via
 			}
 		}
 		if matchedAt < 0 {
@@ -4506,15 +4536,25 @@ func deduplicateExistingLiveState(state *liveAnalysisPayload, stats *liveAnalysi
 		}
 		canonicalID := kept[matchedAt].ID
 		remap[item.ID] = canonicalID
-		addItemTombstone(state, item, "merged", canonicalID, "semantic_dedup", "", state.TreeVersion, state.TreeVersion)
-		if recap {
+		tombstoneSource := "semantic_dedup"
+		if matchedViaSibling {
+			tombstoneSource = "sibling_semantic_dedup"
+		}
+		addItemTombstone(state, item, "merged", canonicalID, tombstoneSource, "", state.TreeVersion, state.TreeVersion)
+		switch {
+		case recap:
 			for _, sequenceNo := range item.EvidenceSequenceNos {
 				kept[matchedAt].EvidenceSequenceNos = appendUniqueSequence(kept[matchedAt].EvidenceSequenceNos, sequenceNo)
 			}
 			if stats != nil {
 				stats.RecapMerged++
 			}
-		} else {
+		case matchedViaSibling:
+			kept[matchedAt] = mergeSiblingDuplicateLiveItem(kept[matchedAt], item)
+			if stats != nil {
+				stats.SiblingDuplicateItemsMerged++
+			}
+		default:
 			kept[matchedAt] = mergeDuplicateLiveItem(kept[matchedAt], item)
 		}
 		if stats != nil {
@@ -4781,6 +4821,130 @@ func itemEvidenceWithin(a, b liveAnalysisItem, maxDistance int64) bool {
 		}
 	}
 	return false
+}
+
+// siblingDuplicateParentIndex builds a node ID -> parent ID map limited to
+// detail nodes (topic/group containers are excluded), the shape
+// sameSubjectSiblingDuplicate needs to confirm two items sit under the same
+// parent before treating them as duplicate siblings.
+func siblingDuplicateParentIndex(tree *liveAnalysisTree) map[string]string {
+	parentOf := make(map[string]string)
+	if tree == nil {
+		return parentOf
+	}
+	for _, node := range tree.Nodes {
+		if node.Kind == "topic" || node.Kind == "group" {
+			continue
+		}
+		parentOf[node.ID] = node.ParentID
+	}
+	return parentOf
+}
+
+// sameSubjectSiblingDuplicate catches issue/todo siblings under one parent
+// that both sameKindSemanticDuplicate (title similarity >= 0.90, or evidence
+// distance <= 2 with title similarity >= 0.70) and sameKindSequentialProposition
+// (evidence distance <= 1) miss: two independently-worded items about the
+// same numbered subject, evidenced a few utterances apart -- e.g. an initial
+// report of a VLAN misconfiguration and a later "再確認" of the same finding.
+// risk/decision/fact stay out of scope: their independent-tracking value
+// outweighs the duplication risk at this looser threshold.
+func sameSubjectSiblingDuplicate(a, b liveAnalysisItem, parentOf map[string]string) (bool, float64) {
+	if !sameSemanticClassification(a, b) {
+		return false, 0
+	}
+	if a.Kind != "issue" && a.Kind != "todo" {
+		return false, 0
+	}
+	if a.Inactive || b.Inactive || a.MergedIntoID != "" || b.MergedIntoID != "" {
+		return false, 0
+	}
+	parentA, parentB := parentOf[a.ID], parentOf[b.ID]
+	if parentA == "" || parentA != parentB {
+		return false, 0
+	}
+	if numericSignatureIncompatible(a.Title, b.Title) {
+		return false, 0
+	}
+	combinedA, combinedB := a.Title+" "+a.Body, b.Title+" "+b.Body
+	if numericSignatureIncompatible(combinedA, combinedB) {
+		return false, 0
+	}
+	coreA, coreB := semanticTopicCore(combinedA), semanticTopicCore(combinedB)
+	if !sharedTreeAuditSubjectTerm(coreA, coreB) {
+		return false, 0
+	}
+	score := semanticItemSimilarity(coreA, coreB)
+	if titleScore := semanticItemSimilarity(a.Title, b.Title); titleScore > score {
+		score = titleScore
+	}
+	if score < 0.55 {
+		return false, 0
+	}
+	if !itemEvidenceWithin(a, b, 3) {
+		return false, 0
+	}
+	if (a.Status == "resolved") != (b.Status == "resolved") {
+		return false, 0
+	}
+	return true, score
+}
+
+// numericSignatureIncompatible is a looser numeric-mismatch guard than the
+// exact-equality check sameKindSemanticDuplicate uses for titles alone: two
+// non-empty signatures are only incompatible when they share no number at
+// all. This still rejects clearly different numbered subjects ("3階" vs
+// "2階") while tolerating a body that names extra specifics (e.g. VLAN20と
+// VLAN30) a shorter companion sentence about the same floor/device omits.
+func numericSignatureIncompatible(a, b string) bool {
+	left, right := numericSignature(a), numericSignature(b)
+	if left == "" || right == "" || left == right {
+		return false
+	}
+	rightTokens := make(map[string]struct{})
+	for _, token := range strings.Split(right, "|") {
+		rightTokens[token] = struct{}{}
+	}
+	for _, token := range strings.Split(left, "|") {
+		if _, shared := rightTokens[token]; shared {
+			return false
+		}
+	}
+	return true
+}
+
+// siblingRecheckTitlePattern marks a title as a bare "re-check" placeholder
+// ("再確認"/"再検討"/"再評価") rather than a concrete restatement of the
+// subject. mergeSiblingDuplicateLiveItem uses it to prefer whichever title
+// actually names the subject.
+var siblingRecheckTitlePattern = regexp.MustCompile(`再確認|再検討|再評価`)
+
+// mergeSiblingDuplicateLiveItem is the conservative counterpart to
+// mergeDuplicateLiveItem for sameSubjectSiblingDuplicate matches. Unlike
+// mergeDuplicateLiveItem's "update always wins" merge -- appropriate when the
+// second item is the model explicitly re-describing the first -- a sibling
+// match is two independently authored items about the same subject, so
+// blindly overwriting the earlier (canonical) title/body would lose
+// information. The canonical title/body is kept unless it is a bare
+// re-check placeholder and the companion is not, in which case the
+// companion's more concrete wording is adopted. Evidence and the other
+// list attributes are unioned via mergePropositionAttributes.
+func mergeSiblingDuplicateLiveItem(canonical, companion liveAnalysisItem) liveAnalysisItem {
+	adoptCompanionWording := siblingRecheckTitlePattern.MatchString(canonical.Title) && !siblingRecheckTitlePattern.MatchString(companion.Title)
+	merged := mergePropositionAttributes(canonical, companion)
+	if adoptCompanionWording {
+		merged.Title = companion.Title
+		merged.Body = companion.Body
+	}
+	if merged.ClassificationStatus != classificationAssigned && companion.ClassificationStatus != "" {
+		merged.ClassificationStatus = companion.ClassificationStatus
+		merged.CandidateTopicID = companion.CandidateTopicID
+		merged.CandidateInactive = companion.CandidateInactive
+		merged.AssignmentConfidence = companion.AssignmentConfidence
+		merged.AssignmentSource = companion.AssignmentSource
+		merged.AssignmentReason = companion.AssignmentReason
+	}
+	return merged
 }
 
 func itemKindPriority(kind string) int {

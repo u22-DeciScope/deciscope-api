@@ -313,6 +313,12 @@ func TestIncidentRecoveryAgendaReplay(t *testing.T) {
 	if !diagnostics.Valid || diagnostics.AgendaRecordCount != 3 || diagnostics.AgendaRecordsPreserved != 3 || diagnostics.MaterializedAgendaCount != 2 || counts[agendaStatusDiscussed] != 2 || counts[agendaStatusNotDiscussed] != 1 || len(diagnostics.EmptyAgendaTopicIDs) != 0 {
 		t.Fatalf("final integrity=%+v anchors=%+v", diagnostics, finalState.AgendaAnchors)
 	}
+	// NotDiscussedAgendaCount was previously never populated by
+	// validateTreeIntegrity (always 0). It must now match the anchor-status
+	// count of agendaStatusNotDiscussed anchors when anchorValues is passed.
+	if diagnostics.NotDiscussedAgendaCount != counts[agendaStatusNotDiscussed] {
+		t.Fatalf("diagnostics.NotDiscussedAgendaCount=%d want anchor-status count=%d", diagnostics.NotDiscussedAgendaCount, counts[agendaStatusNotDiscussed])
+	}
 	if agendaTopicNodeByRef(finalState.Tree, "agenda-3") != nil {
 		t.Fatalf("undiscussed agenda materialized: %+v", finalState.Tree.Nodes)
 	}

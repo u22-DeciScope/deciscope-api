@@ -59,15 +59,20 @@ confidenceに関わらず必ず`unsupported_operation`で拒否)です。
 `merge_dynamic_topics`, `create_group`, `move_items_to_group`,
 `split_candidate`, `merge_fragmented_utterances`
 
-applicableなoperationも、個別の安全条件(confidence、parent一致、evidence、
-cycle、depth、subject整合等)を満たさなければ`unsafe`カテゴリとして拒否
-されます。拒否理由(`reason`)は具体的な文字列(例:
+applicableなoperationはさらに3段階のrisk class(`safe`/`moderate`/
+`destructive`、後述の「Risk classとconfidence閾値」参照)へ分類され、
+個別の安全条件(confidence、parent一致、evidence、
+cycle、depth、subject整合等)を満たさなければ拒否されます。拒否理由
+(`reason`)は具体的な文字列(例:
 `parent_stickiness_margin`, `reference_evidence_only`,
 `root_immutable`, `cycle_target_descendant`,
 `recap_only_candidate`, `deactivate_grounds_not_verified`,
 `dependency_rejected`, `unresolved_canonical_id`, `ambiguous_alias`)で
-記録され、`unsupported`/`unsafe`という2値だけがカテゴリとして
-`validator_result`に残ります。
+記録されます。`validator_result`の各operation評価
+(`evaluations[].category`)には、unsupported operationなら
+`unsupported`、applicableなoperationならそのrisk class名
+(`safe`/`moderate`/`destructive`)が、採否(accept/reject)に関わらず
+常に記録されます。
 
 監査snapshotの`agendaIds`は論理agenda recordの参照IDです。tree operationの
 対象・移動先には`nodes[].canonicalNodeId`の`topic-*` IDを使い、agenda IDを
@@ -175,8 +180,41 @@ container削除を提案したい場合のために従来どおり利用でき�
 ## Canonicalization
 
 parseは、schema・type・confidence・重複ID・依存関係のみを検証し、
-tree側のID存在チェックは行いません。canonicalizationは、parseされた
+tree側のID存在チェックは行いません。canonicalizationは、ID解決の前に
+まず**operation種別ごとのフィールド正規化**を行い、そのあとparseされた
 すべてのID風文字列を次の順で解決します。
+
+### フィールド正規化
+
+v3 schemaは全operation typeで同じID系フィールド
+(`targetCanonicalItemId`, `targetCanonicalNodeId`,
+`targetCanonicalItemIds`, `targetCandidateId`,
+`fromParentCanonicalNodeId`, `toParentCanonicalNodeId`)を公開しますが、
+実際にapplier(`applyOneTreeAuditOperation`)が読むフィールドはoperation
+typeごとに異なります。フィールド正規化はID解決より前に、operationが
+実際に使わないIDフィールドを空へ消去します(必須フィールド自体が
+未解決・不正な場合の拒否は従来どおりID解決側で行われ、正規化そのものは
+拒否にはなりません)。これは実セッションで観測された、モデルが
+`move_item`の`targetCanonicalItemId`と同じitem IDを、move_itemでは
+使われない`targetCanonicalNodeId`にも冗長入力し、その未使用フィールドの
+node文脈チェック(`requireContainer`)で`target_not_node`となり
+operation全体が破棄されていた問題への対処です。
+
+次の2件は、消去の前にフィールド間で値を補完する救済を行います。
+
+- `merge_items`: `targetCanonicalItemIds`が1要素、かつ`targetCanonicalItemId`
+  がそれと異なる値を持つ場合、`targetCanonicalItemId`を先頭に補って
+  2要素の`targetCanonicalItemIds`にする
+- `fold_candidate_into_topic`: 統合先topicはapplier・effective
+  confidence計算のいずれも`toParentCanonicalNodeId`を読みます
+  (`targetCanonicalNodeId`は読みません)。`toParentCanonicalNodeId`が空で
+  `targetCanonicalNodeId`に値がある場合、そちらを`toParentCanonicalNodeId`
+  へ補完します
+
+消去・補完のいずれも`response`の`canonicalizationCount`へ加算されるだけで、
+それ自体を理由にoperationを拒否することはありません。
+
+### ID解決
 
 1. そのままnode・item・candidateのいずれかのID集合に一致すれば採用
 2. candidate IDがすでにtree nodeとして存在する(昇格済み)なら、node
@@ -201,10 +239,43 @@ tree側のID存在チェックは行いません。canonicalizationは、parse�
 `below_high_confidence_threshold`のようなmodel自己申告confidenceのみに
 よる単独判定は廃止されました。move型operation(`move_item`,
 `restore_previous_parent`, `move_node`, `fold_candidate_into_topic`)は、
-サーバー側で合成した`effectiveConfidence`を`HighConfidenceThreshold`
-(既定0.90、`TREE_AUDIT_HIGH_CONFIDENCE_THRESHOLD`で設定可能、下げる
-方向の変更はしていません)と比較します。それ以外のapplicable
-operationは、modelの自己申告confidenceをそのまま閾値と比較します。
+サーバー側で合成した`effectiveConfidence`を、下記のrisk classごとの
+閾値と比較します。それ以外のapplicable operationは、modelの自己申告
+confidenceをそのままrisk classごとの閾値と比較します。
+
+### Risk classとconfidence閾値
+
+`HighConfidenceThreshold`(HCT、既定0.90、
+`TREE_AUDIT_HIGH_CONFIDENCE_THRESHOLD`で設定可能)を全operation種別へ
+一律適用していた単一gateは廃止し、operation typeを3段階のrisk classへ
+分類してから閾値を導出します(`treeAuditOperationRiskClass`)。
+
+- **safe**(閾値 = HCT − 0.20): `rewrite_item`, `rewrite_item_title`,
+  `rewrite_item_description`, `reclassify_subtype`,
+  `change_evidence_role`, `rename_group`, `remove_empty_group`,
+  `assign_item_to_candidate`
+- **moderate**(閾値 = HCT − 0.10): `move_item`, `restore_previous_parent`,
+  `move_node`, `fold_candidate_into_topic`, `create_topic_from_candidate`,
+  `deactivate_candidate`, `merge_items`, `reclassify_kind`
+- **destructive**(閾値 = HCT): `deactivate_item`
+
+いずれの閾値も0.50未満へはclampされません(下限0.50)。既定のHCT=0.90
+であればsafe=0.70、moderate=0.80、destructive=0.90です。新しい環境変数は
+追加していません。
+
+次の2条件は、対象itemの現在の状態に応じてoperationのrisk classを
+`destructive`(=HCT)へ強制的に格上げします(`treeAuditEffectiveRiskClass`)。
+
+- `merge_items`の対象itemに`kind=decision`が1件でも含まれる場合
+- `reclassify_kind`で対象itemの現在`kind`が`decision`/`todo`/`risk`であり、
+  別kindへの変更を要求している場合(applier自身の
+  `protected_semantic_kind`保護と同じ対象への、confidence gate側での
+  多重防御です)
+
+`deactivate_item`は元々HCTと比較されており、この変更後も変わりません。
+manual edit保護(`manual_edit_protected`)、`dependency_rejected`、
+`tree_integrity_rejected`、`heuristic_structural_quality_worsened`等の
+既存の安全機構はいずれもrisk classとは独立に、従来どおり動作します。
 
 ```
 effectiveConfidence = clamp01(modelConfidence + bonuses - penalties)
@@ -414,6 +485,17 @@ agenda lifecycleのintegrityは、tree node数ではなく`agendaRecordCount` /
 merge / rename / reparent / dematerialize、assignment結果、空topicとdynamic overlapの
 before/after、`agendaTopicIdCollisions`、`agendaNodeIdNamespaceValid`、
 `orphanMaterializedTopicIds`、`agendaReferenceIntegrityValid`、`treeIntegrityValid`を記録します。
+
+agenda anchor(`agendaAnchor`)の`Status`は`planned` / `discussed` / `merged` /
+`not_discussed`のいずれか1つだけを持つ排他的な値です。`MaterializedTopicIDs`の
+有無はこれとは直交する別属性で、たとえば`action_summary`アジェンダのanchorは
+materializeされないまま`discussed`になり得ます。ログは2系統あり、意味が異なる
+点に注意してください。「Live agenda anchor lifecycle」のplanned/discussed/
+merged/notDiscussedAgendaCountは`validateTreeIntegrity`がtree上のagendaRefs付き
+topicから数えたtree由来の値です。「Final tree snapshot persisted」の
+`anchorStatusPlannedCount`/`anchorStatusDiscussedCount`/`anchorStatusNotDiscussedCount`
+は`summarizeAgendaAnchorStatuses`がanchorの`Status`をそのまま集計した値で、
+同じ概念でも算出元が異なるため単純比較はできません。
 
 ## 実GPT-5-mini統合テスト
 

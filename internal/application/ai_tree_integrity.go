@@ -8,40 +8,49 @@ import (
 // treeIntegrityDiagnostics is safe to persist and expose. It contains only
 // machine IDs and counters, never transcript or item text.
 type treeIntegrityDiagnostics struct {
-	Valid                           bool     `json:"valid"`
-	DuplicateNodeIDs                []string `json:"duplicateNodeIds,omitempty"`
-	CrossKindIDCollisions           []string `json:"crossKindIdCollisions,omitempty"`
-	ReservedItemIDs                 []string `json:"reservedItemIds,omitempty"`
-	DuplicateItemIDs                []string `json:"duplicateItemIds,omitempty"`
-	SelfParentNodeIDs               []string `json:"selfParentNodeIds,omitempty"`
-	OrphanNodeIDs                   []string `json:"orphanNodeIds,omitempty"`
-	CycleNodeIDs                    []string `json:"cycleNodeIds,omitempty"`
-	InvalidParentKindNodeIDs        []string `json:"invalidParentKindNodeIds,omitempty"`
-	RootDirectDetailNodeIDs         []string `json:"rootDirectDetailNodeIds,omitempty"`
-	MissingFixedAgendaIDs           []string `json:"missingFixedAgendaIds,omitempty"`
-	MovedFixedAgendaIDs             []string `json:"movedFixedAgendaIds,omitempty"`
-	FixedAgendaKindMismatchIDs      []string `json:"fixedAgendaKindMismatchIds,omitempty"`
-	RenamedFixedAgendaIDs           []string `json:"renamedFixedAgendaIds,omitempty"`
-	ActionSummaryTreeNodeIDs        []string `json:"actionSummaryTreeNodeIds,omitempty"`
-	InvalidKindNodeIDs              []string `json:"invalidKindNodeIds,omitempty"`
-	EmptyGroupNodeIDs               []string `json:"emptyGroupNodeIds,omitempty"`
-	SingleChildGroupNodeIDs         []string `json:"singleChildGroupNodeIds,omitempty"`
-	HardDepthNodeIDs                []string `json:"hardDepthNodeIds,omitempty"`
-	ExpectedFixedAgendaCount        int      `json:"expectedFixedAgendaCount"`
-	ActualFixedAgendaCount          int      `json:"actualFixedAgendaCount"`
-	RootCount                       int      `json:"rootCount"`
-	EdgeCountMismatch               bool     `json:"edgeCountMismatch,omitempty"`
-	EdgeParentMismatch              bool     `json:"edgeParentMismatch,omitempty"`
-	AgendaRecordCount               int      `json:"agendaRecordCount"`
-	AgendaRecordsPreserved          int      `json:"agendaRecordsPreserved"`
-	AgendaRecordIntegrityValid      bool     `json:"agendaRecordIntegrityValid"`
-	MissingAgendaRecordIDs          []string `json:"missingAgendaRecordIds,omitempty"`
-	DuplicateAgendaRecordIDs        []string `json:"duplicateAgendaRecordIds,omitempty"`
-	MutatedAgendaRecordIDs          []string `json:"mutatedAgendaRecordIds,omitempty"`
-	PlannedAgendaCount              int      `json:"plannedAgendaCount"`
-	MaterializedAgendaCount         int      `json:"materializedAgendaCount"`
-	DiscussedAgendaCount            int      `json:"discussedAgendaCount"`
-	MergedAgendaCount               int      `json:"mergedAgendaCount"`
+	Valid                      bool     `json:"valid"`
+	DuplicateNodeIDs           []string `json:"duplicateNodeIds,omitempty"`
+	CrossKindIDCollisions      []string `json:"crossKindIdCollisions,omitempty"`
+	ReservedItemIDs            []string `json:"reservedItemIds,omitempty"`
+	DuplicateItemIDs           []string `json:"duplicateItemIds,omitempty"`
+	SelfParentNodeIDs          []string `json:"selfParentNodeIds,omitempty"`
+	OrphanNodeIDs              []string `json:"orphanNodeIds,omitempty"`
+	CycleNodeIDs               []string `json:"cycleNodeIds,omitempty"`
+	InvalidParentKindNodeIDs   []string `json:"invalidParentKindNodeIds,omitempty"`
+	RootDirectDetailNodeIDs    []string `json:"rootDirectDetailNodeIds,omitempty"`
+	MissingFixedAgendaIDs      []string `json:"missingFixedAgendaIds,omitempty"`
+	MovedFixedAgendaIDs        []string `json:"movedFixedAgendaIds,omitempty"`
+	FixedAgendaKindMismatchIDs []string `json:"fixedAgendaKindMismatchIds,omitempty"`
+	RenamedFixedAgendaIDs      []string `json:"renamedFixedAgendaIds,omitempty"`
+	ActionSummaryTreeNodeIDs   []string `json:"actionSummaryTreeNodeIds,omitempty"`
+	InvalidKindNodeIDs         []string `json:"invalidKindNodeIds,omitempty"`
+	EmptyGroupNodeIDs          []string `json:"emptyGroupNodeIds,omitempty"`
+	SingleChildGroupNodeIDs    []string `json:"singleChildGroupNodeIds,omitempty"`
+	HardDepthNodeIDs           []string `json:"hardDepthNodeIds,omitempty"`
+	ExpectedFixedAgendaCount   int      `json:"expectedFixedAgendaCount"`
+	ActualFixedAgendaCount     int      `json:"actualFixedAgendaCount"`
+	RootCount                  int      `json:"rootCount"`
+	EdgeCountMismatch          bool     `json:"edgeCountMismatch,omitempty"`
+	EdgeParentMismatch         bool     `json:"edgeParentMismatch,omitempty"`
+	AgendaRecordCount          int      `json:"agendaRecordCount"`
+	AgendaRecordsPreserved     int      `json:"agendaRecordsPreserved"`
+	AgendaRecordIntegrityValid bool     `json:"agendaRecordIntegrityValid"`
+	MissingAgendaRecordIDs     []string `json:"missingAgendaRecordIds,omitempty"`
+	DuplicateAgendaRecordIDs   []string `json:"duplicateAgendaRecordIds,omitempty"`
+	MutatedAgendaRecordIDs     []string `json:"mutatedAgendaRecordIds,omitempty"`
+	PlannedAgendaCount         int      `json:"plannedAgendaCount"`
+	MaterializedAgendaCount    int      `json:"materializedAgendaCount"`
+	// DiscussedAgendaCount is tree-derived: it counts primary agenda records
+	// whose materialized topic currently has at least one child node in the
+	// tree (see the discussedAgendaIDs loop below). It does not read anchor
+	// status and is populated unconditionally.
+	DiscussedAgendaCount int `json:"discussedAgendaCount"`
+	MergedAgendaCount    int `json:"mergedAgendaCount"`
+	// NotDiscussedAgendaCount is anchor-status-derived: it counts agendaAnchor
+	// entries (only when anchorValues is passed to validateTreeIntegrity)
+	// whose exclusive Status equals agendaStatusNotDiscussed. It is therefore
+	// not directly comparable to the tree-derived DiscussedAgendaCount above,
+	// and stays 0 when anchorValues is omitted.
 	NotDiscussedAgendaCount         int      `json:"notDiscussedAgendaCount"`
 	AgendaReferenceIntegrityValid   bool     `json:"agendaReferenceIntegrityValid"`
 	AgendaNodeIDNamespaceValid      bool     `json:"agendaNodeIdNamespaceValid"`
@@ -75,6 +84,13 @@ func validateTreeIntegrity(tree *liveAnalysisTree, items []liveAnalysisItem, mc 
 	d.AgendaNodeIDNamespaceValid = true
 	anchorTopicIDs := make(map[string]map[string]struct{})
 	anchorsProvided := len(anchorValues) > 0
+	if anchorsProvided {
+		for _, anchor := range anchorValues[0] {
+			if anchor.Status == agendaStatusNotDiscussed {
+				d.NotDiscussedAgendaCount++
+			}
+		}
+	}
 	if len(anchorValues) > 0 {
 		d.AgendaRecordsPreserved = 0
 		expected := agendaRecordMap(mc)

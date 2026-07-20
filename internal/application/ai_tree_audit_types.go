@@ -160,11 +160,14 @@ type treeAuditValidatorEvaluation struct {
 	Type        TreeAuditOperationType `json:"type"`
 	Result      string                 `json:"result"`
 	Reason      string                 `json:"reason,omitempty"`
-	// Category classifies a rejection as "unsupported" (the operation type
-	// itself has no applier and is never applied regardless of confidence)
-	// or "unsafe" (an applicable operation type whose operation-specific
-	// safety conditions, confidence, or dependency were not satisfied this
-	// round). It is left empty (omitted) for accepted operations.
+	// Category is "unsupported" for an operation type with no applier (never
+	// applied regardless of confidence); otherwise it is the operation's
+	// risk class - "safe", "moderate", or "destructive" (see
+	// treeAuditOperationRiskClass/treeAuditEffectiveRiskClass) - which is
+	// also what treeAuditRiskConfidenceThreshold derived this operation's
+	// EffectiveConfidence gate from. Unlike the previous fixed "unsafe"
+	// label, it is populated for every evaluated operation, accepted or
+	// rejected, not only on rejection.
 	Category           string  `json:"category,omitempty"`
 	Valid              bool    `json:"valid"`
 	Applied            bool    `json:"applied"`
@@ -224,6 +227,22 @@ const (
 	treeAuditEvidencePrimary    treeAuditEvidenceRole = "primary"
 	treeAuditEvidenceSupporting treeAuditEvidenceRole = "supporting"
 	treeAuditEvidenceReference  treeAuditEvidenceRole = "reference"
+)
+
+// treeAuditRiskClass is the three-tier risk classification used to derive
+// an operation's confidence gate (see treeAuditOperationRiskClass,
+// treeAuditEffectiveRiskClass, treeAuditRiskConfidenceThreshold in
+// ai_tree_audit_validator.go). It replaces the previous single flat
+// HighConfidenceThreshold gate shared by every applicable operation type,
+// which rejected most of the model's real-world proposals (typically
+// reported in the 0.70-0.85 range) even though their underlying change was
+// low-risk (a title rewrite) rather than high-risk (deactivating an item).
+type treeAuditRiskClass string
+
+const (
+	treeAuditRiskSafe        treeAuditRiskClass = "safe"
+	treeAuditRiskModerate    treeAuditRiskClass = "moderate"
+	treeAuditRiskDestructive treeAuditRiskClass = "destructive"
 )
 
 type treeAuditEvidenceSegment struct {

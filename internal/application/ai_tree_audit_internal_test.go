@@ -853,7 +853,7 @@ func TestTreeAuditMoveNodeRejectsCycleIntoOwnDescendant(t *testing.T) {
 		ToParentCanonicalNodeID: "group-y", Confidence: 1, EvidenceSequenceNos: []int64{22},
 	}
 	_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-cycle", 13, true)
-	if result.OperationsValid != 0 || len(result.Evaluations) != 1 || result.Evaluations[0].Reason != "cycle_target_descendant" || result.Evaluations[0].Category != "unsafe" {
+	if result.OperationsValid != 0 || len(result.Evaluations) != 1 || result.Evaluations[0].Reason != "cycle_target_descendant" || result.Evaluations[0].Category != "moderate" {
 		t.Fatalf("cycle rejection = %+v", result.Evaluations)
 	}
 }
@@ -1440,7 +1440,11 @@ func TestTreeAuditMergeItemsRejectsDecisionAndUndecidedMismatch(t *testing.T) {
 		Confidence:             0.97, Reason: "誤統合の試み", EvidenceSequenceNos: []int64{17},
 	}
 	_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-merge-bad", 13, true)
-	if result.OperationsValid != 0 || len(result.Evaluations) != 1 || result.Evaluations[0].Reason != "items_not_connected_duplicates" || result.Evaluations[0].Category != "unsafe" {
+	// item-decision-public-web is kind "decision", so this merge_items
+	// operation is escalated from its moderate baseline to destructive
+	// (treeAuditEffectiveRiskClass) regardless of the unrelated rejection
+	// reason below.
+	if result.OperationsValid != 0 || len(result.Evaluations) != 1 || result.Evaluations[0].Reason != "items_not_connected_duplicates" || result.Evaluations[0].Category != "destructive" {
 		t.Fatalf("mismatch rejection = %+v", result.Evaluations)
 	}
 }
@@ -1481,7 +1485,7 @@ func TestTreeAuditRewriteItemTitleRejectsSubjectChange(t *testing.T) {
 		Confidence: 0.97, Reason: "無関係な書き換え", EvidenceSequenceNos: []int64{17},
 	}
 	_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-rewrite-bad", 13, true)
-	if result.OperationsValid != 0 || len(result.Evaluations) != 1 || result.Evaluations[0].Reason != "subject_not_preserved" || result.Evaluations[0].Category != "unsafe" {
+	if result.OperationsValid != 0 || len(result.Evaluations) != 1 || result.Evaluations[0].Reason != "subject_not_preserved" || result.Evaluations[0].Category != "safe" {
 		t.Fatalf("subject-change rejection = %+v", result.Evaluations)
 	}
 }
@@ -1791,7 +1795,7 @@ func TestTreeAuditCreateTopicFromCandidateRejectsFixedAgendaDuplicate(t *testing
 		TargetCandidateID: "candidate-agenda-echo", Confidence: 0.97, Reason: "固定agendaと重複", EvidenceSequenceNos: []int64{22},
 	}
 	_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-agenda-dup", 13, true)
-	if result.OperationsValid != 0 || len(result.Evaluations) != 1 || result.Evaluations[0].Reason != "should_fold_into_fixed_agenda" || result.Evaluations[0].Category != "unsafe" {
+	if result.OperationsValid != 0 || len(result.Evaluations) != 1 || result.Evaluations[0].Reason != "should_fold_into_fixed_agenda" || result.Evaluations[0].Category != "moderate" {
 		t.Fatalf("fixed-agenda duplicate rejection = %+v", result.Evaluations)
 	}
 }
@@ -1971,14 +1975,18 @@ func TestTreeAuditRecentParentChangeStickyExemptForReferenceEvidenceReparent(t *
 }
 
 // TestTreeAuditEffectiveConfidenceRecapContaminationPenaltyBlocksOtherwiseValidMove
-// covers design D4 14.4(g): reusing the fixed-agenda-match scenario that
-// passes cleanly at modelConfidence 0.80 (see
+// covers design D4 14.4(g): reusing the fixed-agenda-match scenario (see
 // TestTreeAuditEffectiveConfidenceAppliesFixedAgendaMatchFromUnclassified),
 // adding a second, reference-role evidence sequence to the same operation
 // mixes reference evidence into otherwise-primary evidence and must apply
-// recapContaminationPenalty (-0.10): 0.80 + 0.15 bonus - 0.10 penalty = 0.85,
-// below HighConfidenceThreshold, so the operation is rejected on effective
-// confidence even though the same structural bonuses fire.
+// recapContaminationPenalty (-0.10). move_item is risk class "moderate"
+// (treeAuditOperationRiskClass), so its gate is
+// HighConfidenceThreshold-0.10 = 0.80, not the flat 0.90 this test used
+// before per-risk-class thresholds existed: modelConfidence 0.70 is chosen
+// so that without the penalty it would clear the 0.80 gate (0.70 + 0.15
+// bonus = 0.85) but with the penalty it does not (0.70 + 0.15 - 0.10 =
+// 0.75 < 0.80), isolating recapContaminationPenalty as the one variable
+// that flips the outcome.
 func TestTreeAuditEffectiveConfidenceRecapContaminationPenaltyBlocksOtherwiseValidMove(t *testing.T) {
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
@@ -1999,7 +2007,7 @@ func TestTreeAuditEffectiveConfidenceRecapContaminationPenaltyBlocksOtherwiseVal
 	operation := treeAuditOperation{
 		OperationID: "op-fixed-agenda-contaminated", Type: TreeAuditMoveItem,
 		TargetCanonicalItemID: "item-todo-noise-echo", FromParentCanonicalNodeID: treeUnclassifiedTopicID,
-		ToParentCanonicalNodeID: stableAgendaTopicID("agenda-2", 0), Confidence: 0.80,
+		ToParentCanonicalNodeID: stableAgendaTopicID("agenda-2", 0), Confidence: 0.70,
 		Reason: "騒音測定の実施方法へ", EvidenceSequenceNos: []int64{40, 41},
 	}
 	_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-contaminated", 13, true)
@@ -2010,8 +2018,272 @@ func TestTreeAuditEffectiveConfidenceRecapContaminationPenaltyBlocksOtherwiseVal
 	if evaluation.Reason != "below_effective_confidence_threshold" {
 		t.Fatalf("reason = %q, want below_effective_confidence_threshold", evaluation.Reason)
 	}
-	if evaluation.EffectiveConfidence >= 0.90 {
-		t.Fatalf("effectiveConfidence = %v, want < 0.90 once recapContaminationPenalty applies", evaluation.EffectiveConfidence)
+	if evaluation.EffectiveConfidence >= 0.80 {
+		t.Fatalf("effectiveConfidence = %v, want < 0.80 (move_item's moderate-risk gate) once recapContaminationPenalty applies", evaluation.EffectiveConfidence)
+	}
+}
+
+// TestTreeAuditCanonicalizeNormalizesMoveItemRedundantTargetNodeID
+// reproduces the session_5e4da9dc40d50940 anomaly: the model correctly set
+// targetCanonicalItemId, but also redundantly copied the same item ID into
+// targetCanonicalNodeId - a field move_item never reads. Before
+// normalizeTreeAuditOperationFields existed, resolving that unused field
+// with requireContainer=true rejected the whole operation on
+// target_not_node. It must now survive canonicalization (with the unused
+// field cleared) and reach the validator's own evaluation instead of
+// falling out at the parser/canonicalization layer.
+func TestTreeAuditCanonicalizeNormalizesMoveItemRedundantTargetNodeID(t *testing.T) {
+	payload, segments, mc := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	roles := classifyTreeAuditEvidence(state, segments)
+	response := &treeAuditResponse{Operations: []treeAuditOperation{
+		{OperationID: "op-redundant-node-id", Type: TreeAuditMoveItem,
+			TargetCanonicalItemID: "item-risk-rare-plants",
+			TargetCanonicalNodeID: "item-risk-rare-plants", // redundant; move_item never reads this field
+			FromParentCanonicalNodeID: "candidate-info-public", ToParentCanonicalNodeID: "candidate-plant-study",
+			Confidence: 0.7, EvidenceSequenceNos: []int64{22},
+		},
+	}}
+	canonicalizeTreeAuditResponse(response, state)
+	if len(response.ParseRejections) != 0 || len(response.Operations) != 1 {
+		t.Fatalf("redundant targetCanonicalNodeId must not be rejected at canonicalization: rejections=%+v operations=%+v", response.ParseRejections, response.Operations)
+	}
+	if got := response.Operations[0].TargetCanonicalNodeID; got != "" {
+		t.Fatalf("targetCanonicalNodeId must be cleared for move_item, got %q", got)
+	}
+	_, result := validateAndDryRunTreeAuditOperations(state, response.Operations, segments, mc, roles, TreeAuditConfig{}, "audit-redundant-node-id", 13, true)
+	if len(result.Evaluations) != 1 {
+		t.Fatalf("validator result = %+v", result)
+	}
+	if reason := result.Evaluations[0].Reason; reason == "target_not_node" || reason == "unresolved_canonical_id" || reason == "ambiguous_alias" {
+		t.Fatalf("operation must reach validator evaluation, not fail on a canonicalization-layer reason: %+v", result.Evaluations[0])
+	}
+}
+
+// TestTreeAuditRewriteItemTitleAppliesAtSafeRiskThreshold covers the
+// rewrite_item_title risk-class gate: rewrite_item_title is risk class
+// "safe" (treeAuditOperationRiskClass), so its threshold is
+// HighConfidenceThreshold-0.20 = 0.70, not the old flat 0.90 gate that
+// rejected most of the model's real-world rewrite proposals (typically
+// reported around 0.75-0.85).
+func TestTreeAuditRewriteItemTitleAppliesAtSafeRiskThreshold(t *testing.T) {
+	payload, segments, mc := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	roles := classifyTreeAuditEvidence(state, segments)
+	operation := treeAuditOperation{
+		OperationID: "op-rewrite-title-safe", Type: TreeAuditRewriteItemTitle,
+		TargetCanonicalItemID: "item-risk-rare-plants", Label: "希少植物の生態調査",
+		Confidence: 0.75, Reason: "簡潔な表現へ整理", EvidenceSequenceNos: []int64{22},
+	}
+	dry, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-rewrite-safe", 13, true)
+	if result.OperationsValid != 1 || result.OperationsApplied != 1 || len(result.Evaluations) != 1 {
+		t.Fatalf("validator result = %+v", result)
+	}
+	if got := result.Evaluations[0].Category; got != "safe" {
+		t.Fatalf("category = %q, want safe", got)
+	}
+	item := findItemByID(dry.Items, "item-risk-rare-plants")
+	if item == nil || item.Title != "希少植物の生態調査" {
+		t.Fatalf("rewritten item = %+v", item)
+	}
+}
+
+// TestTreeAuditDeactivateItemRejectsBelowDestructiveThreshold covers the
+// deactivate_item risk-class gate: deactivate_item is the sole
+// "destructive" risk class operation, so its threshold stays at the full
+// HighConfidenceThreshold (0.90) even though every other applicable
+// operation type's gate was lowered. modelConfidence 0.85 must still be
+// rejected on the confidence gate itself, for a plain target and for
+// decision/todo/risk targets alike (the confidence gate is evaluated
+// before applyOneTreeAuditOperation's own protected_semantic_kind check,
+// so every target here fails on the same, confidence-only reason).
+func TestTreeAuditDeactivateItemRejectsBelowDestructiveThreshold(t *testing.T) {
+	payload, segments, mc := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	roles := classifyTreeAuditEvidence(state, segments)
+	for _, target := range []string{"item-todo-plant-survey", "item-decision-public-web", "item-risk-rare-plants"} {
+		operation := treeAuditOperation{
+			OperationID: "op-deactivate-below-threshold", Type: TreeAuditDeactivateItem,
+			TargetCanonicalItemID: target, Confidence: 0.85, Reason: "low_information",
+		}
+		_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-deactivate-below", 13, true)
+		if result.OperationsValid != 0 || len(result.Evaluations) != 1 {
+			t.Fatalf("target %s validator result = %+v", target, result)
+		}
+		evaluation := result.Evaluations[0]
+		if evaluation.Reason != "below_effective_confidence_threshold" || evaluation.Category != "destructive" {
+			t.Fatalf("target %s deactivate_item at confidence 0.85 = %+v, want below_effective_confidence_threshold/destructive", target, evaluation)
+		}
+	}
+}
+
+// TestTreeAuditMergeItemsAppliesAtModerateThresholdRejectsDecisionAtSameConfidence
+// covers the merge_items risk-class gate and its decision-item escalation
+// rule. Two duplicate issue-kind siblings under the same parent merge at
+// modelConfidence 0.82 - above merge_items' moderate threshold
+// (HighConfidenceThreshold-0.10 = 0.80) but below the old flat 0.90 gate.
+// The same confidence targeting a pair that includes a decision-kind item
+// is rejected instead: treeAuditEffectiveRiskClass escalates any
+// merge_items touching a decision item to destructive (threshold = 0.90).
+func TestTreeAuditMergeItemsAppliesAtModerateThresholdRejectsDecisionAtSameConfidence(t *testing.T) {
+	payload, segments, mc := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	state.Items = append(state.Items,
+		liveAnalysisItem{ID: "item-issue-noise-a", Kind: "issue", Subtype: issueSubtypeDiscussion, Title: "騒音基準の未確定", Body: "騒音基準がまだ決まっていない", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{22, 24}},
+		liveAnalysisItem{ID: "item-issue-noise-b", Kind: "issue", Subtype: issueSubtypeDiscussion, Title: "騒音基準の未確定", Body: "騒音基準の決定がまだ", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{24}},
+		liveAnalysisItem{ID: "item-decision-dup-a", Kind: "decision", Title: "調査結果を図付きでウェブ公開", Body: "住民説明資料の公開方針", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{17}},
+	)
+	state.Tree.Nodes = append(state.Tree.Nodes,
+		liveAnalysisTreeNode{ID: "item-issue-noise-a", Kind: "issue", Subtype: issueSubtypeDiscussion, ParentID: "candidate-info-public", Label: "騒音基準の未確定", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-issue-noise-b", Kind: "issue", Subtype: issueSubtypeDiscussion, ParentID: "candidate-info-public", Label: "騒音基準の未確定", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-decision-dup-a", Kind: "decision", ParentID: "candidate-info-public", Label: "調査結果を図付きでウェブ公開", Status: "open"},
+	)
+	rebuildTreeAuditEdges(state.Tree)
+	roles := classifyTreeAuditEvidence(state, segments)
+
+	mergeIssues := treeAuditOperation{
+		OperationID: "op-merge-issue-moderate", Type: TreeAuditMergeItems,
+		TargetCanonicalItemIDs: []string{"item-issue-noise-a", "item-issue-noise-b"},
+		Confidence:             0.82, Reason: "同一issueの重複統合", EvidenceSequenceNos: []int64{22},
+	}
+	_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{mergeIssues}, segments, mc, roles, TreeAuditConfig{}, "audit-merge-issue", 13, true)
+	if result.OperationsValid != 1 || result.OperationsApplied != 1 || len(result.Evaluations) != 1 || result.Evaluations[0].Category != "moderate" {
+		t.Fatalf("issue merge at confidence 0.82 = %+v", result)
+	}
+
+	mergeDecision := treeAuditOperation{
+		OperationID: "op-merge-decision-escalated", Type: TreeAuditMergeItems,
+		TargetCanonicalItemIDs: []string{"item-decision-dup-a", "item-decision-public-web"},
+		Confidence:             0.82, Reason: "同一decisionの重複統合", EvidenceSequenceNos: []int64{17},
+	}
+	_, result2 := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{mergeDecision}, segments, mc, roles, TreeAuditConfig{}, "audit-merge-decision", 13, true)
+	if result2.OperationsValid != 0 || len(result2.Evaluations) != 1 {
+		t.Fatalf("decision merge at confidence 0.82 = %+v", result2)
+	}
+	evaluation := result2.Evaluations[0]
+	if evaluation.Reason != "below_effective_confidence_threshold" || evaluation.Category != "destructive" {
+		t.Fatalf("decision merge evaluation = %+v, want below_effective_confidence_threshold/destructive", evaluation)
+	}
+}
+
+// TestTreeAuditCanonicalizeMergeItemsRescuesSingularTargetIntoPlural covers
+// the merge_items canonicalization rescue: a second merge target left in
+// the singular targetCanonicalItemId field (alongside a single-element
+// targetCanonicalItemIds) is folded into a two-element
+// targetCanonicalItemIds before targetCanonicalItemId is cleared, instead
+// of being silently dropped.
+func TestTreeAuditCanonicalizeMergeItemsRescuesSingularTargetIntoPlural(t *testing.T) {
+	payload, segments, mc := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	state.Items = append(state.Items,
+		liveAnalysisItem{ID: "item-todo-vpn-cert-a", Kind: "todo", Title: "VPN証明書の更新", Body: "来月までにVPN証明書を更新する", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{22, 24}},
+		liveAnalysisItem{ID: "item-todo-vpn-cert-b", Kind: "todo", Title: "VPN証明書の更新", Body: "VPN証明書の更新対応を進める", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{24}},
+	)
+	state.Tree.Nodes = append(state.Tree.Nodes,
+		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-a", Kind: "todo", ParentID: "candidate-info-public", Label: "VPN証明書の更新", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-b", Kind: "todo", ParentID: "candidate-info-public", Label: "VPN証明書の更新", Status: "open"},
+	)
+	rebuildTreeAuditEdges(state.Tree)
+	roles := classifyTreeAuditEvidence(state, segments)
+	response := &treeAuditResponse{Operations: []treeAuditOperation{
+		{OperationID: "op-merge-rescue", Type: TreeAuditMergeItems,
+			TargetCanonicalItemID: "item-todo-vpn-cert-a", TargetCanonicalItemIDs: []string{"item-todo-vpn-cert-b"},
+			Confidence: 0.97, Reason: "同一VPN証明書更新の重複統合", EvidenceSequenceNos: []int64{22},
+		},
+	}}
+	canonicalizeTreeAuditResponse(response, state)
+	if len(response.ParseRejections) != 0 || len(response.Operations) != 1 {
+		t.Fatalf("canonicalized response = %+v", response)
+	}
+	got := response.Operations[0]
+	if got.TargetCanonicalItemID != "" {
+		t.Fatalf("targetCanonicalItemId must be cleared after the merge rescue, got %q", got.TargetCanonicalItemID)
+	}
+	if len(got.TargetCanonicalItemIDs) != 2 || got.TargetCanonicalItemIDs[0] != "item-todo-vpn-cert-a" || got.TargetCanonicalItemIDs[1] != "item-todo-vpn-cert-b" {
+		t.Fatalf("targetCanonicalItemIds = %v, want [item-todo-vpn-cert-a item-todo-vpn-cert-b]", got.TargetCanonicalItemIDs)
+	}
+	_, result := validateAndDryRunTreeAuditOperations(state, response.Operations, segments, mc, roles, TreeAuditConfig{}, "audit-merge-rescue", 13, true)
+	if result.OperationsValid != 1 || result.OperationsApplied != 1 {
+		t.Fatalf("validator result = %+v", result)
+	}
+}
+
+// TestTreeAuditCanonicalizeFoldCandidateComplementsDestinationField covers
+// the fold_candidate_into_topic destination-field complement: both
+// applyOneTreeAuditOperation and treeAuditEffectiveConfidence read
+// toParentCanonicalNodeId (never targetCanonicalNodeId) as the fold
+// destination. When the model instead puts the destination in
+// targetCanonicalNodeId and leaves toParentCanonicalNodeId blank - the
+// exact shape observed in session_5e4da9dc40d50940, where the destination
+// went unread and no fixedAgendaMatchBonus could fire - the value is
+// copied over before targetCanonicalNodeId is cleared.
+func TestTreeAuditCanonicalizeFoldCandidateComplementsDestinationField(t *testing.T) {
+	payload, segments, mc := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	roles := classifyTreeAuditEvidence(state, segments)
+	destination := stableAgendaTopicID("agenda-2", 0)
+	response := &treeAuditResponse{Operations: []treeAuditOperation{
+		{OperationID: "op-fold-complement", Type: TreeAuditFoldCandidateIntoTopic,
+			TargetCandidateID:     "candidate-plant-video",
+			TargetCanonicalNodeID: destination, // destination given in the wrong field; toParentCanonicalNodeId left blank
+			Confidence:            0.97, Reason: "強風日の風速基準を騒音測定topicへ統合", EvidenceSequenceNos: []int64{13},
+		},
+	}}
+	canonicalizeTreeAuditResponse(response, state)
+	if len(response.ParseRejections) != 0 || len(response.Operations) != 1 {
+		t.Fatalf("canonicalized response = %+v", response)
+	}
+	got := response.Operations[0]
+	if got.TargetCanonicalNodeID != "" {
+		t.Fatalf("targetCanonicalNodeId must be cleared after the fold destination complement, got %q", got.TargetCanonicalNodeID)
+	}
+	if got.ToParentCanonicalNodeID != destination {
+		t.Fatalf("toParentCanonicalNodeId = %q, want %q (complemented from targetCanonicalNodeId)", got.ToParentCanonicalNodeID, destination)
+	}
+	dry, result := validateAndDryRunTreeAuditOperations(state, response.Operations, segments, mc, roles, TreeAuditConfig{}, "audit-fold-complement", 13, true)
+	if result.OperationsValid != 1 || result.OperationsApplied != 1 || !result.TreeIntegrityValid {
+		t.Fatalf("validator result = %+v", result)
+	}
+	if node := treeNodeByID(dry.Tree, "item-todo-wind-standard"); node == nil || node.ParentID != destination {
+		t.Fatalf("folded item parent = %+v, want parent %q", node, destination)
+	}
+}
+
+// TestTreeAuditCanonicalizeStillRejectsGenuinelyInvalidRequiredField covers
+// the negative case for field normalization: a field the operation's
+// applier *does* use must still be rejected with its original reason when
+// it genuinely fails to resolve, even after normalization runs. Normalizing
+// unused fields never loosens resolution of the fields that remain in use.
+func TestTreeAuditCanonicalizeStillRejectsGenuinelyInvalidRequiredField(t *testing.T) {
+	payload, _, _ := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	response := &treeAuditResponse{Operations: []treeAuditOperation{
+		{OperationID: "op-rename-bad-target", Type: TreeAuditRenameGroup,
+			TargetCanonicalNodeID: "item-risk-rare-plants", // a real ID, but a detail item, not a container
+			Label:                 "植物調査班", Confidence: 1,
+		},
+		{OperationID: "op-move-unknown-item", Type: TreeAuditMoveItem,
+			TargetCanonicalItemID:     "does-not-exist",
+			FromParentCanonicalNodeID: "candidate-info-public", ToParentCanonicalNodeID: "candidate-plant-study",
+			Confidence: 1,
+		},
+	}}
+	canonicalizeTreeAuditResponse(response, state)
+	if len(response.Operations) != 0 {
+		t.Fatalf("both operations must still be rejected at canonicalization, got %+v", response.Operations)
+	}
+	if len(response.ParseRejections) != 2 {
+		t.Fatalf("rejections = %+v", response.ParseRejections)
+	}
+	byID := make(map[string]string, len(response.ParseRejections))
+	for _, rejection := range response.ParseRejections {
+		byID[rejection.ElementID] = rejection.Reason
+	}
+	if byID["op-rename-bad-target"] != "target_not_node" {
+		t.Fatalf("op-rename-bad-target reason = %q, want target_not_node", byID["op-rename-bad-target"])
+	}
+	if byID["op-move-unknown-item"] != "unresolved_canonical_id" {
+		t.Fatalf("op-move-unknown-item reason = %q, want unresolved_canonical_id", byID["op-move-unknown-item"])
 	}
 }
 
