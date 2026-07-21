@@ -144,7 +144,12 @@ func (h treeHealth) reorganizationReasons() []string {
 }
 
 func (h treeHealth) String() string {
-	return fmt.Sprintf("topics=%d groups=%d nestedGroups=%d details=%d unclassified=%d maxTopicChildren=%d maxTopicId=%s maxGroupChildren=%d maxGroupId=%s maxChildren=%d maxChildrenParentId=%s maxConcentration=%.2f flatTopics=%d singleChildGroups=%d averageDepth=%.2f averageBranchingFactor=%.2f",
+	// unclassifiedStagingChildren counts nodes directly under the
+	// topic-unclassified staging topic (h.UnclassifiedChildren); it is a tree
+	// node count, distinct from trueUnclassifiedItems (an item-level
+	// ClassificationStatus count logged elsewhere). The old "unclassified="
+	// name read as if it were that item count, which it is not (H3).
+	return fmt.Sprintf("topics=%d groups=%d nestedGroups=%d details=%d unclassifiedStagingChildren=%d maxTopicChildren=%d maxTopicId=%s maxGroupChildren=%d maxGroupId=%s maxChildren=%d maxChildrenParentId=%s maxConcentration=%.2f flatTopics=%d singleChildGroups=%d averageDepth=%.2f averageBranchingFactor=%.2f",
 		h.TopicCount, h.GroupCount, h.NestedGroupCount, h.DetailCount, h.UnclassifiedChildren, h.MaxTopicChildren, h.MaxTopicID, h.MaxGroupChildren, h.MaxGroupID, h.MaxChildren, h.MaxChildrenParentID, h.MaxConcentration, h.FlatTopicCount, h.SingleChildGroupCount, h.AverageDepth, h.AverageBranchingFactor)
 }
 

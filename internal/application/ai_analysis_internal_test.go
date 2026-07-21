@@ -1301,3 +1301,48 @@ func TestLiveAnalysisBackoffCapsAtMaxBackoff(t *testing.T) {
 		t.Fatalf("backoff(100) = %s, want capped at %s", got, meetingAnalysisMaxBackoff)
 	}
 }
+
+// TestCountLiveAnalysisPayloadStatsSplitsTreeAndAssistantTentativeVisibility
+// covers H2: TreeHiddenTentativeItems/AssistantVisibleTentativeItems must
+// reflect their distinct frontend contracts, not one shared count. Four
+// tentative items exercise every combination: a card-visible kind that is
+// still open (counted by both), a card-visible kind that is resolved
+// (excluded from the assistant count only, per that surface's own status
+// filter), a non-card kind (fact, excluded from the assistant count only),
+// and a second card-visible open kind (todo) to prove the count is not
+// hardcoded to a single kind.
+func TestCountLiveAnalysisPayloadStatsSplitsTreeAndAssistantTentativeVisibility(t *testing.T) {
+	payload, err := json.Marshal(liveAnalysisPayload{Items: []liveAnalysisItem{
+		{ID: "item-risk-open", Kind: "risk", Status: "open", ClassificationStatus: classificationTentative},
+		{ID: "item-decision-resolved", Kind: "decision", Status: "resolved", ClassificationStatus: classificationTentative},
+		{ID: "item-fact-open", Kind: "fact", Status: "open", ClassificationStatus: classificationTentative},
+		{ID: "item-todo-open", Kind: "todo", Status: "open", ClassificationStatus: classificationTentative},
+		{ID: "item-todo-assigned", Kind: "todo", Status: "open", ClassificationStatus: classificationAssigned},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := countLiveAnalysisPayloadStats(payload)
+	if stats.TentativeItems != 4 {
+		t.Fatalf("TentativeItems = %d, want 4 (tree projection hides every tentative item regardless of kind/status)", stats.TentativeItems)
+	}
+	if stats.AssistantVisibleTentativeItems != 2 {
+		t.Fatalf("AssistantVisibleTentativeItems = %d, want 2 (item-risk-open + item-todo-open only: card-visible kind and status!=resolved)", stats.AssistantVisibleTentativeItems)
+	}
+}
+
+// TestTreeHealthStringUsesUnclassifiedStagingChildrenLabel covers H3: the
+// old "unclassified=" label read as if it were the item-level
+// trueUnclassifiedItems count logged elsewhere, when it is actually
+// treeHealth.UnclassifiedChildren (a tree node count: children directly
+// under the topic-unclassified staging topic).
+func TestTreeHealthStringUsesUnclassifiedStagingChildrenLabel(t *testing.T) {
+	health := treeHealth{UnclassifiedChildren: 3}
+	rendered := health.String()
+	if !strings.Contains(rendered, "unclassifiedStagingChildren=3") {
+		t.Fatalf("health.String() = %q, want it to contain unclassifiedStagingChildren=3", rendered)
+	}
+	if strings.Contains(rendered, "unclassified=") {
+		t.Fatalf("health.String() = %q, must not still contain the old unclassified= label", rendered)
+	}
+}

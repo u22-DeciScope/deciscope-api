@@ -896,7 +896,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	stats := countLiveAnalysisPayloadStats(payload)
 	treeStats.RecapMerged = issueAudit.RecapMerged
 	treeStats.TrueUnclassifiedItems = stats.UnclassifiedItems
-	treeStats.TentativeItemsHidden = stats.TentativeItems
+	treeStats.TreeHiddenTentativeItems = stats.TentativeItems
+	treeStats.AssistantVisibleTentativeItems = stats.AssistantVisibleTentativeItems
 	payloadState := previousLiveAnalysisState(payload)
 	treeHealth := computeTreeHealth(payloadState.Tree)
 	relatedAgendaReferences := 0
@@ -924,8 +925,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, issueAudit.QuestionCandidates, issueAudit.OpenIssueCandidates, issueAudit.QuestionsAccepted, issueAudit.OpenIssuesAccepted, issueAudit.ExistingMerged)
 	log.Printf("Live action summary projection. sessionId=%s version=%d sourceActionSummaryAgendaCount=%d actionSummaryAgendaIds=%v logicalActionSummaryCount=%d actionSummaryCandidates=%d deduplicatedActionItems=%d renderedActionItems=%d renderedActionTabs=1 renderedReferenceNodes=0 activeTodoReferences=%d activeOpenIssueFallbacks=%d completedItemsExcluded=%d resolvedItemsExcluded=%d clusteredReferences=%d",
 		sessionID, newVersion, treeStats.SourceActionSummaryAgendaCount, actionSummaryAgendaIDs, treeStats.LogicalActionSummaryCount, treeStats.ActionSummaryCandidates, treeStats.DeduplicatedActionItems, treeStats.RenderedActionItems, treeStats.ActiveTodoReferences, treeStats.ActiveOpenIssueFallbacks, treeStats.CompletedTodoExcluded, treeStats.ResolvedItemsExcluded, treeStats.ClusteredReferences)
-	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d tentativeItemsHidden=%d companionParentInherited=%d companionCandidateInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d tentativeMetadataLost=%d",
-		sessionID, newVersion, treeStats.TrueUnclassifiedItems, stats.TentativeItems, treeStats.TentativeItemsHidden, treeStats.CompanionParentInherited, treeStats.CompanionCandidateInherited, treeStats.SemanticParentCorrected, treeStats.PromotedItemsReparented, treeStats.StaleCandidatesHidden, treeStats.TentativeMetadataLost)
+	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d treeHiddenTentativeItems=%d assistantVisibleTentativeItems=%d companionParentInherited=%d companionCandidateInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d tentativeMetadataLost=%d",
+		sessionID, newVersion, treeStats.TrueUnclassifiedItems, stats.TentativeItems, treeStats.TreeHiddenTentativeItems, treeStats.AssistantVisibleTentativeItems, treeStats.CompanionParentInherited, treeStats.CompanionCandidateInherited, treeStats.SemanticParentCorrected, treeStats.PromotedItemsReparented, treeStats.StaleCandidatesHidden, treeStats.TentativeMetadataLost)
 	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d discourseOnlyItemsRejected=%d discourseOnlyCandidatesRejected=%d candidateSubjectIncoherentDeferred=%d candidateSubjectMutationRejected=%d candidateSubjectsSplit=%d",
 		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited, treeStats.DiscourseOnlyItemsRejected, treeStats.DiscourseOnlyCandidatesRejected, treeStats.CandidateSubjectIncoherentDeferred, treeStats.CandidateSubjectMutationRejected, treeStats.CandidateSubjectsSplit)
 	log.Printf("Live no-agenda candidate lifecycle. sessionId=%s version=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v noAgendaSpansClosed=%d explicitAgendaReentries=%d implicitAgendaReentries=%d lowConfidenceNoAgendaOverridesRejected=%d staleAgendaFallbackRejected=%d fixedAgendaAssignmentRejectedByNoAgendaSpan=%d candidateSubjectKey=%v candidateIdsMerged=%d companionCandidateInherited=%d crossKindCandidateInherited=%d dynamicTopicPromoted=%d promotedItemIds=%v promotedItemsRemainingOutsideTopic=%d",
@@ -3887,14 +3888,23 @@ type liveAnalysisTreeMergeStats struct {
 	ResurrectionPreventions              []itemResurrectionPrevention
 	// Classification/projection diagnostics make the computed action summary
 	// and tentative staging observable without creating extra tree nodes.
-	ActionSummaryCandidates             int
-	ActiveTodoReferences                int
-	ActiveOpenIssueFallbacks            int
-	CompletedTodoExcluded               int
-	ResolvedItemsExcluded               int
-	ClusteredReferences                 int
-	TrueUnclassifiedItems               int
-	TentativeItemsHidden                int
+	ActionSummaryCandidates  int
+	ActiveTodoReferences     int
+	ActiveOpenIssueFallbacks int
+	CompletedTodoExcluded    int
+	ResolvedItemsExcluded    int
+	ClusteredReferences      int
+	TrueUnclassifiedItems    int
+	// TreeHiddenTentativeItems is the tentative item count as hidden by the
+	// tree projection (stageTentativeTree, deciscope-web hides every
+	// tentative item regardless of kind). AssistantVisibleTentativeItems is
+	// the subset of those the AI assistant card list would still show (kind
+	// decision/risk/todo/issue, status != resolved -- that surface does not
+	// look at classificationStatus at all). Both are frontend-contract
+	// estimates computed from this payload, not a measurement of actual
+	// rendered output (H2).
+	TreeHiddenTentativeItems            int
+	AssistantVisibleTentativeItems      int
 	CompanionParentInherited            int
 	SemanticParentCorrected             int
 	PromotedItemsReparented             int
@@ -5262,14 +5272,35 @@ type liveAnalysisPayloadStats struct {
 	TotalNodes    int
 	ResolvedNodes int
 	// 分類状態別のitem数と未昇格候補数(集計ログ用)。
-	AssignedItems         int
-	TentativeItems        int
-	UnclassifiedItems     int
-	EmergingCandidates    int
-	KindCounts            map[string]int
-	ResolvedKindCounts    map[string]int
-	SubtypeCounts         map[string]int
-	ResolvedSubtypeCounts map[string]int
+	AssignedItems      int
+	TentativeItems     int
+	UnclassifiedItems  int
+	EmergingCandidates int
+	// AssistantVisibleTentativeItems estimates how many of TentativeItems the
+	// AI assistant card list would still show: that surface filters on kind
+	// only (decision|risk|todo|issue) and excludes resolved status, unlike
+	// the tree projection (stageTentativeTree, deciscope-web) which hides
+	// every tentative item regardless of kind. This is a frontend-contract
+	// estimate, not a measurement of actual rendered output (H2).
+	AssistantVisibleTentativeItems int
+	KindCounts                     map[string]int
+	ResolvedKindCounts             map[string]int
+	SubtypeCounts                  map[string]int
+	ResolvedSubtypeCounts          map[string]int
+}
+
+// assistantCardVisibleKind mirrors the AI assistant card list's own kind
+// filter (deciscope-web): it renders decision/risk/todo/issue cards
+// regardless of classificationStatus, unlike the tree projection which hides
+// every tentative item. Kept in sync with that filter is a documentation
+// intent only -- this backend does not render the card list itself (H2).
+func assistantCardVisibleKind(kind string) bool {
+	switch kind {
+	case "decision", "risk", "todo", "issue":
+		return true
+	default:
+		return false
+	}
 }
 
 // countLiveAnalysisPayloadStats re-parses an already-merged payload to count
@@ -5306,6 +5337,9 @@ func countLiveAnalysisPayloadStats(payload json.RawMessage) liveAnalysisPayloadS
 			stats.AssignedItems++
 		case classificationTentative:
 			stats.TentativeItems++
+			if item.Status != "resolved" && assistantCardVisibleKind(item.Kind) {
+				stats.AssistantVisibleTentativeItems++
+			}
 		case classificationUnclassified:
 			stats.UnclassifiedItems++
 		}

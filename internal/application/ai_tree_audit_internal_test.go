@@ -48,6 +48,75 @@ func TestDeterministicTreeAuditPrecheckReplaysTargetSessionAnomalies(t *testing.
 	t.Logf("target replay: treeVersion=%d findings=%d byType=%v nodes=%d edges=%d coverage=%d integrityValid=%t", state.TreeVersion, len(findings), byType, len(state.Tree.Nodes), len(state.Tree.Edges), state.CoveredThroughSequenceNo, integrity.Valid)
 }
 
+// TestClassifyTreeAuditEvidenceKeepsPersistedPrimaryUtterance covers H1: a
+// primary utterance must not be demoted to "reference" by
+// looksLikeTreeAuditReference's heuristic just because it also happens to
+// resemble the very item it was extracted from, or contains a generic
+// status-review word ("確認"), when the deterministic timeline and the
+// item's own persisted EvidenceRoles both already say primary/correction.
+// This reproduces session_7e10430ec0ac3b82's seq14: a real "作業者とは別の
+// 担当者が設定内容を確認するダブルチェックを必須にします。また、…疎通確認を
+// 実施する…" utterance contains 確認 twice and closely resembles both the
+// decision item it produced and a label-derived topic, yet remains the
+// utterance's own primary evidence, not a reference to something else.
+func TestClassifyTreeAuditEvidenceKeepsPersistedPrimaryUtterance(t *testing.T) {
+	// ケース1: 永続化済みprimaryの本編発話は、自己参照・statusReviewの混同
+	// 要因があってもprimaryのまま。
+	seq14Text := "まず、ネットワーク機器を交換する際は、作業者とは別の担当者が設定内容を確認するダブルチェックを必須にします。また、交換前後でブイランごとの疎通確認を実施するチェックリストを作成します。"
+	primaryState := liveAnalysisPayload{
+		Items: []liveAnalysisItem{
+			{ID: "item-decision-doublecheck", Kind: "decision", Title: "ダブルチェックを必須にします", Body: seq14Text, Status: "open",
+				EvidenceSequenceNos: []int64{14}, EvidenceRoles: []liveEvidenceRoleRef{{SequenceNo: 14, Role: liveEvidencePrimary}}},
+		},
+		Tree: &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+			{ID: treeRootNodeID, Kind: "topic", Label: "root", Origin: topicOriginSystem},
+			// ラベル由来topic(同じ発話から生まれた話題): matchedTopicsを
+			// 誤って稼働させうる混同要因として同席させる。
+			{ID: "candidate-doublecheck", Kind: "topic", ParentID: treeRootNodeID, Label: "ダブルチェックとチェックリスト", Description: "設定内容の確認運用", Origin: topicOriginDynamic},
+		}},
+	}
+	primarySegments := []domain.TranscriptSegment{{SequenceNo: 14, Text: seq14Text, IsFinal: true}}
+	primaryRoles := classifyTreeAuditEvidence(primaryState, primarySegments)
+	if primaryRoles[14] != treeAuditEvidencePrimary {
+		t.Fatalf("roles[14] = %q, want primary (persisted-primary utterance must survive the self-referential/status-review heuristic)", primaryRoles[14])
+	}
+
+	// ケース2: 純粋なrecap発話(永続化済みreference_recap)はreferenceのまま
+	// (L722-728の優先ルールは変更していないことの回帰確認)。
+	recapState := liveAnalysisPayload{
+		Items: []liveAnalysisItem{
+			{ID: "item-decision-doublecheck-recap", Kind: "decision", Title: "ダブルチェックの再掲", Body: "再発防止として、設定のダブルチェックとvランごとの疎通確認を必須にします。", Status: "open",
+				EvidenceSequenceNos: []int64{27}, EvidenceRoles: []liveEvidenceRoleRef{{SequenceNo: 27, Role: liveEvidenceReferenceRecap}}},
+		},
+	}
+	recapSegments := []domain.TranscriptSegment{{SequenceNo: 27, Text: "再発防止として、設定のダブルチェックとvランごとの疎通確認を必須にします。", IsFinal: true}}
+	recapRoles := classifyTreeAuditEvidence(recapState, recapSegments)
+	if recapRoles[27] != treeAuditEvidenceReference {
+		t.Fatalf("roles[27] = %q, want reference (persisted reference_recap must still win)", recapRoles[27])
+	}
+
+	// ケース3: 同一item内でprimaryとrecapの両evidenceが混在する場合
+	// ([9,29]型)、9はprimaryのまま、29はreferenceになる。
+	mixedState := liveAnalysisPayload{
+		Items: []liveAnalysisItem{
+			{ID: "item-issue-investigation-cause", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "2階通信遅延の原因調査", Body: "2階の通信遅延の原因はvラン設定だけで説明できるか確認できていない", Status: "open",
+				EvidenceSequenceNos: []int64{9, 29},
+				EvidenceRoles: []liveEvidenceRoleRef{{SequenceNo: 9, Role: liveEvidencePrimary}, {SequenceNo: 29, Role: liveEvidenceReferenceRecap}}},
+		},
+	}
+	mixedSegments := []domain.TranscriptSegment{
+		{SequenceNo: 9, Text: "2階の通信遅延の原因はvラン設定だけで説明できるか確認できていません。", IsFinal: true},
+		{SequenceNo: 29, Text: "2階の通信遅延の原因と監視アラートの条件は、未解決事項として残します。", IsFinal: true},
+	}
+	mixedRoles := classifyTreeAuditEvidence(mixedState, mixedSegments)
+	if mixedRoles[9] != treeAuditEvidencePrimary {
+		t.Fatalf("roles[9] = %q, want primary", mixedRoles[9])
+	}
+	if mixedRoles[29] != treeAuditEvidenceReference {
+		t.Fatalf("roles[29] = %q, want reference", mixedRoles[29])
+	}
+}
+
 func TestTreeAuditPatchValidatorAllowsOnlySafeSemanticImprovement(t *testing.T) {
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
@@ -1759,13 +1828,24 @@ func TestTreeAuditAssignItemToCandidateApplies(t *testing.T) {
 // TestTreeAuditChangeEvidenceRoleDowngradesToReferenceRecap covers the
 // change_evidence_role success path, including that the downgrade is
 // visible to a fresh classifyTreeAuditEvidence pass (the next snapshot must
-// honor the audit's own correction).
+// honor the audit's own correction). Sequence 24 ("植物の種類を確認するため、
+// 専門家による予備調査を検討します。") is classifyTreeAuditEvidence's own
+// primary classification since H1: it is item-todo-plant-survey's own
+// genuine supplementary evidence (not a reference to something else), which
+// looksLikeTreeAuditReference now recognizes correctly by excluding the
+// item's own self-similarity from matchedItems (previously this fixture's
+// assumption relied on that very self-match bug demoting it to reference
+// already, before any explicit operation ran). The point of this test is
+// that an explicit, server-owned change_evidence_role correction can still
+// downgrade it deliberately and have that downgrade persist across a fresh
+// classification pass -- regardless of what the heuristic alone would have
+// classified it as.
 func TestTreeAuditChangeEvidenceRoleDowngradesToReferenceRecap(t *testing.T) {
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
 	roles := classifyTreeAuditEvidence(state, segments)
-	if roles[24] == treeAuditEvidencePrimary {
-		t.Fatalf("fixture assumption violated: sequence 24 role = %q, want non-primary", roles[24])
+	if roles[24] != treeAuditEvidencePrimary {
+		t.Fatalf("fixture assumption violated: sequence 24 role = %q, want primary", roles[24])
 	}
 	operation := treeAuditOperation{
 		OperationID: "op-downgrade", Type: TreeAuditChangeEvidenceRole,

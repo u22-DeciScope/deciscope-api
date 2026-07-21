@@ -699,18 +699,42 @@ func classifyTreeAuditEvidence(state liveAnalysisPayload, segments []domain.Tran
 			roles[sequenceNo] = treeAuditEvidencePrimary
 		}
 	}
+	// persistedPrimary holds every sequence a previous round already stamped
+	// primary/correction on some item's own EvidenceRoles (stampEvidenceRoles).
+	// H1: when the deterministic timeline above (not just this heuristic's own
+	// prior iteration) agrees a sequence is primary/correction, the
+	// looksLikeTreeAuditReference heuristic below must not downgrade it. Left
+	// unguarded, a primary utterance that also happens to resemble its own
+	// freshly-extracted item/topic (or contains a generic status-review word
+	// such as "確認") gets misjudged as a reference to *something else* and
+	// wrongly demoted, which then makes a correct audit move_item repair get
+	// rejected as reference_evidence_only (see the report).
+	persistedPrimary := make(map[int64]struct{})
+	for _, item := range state.Items {
+		for _, ref := range item.EvidenceRoles {
+			if ref.Role == liveEvidencePrimary || ref.Role == liveEvidenceCorrection {
+				persistedPrimary[ref.SequenceNo] = struct{}{}
+			}
+		}
+	}
 	for _, item := range state.Items {
 		if len(item.EvidenceSequenceNos) == 0 {
 			continue
 		}
 		primary := item.EvidenceSequenceNos[0]
-		if roles[primary] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[primary].Text, state) {
+		if _, protected := persistedPrimary[primary]; protected && roles[primary] == treeAuditEvidencePrimary {
+			// already primary by both the persisted record and the
+			// deterministic timeline; keep it.
+		} else if roles[primary] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[primary].Text, state, primary) {
 			roles[primary] = treeAuditEvidenceReference
 		} else {
 			roles[primary] = treeAuditEvidencePrimary
 		}
 		for _, sequenceNo := range item.EvidenceSequenceNos[1:] {
-			if roles[sequenceNo] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[sequenceNo].Text, state) {
+			if _, protected := persistedPrimary[sequenceNo]; protected && roles[sequenceNo] == treeAuditEvidencePrimary {
+				continue
+			}
+			if roles[sequenceNo] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[sequenceNo].Text, state, sequenceNo) {
 				roles[sequenceNo] = treeAuditEvidenceReference
 			}
 		}
@@ -729,13 +753,23 @@ func classifyTreeAuditEvidence(state liveAnalysisPayload, segments []domain.Tran
 	return roles
 }
 
-func looksLikeTreeAuditReference(text string, state liveAnalysisPayload) bool {
+// looksLikeTreeAuditReference judges whether text (the utterance behind one
+// evidence sequenceNo) reads like a reference back to already-recorded
+// content rather than the primary utterance that produced it. matchedItems
+// deliberately excludes any item whose own EvidenceSequenceNos already
+// include sequenceNo: an utterance always resembles the very item it was
+// just extracted from, and that self-similarity is not evidence that the
+// utterance is *referencing* some other, already-existing item (H1).
+func looksLikeTreeAuditReference(text string, state liveAnalysisPayload, sequenceNo int64) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return false
 	}
 	matchedItems := 0
 	for _, item := range state.Items {
+		if containsInt64(item.EvidenceSequenceNos, sequenceNo) {
+			continue
+		}
 		if semanticItemSimilarity(text, item.Title+" "+item.Body) >= 0.48 {
 			matchedItems++
 		}
