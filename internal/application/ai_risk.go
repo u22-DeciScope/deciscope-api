@@ -20,7 +20,27 @@ var (
 	// ("という可能性があります" etc.) that explicitRiskItemTitle would
 	// otherwise carry verbatim into the card title.
 	riskTitleTrailingPattern = regexp.MustCompile(`(?:という)?(?:可能性があ(?:る|ります)|お(?:それ|それ)があ(?:る|ります)|恐れがあ(?:る|ります)|リスクがあ(?:る|ります)|なりかねな(?:い|く)(?:なります)?|なりかねません)$`)
+	// issueDistinctActionPropositionPattern matches an explicit
+	// action/undecided marker ("〜が必要", "次回までに検討", "〜を検討します")
+	// that names its own proposition (a pending decision/action) distinct
+	// from a co-occurring risk statement in the same sentence (e.g. 「監査
+	// 対象を増やすとアラートが多くなりすぎる可能性がある。監視間隔と通知条件
+	// については、次回までに検討が必要です。」). A bare possibility statement
+	// without this marker (「放置するとリモート接続に影響する可能性がある」)
+	// does not match and keeps the existing migrate/dedup behavior.
+	issueDistinctActionPropositionPattern = regexp.MustCompile(`(?:検討|確認|調査|対応|見直し)が必要|次回までに(?:検討|確認|調査)|を(?:検討|確認|調査)します`)
 )
+
+// issueCarriesDistinctActionProposition reports whether item's own text
+// names an explicit pending action/decision that is a separate proposition
+// from a risk statement it may share evidence with. When true, the risk/issue
+// same-evidence migration and dedup in this file (and
+// mergeSameEvidenceCrossKindDuplicates in ai_analysis.go) must not collapse
+// the issue into the risk -- both are kept so the action proposition is not
+// lost.
+func issueCarriesDistinctActionProposition(item liveAnalysisItem) bool {
+	return issueDistinctActionPropositionPattern.MatchString(item.Title + item.Body)
+}
 
 // liveAnalysisRoundMaxSynthesizedRiskItems caps how many risk items
 // synthesizeExplicitRiskItems will create from one round's utterances.
@@ -65,6 +85,17 @@ func synthesizeExplicitRiskItems(previous, diff []liveAnalysisItem, scope liveEv
 		if evidenceRoleIsReference(sequenceNo, timeline) {
 			continue
 		}
+		// 同一発話(sequenceNo)だけをevidenceに持つdiscussion issueが既に提案
+		// されている場合、そのissueとこのrisk合成は実質同じ発話の重複表現
+		// (modelのissue抽出とサーバーのrisk合成が併存してしまう)。diff側は
+		// risk側へ移行(kind書き換え)してrisk合成をスキップし、previous
+		// (確定済み)側は合成のみをスキップする(既存itemのkindは触らない)。
+		if migrateSameSentenceDiscussionIssueToRisk(diff, text, sequenceNo, stats) {
+			continue
+		}
+		if sameSentenceDiscussionIssueExists(previous, text, sequenceNo) {
+			continue
+		}
 		if riskItemDuplicatesExisting(text, sequenceNo, existingRisks) {
 			continue
 		}
@@ -84,6 +115,56 @@ func synthesizeExplicitRiskItems(previous, diff []liveAnalysisItem, scope liveEv
 		}
 	}
 	return synthesized
+}
+
+// sameSentenceDiscussionIssueEvidence reports whether item is a discussion
+// issue whose sole evidence is sequenceNo and whose text closely matches the
+// sentence at that sequence -- the shape produced when the model's issue
+// extraction and synthesizeExplicitRiskItems both react to the same sentence
+// (e.g. group-dd702579aa54's issue と risk が同一発話由来で併存するケース)。
+func sameSentenceDiscussionIssueEvidence(item liveAnalysisItem, text string, sequenceNo int64) bool {
+	if item.Kind != "issue" || item.Subtype != issueSubtypeDiscussion {
+		return false
+	}
+	if len(item.EvidenceSequenceNos) != 1 || item.EvidenceSequenceNos[0] != sequenceNo {
+		return false
+	}
+	if issueCarriesDistinctActionProposition(item) {
+		return false
+	}
+	return semanticItemSimilarity(item.Title+" "+item.Body, text) >= 0.5
+}
+
+// migrateSameSentenceDiscussionIssueToRisk migrates the first diff issue
+// matching sameSentenceDiscussionIssueEvidence into a risk item in place
+// (clearing Subtype), so the same sentence does not end up with both a
+// model-proposed discussion issue and a server-synthesized risk item.
+func migrateSameSentenceDiscussionIssueToRisk(diff []liveAnalysisItem, text string, sequenceNo int64, stats *liveAnalysisTreeMergeStats) bool {
+	for i := range diff {
+		if !sameSentenceDiscussionIssueEvidence(diff[i], text, sequenceNo) {
+			continue
+		}
+		diff[i].Kind = "risk"
+		diff[i].Subtype = ""
+		if stats != nil {
+			stats.SemanticKindMigrations++
+		}
+		return true
+	}
+	return false
+}
+
+// sameSentenceDiscussionIssueExists reports whether previous (already
+// persisted, canonical state) holds a discussion issue matching
+// sameSentenceDiscussionIssueEvidence. previous items are never rewritten
+// here -- only the pending risk synthesis for this sentence is skipped.
+func sameSentenceDiscussionIssueExists(previous []liveAnalysisItem, text string, sequenceNo int64) bool {
+	for _, item := range previous {
+		if sameSentenceDiscussionIssueEvidence(item, text, sequenceNo) {
+			return true
+		}
+	}
+	return false
 }
 
 // riskItemDuplicatesExisting reports whether a candidate risk sentence

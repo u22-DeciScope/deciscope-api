@@ -823,13 +823,28 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		}
 	}
 	evidenceScope := s.liveEvidenceScope(ctx, sessionID, previousPayload, segments)
+	// server decision/issue候補のrecap扱い: 談話タイムライン上でrecapと判定
+	// された発話由来の候補は、新規item作成やtodo昇格へ落とさず既存itemの
+	// 更新のみ許可する(reconcileDecisionCandidates/reconcileIssueCandidates
+	// 側のRecapゲート参照)。model roleはまだ無いため、決定的判定のみで作る。
+	precheckTimeline := classifyDiscourseTimeline(evidenceScope)
 	issueCandidates := detectIssueCandidates(segments)
+	for i := range issueCandidates {
+		if precheckTimeline.Roles[issueCandidates[i].SequenceNo] == liveEvidenceReferenceRecap {
+			issueCandidates[i].Recap = true
+		}
+	}
 	issueContent, issueAudit, issueErr := reconcileIssueCandidates(result.Content, previousPayload, issueCandidates)
 	if issueErr != nil {
 		issueContent = result.Content
 		log.Printf("Question/open issue reconciliation failed. sessionId=%s error=%v", sessionID, issueErr)
 	}
 	decisionCandidates := detectDecisionCandidates(extendDecisionSegmentsWithPriorFragment(segments, evidenceScope))
+	for i := range decisionCandidates {
+		if precheckTimeline.Roles[decisionCandidates[i].SequenceNo] == liveEvidenceReferenceRecap {
+			decisionCandidates[i].Recap = true
+		}
+	}
 	reconciledContent, decisionAudit, reconcileErr := reconcileDecisionCandidates(issueContent, previousPayload, decisionCandidates)
 	if reconcileErr != nil {
 		// The normal parser below remains the source of truth for malformed
@@ -1745,6 +1760,19 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	} else {
 		livePayload = finalizedPayload
 	}
+	// Deterministic repairs the model-facing auditor cannot apply itself
+	// (merge_dynamic_topics has no server applier, and a leftover
+	// same-evidence risk/issue duplicate needs a sweep rather than a fresh
+	// finding). Fail-safe: on error or integrity rejection, continue with the
+	// payload from just above unmodified.
+	if repaired, repairStats := applyDeterministicFinalTreeRepairs(livePayload, meetingCtx, liveVersion); repairStats.Error != "" || repairStats.IntegrityRejected {
+		log.Printf("Deterministic final tree repair skipped. sessionId=%s treeVersion=%d integrityRejected=%t error=%s", sessionID, liveVersion, repairStats.IntegrityRejected, repairStats.Error)
+	} else {
+		livePayload = repaired
+		if repairStats.PromotedTopicDuplicatesFolded > 0 || repairStats.PromotedTopicFoldsAborted > 0 || repairStats.CrossKindDuplicatesMerged > 0 {
+			log.Printf("Deterministic final tree repair applied. sessionId=%s treeVersion=%d promotedTopicDuplicatesFolded=%d promotedTopicFoldsAborted=%d crossKindDuplicatesMerged=%d", sessionID, liveVersion, repairStats.PromotedTopicDuplicatesFolded, repairStats.PromotedTopicFoldsAborted, repairStats.CrossKindDuplicatesMerged)
+		}
+	}
 	progress.Stage = "final_tree_review_completed"
 	s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisRunning, progressVersion, progress, nil)
 
@@ -1888,6 +1916,247 @@ func finalizeAgendaLifecyclePayload(payload json.RawMessage, mc *meetingContext,
 		state.TreeIntegrity = &integrity
 	}
 	return json.Marshal(state)
+}
+
+// finalRepairStats summarizes what applyDeterministicFinalTreeRepairs changed
+// (or safely declined to change).
+type finalRepairStats struct {
+	PromotedTopicDuplicatesFolded int
+	PromotedTopicFoldsAborted     int
+	CrossKindDuplicatesMerged     int
+	IntegrityRejected             bool
+	Error                         string
+}
+
+// applyDeterministicFinalTreeRepairs runs two decision-driven repairs the
+// model-facing tree auditor cannot apply on its own: merge_dynamic_topics has
+// no server applier (see treeAuditRules), so a promoted dynamic topic that
+// still duplicates another promoted topic's subject (e.g. a recap-round
+// promotion that slipped through before W1/W2's fold rule existed, or a tree
+// restored from an intermediate live version) never gets folded by the
+// live/audit pipeline on its own. Likewise a risk/issue(discussion) pair that
+// share the exact same evidence and are clearly the same proposition (the
+// shape W6 now prevents from being newly created, but which can still exist
+// in an older persisted tree) needs a deterministic sweep rather than a fresh
+// model finding. It is fail-safe: any marshal error or post-repair integrity
+// failure discards every change from this pass and returns payload
+// unmodified; the caller only needs to log the outcome.
+func applyDeterministicFinalTreeRepairs(payload json.RawMessage, mc *meetingContext, version int64) (json.RawMessage, finalRepairStats) {
+	var stats finalRepairStats
+	state := previousLiveAnalysisState(payload)
+	if state.Tree == nil || len(state.Tree.Nodes) == 0 {
+		return payload, stats
+	}
+
+	foldDuplicatePromotedDynamicTopics(&state, version, &stats)
+	mergeSameEvidenceCrossKindDuplicates(&state, version, &stats)
+	rebuildTreeAuditEdges(state.Tree)
+
+	integrity := validateTreeIntegrity(state.Tree, state.Items, mc, state.AgendaAnchors)
+	if !integrity.Valid {
+		stats.IntegrityRejected = true
+		return payload, stats
+	}
+	state.ReorganizationReasons = computeTreeHealth(state.Tree).reorganizationReasons()
+
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		stats.Error = err.Error()
+		return payload, stats
+	}
+	return encoded, stats
+}
+
+// foldDuplicatePromotedDynamicTopics folds a later dynamic topic into an
+// earlier one whenever semanticExistingTopicID (design W1's fold rule) judges
+// them the same subject. "Later" is the topic with the larger
+// CreatedAtVersion, or (on a tie) the one with fewer children; ties beyond
+// that resolve by ID so repeated runs fold the same way. A child currently
+// protected by a manual edit (LastParentChangeSource) aborts the fold
+// entirely rather than partially reparenting the topic's children.
+func foldDuplicatePromotedDynamicTopics(state *liveAnalysisPayload, version int64, stats *finalRepairStats) {
+	if state == nil || state.Tree == nil {
+		return
+	}
+	topics := make(map[string]liveAnalysisTreeNode)
+	for _, node := range state.Tree.Nodes {
+		if node.Kind == "topic" {
+			topics[node.ID] = node
+		}
+	}
+	childCount := make(map[string]int, len(state.Tree.Nodes))
+	for _, node := range state.Tree.Nodes {
+		if node.ParentID != "" {
+			childCount[node.ParentID]++
+		}
+	}
+	dynamicIDs := make([]string, 0, len(topics))
+	for id, topic := range topics {
+		if topic.Origin == topicOriginDynamic {
+			dynamicIDs = append(dynamicIDs, id)
+		}
+	}
+	sort.Strings(dynamicIDs)
+
+	handled := make(map[string]struct{})
+	for _, candidateID := range dynamicIDs {
+		if _, done := handled[candidateID]; done {
+			continue
+		}
+		candidate, exists := topics[candidateID]
+		if !exists {
+			continue
+		}
+		others := make(map[string]liveAnalysisTreeNode, len(topics))
+		for id, topic := range topics {
+			if id != candidateID {
+				others[id] = topic
+			}
+		}
+		matchID := semanticExistingTopicID(candidate.Label, candidate.Description, others)
+		if matchID == "" || matchID == candidateID {
+			continue
+		}
+		match, exists := topics[matchID]
+		if !exists {
+			continue
+		}
+		laterID, earlierID := candidateID, matchID
+		switch {
+		case match.CreatedAtVersion > candidate.CreatedAtVersion:
+			laterID, earlierID = matchID, candidateID
+		case match.CreatedAtVersion == candidate.CreatedAtVersion && childCount[matchID] < childCount[candidateID]:
+			laterID, earlierID = matchID, candidateID
+		}
+		childIndexes := make([]int, 0, childCount[laterID])
+		for index, node := range state.Tree.Nodes {
+			if node.ParentID == laterID {
+				childIndexes = append(childIndexes, index)
+			}
+		}
+		manualEditBlocked := false
+		for _, index := range childIndexes {
+			if treeAuditIsManualChangeSource(state.Tree.Nodes[index].LastParentChangeSource) {
+				manualEditBlocked = true
+				break
+			}
+		}
+		handled[candidateID] = struct{}{}
+		handled[matchID] = struct{}{}
+		if manualEditBlocked {
+			stats.PromotedTopicFoldsAborted++
+			continue
+		}
+		for _, index := range childIndexes {
+			state.Tree.Nodes[index].ParentID = earlierID
+			state.Tree.Nodes[index].LastParentChangeSource = "final_dynamic_topic_fold"
+			state.Tree.Nodes[index].LastParentChangeVersion = version
+		}
+		treeAuditCascadeRemoveEmptyAncestors(state.Tree, laterID)
+		delete(topics, laterID)
+		stats.PromotedTopicDuplicatesFolded++
+	}
+}
+
+// mergeSameEvidenceCrossKindDuplicates merges a risk/issue(discussion) pair
+// under the same topic whose evidence sequence sets are identical and whose
+// text is clearly the same proposition (score >= 0.5): the shape W6
+// (synthesizeExplicitRiskItems) now prevents from being newly created, but
+// which can still exist in a tree restored from an intermediate live
+// version. The risk item survives; the issue is tombstoned into it exactly
+// like a tree-auditor merge_items outcome. A manually edited issue node is
+// left untouched, and an issue carrying its own distinct action proposition
+// (issueCarriesDistinctActionProposition, e.g. 「次回までに検討が必要です」)
+// is never merged away either -- it survives alongside the risk.
+func mergeSameEvidenceCrossKindDuplicates(state *liveAnalysisPayload, version int64, stats *finalRepairStats) {
+	if state == nil || state.Tree == nil {
+		return
+	}
+	parents := make(map[string]string, len(state.Tree.Nodes))
+	topics := make(map[string]liveAnalysisTreeNode)
+	for _, node := range state.Tree.Nodes {
+		parents[node.ID] = node.ParentID
+		if node.Kind == "topic" {
+			topics[node.ID] = node
+		}
+	}
+	byTopic := make(map[string][]int)
+	for index, item := range state.Items {
+		if item.Inactive || item.MergedIntoID != "" {
+			continue
+		}
+		if item.Kind != "risk" && !(item.Kind == "issue" && item.Subtype == issueSubtypeDiscussion) {
+			continue
+		}
+		topicID := resolveRootTopic(item.ID, parents, topics)
+		if topicID == "" {
+			continue
+		}
+		byTopic[topicID] = append(byTopic[topicID], index)
+	}
+	removed := make(map[string]struct{})
+	for _, indexes := range byTopic {
+		for _, riskAt := range indexes {
+			risk := state.Items[riskAt]
+			if risk.Kind != "risk" {
+				continue
+			}
+			for _, issueAt := range indexes {
+				issue := state.Items[issueAt]
+				if issue.Kind != "issue" || issue.Subtype != issueSubtypeDiscussion {
+					continue
+				}
+				if _, dropped := removed[issue.ID]; dropped {
+					continue
+				}
+				if issueCarriesDistinctActionProposition(issue) {
+					continue
+				}
+				if issueNode := liveTreeNodeByID(state.Tree, issue.ID); issueNode != nil && treeAuditIsManualChangeSource(issueNode.LastParentChangeSource) {
+					continue
+				}
+				if !sameEvidenceSequenceSet(risk.EvidenceSequenceNos, issue.EvidenceSequenceNos) {
+					continue
+				}
+				if semanticItemSimilarity(risk.Title+" "+risk.Body, issue.Title+" "+issue.Body) < 0.5 {
+					continue
+				}
+				addItemTombstone(state, issue, "merged", risk.ID, "final_cross_kind_dedup", "", version, version)
+				state.Items[issueAt].MergedIntoID = risk.ID
+				removed[issue.ID] = struct{}{}
+				stats.CrossKindDuplicatesMerged++
+			}
+		}
+	}
+	if len(removed) == 0 {
+		return
+	}
+	keptNodes := state.Tree.Nodes[:0]
+	for _, node := range state.Tree.Nodes {
+		if _, drop := removed[node.ID]; drop {
+			continue
+		}
+		keptNodes = append(keptNodes, node)
+	}
+	state.Tree.Nodes = keptNodes
+}
+
+// sameEvidenceSequenceSet reports whether a and b contain exactly the same
+// set of sequence numbers (order-independent, no extras on either side).
+func sameEvidenceSequenceSet(a, b []int64) bool {
+	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
+		return false
+	}
+	seen := make(map[int64]struct{}, len(a))
+	for _, value := range a {
+		seen[value] = struct{}{}
+	}
+	for _, value := range b {
+		if _, ok := seen[value]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // persistFinalTreeSnapshot runs the meeting-end reorganization pass (Task F)
@@ -2839,6 +3108,11 @@ type liveAnalysisPayload struct {
 	Degraded       bool                      `json:"degraded,omitempty"`
 	DegradedReason string                    `json:"degradedReason,omitempty"`
 	TreeIntegrity  *treeIntegrityDiagnostics `json:"treeIntegrity,omitempty"`
+	// ReorganizationReasons is set by applyDeterministicFinalTreeRepairs after
+	// its meeting-end repair pass: the treeHealth reasons (if any) that still
+	// warrant reorganization once the deterministic repairs have run, kept in
+	// sync with persistFinalTreeSnapshot's own reorganizationReasons log field.
+	ReorganizationReasons []string `json:"reorganizationReasons,omitempty"`
 	// Audit provenance is additive metadata. Existing clients ignore it while
 	// newer consumers can distinguish a normal live extraction from a CAS-safe
 	// tree-auditor version.

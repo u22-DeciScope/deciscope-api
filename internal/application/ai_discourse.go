@@ -192,6 +192,35 @@ func structurallyDiscourseTransition(normalized string) bool {
 		discourseTransitionPredicatePattern.MatchString(normalized)
 }
 
+// hasLeadingRecapIntroClause reports whether text's first non-empty clause
+// (split the same way detectDecisionCandidates splits sentences) is itself a
+// recap-introduction declaration, even when the utterance as a whole is too
+// long for classifyDiscourseAct's 30-rune control-speech budget (e.g. 「最後に
+// ここまでをまとめます。今回の障害は…」のように、recap宣言が長い発話の先頭節に
+// 埋め込まれているケース)。単独のrecap宣言発話(discourse_only)の既存判定は
+// classifyDiscourseAct のまま変更しない -- これはあくまで最初の節だけを見る
+// 追加の判定である。
+func hasLeadingRecapIntroClause(text string) bool {
+	for _, rawClause := range decisionClauseSplitPattern.Split(text, -1) {
+		clause := strings.TrimSpace(rawClause)
+		if clause == "" {
+			continue
+		}
+		normalized := normalizeDiscourseText(clause)
+		stripped := discourseFillerPattern.ReplaceAllString(normalized, "")
+		if stripped == "" || len([]rune(stripped)) > 30 {
+			return false
+		}
+		for _, pattern := range recapIntroPatterns {
+			if pattern.MatchString(stripped) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // isDiscourseOnlyText は発話・ラベルが制御発話のみかどうかを返す。
 func isDiscourseOnlyText(text string) bool {
 	return classifyDiscourseAct(text) != discourseContent
@@ -287,6 +316,13 @@ func classifyDiscourseTimelineWithModel(scope liveEvidenceScope, modelRoles []li
 			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
 			timeline.DetectedRoles[sequenceNo] = liveUtteranceFiller
 		case discourseContent:
+			if mode != "recap" && hasLeadingRecapIntroClause(text) {
+				timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "recap", Act: discourseRecapIntro})
+				mode = "recap"
+				timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
+				timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
+				continue
+			}
 			modelRole := modelBySequence[sequenceNo]
 			switch modelRole {
 			case liveUtteranceDiscourseTransition, liveUtteranceFiller:

@@ -57,10 +57,18 @@ func TestSession5b7b78256ab026faSemanticReplay(t *testing.T) {
 	}
 
 	decisionCandidates := detectDecisionCandidates(segments)
-	if len(decisionCandidates) != 1 || decisionCandidates[0].SequenceNo != 16 || !equalInt64s(decisionCandidates[0].SourceSequenceNos, []int64{15, 16}) {
+	// セグ14「…設定内容を確認するダブルチェックを必須にします」は
+	// decisionPositivePatternの「を必須にします」追加により新たに検出される
+	// (対象会議のseq12と同種の文言)。セグ15+16の参照解決由来の候補は引き続き
+	// 2件目に現れる。
+	if len(decisionCandidates) != 2 || decisionCandidates[0].SequenceNo != 14 {
 		t.Fatalf("decision candidates=%+v", decisionCandidates)
 	}
-	if title := decisionCandidateTitle(decisionCandidates[0].Statement); strings.HasPrefix(title, "の") || !strings.Contains(title, "チェックリストの運用") {
+	repaired := decisionCandidates[1]
+	if repaired.SequenceNo != 16 || !equalInt64s(repaired.SourceSequenceNos, []int64{15, 16}) {
+		t.Fatalf("decision candidates=%+v", decisionCandidates)
+	}
+	if title := decisionCandidateTitle(repaired.Statement); strings.HasPrefix(title, "の") || !strings.Contains(title, "チェックリストの運用") {
 		t.Fatalf("repaired decision title=%q", title)
 	}
 

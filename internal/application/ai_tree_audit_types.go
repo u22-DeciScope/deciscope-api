@@ -88,6 +88,20 @@ const (
 	TreeAuditIncompleteSTTSegmentItem          TreeAuditFindingType = "incomplete_stt_segment_item"
 	TreeAuditDecisionMissingObject             TreeAuditFindingType = "decision_missing_object"
 	TreeAuditNoAgendaFalsePositiveFromModifier TreeAuditFindingType = "no_agenda_false_positive_from_modifier"
+	// The following six finding types cover final-review-shaped defects that
+	// the previous vocabulary could not name precisely: a recap utterance
+	// that got as far as promoting its own duplicate dynamic topic, a root
+	// with too many direct topic children, a tree that still needs
+	// reorganization after final repairs, a promoted dynamic topic that
+	// duplicates a still-open candidate's subject, a topic whose one child
+	// leaves related items stranded elsewhere, and a newly-promoted topic
+	// whose label is generic rather than derived from its evidence.
+	TreeAuditRecapOnlyPromotedTopic                    TreeAuditFindingType = "recap_only_promoted_topic"
+	TreeAuditRootTopicOverpopulation                   TreeAuditFindingType = "root_topic_overpopulation"
+	TreeAuditFinalTreeNeedsReorganization              TreeAuditFindingType = "final_tree_needs_reorganization"
+	TreeAuditPromotedTopicCandidateOverlap             TreeAuditFindingType = "promoted_topic_candidate_overlap"
+	TreeAuditSingleChildTopicWithRelatedItemsElsewhere TreeAuditFindingType = "single_child_topic_with_related_items_elsewhere"
+	TreeAuditGenericAdditionalTopic                    TreeAuditFindingType = "generic_additional_topic"
 )
 
 type TreeAuditOperationType string
@@ -406,6 +420,10 @@ func validTreeAuditFindingType(value TreeAuditFindingType) bool {
 		TreeAuditRelatedActionOutsideRiskTopic, TreeAuditLeadingParticleFragment,
 		TreeAuditAnaphoraTargetMissing, TreeAuditIncompleteSTTSegmentItem,
 		TreeAuditDecisionMissingObject, TreeAuditNoAgendaFalsePositiveFromModifier:
+		fallthrough
+	case TreeAuditRecapOnlyPromotedTopic, TreeAuditRootTopicOverpopulation,
+		TreeAuditFinalTreeNeedsReorganization, TreeAuditPromotedTopicCandidateOverlap,
+		TreeAuditSingleChildTopicWithRelatedItemsElsewhere, TreeAuditGenericAdditionalTopic:
 		return true
 	default:
 		return false

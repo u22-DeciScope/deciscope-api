@@ -1,6 +1,9 @@
 package application
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func riskFixtureTexts() (seq18, seq21, seq9 string) {
 	seq18 = "ただし、間接対象を増やすとアラートが多くなりすぎるという可能性があります。監視間隔と通知条件については、次回までに検討が必要です。"
@@ -59,6 +62,101 @@ func TestSynthesizeExplicitRiskItemsSkipsReferenceRecapUtterances(t *testing.T) 
 	risks := synthesizeExplicitRiskItems(nil, nil, scope, timeline, nil)
 	if len(risks) != 0 {
 		t.Fatalf("expected no risk item from a reference/recap utterance, got %+v", risks)
+	}
+}
+
+// TestSynthesizeExplicitRiskItemsMigratesSameSentenceDiscussionIssueToRisk
+// reproduces group-dd702579aa54's 4-child defect (W6): the model's own
+// discussion issue and synthesizeExplicitRiskItems both react to the exact
+// same sentence. The diff issue must migrate into a risk item (kind
+// rewritten, subtype cleared) instead of a second, separately synthesized
+// risk item coexisting alongside it. This fixture is a pure possibility
+// statement with no distinct action/undecided marker of its own (unlike
+// riskFixtureTexts's seq18, which now keeps its issue separate per F1's
+// issueCarriesDistinctActionProposition guard -- see
+// TestAlertRiskAndConditionReviewCoexist).
+func TestSynthesizeExplicitRiskItemsMigratesSameSentenceDiscussionIssueToRisk(t *testing.T) {
+	text := "放置すると、リモート接続ができなくなる可能性があります。"
+	scope := evidenceScopeFromTexts(map[int64]string{18: text}, 18)
+	timeline := discourseTimeline{Roles: map[int64]liveEvidenceRole{}}
+	diffItems := []liveAnalysisItem{{
+		ID: "item-issue-discussion-alert", Kind: "issue", Subtype: issueSubtypeDiscussion,
+		Title: "リモート接続への影響懸念", Body: text, Status: "open", EvidenceSequenceNos: []int64{18},
+	}}
+	stats := &liveAnalysisTreeMergeStats{}
+	risks := synthesizeExplicitRiskItems(nil, diffItems, scope, timeline, stats)
+	if len(risks) != 0 {
+		t.Fatalf("expected no separately-synthesized risk item (the diff issue migrates instead), got %+v", risks)
+	}
+	if diffItems[0].Kind != "risk" || diffItems[0].Subtype != "" {
+		t.Fatalf("diff issue = %+v, want migrated to kind=risk with subtype cleared", diffItems[0])
+	}
+	if stats.SemanticKindMigrations == 0 {
+		t.Fatalf("stats = %+v, want SemanticKindMigrations incremented", stats)
+	}
+}
+
+// TestAlertRiskAndConditionReviewCoexist reproduces F1's motivating defect:
+// an issue whose body carries BOTH a risk-shaped possibility clause and its
+// own distinct pending-review proposition ("〜を検討します") must not be
+// migrated/merged into a risk -- both the synthesized risk and the original
+// issue must survive, including through applyDeterministicFinalTreeRepairs's
+// cross-kind dedup sweep.
+func TestAlertRiskAndConditionReviewCoexist(t *testing.T) {
+	text := "監視対象を増やすとアラートが多くなりすぎる可能性があります。通知間隔と通知条件を検討します。"
+	scope := evidenceScopeFromTexts(map[int64]string{14: text}, 14)
+	timeline := discourseTimeline{Roles: map[int64]liveEvidenceRole{}}
+	diffItems := []liveAnalysisItem{{
+		ID: "item-issue-discussion-alert", Kind: "issue", Subtype: issueSubtypeDiscussion,
+		Title: "通知間隔と通知条件の検討", Body: text, Status: "open", EvidenceSequenceNos: []int64{14},
+	}}
+	stats := &liveAnalysisTreeMergeStats{}
+	risks := synthesizeExplicitRiskItems(nil, diffItems, scope, timeline, stats)
+	if len(risks) != 1 {
+		t.Fatalf("expected exactly 1 synthesized risk item, got %d: %+v", len(risks), risks)
+	}
+	if diffItems[0].Kind != "issue" || diffItems[0].Subtype != issueSubtypeDiscussion {
+		t.Fatalf("diff issue = %+v, want kind left unchanged (issue/discussion), not migrated", diffItems[0])
+	}
+	if stats.SemanticKindMigrations != 0 {
+		t.Fatalf("stats = %+v, want no kind migration", stats)
+	}
+
+	// applyDeterministicFinalTreeRepairs後もrisk/issueが統合されないこと。
+	risk := risks[0]
+	issue := diffItems[0]
+	previous := liveAnalysisPayload{
+		Summary: "previous",
+		Items:   []liveAnalysisItem{issue, risk},
+		Tree: &liveAnalysisTree{
+			Nodes: []liveAnalysisTreeNode{
+				{ID: treeRootNodeID, Kind: "topic", Label: "会議全体"},
+				{ID: "topic-network", Kind: "topic", ParentID: treeRootNodeID, Label: "監視アラート運用", Origin: topicOriginDynamic},
+				{ID: issue.ID, Kind: "issue", Subtype: issueSubtypeDiscussion, ParentID: "topic-network", Label: issue.Title, Status: "open"},
+				{ID: risk.ID, Kind: "risk", ParentID: "topic-network", Label: risk.Title, Status: "open"},
+			},
+		},
+	}
+	rebuildTreeAuditEdges(previous.Tree)
+	payload, err := json.Marshal(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired, repairStats := applyDeterministicFinalTreeRepairs(payload, nil, 5)
+	if repairStats.Error != "" || repairStats.IntegrityRejected {
+		t.Fatalf("repair stats = %+v, want a clean pass-through", repairStats)
+	}
+	if repairStats.CrossKindDuplicatesMerged != 0 {
+		t.Fatalf("repair stats = %+v, want no cross-kind merge (distinct action proposition survives)", repairStats)
+	}
+	final := previousLiveAnalysisState(repaired)
+	survivingIssue := findItemByID(final.Items, issue.ID)
+	if survivingIssue == nil || survivingIssue.MergedIntoID != "" || survivingIssue.Kind != "issue" {
+		t.Fatalf("issue after final repair = %+v, want unmerged and kind=issue", survivingIssue)
+	}
+	survivingRisk := findItemByID(final.Items, risk.ID)
+	if survivingRisk == nil || survivingRisk.Kind != "risk" {
+		t.Fatalf("risk after final repair = %+v, want present and kind=risk", survivingRisk)
 	}
 }
 

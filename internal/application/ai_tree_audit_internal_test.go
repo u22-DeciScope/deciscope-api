@@ -2170,6 +2170,43 @@ func TestTreeAuditCanonicalizeNormalizesMoveItemRedundantTargetNodeID(t *testing
 	}
 }
 
+// TestTreeAuditEffectiveConfidenceEpsilonAcceptsModerateThresholdTie
+// reproduces the final-review op1 float-comparison bug (W7.1):
+// modelConfidence 0.7 plus two treeAuditConfidenceBonusStep bonuses (0.05
+// each, from a generic FROM parent and a precheck-agreeing move) sums in
+// float64 to 0.7999999999999999, not exactly 0.8. Before the epsilon guard,
+// `effectiveConfidence < threshold` rejected this purely from float addition
+// error even though the operation is exactly at the moderate-risk threshold
+// (HighConfidenceThreshold-0.10 = 0.80); it must now be accepted.
+func TestTreeAuditEffectiveConfidenceEpsilonAcceptsModerateThresholdTie(t *testing.T) {
+	payload, segments, mc := targetTreeAuditFixture(t)
+	state := previousLiveAnalysisState(payload)
+	roles := classifyTreeAuditEvidence(state, segments)
+	operation := treeAuditOperation{
+		OperationID:               "op-epsilon",
+		Type:                      TreeAuditMoveItem,
+		TargetCanonicalItemID:     "item-risk-rare-plants",
+		FromParentCanonicalNodeID: "candidate-info-public",
+		ToParentCanonicalNodeID:   "candidate-plant-study",
+		Confidence:                0.7,
+		EvidenceSequenceNos:       []int64{22},
+	}
+	_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-epsilon", 13, true)
+	if len(result.Evaluations) != 1 {
+		t.Fatalf("validator result = %+v", result)
+	}
+	evaluation := result.Evaluations[0]
+	if evaluation.EffectiveConfidence != 0.7999999999999999 {
+		t.Fatalf("effectiveConfidence = %v, want the float64 sum 0.7+0.05+0.05 (0.7999999999999999) to reproduce the epsilon case", evaluation.EffectiveConfidence)
+	}
+	if evaluation.Category != "moderate" {
+		t.Fatalf("category = %q, want moderate", evaluation.Category)
+	}
+	if result.OperationsValid != 1 || result.OperationsApplied != 1 || evaluation.Reason == "below_effective_confidence_threshold" {
+		t.Fatalf("evaluation = %+v, want accepted at the moderate threshold (0.80) despite the float64 tie", evaluation)
+	}
+}
+
 // TestTreeAuditRewriteItemTitleAppliesAtSafeRiskThreshold covers the
 // rewrite_item_title risk-class gate: rewrite_item_title is risk class
 // "safe" (treeAuditOperationRiskClass), so its threshold is

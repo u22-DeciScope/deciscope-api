@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -633,6 +634,18 @@ func rebuildDiscussionTree(
 			}
 			continue
 		}
+		// ラベル完全一致では捉えられない意味的重複(例: 「VPN装置証明書の期限切れ
+		// 対策の検討」に対する「vpnと証明書」)を、新規candidateを作る前に既存
+		// topicへ折り畳む。モデルの割当(requestedParentId)はaliasを通じて通常の
+		// hysteresis/assignment検証へそのまま流れる。
+		if existingID := semanticExistingTopicID(label, truncateRunes(strings.TrimSpace(proposed.Description), liveAnalysisTreeDescriptionMaxRunes), topics); existingID != "" {
+			topicAlias[proposedID] = existingID
+			if stats != nil {
+				stats.CandidateFoldedIntoAgenda++
+			}
+			recordEmerging(emergingDecision{CandidateID: proposedID, Decision: emergingFoldedIntoExisting, TopicID: existingID, Reason: "proposal_matches_existing_topic"})
+			continue
+		}
 		if _, exists := topics[proposedID]; exists {
 			continue
 		}
@@ -924,6 +937,90 @@ func emergingTopicCore(value string) string {
 		core = strings.ReplaceAll(core, generic, "")
 	}
 	return core
+}
+
+// latinTokenSetPattern extracts alphanumeric tokens (english acronyms/words
+// such as "vpn", "ssl") that survive normalizeForMatch's lowercasing. Tokens
+// must start with a letter and be at least 2 runes long so that stray single
+// characters don't trigger a false conflict.
+var latinTokenSetPattern = regexp.MustCompile(`[a-z][a-z0-9]+`)
+
+// latinTokenConflict reports whether a and b (already free-form text, not
+// pre-normalized) each contain at least one latin token (e.g. "vpn", "ssl")
+// and share none of them. It is used to keep semanticExistingTopicID's loose
+// shared-subject-term rule from folding "SSL証明書の管理" into "VPN装置証明書
+// の期限切れ対策" just because both mention 証明書.
+func latinTokenConflict(a, b string) bool {
+	aTokens := latinTokenSetPattern.FindAllString(normalizeForMatch(a), -1)
+	bTokens := latinTokenSetPattern.FindAllString(normalizeForMatch(b), -1)
+	if len(aTokens) == 0 || len(bTokens) == 0 {
+		return false
+	}
+	bSet := make(map[string]struct{}, len(bTokens))
+	for _, token := range bTokens {
+		bSet[token] = struct{}{}
+	}
+	for _, token := range aTokens {
+		if _, shared := bSet[token]; shared {
+			return false
+		}
+	}
+	return true
+}
+
+// semanticExistingTopicID returns the ID of an existing topic that the
+// proposed label/description semantically duplicates, or "" if none matches.
+// It is shared by candidate creation (before a new emerging candidate is
+// spun up) and by candidate promotion (before a stable candidate becomes its
+// own dynamic topic), so both paths route into an already-materialized topic
+// under the same rules instead of drifting into duplicate topics for the
+// same subject (e.g. 「VPN装置証明書の期限切れ対策の検討」 vs 「vpnと証明書」).
+func semanticExistingTopicID(label, description string, topics map[string]liveAnalysisTreeNode) string {
+	candidateText := strings.TrimSpace(label + " " + description)
+	candidateCore := semanticTopicCore(label)
+	// candidateSubjectFloor is the label with generic staging words ("話題"
+	// "論点" 等) stripped. Two labels that only agree on such a scaffolding
+	// word once it is removed (e.g. 「話題A」 vs 「話題B」, differing solely by
+	// a trailing single-letter suffix) have no real shared subject, so the
+	// loose fold rule below requires both sides to retain enough residual
+	// content for sharedTreeAuditSubjectTerm's match to mean anything.
+	candidateSubjectFloor := emergingTopicCore(label)
+	bestID, bestScore := "", 0.0
+	looseBestID, looseBestScore := "", 0.0
+	for id, topic := range topics {
+		if id == treeRootNodeID || id == treeUnclassifiedTopicID || topic.AgendaRole == agendaRoleActionSummary {
+			continue
+		}
+		topicText := topic.Label + " " + topic.Description
+		score := semanticItemSimilarity(candidateText, topicText)
+		if labelScore := semanticItemSimilarity(label, topic.Label); labelScore > score {
+			score = labelScore
+		}
+		topicCore := semanticTopicCore(topic.Label)
+		if len([]rune(candidateCore)) >= 4 && len([]rune(topicCore)) >= 4 &&
+			(strings.Contains(candidateCore, topicCore) || strings.Contains(topicCore, candidateCore)) && score < 0.90 {
+			score = 0.90
+		}
+		if score > bestScore {
+			bestID, bestScore = id, score
+		}
+		// 追加ルール: 主題語を共有し、英字トークン(vpn/ssl等)が衝突せず、数値署名
+		// (階数・vlan番号等)も衝突しない場合に限り、より緩い閾値でfoldを許す。
+		if score >= 0.40 && sharedTreeAuditSubjectTerm(candidateText, topicText) &&
+			!latinTokenConflict(candidateText, topicText) && !numericSignatureIncompatible(candidateText, topicText) &&
+			len([]rune(candidateSubjectFloor)) >= 2 && len([]rune(emergingTopicCore(topic.Label))) >= 2 {
+			if score > looseBestScore {
+				looseBestID, looseBestScore = id, score
+			}
+		}
+	}
+	if bestScore >= 0.72 {
+		return bestID
+	}
+	if looseBestScore >= 0.40 {
+		return looseBestID
+	}
+	return ""
 }
 
 // candidateSubjectCoherenceThreshold は candidate label と証拠itemが同一主題と
@@ -1892,6 +1989,29 @@ type promotionContext struct {
 	mc                *meetingContext
 }
 
+// resolveRootTopic walks nodeID's parent chain (through nested groups, up to
+// a small depth bound against cycles) until it reaches a topic id present in
+// topics, returning that topic's id. It returns "" when the chain is
+// incomplete (missing/root parent) or resolves to topic-unclassified: both
+// cases mean nodeID is not actually placed under a real topic yet.
+func resolveRootTopic(nodeID string, parents map[string]string, topics map[string]liveAnalysisTreeNode) string {
+	current := nodeID
+	for i := 0; i < 8; i++ {
+		parent := strings.TrimSpace(parents[current])
+		if parent == "" || parent == treeRootNodeID {
+			return ""
+		}
+		if _, isTopic := topics[parent]; isTopic {
+			if parent == treeUnclassifiedTopicID {
+				return ""
+			}
+			return parent
+		}
+		current = parent
+	}
+	return ""
+}
+
 // promoteEmergingCandidates promotes candidates that satisfy the evidence
 // conditions (PromotionMinItems現存item・PromotionMinRoundsラウンド)を
 // dynamic topic へ昇格させ、証拠itemを追加論点から新topicへ付け替える。
@@ -1948,29 +2068,7 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 		}
 	}
 	semanticExistingTopic := func(candidate emergingTopicCandidate) string {
-		bestID, bestScore := "", 0.0
-		candidateCore := semanticTopicCore(candidate.Label)
-		for id, topic := range pc.topics {
-			if id == treeUnclassifiedTopicID || topic.AgendaRole == agendaRoleActionSummary {
-				continue
-			}
-			score := semanticItemSimilarity(candidate.Label+" "+candidate.Description, topic.Label+" "+topic.Description)
-			if labelScore := semanticItemSimilarity(candidate.Label, topic.Label); labelScore > score {
-				score = labelScore
-			}
-			topicCore := semanticTopicCore(topic.Label)
-			if len([]rune(candidateCore)) >= 4 && len([]rune(topicCore)) >= 4 &&
-				(strings.Contains(candidateCore, topicCore) || strings.Contains(topicCore, candidateCore)) && score < 0.90 {
-				score = 0.90
-			}
-			if score > bestScore {
-				bestID, bestScore = id, score
-			}
-		}
-		if bestScore < 0.72 {
-			return ""
-		}
-		return bestID
+		return semanticExistingTopicID(candidate.Label, candidate.Description, pc.topics)
 	}
 	plannedAgendaMatch := func(candidate emergingTopicCandidate) string {
 		if pc.mc == nil {
@@ -2030,7 +2128,59 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			continue
 		}
 		stableLongEnough := candidate.RoundCount >= pc.cfg.PromotionMinRounds
-		evidenceCount := candidatePromotionEvidenceCount(*candidate)
+		// 証拠itemを現在の親で仕分ける: 既に(unclassified以外の)実topic配下に
+		// 置かれているitemは"placed"、追加論点のまま(親が空またはtopic-
+		// unclassified)のitemは"unplaced"とする。起点itemがsemantic dedupで
+		// 既存topic配下のitemへ統合された場合など、candidateのevidenceが実質
+		// 既存topicのものになっているケースを昇格根拠から除外するため。
+		placedTopics := make(map[string]struct{})
+		unplacedCount := 0
+		for _, itemID := range candidate.EvidenceItemIDs {
+			if topicID := resolveRootTopic(itemID, pc.parents, pc.topics); topicID != "" {
+				placedTopics[topicID] = struct{}{}
+				continue
+			}
+			unplacedCount++
+		}
+		// foldはcandidateが昇格判定に届くだけの安定度(PromotionMinRounds)を
+		// 満たした後にのみ行う。生まれたばかりの候補が、たまたま既存topicに
+		// 残っている関連item(companion)を1件evidenceに持つだけで即座に消える
+		// ことを防ぐ(会議冒頭で品質候補が進捗確認topic配下のitem-aを参照する
+		// ケース等)。また、candidateの主題とplaced先topicの主題が無関係な場合
+		// (テスト用fixtureの使い回しitem等)まで畳まないよう、主題語を共有する
+		// 場合に限定する。
+		if stableLongEnough && len(placedTopics) == 1 && unplacedCount < pc.cfg.PromotionMinItems {
+			var placedTopicID string
+			for id := range placedTopics {
+				placedTopicID = id
+			}
+			placedTopic := pc.topics[placedTopicID]
+			if sharedTreeAuditSubjectTerm(candidate.Label+" "+candidate.Description, placedTopic.Label+" "+placedTopic.Description) {
+				reparentEvidence(*candidate, placedTopicID)
+				removed[candidate.ID] = struct{}{}
+				if pc.stats != nil {
+					pc.stats.CandidateFoldedIntoAgenda++
+				}
+				record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingFoldedIntoExisting, TopicID: placedTopicID, Reason: "evidence_already_in_topic"})
+				continue
+			}
+		}
+		// 昇格判定のevidence数はunplacedのみで数える。OriginItemIDsフォール
+		// バック(candidatePromotionEvidenceCount本体の定義は変えない)も同様に
+		// 既に実topicへplacedなidを除外する。
+		evidenceCount := unplacedCount
+		if originIDs := uniqueNonEmptyIDs(candidate.OriginItemIDs); len(originIDs) > 0 {
+			unplacedOriginCount := 0
+			for _, id := range originIDs {
+				if resolveRootTopic(id, pc.parents, pc.topics) != "" {
+					continue
+				}
+				unplacedOriginCount++
+			}
+			if unplacedOriginCount > evidenceCount {
+				evidenceCount = unplacedOriginCount
+			}
+		}
 		if evidenceCount < pc.cfg.PromotionMinItems || !stableLongEnough {
 			if candidate.LastRound > 0 && pc.round-candidate.LastRound >= 4 &&
 				(evidenceCount < pc.cfg.PromotionMinItems || !stableLongEnough) {

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -419,6 +420,59 @@ func candidateClusterLabel(ids []string, itemByID map[string]*liveAnalysisItem) 
 	return truncateRunes(strings.TrimSpace(best), liveAnalysisTopicLabelMaxRunes)
 }
 
+// recapNovelActorPattern / recapNovelDeadlinePattern detect concrete
+// information (an assignee, or a due-date expression) that a recap sentence
+// can add on top of what its canonical target already says.
+var (
+	recapNovelActorPattern    = regexp.MustCompile(`(?:[\p{Han}]{1,6}|[ァ-ヶー]{2,8})さん`)
+	recapNovelDeadlinePattern = regexp.MustCompile(`今週|来週|今月|来月|本日|明日|月末|年内|[月火水木金土日]曜|期限|までに?`)
+)
+
+// recapBodyHasNovelInfo reports whether recapBody names an actor or due-date
+// expression that canonicalBody does not already contain, so a recap that
+// merely restates the canonical item's own actor/deadline does not trigger a
+// body rewrite.
+func recapBodyHasNovelInfo(recapBody, canonicalBody string) bool {
+	for _, match := range recapNovelActorPattern.FindAllString(recapBody, -1) {
+		if !strings.Contains(canonicalBody, match) {
+			return true
+		}
+	}
+	for _, match := range recapNovelDeadlinePattern.FindAllString(recapBody, -1) {
+		if !strings.Contains(canonicalBody, match) {
+			return true
+		}
+	}
+	return false
+}
+
+// recapItemHasConcreteInfo reports whether item names an actor, a due-date
+// expression, or a number -- the kind of specific content that can justify
+// treating an unmatched recap sentence as a genuinely new proposition instead
+// of dropping it as pure restatement.
+func recapItemHasConcreteInfo(item liveAnalysisItem) bool {
+	text := item.Title + " " + item.Body
+	if recapNovelActorPattern.MatchString(text) || recapNovelDeadlinePattern.MatchString(text) {
+		return true
+	}
+	return numericSignature(text) != ""
+}
+
+// recapItemHasNovelSubject reports whether item's subject does not overlap
+// any previous item's subject at all. Combined with recapItemHasConcreteInfo,
+// this is the narrow exception that lets a truly new proposition surface
+// during a recap round instead of being rejected outright like every other
+// unmatched recap sentence.
+func recapItemHasNovelSubject(item liveAnalysisItem, previous []liveAnalysisItem) bool {
+	itemText := item.Title + " " + item.Body
+	for _, existing := range previous {
+		if sharedTreeAuditSubjectTerm(existing.Title+" "+existing.Body, itemText) {
+			return false
+		}
+	}
+	return true
+}
+
 func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisItem, roundSeqNos []int64, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats) []liveAnalysisItem {
 	filtered := make([]liveAnalysisItem, 0, len(diff))
 	for _, item := range diff {
@@ -432,6 +486,13 @@ func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisIt
 		}
 		at, score := bestPropositionMatch(previous, item)
 		if at < 0 || score < 0.12 {
+			// recap中の新規item作成は原則禁止だが、どのprevious itemとも主題が
+			// 重ならず、かつ担当者/期限/数値のような具体情報を伴う場合に限り、
+			// 真に新しい命題として救済する(recapの言い換えを新規item化はしない)。
+			if recapItemHasNovelSubject(item, previous) && recapItemHasConcreteInfo(item) {
+				filtered = append(filtered, item)
+				continue
+			}
 			if stats != nil {
 				stats.ReferenceRecapItemsRejected++
 			}
@@ -443,6 +504,14 @@ func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisIt
 		canonical.evidenceSpecified = item.evidenceSpecified
 		canonical.evidenceRejectedCount = item.evidenceRejectedCount
 		canonical.evidenceNormalizedCount = item.evidenceNormalizedCount
+		// recapが本編に無い担当者/期限を追加している場合のみ、canonicalの本文へ
+		// 反映する(単なる言い換えでは本文を書き換えない)。evidenceは本編+recap
+		// 両方が最終itemに残る(下流のappendItemEvidenceSequenceNosがcanonical
+		// のEvidenceSequenceNos=evidenceと元のEvidenceSequenceNosを和集合にする)。
+		if recapBodyHasNovelInfo(item.Body, canonical.Body) {
+			canonical.Body = truncateRunes(strings.TrimSpace(canonical.Body+" "+item.Body), liveAnalysisTreeDescriptionMaxRunes)
+			canonical.Status = "updated"
+		}
 		filtered = append(filtered, canonical)
 		if stats != nil {
 			stats.ReferenceRecapItemsMerged++

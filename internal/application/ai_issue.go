@@ -15,6 +15,10 @@ type issueCandidate struct {
 	SequenceNo int64
 	Subtype    string
 	Statement  string
+	// Recap marks a candidate whose utterance the discourse timeline placed
+	// in a recap span (set by the caller from classifyDiscourseTimeline,
+	// distinct from the narrower issueRecapPattern text match below).
+	Recap bool
 }
 
 type issueExtractionAudit struct {
@@ -93,18 +97,43 @@ func reconcileIssueCandidates(content string, previousPayload json.RawMessage, c
 		} else {
 			audit.OpenIssueCandidates++
 		}
-		if issueRecapPattern.MatchString(candidate.Statement) && mergeIssueRecap(&diff, previous.Items, candidate) {
+		if (candidate.Recap || issueRecapPattern.MatchString(candidate.Statement)) && mergeIssueRecap(&diff, previous.Items, candidate) {
 			audit.ExistingMerged++
 			audit.RecapMerged++
 			continue
 		}
-		if at, score := bestSameKindMatch(diff.Items, candidate); at >= 0 && score >= 0.16 {
+		if candidate.Recap {
+			// 談話タイムライン由来のrecap候補はmerge-onlyとする。
+			// mergeIssueRecapで拾えなかった場合に限り、subtype不問の
+			// same-kind(issue)マッチを追加で試す。それでもマッチしなければ
+			// 新規item・assignmentを作らずスキップする(非recap時の新規作成
+			// パスへは落とさない)。
+			if at, score := bestSameKindMatch(diff.Items, candidate, true); at >= 0 && score >= 0.16 {
+				diff.Items[at].EvidenceSequenceNos = appendUniqueSequence(diff.Items[at].EvidenceSequenceNos, candidate.SequenceNo)
+				appendIssueOpenUpdate(&diff, modelItemReference(diff.Items[at]), candidate)
+				audit.ExistingMerged++
+				audit.RecapMerged++
+				continue
+			}
+			if at, score := bestSameKindMatch(previous.Items, candidate, true); at >= 0 && score >= 0.16 {
+				updated := previous.Items[at]
+				updated.Status = "updated"
+				updated.EvidenceSequenceNos = []int64{candidate.SequenceNo}
+				diff.Items = append(diff.Items, updated)
+				appendIssueOpenUpdate(&diff, updated.ID, candidate)
+				audit.ExistingMerged++
+				audit.RecapMerged++
+				continue
+			}
+			continue
+		}
+		if at, score := bestSameKindMatch(diff.Items, candidate, false); at >= 0 && score >= 0.16 {
 			diff.Items[at].EvidenceSequenceNos = appendUniqueSequence(diff.Items[at].EvidenceSequenceNos, candidate.SequenceNo)
 			appendIssueOpenUpdate(&diff, modelItemReference(diff.Items[at]), candidate)
 			audit.ExistingMerged++
 			continue
 		}
-		if at, score := bestSameKindMatch(previous.Items, candidate); at >= 0 && score >= 0.22 {
+		if at, score := bestSameKindMatch(previous.Items, candidate, false); at >= 0 && score >= 0.22 {
 			updated := previous.Items[at]
 			updated.Status = "updated"
 			updated.EvidenceSequenceNos = []int64{candidate.SequenceNo}
@@ -201,10 +230,19 @@ func appendIssueOpenUpdate(diff *liveAnalysisPayload, itemID string, candidate i
 	})
 }
 
-func bestSameKindMatch(items []liveAnalysisItem, candidate issueCandidate) (int, float64) {
+// bestSameKindMatch finds the best issue match for candidate. allowAnySubtype
+// disables the subtype equality check; it is only set true for recap
+// candidates, where a discussion issue may legitimately be the canonical
+// target for a recap statement whose own subtype classifier guessed
+// differently (e.g. a recap clause split into an "investigation" statement
+// that really refers to an existing "discussion" issue).
+func bestSameKindMatch(items []liveAnalysisItem, candidate issueCandidate, allowAnySubtype bool) (int, float64) {
 	bestAt, bestScore := -1, 0.0
 	for i, item := range items {
-		if strings.ToLower(strings.TrimSpace(item.Kind)) != "issue" || item.Subtype != candidate.Subtype {
+		if strings.ToLower(strings.TrimSpace(item.Kind)) != "issue" {
+			continue
+		}
+		if !allowAnySubtype && item.Subtype != candidate.Subtype {
 			continue
 		}
 		score := semanticItemSimilarity(item.Title+" "+item.Body, candidate.Statement)

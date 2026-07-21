@@ -93,7 +93,11 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 			effectiveConfidence = treeAuditEffectiveConfidence(operation, dry, beforeFindings, evidenceRoles, segmentText, mc, cfg)
 		}
 		evaluation.EffectiveConfidence = effectiveConfidence
-		if effectiveConfidence < treeAuditRiskConfidenceThreshold(riskClass, cfg) {
+		// epsilon guard: modelConfidence 0.7 + bonus 0.10 lands on
+		// 0.7999999999999999 in float64, which must still clear an 0.8
+		// threshold. The threshold and escalation design are unchanged; this
+		// only absorbs float addition error at the comparison itself.
+		if effectiveConfidence < treeAuditRiskConfidenceThreshold(riskClass, cfg)-1e-9 {
 			reject("below_effective_confidence_threshold")
 			continue
 		}

@@ -197,3 +197,285 @@ func TestSameRoundQuestionAndTodoRemainIndependentCanonicalPropositions(t *testi
 		t.Fatalf("propositionItemsMerged=%d", stats.PropositionItemsMerged)
 	}
 }
+
+// TestDecisionCandidatesFromThreeClauseSegmentBuildTwoDecisionsAndKeepChecklistTodo
+// reproduces the target session's seq12 segment (W5): 「…ダブルチェックを必須に
+// します。また、…チェックリストを作成します。この運用を次回の危機交換から適用
+// することにします。」. The new「を必須にします」pattern (W5.1) turns clause1 into
+// its own decision; clause3's bare「この運用」is repaired using clause2 (the
+// checklist creation clause, itself not a decision) as the same-segment
+// referent (W5.2), producing a title that names both the target object and
+// the policy verb. The model's own checklist-creation todo must remain a
+// todo, not get consumed into either decision.
+func TestDecisionCandidatesFromThreeClauseSegmentBuildTwoDecisionsAndKeepChecklistTodo(t *testing.T) {
+	text := "今後の対応についてです。まず、ネットワーク機器を交換する際は、作業者とは別の担当者が設定内容を確認するダブルチェックを必須にします。また、交換前後でvランごとの疎通確認を実施するチェックリストを作成します。この運用を次回の危機交換から適用することにします。"
+	segments := []domain.TranscriptSegment{finalSegment(12, text)}
+	candidates := detectDecisionCandidates(segments)
+	if len(candidates) < 2 {
+		t.Fatalf("candidates = %+v, want at least 2 decision candidates from this segment", candidates)
+	}
+	var sawMustCheck, sawApplyChecklist bool
+	for _, c := range candidates {
+		if strings.Contains(c.Statement, "ダブルチェック") && strings.Contains(c.Statement, "必須") {
+			sawMustCheck = true
+		}
+		if strings.Contains(c.Statement, "チェックリスト") && strings.Contains(c.Statement, "適用") {
+			sawApplyChecklist = true
+			if strings.HasPrefix(c.Statement, "の") {
+				t.Fatalf("repaired statement = %q, must not still start with the bare leading particle", c.Statement)
+			}
+		}
+	}
+	if !sawMustCheck {
+		t.Fatalf("candidates = %+v, want a ダブルチェックを必須にします decision", candidates)
+	}
+	if !sawApplyChecklist {
+		t.Fatalf("candidates = %+v, want the referent-repaired チェックリストの運用を適用 decision", candidates)
+	}
+
+	model := `{"summary":"更新","currentTopic":"再発防止策","resolvedIds":[],"items":[{"id":"item-todo-checklist","kind":"todo","severity":"medium","title":"vランごとの疎通確認チェックリスト作成","body":"交換前後でvランごとの疎通確認を実施するチェックリストを作成する","status":"open","evidenceSequenceNos":[12]}],"assignments":[{"nodeId":"item-todo-checklist","parentTopicId":"agenda-3","confidence":0.8}]}`
+	reconciled, audit, err := reconcileDecisionCandidates(model, nil, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff liveAnalysisPayload
+	if err := json.Unmarshal([]byte(reconciled), &diff); err != nil {
+		t.Fatal(err)
+	}
+	decisionCount := 0
+	var applyTitle string
+	for _, item := range diff.Items {
+		if item.Kind == "decision" {
+			decisionCount++
+			if strings.Contains(item.Title, "適用") {
+				applyTitle = item.Title
+			}
+		}
+	}
+	if decisionCount < 2 {
+		t.Fatalf("decisionCount = %d, items=%+v, want >= 2", decisionCount, diff.Items)
+	}
+	if applyTitle == "" || !strings.Contains(applyTitle, "チェックリスト") {
+		t.Fatalf("applyTitle = %q, want a title containing both the target object (チェックリスト) and the policy verb (適用)", applyTitle)
+	}
+	todo := findItemByID(diff.Items, "item-todo-checklist")
+	if todo == nil || todo.Kind != "todo" {
+		t.Fatalf("checklist todo = %+v, want kind left unchanged (todo), not consumed by a decision", todo)
+	}
+	if audit.AcceptedDecisions < 2 {
+		t.Fatalf("audit = %+v, want >= 2 accepted decisions", audit)
+	}
+}
+
+// TestDetectDecisionCandidatesRejectsConsiderationAndMeetingEndPhrasing
+// guards W5.1's new positive-pattern alternatives (を必須にします等) against
+// over-matching plain consideration and meeting-end control speech.
+func TestDetectDecisionCandidatesRejectsConsiderationAndMeetingEndPhrasing(t *testing.T) {
+	cases := []string{
+		"監視間隔と通知条件については、次回までに検討します。",
+		"今日はここまでにします。",
+	}
+	for _, text := range cases {
+		segments := []domain.TranscriptSegment{finalSegment(14, text)}
+		if candidates := detectDecisionCandidates(segments); len(candidates) != 0 {
+			t.Fatalf("text=%q candidates=%+v, want 0", text, candidates)
+		}
+	}
+}
+
+// TestDecisionAdoptionConsumesCreationTodoGuardsKindRewrite covers
+// decisionAdoptionConsumesCreationTodo: a strongly-matching decision
+// statement about ADOPTING/APPLYING a deliverable (適用/運用/導入/施行) must
+// not consume a todo about CREATING/PREPARING that same deliverable
+// (作成/策定/準備/起票/ドラフト) -- they are distinct propositions, so the todo
+// stays a todo and the decision is created as its own item. When both the
+// todo and the decision statement share the same creation verb, the normal
+// same-id promotion still applies.
+func TestDecisionAdoptionConsumesCreationTodoGuardsKindRewrite(t *testing.T) {
+	// ケース1: 作成系todo + 適用系decision → todoは維持され、別decisionが作られる。
+	adoptionSegment := finalSegment(20, "交換前後でvランごとの疎通確認を実施するチェックリストの運用を次回から適用することにします。")
+	model := `{"summary":"更新","currentTopic":"再発防止策","resolvedIds":[],"items":[{"id":"item-todo-checklist","kind":"todo","severity":"medium","title":"チェックリスト作成","body":"交換前後でvランごとの疎通確認を実施するチェックリストを作成する","status":"open","evidenceSequenceNos":[12]}],"assignments":[]}`
+	reconciled, audit, err := reconcileDecisionCandidates(model, nil, detectDecisionCandidates([]domain.TranscriptSegment{adoptionSegment}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff liveAnalysisPayload
+	if err := json.Unmarshal([]byte(reconciled), &diff); err != nil {
+		t.Fatal(err)
+	}
+	todo := findItemByID(diff.Items, "item-todo-checklist")
+	if todo == nil || todo.Kind != "todo" {
+		t.Fatalf("checklist todo = %+v, want kind left unchanged (todo)", todo)
+	}
+	decisionCount := 0
+	for _, item := range diff.Items {
+		if item.Kind == "decision" {
+			decisionCount++
+		}
+	}
+	if decisionCount != 1 {
+		t.Fatalf("decisionCount = %d items=%+v, want exactly 1 separate decision item", decisionCount, diff.Items)
+	}
+	if audit.AcceptedDecisions != 1 {
+		t.Fatalf("audit = %+v, want 1 accepted (separately created) decision", audit)
+	}
+
+	// ケース2: 同一動作(作成todo + 「作成することにします」decision) → 従来どおり
+	// 同一IDのままkindがdecisionへ書き換わる(消費される命題が別ではないため)。
+	creationSegment := finalSegment(20, "交換前後でvランごとの疎通確認を実施するチェックリストを作成することにします。")
+	model2 := `{"summary":"更新","currentTopic":"再発防止策","resolvedIds":[],"items":[{"id":"item-todo-checklist2","kind":"todo","severity":"medium","title":"チェックリスト作成","body":"交換前後でvランごとの疎通確認を実施するチェックリストを作成する","status":"open","evidenceSequenceNos":[12]}],"assignments":[]}`
+	reconciled2, _, err := reconcileDecisionCandidates(model2, nil, detectDecisionCandidates([]domain.TranscriptSegment{creationSegment}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff2 liveAnalysisPayload
+	if err := json.Unmarshal([]byte(reconciled2), &diff2); err != nil {
+		t.Fatal(err)
+	}
+	if len(diff2.Items) != 1 || diff2.Items[0].ID != "item-todo-checklist2" || diff2.Items[0].Kind != "decision" {
+		t.Fatalf("items = %+v, want the same id promoted in place to decision (same creation verb on both sides)", diff2.Items)
+	}
+}
+
+// TestChecklistCreationTodoAndApplicationDecisionCoexist covers F2's new
+// 「(から|を)適用します$」 marker together with F5's same-segment referent
+// repair: a single segment states a creation clause ("…チェックリストを作成
+// します") immediately followed by a bare-anaphora adoption clause ("この運用
+// を…適用します"). The adoption clause is repaired using the creation clause
+// as its referent (W5.2) and recognized as a decision only via F2's new
+// pattern; decisionAdoptionConsumesCreationTodo (the earlier W5.3 guard)
+// must then keep the model's own creation TODO unchanged and create the
+// decision as its own separate item.
+func TestChecklistCreationTodoAndApplicationDecisionCoexist(t *testing.T) {
+	text := "VLAN疎通確認チェックリストを作成します。この運用を次回の機器交換から適用します。"
+	segments := []domain.TranscriptSegment{finalSegment(30, text)}
+	candidates := detectDecisionCandidates(segments)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v, want exactly 1 (the creation clause carries no decision marker of its own)", candidates)
+	}
+	if !strings.Contains(candidates[0].Statement, "チェックリスト") || !strings.Contains(candidates[0].Statement, "適用") {
+		t.Fatalf("repaired statement = %q, want referent-repaired to name both the target object and 適用", candidates[0].Statement)
+	}
+	if strings.HasPrefix(candidates[0].Statement, "この") {
+		t.Fatalf("repaired statement = %q, must not still start with the bare anaphora", candidates[0].Statement)
+	}
+
+	model := `{"summary":"更新","currentTopic":"再発防止策","resolvedIds":[],"items":[{"id":"item-todo-vlan-checklist","kind":"todo","severity":"medium","title":"VLAN疎通確認チェックリストの作成","body":"VLAN疎通確認チェックリストを作成する","status":"open","evidenceSequenceNos":[30]}],"assignments":[]}`
+	reconciledContent, decisionAudit, err := reconcileDecisionCandidates(model, nil, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scope := evidenceScopeFromTexts(map[int64]string{30: text}, 30)
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(reconciledContent, nil, nil, 1, []int64{30}, scope, TreeClassificationConfig{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := previousLiveAnalysisState(raw)
+
+	todo := findItemByID(state.Items, "item-todo-vlan-checklist")
+	if todo == nil || todo.Kind != "todo" {
+		t.Fatalf("todo = %+v, want kind left unchanged (todo)", todo)
+	}
+	decisionCount := 0
+	for _, item := range state.Items {
+		if item.Kind != "decision" {
+			continue
+		}
+		decisionCount++
+		if item.ID == todo.ID {
+			t.Fatalf("decision must not reuse the todo's id: %+v", item)
+		}
+	}
+	if decisionCount != 1 {
+		t.Fatalf("decisionCount = %d items=%+v, want exactly 1", decisionCount, state.Items)
+	}
+	if decisionAudit.AcceptedDecisions != 1 {
+		t.Fatalf("audit = %+v, want 1 accepted decision", decisionAudit)
+	}
+}
+
+// TestDecisionDoesNotResolveExecutionTodo covers G1: a decision reaching
+// consensus on ADOPTING/OPERATING a deliverable ("運用を...適用します") must
+// not silently resolve a pre-existing (persisted, from previous.Items) TODO
+// about CREATING that same deliverable ("...を作成する"), even though the
+// two are topically related enough to match reconcileDecisionCandidates'
+// subject-matched-explicit-decision resolution loop's 0.16 similarity floor.
+// Making a decision does not itself complete a create/implement/confirm
+// task -- the same principle the existing prompt already applies model-side
+// ("decisionが出たという理由だけでは解決にしない"), now also enforced
+// server-side via deliberativeTodoPattern + decisionAdoptionConsumesCreationTodo.
+// A genuinely deliberative TODO ("...を検討する") must keep resolving via a
+// matching decision exactly as before (regression guard: G1 must not touch
+// issue/question/risk resolution, nor deliberative todo resolution).
+func TestDecisionDoesNotResolveExecutionTodo(t *testing.T) {
+	hasResolvedUpdateFor := func(updates []resolutionUpdate, itemID string) bool {
+		key := canonicalReferenceKey(itemID)
+		for _, update := range updates {
+			if canonicalReferenceKey(update.ItemID) == key && normalizeResolutionStatus(update.Status) == "resolved" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// ケースA(G1本体): 実行系(作成)TODOはdecisionだけではresolvedにならない。
+	previousExecution := liveAnalysisPayload{
+		Summary: "previous",
+		Items:   []liveAnalysisItem{{ID: "item-todo-checklist", Kind: "todo", Severity: "medium", Title: "スイッチ交換用チェックリスト案の作成", Body: "スイッチ交換用チェックリスト案を作成する", Status: "open", EvidenceSequenceNos: []int64{3}}},
+	}
+	previousExecutionJSON, err := json.Marshal(previousExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionText := "スイッチ交換用チェックリスト案を作成します。この運用を次回の機器交換から適用します。"
+	executionCandidates := detectDecisionCandidates([]domain.TranscriptSegment{finalSegment(20, executionText)})
+	if len(executionCandidates) != 1 {
+		t.Fatalf("executionCandidates = %+v, want exactly 1 (referent-repaired 適用 decision)", executionCandidates)
+	}
+	model := `{"summary":"更新","currentTopic":"再発防止策","resolvedIds":[],"items":[],"assignments":[]}`
+	reconciled, _, err := reconcileDecisionCandidates(model, previousExecutionJSON, executionCandidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff liveAnalysisPayload
+	if err := json.Unmarshal([]byte(reconciled), &diff); err != nil {
+		t.Fatal(err)
+	}
+	if hasResolvedUpdateFor(diff.ResolutionUpdates, "item-todo-checklist") {
+		t.Fatalf("resolutionUpdates = %+v, want no resolved update for the execution todo (a decision must not resolve a create/implement task)", diff.ResolutionUpdates)
+	}
+	for _, item := range diff.ResolvedIds {
+		if canonicalReferenceKey(item) == canonicalReferenceKey("item-todo-checklist") {
+			t.Fatalf("resolvedIds = %v, want the execution todo absent", diff.ResolvedIds)
+		}
+	}
+	if rewritten := findItemByID(diff.Items, "item-todo-checklist"); rewritten != nil && rewritten.Kind != "todo" {
+		t.Fatalf("item-todo-checklist = %+v, want kind left unchanged (todo) if present at all", rewritten)
+	}
+
+	// ケースB(回帰ガード): 検討系TODOは従来どおりdecisionでresolvedになる。
+	previousDeliberation := liveAnalysisPayload{
+		Summary: "previous",
+		Items:   []liveAnalysisItem{{ID: "item-todo-consider-sites", Kind: "todo", Severity: "medium", Title: "三地点案の検討", Body: "三地点案を検討する", Status: "open", EvidenceSequenceNos: []int64{5}}},
+	}
+	previousDeliberationJSON, err := json.Marshal(previousDeliberation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliberationCandidates := detectDecisionCandidates([]domain.TranscriptSegment{finalSegment(9, "三地点で実施することを決定します。")})
+	if len(deliberationCandidates) != 1 {
+		t.Fatalf("deliberationCandidates = %+v, want exactly 1", deliberationCandidates)
+	}
+	reconciled2, _, err := reconcileDecisionCandidates(model, previousDeliberationJSON, deliberationCandidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff2 liveAnalysisPayload
+	if err := json.Unmarshal([]byte(reconciled2), &diff2); err != nil {
+		t.Fatal(err)
+	}
+	if !hasResolvedUpdateFor(diff2.ResolutionUpdates, "item-todo-consider-sites") {
+		t.Fatalf("resolutionUpdates = %+v, want a resolved update for the deliberative todo (regression: a decision must still resolve an open deliberation)", diff2.ResolutionUpdates)
+	}
+}
