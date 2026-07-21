@@ -41,6 +41,10 @@ var (
 	decisionRecapPattern       = regexp.MustCompile(`決定事項(?:は|として)`)
 	decisionNegativePattern    = regexp.MustCompile(`(?:未決定|決まってい(?:ない|ません)|決定してい(?:ない|ません)|決定せず|まだ決定|次回.{0,12}決定|決定.{0,12}(?:検討|候補)|採用.{0,12}(?:検討|候補)|候補にすぎ|したい|予定です)`)
 	decisionSuffixPattern      = regexp.MustCompile(`(?:する)?ことを決定(?:事項)?と?します|決定(?:事項)?と?します|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします`)
+	leadingParticlePattern     = regexp.MustCompile(`^(?:の|を|が|は|に|で|と)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
+	leadingAnaphoraPattern     = regexp.MustCompile(`^(?:この|その)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
+	decisionReferentPattern    = regexp.MustCompile(`(?:^|[、,。！？!?])([^、,。！？!?]{2,80}?)を(?:作成|策定|準備|定義|設定|整備|手順化)(?:します|する|しました|した)?$`)
+	checklistReferentPattern   = regexp.MustCompile(`^(.{2,24})で(.{2,32})を実施するチェックリスト$`)
 )
 
 func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCandidate {
@@ -61,10 +65,10 @@ func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCan
 			}
 			sourceSequenceNos := []int64{segment.SequenceNo}
 			statement := clause
-			if !recap && !completeDecisionStatement(statement) && index > 0 {
+			if !recap && (!completeDecisionStatement(statement) || decisionStatementNeedsReferent(statement)) && index > 0 {
 				previous := segments[index-1]
-				if logicalUtteranceContinuation(previous, segment) {
-					statement = joinDecisionFragments(previous.Text, clause)
+				if repaired, ok := repairDecisionFragment(previous, segment, clause); ok {
+					statement = repaired
 					sourceSequenceNos = []int64{previous.SequenceNo, segment.SequenceNo}
 				}
 			}
@@ -119,7 +123,17 @@ func extendDecisionSegmentsWithPriorFragment(round []domain.TranscriptSegment, s
 }
 
 func logicalUtteranceContinuation(previous, current domain.TranscriptSegment) bool {
-	if !previous.IsFinal || previous.SequenceNo <= 0 || current.SequenceNo != previous.SequenceNo+1 {
+	if !adjacentSameSpeakerSegments(previous, current) {
+		return false
+	}
+	if classifyDiscourseAct(previous.Text) != discourseContent || classifyDiscourseAct(current.Text) != discourseContent {
+		return false
+	}
+	return sttSegmentLikelyIncomplete(previous.Text)
+}
+
+func adjacentSameSpeakerSegments(previous, current domain.TranscriptSegment) bool {
+	if !previous.IsFinal || !current.IsFinal || previous.SequenceNo <= 0 || current.SequenceNo != previous.SequenceNo+1 {
 		return false
 	}
 	if previous.SpeakerID != "" && current.SpeakerID != "" && previous.SpeakerID != current.SpeakerID {
@@ -134,13 +148,20 @@ func logicalUtteranceContinuation(previous, current domain.TranscriptSegment) bo
 			return false
 		}
 	}
-	if classifyDiscourseAct(previous.Text) != discourseContent || classifyDiscourseAct(current.Text) != discourseContent {
+	return true
+}
+
+func sttSegmentLikelyIncomplete(text string) bool {
+	trimmed := strings.TrimSpace(strings.TrimRight(text, "。！？!? "))
+	if trimmed == "" {
 		return false
 	}
-	trimmed := strings.TrimSpace(strings.TrimRight(previous.Text, "。！？!? "))
-	return strings.HasSuffix(trimmed, "で") || strings.HasSuffix(trimmed, "を") || strings.HasSuffix(trimmed, "は") ||
-		strings.HasSuffix(trimmed, "に") || strings.HasSuffix(trimmed, "として") || strings.HasSuffix(trimmed, "について") ||
-		strings.HasSuffix(trimmed, "については")
+	for _, suffix := range []string{"が", "で", "を", "は", "に", "と", "へ", "も", "として", "について", "については", "よう", "ため", "ので"} {
+		if strings.HasSuffix(trimmed, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func joinDecisionFragments(previous, current string) string {
@@ -150,7 +171,71 @@ func joinDecisionFragments(previous, current string) string {
 	return strings.TrimSpace(left + right)
 }
 
+func decisionStatementNeedsReferent(statement string) bool {
+	normalized := normalizeDiscourseText(statement)
+	return leadingParticlePattern.MatchString(normalized) || leadingAnaphoraPattern.MatchString(normalized)
+}
+
+// repairDecisionFragment reconstructs only an immediately adjacent,
+// same-speaker STT continuation. A leading 「の運用」 may refer back to the
+// object just created in the previous segment; when that object cannot be
+// recovered verbatim, the fragment remains rejected rather than being filled
+// with model-invented content.
+func repairDecisionFragment(previous, current domain.TranscriptSegment, clause string) (string, bool) {
+	if !adjacentSameSpeakerSegments(previous, current) {
+		return "", false
+	}
+	if logicalUtteranceContinuation(previous, current) {
+		joined := joinDecisionFragments(previous.Text, clause)
+		return joined, completeDecisionStatement(joined)
+	}
+	normalized := normalizeDiscourseText(clause)
+	if !leadingParticlePattern.MatchString(normalized) && !leadingAnaphoraPattern.MatchString(normalized) {
+		return "", false
+	}
+	referent := decisionReferentFromPrevious(previous.Text)
+	if referent == "" {
+		return "", false
+	}
+	right := strings.TrimSpace(strings.TrimLeft(clause, "、。 "))
+	switch {
+	case strings.HasPrefix(right, "の"):
+		right = referent + right
+	case strings.HasPrefix(right, "この"), strings.HasPrefix(right, "その"):
+		runes := []rune(right)
+		if len(runes) < 2 {
+			return "", false
+		}
+		right = referent + "の" + string(runes[2:])
+	default:
+		// Other leading particles are repaired only when the previous segment
+		// itself was syntactically incomplete (handled above).
+		return "", false
+	}
+	return right, completeDecisionStatement(right)
+}
+
+func decisionReferentFromPrevious(text string) string {
+	trimmed := strings.TrimSpace(strings.TrimRight(text, "。！？!? "))
+	matches := decisionReferentPattern.FindAllStringSubmatch(trimmed, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	referent := strings.TrimSpace(matches[len(matches)-1][1])
+	referent = regexp.MustCompile(`^(?:また|さらに|加えて|そして|まず)[、,]*`).ReplaceAllString(referent, "")
+	if match := checklistReferentPattern.FindStringSubmatch(referent); len(match) == 3 {
+		referent = strings.TrimSpace(match[1]) + "の" + strings.TrimSpace(match[2]) + "チェックリスト"
+	}
+	if len([]rune(semanticItemKey(referent))) < 4 || isDiscourseOnlyText(referent) {
+		return ""
+	}
+	return referent
+}
+
 func completeDecisionStatement(statement string) bool {
+	if decisionStatementNeedsReferent(statement) {
+		return false
+	}
 	title := normalizeForMatch(decisionCandidateTitle(statement))
 	for _, filler := range []string{"はい", "ええ", "えー", "ええと", "えっと", "あの"} {
 		title = strings.TrimPrefix(title, filler)

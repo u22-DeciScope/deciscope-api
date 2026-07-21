@@ -343,8 +343,8 @@ func normalizeTreeAuditOperationFields(operation *treeAuditOperation, spaces tre
 		clearFrom()
 		clearTo()
 
-	case TreeAuditRenameGroup, TreeAuditRemoveEmptyGroup:
-		// Used: TargetCanonicalNodeID (+Label for rename_group).
+	case TreeAuditRenameGroup, TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup:
+		// Used: TargetCanonicalNodeID (+Label for rename operations).
 		clearItemID()
 		clearItemIDs()
 		clearCandidateID()

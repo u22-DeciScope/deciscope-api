@@ -283,13 +283,20 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
 - `items[].relatedAgendaIds` は横断agendaへの副次的な参照です。canonicalな親は
   `tree.nodes[].parentId` の1つだけで、`relatedAgendaIds` から複数親edgeは作りません。
   `agendaRole: "action_summary"` のagenda nodeは、activeなTODO・未解決itemを
-  `relatedItemIds` でも参照できるため、内容別topicの所属を失わず横断表示できます
+  `relatedItemIds` でも参照できるため、内容別topicの所属を失わず横断表示できます。
+  action-summary agendaが事前入力に無い会議では、activeで分類済みのTODO・未解決itemに
+  参照専用ID `action-summary-fallback` を付けます。これはagenda anchorやtree nodeではなく、
+  canonical itemを複製しないAction Summary projectionのview keyです。resolved・inactive・
+  tentative・unclassified itemはfallback projectionに含めません
 - `treeVersion` はtreeを生成したlive analysis versionです。`treeChanges` はそのversionで
   サーバーが算出した構造差分で、`newNodeIds` / `updatedNodeIds` / `reparentedNodeIds` /
   `resolvedNodeIds` / `promotedNodeIds` を必要なものだけ含みます。旧payloadでは省略されます
 - tree auditorが検証済みpatchを適用したversionでは、任意の
   `changeSource: "tree_auditor"`, `auditRunId`, `basedOnTreeVersion` が追加されます。
   `treeChanges.source` / `treeChanges.auditRunId`も同じ由来を示します。旧クライアントは無視できます
+- tree auditorの`rename_topic`は既存topicの`label`だけを安全に更新します。
+  node `id`、`parentId`、children、`agendaRefs`は維持され、更新したtopic IDは
+  `treeChanges.updatedNodeIds`に含まれます
 
 ## Teams Bot会議セッション
 

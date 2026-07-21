@@ -12,9 +12,12 @@ import (
 // versions. A recap-only item can update an existing primary proposition, but
 // cannot remain as an independent node. Predicate-only decisions are removed
 // because their subject was lost before the decision marker was recognized.
-func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats) map[string]string {
+func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats, scopes ...liveEvidenceScope) map[string]string {
 	if state == nil || len(state.Items) == 0 {
 		return nil
+	}
+	if len(scopes) > 0 {
+		repairHistoricalDecisionFragments(state, scopes[0], stats)
 	}
 	primary := make([]liveAnalysisItem, 0, len(state.Items))
 	for _, item := range state.Items {
@@ -87,6 +90,43 @@ func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discour
 		state.EmergingTopics[i].EvidenceItemIDs = uniqueNonEmptyIDs(ids)
 	}
 	return remap
+}
+
+func repairHistoricalDecisionFragments(state *liveAnalysisPayload, scope liveEvidenceScope, stats *liveAnalysisTreeMergeStats) {
+	if state == nil {
+		return
+	}
+	for i := range state.Items {
+		item := &state.Items[i]
+		if item.Kind != "decision" || (!decisionStatementNeedsReferent(item.Title) && !decisionStatementNeedsReferent(item.Body)) || len(item.EvidenceSequenceNos) == 0 {
+			continue
+		}
+		sequenceNo := item.EvidenceSequenceNos[len(item.EvidenceSequenceNos)-1]
+		current := segmentFromEvidenceScope(scope, sequenceNo)
+		previous := segmentFromEvidenceScope(scope, sequenceNo-1)
+		if current.SequenceNo <= 0 || previous.SequenceNo <= 0 {
+			continue
+		}
+		repaired, ok := repairDecisionFragment(previous, current, current.Text)
+		if !ok {
+			continue
+		}
+		item.Title = truncateRunes(decisionCandidateTitle(repaired), 40)
+		item.Body = truncateRunes(strings.TrimSpace(repaired), liveAnalysisTreeDescriptionMaxRunes)
+		item.EvidenceSequenceNos = appendUniqueSequences([]int64{previous.SequenceNo}, item.EvidenceSequenceNos)
+		item.InformationStatus = informationStatusGrounded
+		if state.Tree != nil {
+			for nodeAt := range state.Tree.Nodes {
+				if state.Tree.Nodes[nodeAt].ID == item.ID {
+					state.Tree.Nodes[nodeAt].Label = item.Title
+					state.Tree.Nodes[nodeAt].Description = item.Body
+				}
+			}
+		}
+		if stats != nil {
+			stats.LowInformationItemsRewritten++
+		}
+	}
 }
 
 // repairMixedEmergingCandidates folds evidence that clearly belongs to an
@@ -264,12 +304,13 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 				continue
 			}
 			label := candidateClusterLabel(cluster, itemByID)
-			candidateID, _ := canonicalCandidateID(label, "agenda-external subject recovered from canonical evidence")
+			candidateID, subjectKey := canonicalCandidateID(label, "agenda-external subject recovered from canonical evidence")
 			if candidateID == "" {
 				continue
 			}
 			split := emergingTopicCandidate{
 				ID: candidateID, Label: label, Description: "agenda-external subject recovered from canonical evidence",
+				SubjectKey:      subjectKey,
 				OriginalSubject: label, CurrentSubject: label, SubjectHistory: []string{label},
 				EvidenceItemIDs: append([]string(nil), cluster...), OriginItemIDs: append([]string(nil), cluster...),
 				FirstRound: candidate.FirstRound, LastRound: candidate.LastRound, RoundCount: candidate.RoundCount,

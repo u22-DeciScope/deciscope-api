@@ -5,6 +5,55 @@ import (
 	"testing"
 )
 
+func TestGenericQuestionWithoutSubjectIsRewrittenFromEvidence(t *testing.T) {
+	if !issueTextNeedsReferent("何が原因でしたか") {
+		t.Fatal("generic question must require a referent")
+	}
+	if issueTextNeedsReferent("領収書不足と入力ミスのどちらが主な差し戻し原因か") {
+		t.Fatal("specific comparison question must retain its subject")
+	}
+	scope := evidenceScopeFromTexts(map[int64]string{
+		4: "何が原因でしたか？",
+		5: "宿泊費が上限を超えた理由を書いていなかったからです。",
+	}, 4, 5)
+	diff := `{"summary":"差し戻し","currentTopic":"原因","items":[{"clientKey":"cause","kind":"issue","subtype":"question","severity":"medium","title":"何が原因でしたか","body":"","status":"open","evidenceSequenceNos":[4]}],"newTopics":[],"assignments":[{"nodeId":"cause","parentTopicId":"topic-unclassified","confidence":0.6,"reason":"model"}]}`
+	stats := &liveAnalysisTreeMergeStats{}
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(diff, nil, nil, 1, []int64{4, 5}, scope, TreeClassificationConfig{}, stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := previousLiveAnalysisState(raw)
+	if len(state.Items) != 1 || state.Items[0].Title == "何が原因でしたか" || !strings.Contains(state.Items[0].Title, "宿泊費") || state.Items[0].InformationStatus != informationStatusGrounded {
+		t.Fatalf("items=%+v", state.Items)
+	}
+}
+
+func TestPersistedGenericQuestionIsRewrittenAndRedundantGroupFlattened(t *testing.T) {
+	previous := liveAnalysisItem{
+		ID: "issue-question-auto-fd5894572c93", Kind: "issue", Subtype: issueSubtypeQuestion,
+		Title: "何が原因でしたか", Body: "差し戻しの原因の最終的な特定が必要。", Status: "open",
+		InformationStatus: informationStatusGrounded, ClassificationStatus: classificationAssigned,
+		EvidenceSequenceNos: []int64{4, 7},
+	}
+	repaired, _ := repairLowInformationIssueItems([]liveAnalysisItem{previous}, nil, nil, discourseTimeline{}, liveEvidenceScope{}, nil)
+	if len(repaired) != 1 || repaired[0].ID != previous.ID || issueTextNeedsReferent(repaired[0].Title) || !containsInt64(repaired[0].EvidenceSequenceNos, 4) || !containsInt64(repaired[0].EvidenceSequenceNos, 7) {
+		t.Fatalf("repaired=%+v", repaired)
+	}
+
+	groupID, agendaTopicID := "group-4ca7e79c8f64", "topic-agenda-a5f8fcd0c7a2"
+	groups := map[string]liveAnalysisTreeNode{groupID: {ID: groupID, Kind: "group", Label: "何が原因でしたか", ParentID: agendaTopicID}}
+	details := map[string]liveAnalysisTreeNode{previous.ID: {ID: previous.ID, Kind: "issue", Label: repaired[0].Title, ParentID: groupID}}
+	parents := map[string]string{groupID: agendaTopicID, previous.ID: groupID}
+	stats := &liveAnalysisTreeMergeStats{}
+	order := flattenLowInformationSingleChildGroups(repaired, groups, []string{groupID}, details, parents, stats)
+	if len(order) != 0 || len(groups) != 0 || parents[previous.ID] != agendaTopicID || stats.GroupsFlattened != 1 {
+		t.Fatalf("order=%v groups=%+v parents=%+v stats=%+v", order, groups, parents, stats)
+	}
+	if repaired[0].ID != previous.ID || len(repaired[0].EvidenceSequenceNos) != 2 {
+		t.Fatalf("canonical evidence changed: %+v", repaired[0])
+	}
+}
+
 func TestNormalizeSemanticClassificationMigratesLegacyKinds(t *testing.T) {
 	tests := []struct {
 		name                          string

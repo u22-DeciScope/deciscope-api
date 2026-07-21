@@ -72,7 +72,7 @@ const liveAnalysisSystemPrompt = "あなたは日本語の会議分析アシス�
 // v14の次のv15では、将来の悪影響への懸念を原因推定と区別してkind=riskへ
 // 抽出する規則、risk/issue/todoの併存を明示する規則、および「正常になった」
 // 「復旧した」「疎通を確認した」を明示的closure根拠に含める規則を追加した。
-const liveAnalysisPromptVersion = "v15"
+const liveAnalysisPromptVersion = "v16"
 
 const liveAnalysisSchemaDescription = `{
   "summary": "議論全体のこれまでの要約(毎回全文を出力、400字程度まで)",
@@ -115,6 +115,7 @@ const liveAnalysisSchemaDescription = `{
 const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を出力してください。
 - utteranceRolesには、このラウンドの各final発言をsequenceNoごとに1件ずつ入れてください。独立した事実・問題・行動・判断を含む発言はsubstantive、以前の内容の訂正はcorrection、既出内容の要約はrecap、次の内容を紹介するだけの話題転換はdiscourse_transition、命題を持たない相づち・フィラーはfillerです。
 - discourse_transitionやfillerだけの発言からitem、newTopic、assignment、candidate相当の提案を作らないでください。アジェンダ外の話題開始を示すdiscourse_transitionは区間制御の根拠にはできますが、表示itemにはしません。直後のsubstantive発言は通常どおりitem化してください。
+- 「話を戻す」「本題に戻る」などはアジェンダ復帰を示すdiscourse_transitionです。復帰表現自体をitemにせず、以後の具体的な業務内容は該当agendaへ分類してください。「項目を追加する」のように業務対象へ追加する発言を、アジェンダ外への遷移と解釈してはいけません。
 - itemsには、このラウンドの新しい発言によって新しく生まれた論点・未解決事項・懸念・質問・決定事項・TODO、または内容が変化した既存itemだけを出力してください。変化のない既存itemは出力しないでください(サーバー側で保持されます)。
 - 既存itemを更新する場合は、そのcanonical idをclientKeyへ完全一致で指定してください。新規itemではclientKeyはラウンド内参照だけに使われ、永続IDはサーバーが生成します。root、agenda-*、topic-*、group-*、reference-*、candidate-*、action-summary-*はclientKeyに使用禁止です。
 - 既存item一覧と同じ内容・同じ趣旨のitemを、別の新しいclientKeyで出力してはいけません。内容が同じなら既存のcanonical idをclientKeyへ指定してください。
@@ -130,6 +131,7 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - 1つの発言に決定事項と未決定事項など複数の意味が含まれる場合は、意味ごとに別itemへ分けてください。逆に、複数発言が同じ論点の言い換え・回答・まとめである場合は、新規itemを増やさず既存idを更新してください。
 - 発言に明示されていないリスク・質問・作業を推測で追加しないでください。短い会議をsegment単位で機械的に細分化せず、独立して追跡すべき結論・未解決事項・作業だけをitemにしてください。
 - 終盤のまとめ発言は新規itemを作る理由ではありません。対応する既存itemを同じidで更新し、evidenceSequenceNosへまとめ発言のsequenceNoを追加してください。
+- 「今日はここまで」「以上で終了」「ありがとうございました」のように会議自体を閉じる発話や、「次へ進む」「一旦まとめる」のような進行発話はdecisionではありません。業務・製品・運用の対象と採否が明示された「フォームに一覧を入れないことにする」のような発言だけをdecisionにしてください。
 - 「この点」「本件」「それ」「上記」だけで対象を表すタイトルや、「引き続き確認が必要」「以上をまとめる」のような状態語・進行発言だけのタイトルを作らないでください。ノード単体で対象と命題が分かる具体的なタイトルにしてください。
 - 1つの抽象表現へ複数の具体的命題を潰さず、それぞれ別itemにしてください。対象がまだ復元できない途中発言は削除を指示せず、後続発言で具体化できるようissueとして保持してください。
 - evidenceSequenceNosには、そのitemを直接裏付ける保存済みfinal発言のsequenceNoだけをJSON整数(number、引用符なし)で入れてください。新規itemは原則このラウンドの発言、既存itemの更新では前回状態に既にある過去sequenceとこのラウンドの発言を指定できます。"123"のような文字列、小数、未来・別論点のsequenceNoを入れないでください。
@@ -911,8 +913,10 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.TrueUnclassifiedItems, stats.TentativeItems, treeStats.TentativeItemsHidden, treeStats.CompanionParentInherited, treeStats.CompanionCandidateInherited, treeStats.SemanticParentCorrected, treeStats.PromotedItemsReparented, treeStats.StaleCandidatesHidden, treeStats.TentativeMetadataLost)
 	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d discourseOnlyItemsRejected=%d discourseOnlyCandidatesRejected=%d candidateSubjectIncoherentDeferred=%d candidateSubjectMutationRejected=%d candidateSubjectsSplit=%d",
 		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited, treeStats.DiscourseOnlyItemsRejected, treeStats.DiscourseOnlyCandidatesRejected, treeStats.CandidateSubjectIncoherentDeferred, treeStats.CandidateSubjectMutationRejected, treeStats.CandidateSubjectsSplit)
-	log.Printf("Live no-agenda candidate lifecycle. sessionId=%s version=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v staleAgendaFallbackRejected=%d fixedAgendaAssignmentRejectedByNoAgendaSpan=%d candidateSubjectKey=%v candidateIdsMerged=%d companionCandidateInherited=%d crossKindCandidateInherited=%d dynamicTopicPromoted=%d promotedItemIds=%v promotedItemsRemainingOutsideTopic=%d",
-		sessionID, newVersion, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.StaleAgendaFallbackRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, uniqueNonEmptyIDs(treeStats.CandidateSubjectKeys), treeStats.CandidateIDsMerged, treeStats.CompanionCandidateInherited, treeStats.CrossKindCandidateInherited, treeStats.DynamicTopicsPromoted, uniqueNonEmptyIDs(treeStats.PromotedItemIDs), treeStats.PromotedItemsRemainingOutsideTopic)
+	log.Printf("Live no-agenda candidate lifecycle. sessionId=%s version=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v noAgendaSpansClosed=%d explicitAgendaReentries=%d implicitAgendaReentries=%d lowConfidenceNoAgendaOverridesRejected=%d staleAgendaFallbackRejected=%d fixedAgendaAssignmentRejectedByNoAgendaSpan=%d candidateSubjectKey=%v candidateIdsMerged=%d companionCandidateInherited=%d crossKindCandidateInherited=%d dynamicTopicPromoted=%d promotedItemIds=%v promotedItemsRemainingOutsideTopic=%d",
+		sessionID, newVersion, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.NoAgendaSpansClosed, treeStats.ExplicitAgendaReentries, treeStats.ImplicitAgendaReentries, treeStats.LowConfidenceNoAgendaOverridesRejected, treeStats.StaleAgendaFallbackRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, uniqueNonEmptyIDs(treeStats.CandidateSubjectKeys), treeStats.CandidateIDsMerged, treeStats.CompanionCandidateInherited, treeStats.CrossKindCandidateInherited, treeStats.DynamicTopicsPromoted, uniqueNonEmptyIDs(treeStats.PromotedItemIDs), treeStats.PromotedItemsRemainingOutsideTopic)
+	log.Printf("Live subject repair. sessionId=%s version=%d genericCandidateLabelsRewritten=%d genericTopicLabelsRewritten=%d subjectFragmentationRepairs=%d",
+		sessionID, newVersion, treeStats.GenericCandidateLabelsRewritten, treeStats.GenericTopicLabelsRewritten, treeStats.SubjectFragmentationRepairs)
 	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d propositionItemsMerged=%d recapMerged=%d referenceRecapItemsMerged=%d referenceRecapItemsRejected=%d referenceRecapTopicProposalsRejected=%d lowInformationDecisionsRejected=%d lowInformationItemsRejected=%d lowInformationItemsRewritten=%d lowInformationItemsSplit=%d lowInformationTentativeRetained=%d semanticKindMigrations=%d semanticSubtypeMigrations=%d itemResurrectionPrevented=%d",
 		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.PropositionItemsMerged, treeStats.RecapMerged, treeStats.ReferenceRecapItemsMerged, treeStats.ReferenceRecapItemsRejected, treeStats.ReferenceRecapTopicProposalsRejected, treeStats.LowInformationDecisionsRejected, treeStats.LowInformationItemsRejected, treeStats.LowInformationItemsRewritten, treeStats.LowInformationItemsSplit, treeStats.LowInformationTentativeRetained, treeStats.SemanticKindMigrations, treeStats.SemanticSubtypeMigrations, treeStats.ItemResurrectionPrevented)
 	noAgendaStarts := make(map[int64]struct{}, len(treeStats.NoAgendaSpanStartSequences))
@@ -937,8 +941,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	resolutionAudit := summarizeResolutionEvaluations(treeStats.ResolutionDecisions)
 	log.Printf("Live resolution lifecycle. sessionId=%s version=%d explicitClosureCandidates=%d closureTargetsFound=%d closureTargetsNotFound=%d resolutionUpdatesRequested=%d resolutionRequestedOpen=%d resolutionRequestedResolved=%d resolutionUpdatesApplied=%d resolutionAppliedOpen=%d resolutionAppliedResolved=%d resolutionAppliedReopen=%d resolutionAppliedNoop=%d resolutionUpdatesRejected=%d resolutionRejectedNoTarget=%d resolutionRejectedNoEvidence=%d resolutionRejectedSemanticMismatch=%d resolutionRejectedNoExplicitClosure=%d resolutionRejectedContradicted=%d",
 		sessionID, newVersion, treeStats.ExplicitClosureCandidates, treeStats.ClosureTargetsFound, treeStats.ClosureTargetsNotFound, resolutionAudit.Requested, resolutionAudit.RequestedOpen, resolutionAudit.RequestedResolved, resolutionAudit.Applied, resolutionAudit.AppliedOpen, resolutionAudit.AppliedResolved, resolutionAudit.AppliedReopen, resolutionAudit.AppliedNoop, resolutionAudit.Rejected, resolutionAudit.RejectedNoTarget, resolutionAudit.RejectedNoEvidence, resolutionAudit.RejectedSemanticMismatch, resolutionAudit.RejectedNoExplicitClosure, resolutionAudit.RejectedContradicted)
-	log.Printf("Live agenda context. sessionId=%s version=%d activeAgendaSpanCount=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v staleAgendaFallbackRejected=%d agendaTransitionDetected=%t agendaTransitionCount=%d",
-		sessionID, newVersion, treeStats.ActiveAgendaSpanCount, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.StaleAgendaFallbackRejected, len(treeStats.AgendaTransitions) > 0, len(treeStats.AgendaTransitions))
+	log.Printf("Live agenda context. sessionId=%s version=%d activeAgendaSpanCount=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v noAgendaSpansClosed=%d explicitAgendaReentries=%d implicitAgendaReentries=%d staleAgendaFallbackRejected=%d agendaTransitionDetected=%t agendaTransitionCount=%d",
+		sessionID, newVersion, treeStats.ActiveAgendaSpanCount, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.NoAgendaSpansClosed, treeStats.ExplicitAgendaReentries, treeStats.ImplicitAgendaReentries, treeStats.StaleAgendaFallbackRejected, len(treeStats.AgendaTransitions) > 0, len(treeStats.AgendaTransitions))
 	log.Printf("Live item lifecycle counts. sessionId=%s version=%d issueCount=%d openIssueCount=%d resolvedIssueCount=%d discussionIssueCount=%d confirmationIssueCount=%d questionIssueCount=%d investigationIssueCount=%d todoCount=%d activeTodoCount=%d completedTodoCount=%d decisionCount=%d factCount=%d riskCount=%d openRiskCount=%d resolvedRiskCount=%d riskItemsSynthesized=%d",
 		sessionID, newVersion,
 		stats.KindCounts["issue"], stats.KindCounts["issue"]-stats.ResolvedKindCounts["issue"], stats.ResolvedKindCounts["issue"],
@@ -3313,6 +3317,10 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, stats ...*liveAnalysis
 		if isDiscourseOnlyItem(item.Title, item.Body) {
 			if mergeStats != nil {
 				mergeStats.DiscourseOnlyItemsRejected++
+				mergeStats.LowInformationItemsRejected++
+				if item.Kind == "decision" && isMeetingEndOnlyItem(item.Title, item.Body) {
+					mergeStats.LowInformationDecisionsRejected++
+				}
 			}
 			continue
 		}
@@ -3643,10 +3651,17 @@ type liveAnalysisTreeMergeStats struct {
 	CrossKindCandidateInherited                 int
 	NoAgendaSpanCount                           int
 	NoAgendaSpanStartSequences                  []int64
+	NoAgendaSpansClosed                         int
+	ExplicitAgendaReentries                     int
+	ImplicitAgendaReentries                     int
+	LowConfidenceNoAgendaOverridesRejected      int
 	StaleAgendaFallbackRejected                 int
 	FixedAgendaAssignmentRejectedByNoAgendaSpan int
 	CandidateIDsMerged                          int
 	CandidateSubjectKeys                        []string
+	GenericCandidateLabelsRewritten             int
+	GenericTopicLabelsRewritten                 int
+	SubjectFragmentationRepairs                 int
 	PromotedItemsRemainingOutsideTopic          int
 	ExplicitClosureCandidates                   int
 	ClosureTargetsFound                         int
@@ -3942,7 +3957,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	if treeStats != nil {
 		treeStats.DiscourseTransitions = append(treeStats.DiscourseTransitions, timeline.Transitions...)
 	}
-	historicalDiscourseRemap := repairHistoricalDiscourseItems(&previous, timeline, treeStats)
+	historicalDiscourseRemap := repairHistoricalDiscourseItems(&previous, timeline, treeStats, evidenceScope)
 	repairMixedEmergingCandidates(&previous, mc, treeVersion, treeStats)
 	reservedIDRemap := repairReservedPersistedItemIDs(&previous, treeStats)
 	previousIDRemap := deduplicateExistingLiveState(&previous, treeStats)
@@ -4046,8 +4061,9 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	}
 	merged.Items = mergeLiveAnalysisItems(previous.Items, diffItems, resolutionUpdates)
 	appendItemEvidenceSequenceNos(merged.Items, diffItems, roundSeqNos, treeStats)
-	agendaSpans := detectAgendaContextSpans(evidenceScope, mc, treeStats)
+	agendaSpans := detectAgendaContextSpans(evidenceScope, mc, treeStats, timeline)
 	agendaEvidenceItems := contentEvidenceItems(diffItems, timeline)
+	agendaEvidenceItems = agendaSpanRepairItems(merged.Items, agendaEvidenceItems, agendaSpans)
 	assignments, newTopics = applyAgendaContextAssignments(assignments, newTopics, previous.Tree, merged.Items, agendaEvidenceItems, previous.EmergingTopics, agendaSpans, mc, treeStats)
 	merged.Tree, merged.Items, merged.EmergingTopics = rebuildDiscussionTree(
 		previous.Tree, mc, merged.Items, newTopics, assignments, resolvedIDs,

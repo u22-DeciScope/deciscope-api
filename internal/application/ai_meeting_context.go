@@ -36,6 +36,10 @@ const (
 
 	agendaRolePrimary       = "primary"
 	agendaRoleActionSummary = "action_summary"
+	// virtualActionSummaryProjectionID is a reference-only view key used when
+	// pre-meeting context omitted an action-summary agenda. It is never a tree
+	// node or agenda anchor and therefore cannot become a second parent.
+	virtualActionSummaryProjectionID = "action-summary-fallback"
 )
 
 // meetingContext is the structured, role-separated form of the pre-meeting
@@ -145,6 +149,16 @@ func (c *meetingContext) logicalActionSummaryAgendaID() string {
 		}
 	}
 	return ""
+}
+
+func (c *meetingContext) actionSummaryProjectionID() string {
+	if c == nil {
+		return ""
+	}
+	if agendaID := c.logicalActionSummaryAgendaID(); agendaID != "" {
+		return agendaID
+	}
+	return virtualActionSummaryProjectionID
 }
 
 // reconcileMeetingContextWithFallback applies the planner as a bounded label

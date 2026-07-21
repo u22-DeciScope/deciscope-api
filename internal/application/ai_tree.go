@@ -718,6 +718,7 @@ func rebuildDiscussionTree(
 			ID:              candidateID,
 			Label:           label,
 			Description:     description,
+			SubjectKey:      subjectKey,
 			OriginalSubject: strings.TrimSpace(label + " " + description),
 			CurrentSubject:  strings.TrimSpace(label + " " + description),
 			SubjectHistory:  []string{strings.TrimSpace(label + " " + description)},
@@ -809,11 +810,16 @@ func rebuildDiscussionTree(
 			parents[items[i].ID] = treeUnclassifiedTopicID
 		}
 	}
+	// Rewrite staging/meta topic names before semantic parent reconciliation.
+	// Otherwise a concrete child can be pulled out of its correct topic merely
+	// because labels such as 「追加論点」 provide no lexical subject signal.
+	repairGenericTopicLabels(items, topics, parents, round, stats)
 
 	// Reconciliation-created question/open_issue items and low-confidence
 	// model items can arrive without a usable parent proposal. Inherit the
 	// primary topic of a strong semantic companion before grouping/promotion.
 	reconcileSemanticItemParents(items, parents, topics, groups, stats)
+	repairGenericCandidateLabels(candidates, items, stats)
 
 	// 昇格判定: 証拠が揃った候補だけを dynamic topic にする。
 	candidates = promoteEmergingCandidates(promotionContext{
@@ -835,10 +841,13 @@ func rebuildDiscussionTree(
 	// the same discussion cluster. Reconcile once more so companions move in
 	// the same canonical tree version.
 	reconcileSemanticItemParents(items, parents, topics, groups, stats)
+	repairRelatedSubjectFragmentation(items, topics, groups, parents, stats)
+	repairGenericTopicLabels(items, topics, parents, round, stats)
 	candidates = capEmergingCandidates(candidates, maxEmergingCandidates)
 	syncCandidateInactive(items, candidates)
 
 	groupOrder = createSemanticDiscussionGroups(items, topics, groups, groupOrder, details, parents, round, stats)
+	groupOrder = flattenLowInformationSingleChildGroups(items, groups, groupOrder, details, parents, stats)
 
 	// Cap detail nodes (active/resolved separately, topics never evicted).
 	detailNodes := make([]liveAnalysisTreeNode, 0, len(detailOrder))
@@ -991,7 +1000,10 @@ func sharesSubjectBigram(subjectCore, text string) bool {
 }
 
 func canonicalCandidateID(label, description string) (string, string) {
-	subjectKey := emergingTopicCore(label)
+	subjectKey := ""
+	if !genericTopicLabel(label) {
+		subjectKey = emergingTopicCore(label)
+	}
 	if subjectKey == "" {
 		subjectKey = emergingTopicCore(description)
 	}
@@ -1787,11 +1799,70 @@ func semanticGroupAnchor(items []liveAnalysisItem) liveAnalysisItem {
 		if !ok {
 			itemPriority = 100
 		}
-		if itemPriority < bestPriority || (itemPriority == bestPriority && len([]rune(item.Title)) < len([]rune(best.Title))) {
+		bestLowInformation := issueTextNeedsReferent(best.Title) || metaOnlyLiveItemText(best.Title)
+		itemLowInformation := issueTextNeedsReferent(item.Title) || metaOnlyLiveItemText(item.Title)
+		if (bestLowInformation && !itemLowInformation) ||
+			(bestLowInformation == itemLowInformation && (itemPriority < bestPriority || (itemPriority == bestPriority && len([]rune(item.Title)) < len([]rune(best.Title))))) {
 			best = item
 		}
 	}
 	return best
+}
+
+// flattenLowInformationSingleChildGroups removes a legacy grouping container
+// that contributes only a referent-free label such as 「何が原因でしたか」 and
+// has exactly one detail child. The canonical item and its evidence remain
+// untouched; only the redundant parent layer is removed.
+func flattenLowInformationSingleChildGroups(items []liveAnalysisItem, groups map[string]liveAnalysisTreeNode, groupOrder []string, details map[string]liveAnalysisTreeNode, parents map[string]string, stats *liveAnalysisTreeMergeStats) []string {
+	itemByID := make(map[string]liveAnalysisItem, len(items))
+	for _, item := range items {
+		itemByID[item.ID] = item
+	}
+	removed := make(map[string]struct{})
+	for _, groupID := range groupOrder {
+		group, exists := groups[groupID]
+		if !exists || (!issueTextNeedsReferent(group.Label) && !metaOnlyLiveItemText(group.Label)) {
+			continue
+		}
+		children := make([]string, 0, 2)
+		for childID, parentID := range parents {
+			if parentID == groupID {
+				children = append(children, childID)
+			}
+		}
+		if len(children) != 1 {
+			continue
+		}
+		childID := children[0]
+		if _, detail := details[childID]; !detail {
+			continue
+		}
+		item, exists := itemByID[childID]
+		if !exists || item.Inactive || item.MergedIntoID != "" {
+			continue
+		}
+		parentID := strings.TrimSpace(parents[groupID])
+		if parentID == "" || parentID == groupID {
+			continue
+		}
+		parents[childID] = parentID
+		delete(parents, groupID)
+		delete(groups, groupID)
+		removed[groupID] = struct{}{}
+		if stats != nil {
+			stats.GroupsFlattened++
+		}
+	}
+	if len(removed) == 0 {
+		return groupOrder
+	}
+	kept := groupOrder[:0]
+	for _, groupID := range groupOrder {
+		if _, drop := removed[groupID]; !drop {
+			kept = append(kept, groupID)
+		}
+	}
+	return kept
 }
 
 func semanticGroupLabel(value string) string {
@@ -2162,7 +2233,7 @@ func syncRelatedAgendaIDs(items []liveAnalysisItem, mc *meetingContext, tree *li
 	compatibilityState := liveAnalysisPayload{Items: items, Tree: tree}
 	normalizePersistedSemanticClassifications(&compatibilityState)
 	actionSummaryIDs := mc.actionSummaryAgendaIDs()
-	logicalActionSummaryID := mc.logicalActionSummaryAgendaID()
+	logicalActionSummaryID := mc.actionSummaryProjectionID()
 	if stats != nil {
 		stats.SourceActionSummaryAgendaCount = len(actionSummaryIDs)
 		if logicalActionSummaryID != "" {
@@ -2233,6 +2304,12 @@ func syncRelatedAgendaIDs(items []liveAnalysisItem, mc *meetingContext, tree *li
 			}
 			continue
 		}
+		if items[i].Inactive || items[i].CandidateInactive {
+			continue
+		}
+		if items[i].ClassificationStatus == classificationTentative || items[i].ClassificationStatus == classificationUnclassified {
+			continue
+		}
 		if items[i].Kind == "todo" {
 			activeTodos = append(activeTodos, i)
 			if stats != nil {
@@ -2242,7 +2319,7 @@ func syncRelatedAgendaIDs(items []liveAnalysisItem, mc *meetingContext, tree *li
 	}
 	representatives = append(representatives, activeTodos...)
 	for i := range items {
-		if items[i].Status == "resolved" || items[i].Kind != "issue" || items[i].ClassificationStatus == classificationUnclassified {
+		if items[i].Status == "resolved" || items[i].Inactive || items[i].CandidateInactive || items[i].Kind != "issue" || items[i].ClassificationStatus == classificationUnclassified || items[i].ClassificationStatus == classificationTentative {
 			continue
 		}
 		if stats != nil {

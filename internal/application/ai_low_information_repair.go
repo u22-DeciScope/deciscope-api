@@ -13,10 +13,11 @@ var (
 	// predicate. Starting at the nearest clause boundary avoids treating a
 	// sentence such as "この点は…ため、現時点では未確定です" as a list of
 	// independent subjects merely because an earlier verb contains 「と」.
-	collapsedOpenIssuePattern    = regexp.MustCompile(`(?:^|[、,])([^、,。]{2,80}?)(?:が|は|では)(?:未解決|未確定)(?:の)?(?:事項|課題|調査事項)?(?:として)?(?:残し|残す|残ります|です)`)
-	issueSubjectSeparatorPattern = regexp.MustCompile(`(?:と|および|及び|ならびに|並びに|、)`)
-	confirmationStatementPattern = regexp.MustCompile(`(?:確認(?:します|する|が必要|が必要です|したい)|問い合わせ(?:ます|る)|不明)`)
-	contextQuestionPattern       = regexp.MustCompile(`^(.+?)(?:は|を)?(?:何[^。]*か|どの[^。]*か)$`)
+	collapsedOpenIssuePattern            = regexp.MustCompile(`(?:^|[、,])([^、,。]{2,80}?)(?:が|は|では)(?:未解決|未確定)(?:の)?(?:事項|課題|調査事項)?(?:として)?(?:残し|残す|残ります|です)`)
+	issueSubjectSeparatorPattern         = regexp.MustCompile(`(?:と|および|及び|ならびに|並びに|、)`)
+	confirmationStatementPattern         = regexp.MustCompile(`(?:確認(?:します|する|が必要|が必要です|したい)|問い合わせ(?:ます|る)|不明)`)
+	contextQuestionPattern               = regexp.MustCompile(`^(.+?)(?:は|を)?(?:何[^。]*か|どの[^。]*か)$`)
+	genericQuestionWithoutSubjectPattern = regexp.MustCompile(`^(?:(?:何|なに)(?:が|は)?(?:原因|理由|問題|課題|対象|方法|条件|結果)|(?:どう|なぜ|いつ|誰|どこ|どれ)(?:です|でした|します|する|なります|なる)?)(?:です|でした|でしょう|なの)?(?:か)?$`)
 )
 
 // repairLowInformationIssueItems runs before canonical ID assignment. It
@@ -58,8 +59,8 @@ func repairLowInformationIssueItems(previous, diff []liveAnalysisItem, assignmen
 			continue
 		}
 
-		if issueTextNeedsReferent(item.Title + " " + item.Body) {
-			if concrete := nearestConcreteIssueEvidence(item, scope, timeline); concrete != "" {
+		if issueTextNeedsReferent(item.Title) {
+			if concrete := concreteIssueRepairText(item, scope, timeline); concrete != "" {
 				concrete = normalizeIssueStatementForSubtype(concrete, item.Subtype)
 				item.Title = truncateRunes(concrete, 40)
 				item.Body = concrete
@@ -80,16 +81,18 @@ func repairLowInformationIssueItems(previous, diff []liveAnalysisItem, assignmen
 	}
 
 	// A tentative issue may be absent from the model diff when the next
-	// utterance finally names its subject. Promote that same canonical item
-	// instead of creating a second card or losing the provisional one.
+	// utterance finally names its subject. A previously-grounded legacy item can
+	// also still carry a generic question title while its body already contains
+	// the subject. Update that same canonical item instead of creating a second
+	// card or leaving the low-information title in the persisted tree.
 	for _, prior := range previous {
-		if prior.Kind != "issue" || prior.InformationStatus != informationStatusTentative {
+		if prior.Kind != "issue" || (prior.InformationStatus != informationStatusTentative && !issueTextNeedsReferent(prior.Title)) {
 			continue
 		}
 		if _, alreadyUpdated := seenRefs[canonicalReferenceKey(modelItemReference(prior))]; alreadyUpdated {
 			continue
 		}
-		concrete := nearestConcreteIssueEvidence(prior, scope, timeline)
+		concrete := concreteIssueRepairText(prior, scope, timeline)
 		if concrete == "" {
 			continue
 		}
@@ -169,12 +172,23 @@ func issueTextNeedsReferent(text string) bool {
 	if text == "" || metaOnlyLiveItemText(text) {
 		return true
 	}
+	if genericQuestionWithoutSubjectPattern.MatchString(normalizeDiscourseText(text)) {
+		return true
+	}
 	if !issueAnaphoraPattern.MatchString(text) {
 		return false
 	}
 	withoutAnaphora := issueAnaphoraPattern.ReplaceAllString(text, "")
 	semanticRemainder := semanticItemKey(withoutAnaphora)
 	return len([]rune(semanticRemainder)) < 6 || issueReferentFreePredicatePattern.MatchString(withoutAnaphora)
+}
+
+func concreteIssueRepairText(item liveAnalysisItem, scope liveEvidenceScope, timelines ...discourseTimeline) string {
+	body := strings.Trim(strings.TrimSpace(item.Body), "。.!！ ")
+	if body != "" && !issueTextNeedsReferent(body) && len([]rune(semanticItemKey(body))) >= 4 {
+		return normalizeConcreteIssueStatement(body)
+	}
+	return nearestConcreteIssueEvidence(item, scope, timelines...)
 }
 
 func nearestConcreteIssueEvidence(item liveAnalysisItem, scope liveEvidenceScope, timelines ...discourseTimeline) string {

@@ -60,6 +60,9 @@ func filterLowInformationLiveItems(previous, diff []liveAnalysisItem, timeline d
 		}
 		if stats != nil {
 			stats.LowInformationItemsRejected++
+			if item.Kind == "decision" {
+				stats.LowInformationDecisionsRejected++
+			}
 			if role == liveUtteranceDiscourseTransition || role == liveUtteranceFiller {
 				stats.DiscourseOnlyItemsRejected++
 			}
@@ -75,6 +78,12 @@ func filterLowInformationLiveItems(previous, diff []liveAnalysisItem, timeline d
 
 func validateLiveItemInformation(item liveAnalysisItem, updatesExisting bool, timeline discourseTimeline, scope liveEvidenceScope) (string, liveUtteranceRole) {
 	role := dominantLiveItemRole(item.EvidenceSequenceNos, timeline)
+	if item.Kind == "decision" && isMeetingEndOnlyItem(item.Title, item.Body) {
+		return "meeting_end_discourse", firstNonEmptyUtteranceRole(role, liveUtteranceDiscourseTransition)
+	}
+	if item.Kind == "decision" && (decisionStatementNeedsReferent(item.Title) || decisionStatementNeedsReferent(item.Body)) {
+		return "decision_missing_object", role
+	}
 	if evidenceOnlyHasRoles(item.EvidenceSequenceNos, timeline, liveEvidenceDiscourseOnly) {
 		return "low_information", firstNonEmptyUtteranceRole(role, liveUtteranceDiscourseTransition)
 	}

@@ -121,6 +121,7 @@ type emergingTopicCandidate struct {
 	ID                string   `json:"id"`
 	Label             string   `json:"label"`
 	Description       string   `json:"description,omitempty"`
+	SubjectKey        string   `json:"subjectKey,omitempty"`
 	OriginalSubject   string   `json:"originalSubject,omitempty"`
 	CurrentSubject    string   `json:"currentSubject,omitempty"`
 	SubjectHistory    []string `json:"subjectHistory,omitempty"`
@@ -173,6 +174,9 @@ func initializeCandidateSubject(candidate *emergingTopicCandidate) {
 		return
 	}
 	subject := strings.TrimSpace(candidate.Label + " " + candidate.Description)
+	if candidate.SubjectKey == "" {
+		_, candidate.SubjectKey = canonicalCandidateID(candidate.Label, candidate.Description)
+	}
 	if candidate.OriginalSubject == "" {
 		candidate.OriginalSubject = subject
 	}

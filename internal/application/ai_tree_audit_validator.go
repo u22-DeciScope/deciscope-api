@@ -37,9 +37,9 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 	beforeFindings := deterministicTreeAuditPrecheck(original, mc, evidenceRoles, cfg)
 	beforeQuality := auditHeuristicDefectCount(beforeFindings)
 	result.HeuristicDefectCountBefore = beforeQuality
-	result.LowInformationItemsBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditLowInformationItem, TreeAuditLowInformationTitle, TreeAuditStatusOnlyNode, TreeAuditAnaphoraWithoutReferent)
-	result.TopicOutliersBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditTopicOutlier, TreeAuditSubjectMismatch)
-	result.CandidateFragmentationBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditCandidateFragmentation)
+	result.LowInformationItemsBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditLowInformationItem, TreeAuditLowInformationTitle, TreeAuditStatusOnlyNode, TreeAuditAnaphoraWithoutReferent, TreeAuditLowInformationChild, TreeAuditGenericQuestionWithoutSubject, TreeAuditMeetingEndAsDecision, TreeAuditLeadingParticleFragment, TreeAuditAnaphoraTargetMissing, TreeAuditIncompleteSTTSegmentItem, TreeAuditDecisionMissingObject)
+	result.TopicOutliersBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditTopicOutlier, TreeAuditSubjectMismatch, TreeAuditGenericTopicLabel, TreeAuditTopicLabelNotDerivedFromChildren, TreeAuditSingleChildGenericTopic)
+	result.CandidateFragmentationBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditCandidateFragmentation, TreeAuditRiskTodoSubjectFragmentation, TreeAuditRelatedActionOutsideRiskTopic)
 	result.CrossAgendaContaminationBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditCrossAgendaContamination)
 
 	for _, operation := range operations {
@@ -180,11 +180,11 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 	result.OperationsRejected = result.OperationsProposed - result.OperationsValid
 	result.TreeIntegrityValid = validateTreeIntegrity(dry.Tree, dry.Items, mc).Valid
 	afterFindings := deterministicTreeAuditPrecheck(dry, mc, evidenceRoles, cfg)
-	result.TopicOutliersAfter = countTreeAuditPrechecks(afterFindings, TreeAuditTopicOutlier, TreeAuditSubjectMismatch)
-	result.CandidateFragmentationAfter = countTreeAuditPrechecks(afterFindings, TreeAuditCandidateFragmentation)
+	result.TopicOutliersAfter = countTreeAuditPrechecks(afterFindings, TreeAuditTopicOutlier, TreeAuditSubjectMismatch, TreeAuditGenericTopicLabel, TreeAuditTopicLabelNotDerivedFromChildren, TreeAuditSingleChildGenericTopic)
+	result.CandidateFragmentationAfter = countTreeAuditPrechecks(afterFindings, TreeAuditCandidateFragmentation, TreeAuditRiskTodoSubjectFragmentation, TreeAuditRelatedActionOutsideRiskTopic)
 	result.CrossAgendaContaminationAfter = countTreeAuditPrechecks(afterFindings, TreeAuditCrossAgendaContamination)
 	result.HeuristicDefectCountAfter = auditHeuristicDefectCount(afterFindings)
-	result.LowInformationItemsAfter = countTreeAuditPrechecks(afterFindings, TreeAuditLowInformationItem, TreeAuditLowInformationTitle, TreeAuditStatusOnlyNode, TreeAuditAnaphoraWithoutReferent)
+	result.LowInformationItemsAfter = countTreeAuditPrechecks(afterFindings, TreeAuditLowInformationItem, TreeAuditLowInformationTitle, TreeAuditStatusOnlyNode, TreeAuditAnaphoraWithoutReferent, TreeAuditLowInformationChild, TreeAuditGenericQuestionWithoutSubject, TreeAuditMeetingEndAsDecision, TreeAuditLeadingParticleFragment, TreeAuditAnaphoraTargetMissing, TreeAuditIncompleteSTTSegmentItem, TreeAuditDecisionMissingObject)
 	if dry.Tree != nil {
 		result.NodeCountAfter = len(dry.Tree.Nodes)
 	}
@@ -230,7 +230,7 @@ func treeAuditOperationClassification(operationType TreeAuditOperationType) tree
 		TreeAuditReclassifyKind, TreeAuditReclassifySubtype,
 		TreeAuditDeactivateItem, TreeAuditAssignItemToCandidate, TreeAuditChangeEvidenceRole,
 		TreeAuditCreateTopicFromCandidate, TreeAuditFoldCandidateIntoTopic,
-		TreeAuditDeactivateCandidate, TreeAuditRenameGroup, TreeAuditRemoveEmptyGroup:
+		TreeAuditDeactivateCandidate, TreeAuditRenameGroup, TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup:
 		return treeAuditOperationApplicable
 	default:
 		return treeAuditOperationUnsupported
@@ -260,7 +260,7 @@ func treeAuditOperationRiskClass(operationType TreeAuditOperationType) treeAudit
 	switch operationType {
 	case TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
 		TreeAuditReclassifySubtype, TreeAuditChangeEvidenceRole, TreeAuditRenameGroup,
-		TreeAuditRemoveEmptyGroup, TreeAuditAssignItemToCandidate:
+		TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup, TreeAuditAssignItemToCandidate:
 		return treeAuditRiskSafe
 	case TreeAuditMoveItem, TreeAuditRestorePreviousParent, TreeAuditMoveNode,
 		TreeAuditFoldCandidateIntoTopic, TreeAuditCreateTopicFromCandidate,
@@ -1124,6 +1124,53 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		state.Tree.Nodes[groupAt].UpdatedAtVersion = resultingVersion
 		return currentScore, newScore, ""
 
+	case TreeAuditRenameTopic:
+		topicAt, exists := nodeIndex[operation.TargetCanonicalNodeID]
+		if !exists || operation.Label == "" || genericTopicLabel(operation.Label) {
+			return 0, 0, "invalid_topic_or_label"
+		}
+		topic := state.Tree.Nodes[topicAt]
+		if topic.Kind != "topic" || topic.ID == treeRootNodeID || topic.ID == treeUnclassifiedTopicID || topic.AgendaRole == agendaRoleActionSummary {
+			return 0, 0, "invalid_topic_or_label"
+		}
+		if topic.Origin != topicOriginAgenda && topic.Origin != topicOriginDynamic && topic.Origin != topicOriginMixed && len(topic.AgendaRefs) == 0 {
+			return 0, 0, "topic_origin_not_renamable"
+		}
+		var descendantText strings.Builder
+		for _, node := range state.Tree.Nodes {
+			if node.ID == topic.ID {
+				continue
+			}
+			currentID := node.ParentID
+			seen := map[string]struct{}{}
+			for currentID != "" {
+				if currentID == topic.ID {
+					descendantText.WriteString(node.Label + " " + node.Description + " ")
+					break
+				}
+				if _, loop := seen[currentID]; loop {
+					break
+				}
+				seen[currentID] = struct{}{}
+				parentAt, ok := nodeIndex[currentID]
+				if !ok {
+					break
+				}
+				currentID = state.Tree.Nodes[parentAt].ParentID
+			}
+		}
+		if strings.TrimSpace(descendantText.String()) == "" {
+			return 0, 0, "topic_has_no_children"
+		}
+		currentScore := semanticItemSimilarity(descendantText.String(), topic.Label+" "+topic.Description)
+		newScore := semanticItemSimilarity(descendantText.String(), operation.Label+" "+topic.Description)
+		if !genericTopicLabel(topic.Label) && newScore+0.05 < currentScore {
+			return currentScore, newScore, "topic_label_cohesion_worsened"
+		}
+		state.Tree.Nodes[topicAt].Label = operation.Label
+		state.Tree.Nodes[topicAt].UpdatedAtVersion = resultingVersion
+		return currentScore, newScore, ""
+
 	case TreeAuditRemoveEmptyGroup:
 		targetAt, exists := nodeIndex[operation.TargetCanonicalNodeID]
 		if !exists {
@@ -1218,7 +1265,7 @@ func treeAuditManualEditProtectedOperation(operation treeAuditOperation, state l
 		TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
 		TreeAuditReclassifyKind, TreeAuditReclassifySubtype:
 		return isManual(operation.TargetCanonicalItemID)
-	case TreeAuditMoveNode, TreeAuditRenameGroup, TreeAuditRemoveEmptyGroup:
+	case TreeAuditMoveNode, TreeAuditRenameGroup, TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup:
 		return isManual(operation.TargetCanonicalNodeID)
 	case TreeAuditMergeItems:
 		for _, id := range operation.TargetCanonicalItemIDs {
@@ -2069,7 +2116,12 @@ func auditHeuristicDefectCount(findings []treeAuditPrecheckFinding) int {
 		switch finding.Type {
 		case TreeAuditSubjectMismatch, TreeAuditCrossAgendaContamination,
 			TreeAuditCandidateMixedSubjects, TreeAuditTopicOutlier,
-			TreeAuditGroupOutlier:
+			TreeAuditGroupOutlier, TreeAuditGenericTopicLabel,
+			TreeAuditTopicLabelNotDerivedFromChildren,
+			TreeAuditRiskTodoSubjectFragmentation, TreeAuditRelatedActionOutsideRiskTopic,
+			TreeAuditLeadingParticleFragment, TreeAuditAnaphoraTargetMissing,
+			TreeAuditIncompleteSTTSegmentItem, TreeAuditDecisionMissingObject,
+			TreeAuditNoAgendaFalsePositiveFromModifier:
 			count++
 		}
 	}

@@ -139,7 +139,9 @@ func treeAuditConditionalTriggerReasons(previousPayload, payload json.RawMessage
 		case TreeAuditParentLowConfidence:
 			reasons = append(reasons, "parent_low_confidence")
 		case TreeAuditSubjectMismatch, TreeAuditCrossAgendaContamination,
-			TreeAuditCandidateMixedSubjects, TreeAuditTopicOutlier:
+			TreeAuditCandidateMixedSubjects, TreeAuditTopicOutlier,
+			TreeAuditAgendaReentryMissed, TreeAuditAgendaItemForcedNoAgenda,
+			TreeAuditParentChildSameTitle, TreeAuditMeetingEndAsDecision:
 			reasons = append(reasons, "semantic_anomaly")
 		}
 	}

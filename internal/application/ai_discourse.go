@@ -97,6 +97,11 @@ var (
 		regexp.MustCompile(`^(会議|ミーティング|定例)(を|は)?(開始|終了|再開|中断)(します|しましょう|とします)?$`),
 		regexp.MustCompile(`^(よろしくお願いします|お疲れ様でした|ありがとうございました|聞こえますか|始めましょう|終わりましょう)$`),
 	}
+	meetingEndControlPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^(?:今日|本日)(?:の(?:会議|ミーティング|議事))?(?:は)?(?:これで|ここまで|以上)(?:に|で|と)?(?:します|しましょう|です|終了します|終わります|とします)?(?:ありがとうございました)?$`),
+		regexp.MustCompile(`^(?:今日|本日)?(?:は)?(?:これで|ここまで|以上で)(?:会議|ミーティング|議事)?(?:を|は)?(?:終了|終わり|終わります|終了します|終えます|お開き)(?:に|と)?(?:します|しましょう|です)?(?:ありがとうございました)?$`),
+		regexp.MustCompile(`^(?:今日|本日)(?:の)?(?:会議|ミーティング|議事)(?:を)?(?:ここで)?(?:打ち切る|終了する|終える)(?:決定)?$`),
+	}
 )
 
 // Structural transition detection intentionally combines three independent
@@ -130,6 +135,9 @@ func classifyDiscourseAct(text string) discourseAct {
 	if stripped == "" {
 		return discourseFiller
 	}
+	if isMeetingEndControlNormalized(stripped) {
+		return discourseMeetingControl
+	}
 	for _, pattern := range recapIntroPatterns {
 		if pattern.MatchString(stripped) {
 			return discourseRecapIntro
@@ -149,6 +157,29 @@ func classifyDiscourseAct(text string) discourseAct {
 		}
 	}
 	return discourseContent
+}
+
+func isMeetingEndControl(text string) bool {
+	normalized := discourseFillerPattern.ReplaceAllString(normalizeDiscourseText(text), "")
+	return isMeetingEndControlNormalized(normalized)
+}
+
+func isMeetingEndControlNormalized(normalized string) bool {
+	for _, pattern := range meetingEndControlPatterns {
+		if pattern.MatchString(normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+func isMeetingEndOnlyItem(title, body string) bool {
+	title = strings.TrimSpace(title)
+	body = strings.TrimSpace(body)
+	if title == "" && body == "" {
+		return false
+	}
+	return (title == "" || isMeetingEndControl(title)) && (body == "" || isMeetingEndControl(body))
 }
 
 func structurallyDiscourseTransition(normalized string) bool {

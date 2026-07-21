@@ -51,6 +51,33 @@ func TestDecisionCandidateRejectsPredicateOnlyMarker(t *testing.T) {
 	}
 }
 
+func TestDecisionCandidateRepairsLeadingParticleFromPreviousSTTSegment(t *testing.T) {
+	segments := []domain.TranscriptSegment{
+		{SequenceNo: 15, SpeakerID: "speaker-1", Text: "また、交換前後でVLANごとの疎通確認を実施するチェックリストを作成します。", IsFinal: true},
+		{SequenceNo: 16, SpeakerID: "speaker-1", Text: "の運用を次回の機器交換から適用することにします。", IsFinal: true},
+	}
+	candidates := detectDecisionCandidates(segments)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates=%+v", candidates)
+	}
+	got := decisionCandidateTitle(candidates[0].Statement)
+	if strings.HasPrefix(got, "の") || !strings.Contains(got, "チェックリストの運用") || !strings.Contains(got, "次回の機器交換") || !strings.Contains(got, "適用") {
+		t.Fatalf("repaired title=%q statement=%q", got, candidates[0].Statement)
+	}
+	if evidence := candidates[0].SourceSequenceNos; len(evidence) != 2 || evidence[0] != 15 || evidence[1] != 16 {
+		t.Fatalf("sourceSequenceNos=%v", evidence)
+	}
+}
+
+func TestDecisionCandidateRejectsUnrecoverableLeadingParticle(t *testing.T) {
+	if candidates := detectDecisionCandidates([]domain.TranscriptSegment{finalSegment(16, "の対応を実施することにします。")}); len(candidates) != 0 {
+		t.Fatalf("unrecoverable fragment candidates=%+v", candidates)
+	}
+	if completeDecisionStatement("その対応を実施することにします") {
+		t.Fatal("anaphora-only decision was accepted without a referent")
+	}
+}
+
 func TestDecisionCandidateCanUsePriorFragmentAcrossAnalysisRounds(t *testing.T) {
 	current := []domain.TranscriptSegment{{SequenceNo: 11, SpeakerID: "speaker-1", Text: "実施することを決定します。", IsFinal: true}}
 	prior := domain.TranscriptSegment{SequenceNo: 10, SpeakerID: "speaker-1", Text: "渡り鳥の調査は三地点で。", IsFinal: true}

@@ -141,3 +141,30 @@ func TestHistoricalDiscourseRepairRetainsAuditorInactiveItemAndProvenance(t *tes
 		t.Fatalf("historical repair changed tombstone provenance: %+v", tombstone)
 	}
 }
+
+func TestLiveItemValidatorRejectsMeetingEndDecision(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{35: "では、今日はここまでにします。ありがとうございました。"}, 35)
+	diff := `{"summary":"終了","currentTopic":"終了","utteranceRoles":[{"sequenceNo":35,"role":"substantive"}],"items":[{"clientKey":"meeting-end","kind":"decision","severity":"low","title":"本日これで終了","body":"本日の議事をここで打ち切る決定。","status":"open","evidenceSequenceNos":[35]}],"newTopics":[],"assignments":[{"nodeId":"meeting-end","parentTopicId":"topic-unclassified","confidence":0.9,"reason":"model"}]}`
+	stats := &liveAnalysisTreeMergeStats{}
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(diff, nil, nil, 1, []int64{35}, scope, TreeClassificationConfig{}, stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := previousLiveAnalysisState(raw)
+	if len(state.Items) != 0 || stats.LowInformationDecisionsRejected != 1 {
+		t.Fatalf("items=%+v stats=%+v", state.Items, stats)
+	}
+}
+
+func TestLiveItemValidatorKeepsBusinessDecisionNearMeetingEnd(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{33: "世界遺産一覧は申請フォームに入れないことにします。"}, 33)
+	diff := `{"summary":"方針","currentTopic":"フォーム","items":[{"clientKey":"form-policy","kind":"decision","severity":"medium","title":"世界遺産一覧はフォームへ入れない","body":"世界遺産一覧は申請フォームに入れないことにする。","status":"open","evidenceSequenceNos":[33]}],"newTopics":[],"assignments":[{"nodeId":"form-policy","parentTopicId":"topic-unclassified","confidence":0.9,"reason":"model"}]}`
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(diff, nil, nil, 1, []int64{33}, scope, TreeClassificationConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := previousLiveAnalysisState(raw)
+	if len(state.Items) != 1 || state.Items[0].Kind != "decision" {
+		t.Fatalf("items=%+v", state.Items)
+	}
+}

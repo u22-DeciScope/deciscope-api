@@ -459,6 +459,33 @@ func TestActionSummaryProjectionSelectsTodoOrUnmatchedOpenIssue(t *testing.T) {
 	}
 }
 
+func TestActionSummaryProjectionFallsBackWithoutSourceAgenda(t *testing.T) {
+	mc := &meetingContext{Title: "運用見直し", Agenda: []agendaItem{{ID: "agenda-1", Title: "フォーム改善", Role: agendaRolePrimary}}}
+	tree := &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+		{ID: treeRootNodeID, Kind: "topic"},
+		{ID: "topic-form", Kind: "topic", ParentID: treeRootNodeID},
+		{ID: "todo-active", Kind: "todo", ParentID: "topic-form"},
+		{ID: "todo-complete", Kind: "todo", ParentID: "topic-form"},
+		{ID: "todo-tentative", Kind: "todo", ParentID: treeUnclassifiedTopicID},
+	}}
+	items := []liveAnalysisItem{
+		{ID: "todo-active", Kind: "todo", Title: "フォーム改善案を作成", Body: "山下さんが来週までに作成", Status: "open", ClassificationStatus: classificationAssigned},
+		{ID: "todo-complete", Kind: "todo", Title: "完了済み", Status: "resolved", ClassificationStatus: classificationAssigned},
+		{ID: "todo-tentative", Kind: "todo", Title: "対象不明", Status: "open", ClassificationStatus: classificationTentative},
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+	syncRelatedAgendaIDs(items, mc, tree, stats)
+	if got := items[0].RelatedAgendaIDs; len(got) != 1 || got[0] != virtualActionSummaryProjectionID {
+		t.Fatalf("active TODO refs=%v", got)
+	}
+	if len(items[1].RelatedAgendaIDs) != 0 || len(items[2].RelatedAgendaIDs) != 0 {
+		t.Fatalf("excluded refs completed=%v tentative=%v", items[1].RelatedAgendaIDs, items[2].RelatedAgendaIDs)
+	}
+	if stats.SourceActionSummaryAgendaCount != 0 || stats.LogicalActionSummaryCount != 1 || stats.ActiveTodoReferences != 1 || stats.RenderedActionItems != 1 {
+		t.Fatalf("stats=%+v", stats)
+	}
+}
+
 func TestTentativeCandidatePromotesAtomicallyAfterStableVersions(t *testing.T) {
 	mc := &meetingContext{Agenda: []agendaItem{{ID: "agenda-1", Title: "既存議題", Role: agendaRolePrimary}}}
 	first := `{"summary":"","currentTopic":"","resolvedIds":[],"items":[

@@ -6,67 +6,88 @@ import (
 	"time"
 )
 
-const treeAuditPromptVersion = "v6"
+const treeAuditPromptVersion = "v8"
 
 type TreeAuditFindingType string
 
 const (
-	TreeAuditSubjectMismatch                  TreeAuditFindingType = "subject_mismatch"
-	TreeAuditCrossAgendaContamination         TreeAuditFindingType = "cross_agenda_contamination"
-	TreeAuditCandidateFragmentation           TreeAuditFindingType = "candidate_fragmentation"
-	TreeAuditCandidateMixedSubjects           TreeAuditFindingType = "candidate_mixed_subjects"
-	TreeAuditDuplicateDynamicTopic            TreeAuditFindingType = "duplicate_dynamic_topic"
-	TreeAuditIncorrectReparent                TreeAuditFindingType = "incorrect_reparent"
-	TreeAuditReferenceEvidenceReparent        TreeAuditFindingType = "reference_evidence_reparent"
-	TreeAuditRecapCreatedNewItem              TreeAuditFindingType = "recap_created_new_item"
-	TreeAuditRecapCreatedNewCandidate         TreeAuditFindingType = "recap_created_new_candidate"
-	TreeAuditFloatingTentativeCandidate       TreeAuditFindingType = "floating_tentative_candidate"
-	TreeAuditTopicOutlier                     TreeAuditFindingType = "topic_outlier"
-	TreeAuditGroupOutlier                     TreeAuditFindingType = "group_outlier"
-	TreeAuditGroupLabelMismatch               TreeAuditFindingType = "group_label_mismatch"
-	TreeAuditGroupChurn                       TreeAuditFindingType = "group_churn"
-	TreeAuditMissingGroup                     TreeAuditFindingType = "missing_group"
-	TreeAuditCandidateShouldPromote           TreeAuditFindingType = "candidate_should_promote"
-	TreeAuditCandidateShouldNotPromote        TreeAuditFindingType = "candidate_should_not_promote"
-	TreeAuditCandidateShouldFoldIntoTopic     TreeAuditFindingType = "candidate_should_fold_into_existing_topic"
-	TreeAuditParentLowConfidence              TreeAuditFindingType = "parent_low_confidence"
-	TreeAuditStaleTentative                   TreeAuditFindingType = "stale_tentative"
-	TreeAuditLowInformationDecision           TreeAuditFindingType = "low_information_decision"
-	TreeAuditSemanticDuplicateSibling         TreeAuditFindingType = "semantic_duplicate_sibling"
-	TreeAuditDuplicateCrossKindProposition    TreeAuditFindingType = "duplicate_cross_kind_proposition"
-	TreeAuditMissingRequiredTopic             TreeAuditFindingType = "missing_required_topic"
-	TreeAuditRecapReferenceContamination      TreeAuditFindingType = "recap_reference_contamination"
-	TreeAuditDiscourseOnlyItem                TreeAuditFindingType = "discourse_only_item"
-	TreeAuditLowInformationItem               TreeAuditFindingType = "low_information_item"
-	TreeAuditIncompleteDecision               TreeAuditFindingType = "incomplete_decision"
-	TreeAuditSemanticDuplicateSiblings        TreeAuditFindingType = "semantic_duplicate_siblings"
-	TreeAuditCrossKindDuplicateProposition    TreeAuditFindingType = "cross_kind_duplicate_proposition"
-	TreeAuditMissingDynamicTopic              TreeAuditFindingType = "missing_dynamic_topic"
-	TreeAuditCandidateSubjectEvidenceMismatch TreeAuditFindingType = "candidate_subject_evidence_mismatch"
-	TreeAuditRecapPromotedCandidate           TreeAuditFindingType = "recap_promoted_candidate"
-	TreeAuditOrphanTentativeItem              TreeAuditFindingType = "orphan_tentative_item"
-	TreeAuditGenericTitle                     TreeAuditFindingType = "generic_title"
-	TreeAuditEvidenceFragmentation            TreeAuditFindingType = "evidence_fragmentation"
-	TreeAuditRecapOnlyItem                    TreeAuditFindingType = "recap_only_item"
-	TreeAuditDuplicateItem                    TreeAuditFindingType = "duplicate_item"
-	TreeAuditSupersededItem                   TreeAuditFindingType = "superseded_item"
-	TreeAuditEmptyGroup                       TreeAuditFindingType = "empty_group"
-	TreeAuditEmptyUnclassifiedContainer       TreeAuditFindingType = "empty_unclassified_container"
-	TreeAuditLowInformationTitle              TreeAuditFindingType = "low_information_title"
-	TreeAuditStatusOnlyNode                   TreeAuditFindingType = "status_only_node"
-	TreeAuditAnaphoraWithoutReferent          TreeAuditFindingType = "anaphora_without_referent"
-	TreeAuditMetaUtteranceNode                TreeAuditFindingType = "meta_utterance_node"
-	TreeAuditMultiplePropositionsCollapsed    TreeAuditFindingType = "multiple_propositions_collapsed"
-	TreeAuditDuplicateOrParaphrase            TreeAuditFindingType = "duplicate_or_paraphrase"
-	TreeAuditSubtypeMismatch                  TreeAuditFindingType = "subtype_mismatch"
-	TreeAuditSemanticKindMismatch             TreeAuditFindingType = "semantic_kind_mismatch"
-	TreeAuditPlannedAgendaWithoutEvidence     TreeAuditFindingType = "planned_agenda_materialized_without_evidence"
-	TreeAuditDiscussedAgendaMissingTopic      TreeAuditFindingType = "discussed_agenda_missing_topic"
-	TreeAuditTopicWithoutActiveAgendaRef      TreeAuditFindingType = "materialized_topic_without_active_agenda_ref"
-	TreeAuditDuplicateAgendaMaterialization   TreeAuditFindingType = "duplicate_agenda_materialization"
-	TreeAuditEmptyAgendaTopic                 TreeAuditFindingType = "empty_agenda_topic"
-	TreeAuditAgendaTopicShouldMergeDynamic    TreeAuditFindingType = "agenda_topic_should_merge_with_dynamic_topic"
-	TreeAuditAgendaTopicShouldDematerialize   TreeAuditFindingType = "agenda_topic_should_dematerialize"
+	TreeAuditSubjectMismatch                   TreeAuditFindingType = "subject_mismatch"
+	TreeAuditCrossAgendaContamination          TreeAuditFindingType = "cross_agenda_contamination"
+	TreeAuditCandidateFragmentation            TreeAuditFindingType = "candidate_fragmentation"
+	TreeAuditCandidateMixedSubjects            TreeAuditFindingType = "candidate_mixed_subjects"
+	TreeAuditDuplicateDynamicTopic             TreeAuditFindingType = "duplicate_dynamic_topic"
+	TreeAuditIncorrectReparent                 TreeAuditFindingType = "incorrect_reparent"
+	TreeAuditReferenceEvidenceReparent         TreeAuditFindingType = "reference_evidence_reparent"
+	TreeAuditRecapCreatedNewItem               TreeAuditFindingType = "recap_created_new_item"
+	TreeAuditRecapCreatedNewCandidate          TreeAuditFindingType = "recap_created_new_candidate"
+	TreeAuditFloatingTentativeCandidate        TreeAuditFindingType = "floating_tentative_candidate"
+	TreeAuditTopicOutlier                      TreeAuditFindingType = "topic_outlier"
+	TreeAuditGroupOutlier                      TreeAuditFindingType = "group_outlier"
+	TreeAuditGroupLabelMismatch                TreeAuditFindingType = "group_label_mismatch"
+	TreeAuditGroupChurn                        TreeAuditFindingType = "group_churn"
+	TreeAuditMissingGroup                      TreeAuditFindingType = "missing_group"
+	TreeAuditCandidateShouldPromote            TreeAuditFindingType = "candidate_should_promote"
+	TreeAuditCandidateShouldNotPromote         TreeAuditFindingType = "candidate_should_not_promote"
+	TreeAuditCandidateShouldFoldIntoTopic      TreeAuditFindingType = "candidate_should_fold_into_existing_topic"
+	TreeAuditParentLowConfidence               TreeAuditFindingType = "parent_low_confidence"
+	TreeAuditStaleTentative                    TreeAuditFindingType = "stale_tentative"
+	TreeAuditLowInformationDecision            TreeAuditFindingType = "low_information_decision"
+	TreeAuditSemanticDuplicateSibling          TreeAuditFindingType = "semantic_duplicate_sibling"
+	TreeAuditDuplicateCrossKindProposition     TreeAuditFindingType = "duplicate_cross_kind_proposition"
+	TreeAuditMissingRequiredTopic              TreeAuditFindingType = "missing_required_topic"
+	TreeAuditRecapReferenceContamination       TreeAuditFindingType = "recap_reference_contamination"
+	TreeAuditDiscourseOnlyItem                 TreeAuditFindingType = "discourse_only_item"
+	TreeAuditLowInformationItem                TreeAuditFindingType = "low_information_item"
+	TreeAuditIncompleteDecision                TreeAuditFindingType = "incomplete_decision"
+	TreeAuditSemanticDuplicateSiblings         TreeAuditFindingType = "semantic_duplicate_siblings"
+	TreeAuditCrossKindDuplicateProposition     TreeAuditFindingType = "cross_kind_duplicate_proposition"
+	TreeAuditMissingDynamicTopic               TreeAuditFindingType = "missing_dynamic_topic"
+	TreeAuditCandidateSubjectEvidenceMismatch  TreeAuditFindingType = "candidate_subject_evidence_mismatch"
+	TreeAuditRecapPromotedCandidate            TreeAuditFindingType = "recap_promoted_candidate"
+	TreeAuditOrphanTentativeItem               TreeAuditFindingType = "orphan_tentative_item"
+	TreeAuditGenericTitle                      TreeAuditFindingType = "generic_title"
+	TreeAuditEvidenceFragmentation             TreeAuditFindingType = "evidence_fragmentation"
+	TreeAuditRecapOnlyItem                     TreeAuditFindingType = "recap_only_item"
+	TreeAuditDuplicateItem                     TreeAuditFindingType = "duplicate_item"
+	TreeAuditSupersededItem                    TreeAuditFindingType = "superseded_item"
+	TreeAuditEmptyGroup                        TreeAuditFindingType = "empty_group"
+	TreeAuditEmptyUnclassifiedContainer        TreeAuditFindingType = "empty_unclassified_container"
+	TreeAuditLowInformationTitle               TreeAuditFindingType = "low_information_title"
+	TreeAuditStatusOnlyNode                    TreeAuditFindingType = "status_only_node"
+	TreeAuditAnaphoraWithoutReferent           TreeAuditFindingType = "anaphora_without_referent"
+	TreeAuditMetaUtteranceNode                 TreeAuditFindingType = "meta_utterance_node"
+	TreeAuditMultiplePropositionsCollapsed     TreeAuditFindingType = "multiple_propositions_collapsed"
+	TreeAuditDuplicateOrParaphrase             TreeAuditFindingType = "duplicate_or_paraphrase"
+	TreeAuditSubtypeMismatch                   TreeAuditFindingType = "subtype_mismatch"
+	TreeAuditSemanticKindMismatch              TreeAuditFindingType = "semantic_kind_mismatch"
+	TreeAuditPlannedAgendaWithoutEvidence      TreeAuditFindingType = "planned_agenda_materialized_without_evidence"
+	TreeAuditDiscussedAgendaMissingTopic       TreeAuditFindingType = "discussed_agenda_missing_topic"
+	TreeAuditTopicWithoutActiveAgendaRef       TreeAuditFindingType = "materialized_topic_without_active_agenda_ref"
+	TreeAuditDuplicateAgendaMaterialization    TreeAuditFindingType = "duplicate_agenda_materialization"
+	TreeAuditEmptyAgendaTopic                  TreeAuditFindingType = "empty_agenda_topic"
+	TreeAuditAgendaTopicShouldMergeDynamic     TreeAuditFindingType = "agenda_topic_should_merge_with_dynamic_topic"
+	TreeAuditAgendaTopicShouldDematerialize    TreeAuditFindingType = "agenda_topic_should_dematerialize"
+	TreeAuditStaleNoAgendaSpan                 TreeAuditFindingType = "stale_no_agenda_span"
+	TreeAuditAgendaReentryMissed               TreeAuditFindingType = "agenda_reentry_missed"
+	TreeAuditAgendaItemForcedNoAgenda          TreeAuditFindingType = "agenda_item_forced_to_no_agenda"
+	TreeAuditUnclassifiedTodoAfterReentry      TreeAuditFindingType = "unclassified_todo_after_agenda_reentry"
+	TreeAuditParentChildSameTitle              TreeAuditFindingType = "parent_child_same_title"
+	TreeAuditLowInformationChild               TreeAuditFindingType = "low_information_child"
+	TreeAuditGenericQuestionWithoutSubject     TreeAuditFindingType = "generic_question_without_subject"
+	TreeAuditAgendaTitleCopiedAsItem           TreeAuditFindingType = "agenda_title_copied_as_item"
+	TreeAuditMeetingEndAsDecision              TreeAuditFindingType = "meeting_end_as_decision"
+	TreeAuditActionSummaryMissingActiveTodos   TreeAuditFindingType = "action_summary_missing_active_todos"
+	TreeAuditGenericTopicLabel                 TreeAuditFindingType = "generic_topic_label"
+	TreeAuditGenericCandidateLabel             TreeAuditFindingType = "generic_candidate_label"
+	TreeAuditTopicLabelNotDerivedFromChildren  TreeAuditFindingType = "topic_label_not_derived_from_children"
+	TreeAuditSingleChildGenericTopic           TreeAuditFindingType = "single_child_generic_topic"
+	TreeAuditRiskTodoSubjectFragmentation      TreeAuditFindingType = "risk_todo_subject_fragmentation"
+	TreeAuditRelatedActionOutsideRiskTopic     TreeAuditFindingType = "related_action_outside_risk_topic"
+	TreeAuditLeadingParticleFragment           TreeAuditFindingType = "leading_particle_fragment"
+	TreeAuditAnaphoraTargetMissing             TreeAuditFindingType = "anaphora_target_missing"
+	TreeAuditIncompleteSTTSegmentItem          TreeAuditFindingType = "incomplete_stt_segment_item"
+	TreeAuditDecisionMissingObject             TreeAuditFindingType = "decision_missing_object"
+	TreeAuditNoAgendaFalsePositiveFromModifier TreeAuditFindingType = "no_agenda_false_positive_from_modifier"
 )
 
 type TreeAuditOperationType string
@@ -83,6 +104,7 @@ const (
 	TreeAuditCreateGroup               TreeAuditOperationType = "create_group"
 	TreeAuditMoveItemsToGroup          TreeAuditOperationType = "move_items_to_group"
 	TreeAuditRenameGroup               TreeAuditOperationType = "rename_group"
+	TreeAuditRenameTopic               TreeAuditOperationType = "rename_topic"
 	TreeAuditRemoveEmptyGroup          TreeAuditOperationType = "remove_empty_group"
 	TreeAuditMergeItems                TreeAuditOperationType = "merge_items"
 	TreeAuditRewriteItem               TreeAuditOperationType = "rewrite_item"
@@ -373,7 +395,17 @@ func validTreeAuditFindingType(value TreeAuditFindingType) bool {
 	case TreeAuditPlannedAgendaWithoutEvidence, TreeAuditDiscussedAgendaMissingTopic,
 		TreeAuditTopicWithoutActiveAgendaRef, TreeAuditDuplicateAgendaMaterialization,
 		TreeAuditEmptyAgendaTopic, TreeAuditAgendaTopicShouldMergeDynamic,
-		TreeAuditAgendaTopicShouldDematerialize:
+		TreeAuditAgendaTopicShouldDematerialize, TreeAuditStaleNoAgendaSpan,
+		TreeAuditAgendaReentryMissed, TreeAuditAgendaItemForcedNoAgenda,
+		TreeAuditUnclassifiedTodoAfterReentry, TreeAuditParentChildSameTitle,
+		TreeAuditLowInformationChild, TreeAuditGenericQuestionWithoutSubject,
+		TreeAuditAgendaTitleCopiedAsItem, TreeAuditMeetingEndAsDecision,
+		TreeAuditActionSummaryMissingActiveTodos, TreeAuditGenericTopicLabel,
+		TreeAuditGenericCandidateLabel, TreeAuditTopicLabelNotDerivedFromChildren,
+		TreeAuditSingleChildGenericTopic, TreeAuditRiskTodoSubjectFragmentation,
+		TreeAuditRelatedActionOutsideRiskTopic, TreeAuditLeadingParticleFragment,
+		TreeAuditAnaphoraTargetMissing, TreeAuditIncompleteSTTSegmentItem,
+		TreeAuditDecisionMissingObject, TreeAuditNoAgendaFalsePositiveFromModifier:
 		return true
 	default:
 		return false
@@ -386,7 +418,7 @@ func validTreeAuditOperationType(value TreeAuditOperationType) bool {
 		TreeAuditFoldCandidateIntoTopic, TreeAuditPromoteCandidate,
 		TreeAuditMarkCandidateTentative, TreeAuditDeactivateCandidate,
 		TreeAuditMergeDynamicTopics, TreeAuditCreateGroup,
-		TreeAuditMoveItemsToGroup, TreeAuditRenameGroup, TreeAuditRemoveEmptyGroup:
+		TreeAuditMoveItemsToGroup, TreeAuditRenameGroup, TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup:
 		fallthrough
 	case TreeAuditMergeItems, TreeAuditRewriteItem, TreeAuditDeactivateItem,
 		TreeAuditSplitCandidate, TreeAuditCreateTopicFromCandidate,

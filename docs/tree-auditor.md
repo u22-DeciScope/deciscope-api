@@ -42,15 +42,15 @@ finding/operationの一部だけが非canonical IDや無効dependencyを含む�
 
 ## Operationの分類
 
-v6 schemaは25種のoperation typeとagenda lifecycle findingを認識します。サーバーが実際に適用しうる
-**applicable**は次の17種です。
+v8 schemaは26種のoperation typeとagenda lifecycle findingを認識します。サーバーが実際に適用しうる
+**applicable**は次の18種です。
 
 `move_item`, `restore_previous_parent`, `move_node`, `merge_items`,
 `rewrite_item`, `rewrite_item_title`, `rewrite_item_description`,
 `reclassify_kind`, `reclassify_subtype`,
 `deactivate_item`, `assign_item_to_candidate`, `change_evidence_role`,
 `create_topic_from_candidate`, `fold_candidate_into_topic`,
-`deactivate_candidate`, `rename_group`, `remove_empty_group`
+`deactivate_candidate`, `rename_group`, `rename_topic`, `remove_empty_group`
 
 残る8種は**unsupported**(schemaとしては認識されるがapplierが存在せず、
 confidenceに関わらず必ず`unsupported_operation`で拒否)です。
@@ -77,6 +77,25 @@ cycle、depth、subject整合等)を満たさなければ拒否されます。�
 監査snapshotの`agendaIds`は論理agenda recordの参照IDです。tree operationの
 対象・移動先には`nodes[].canonicalNodeId`の`topic-*` IDを使い、agenda IDを
 node IDとして指定しません。agendaとの対応はnodeの`agendaRefs`で解決します。
+
+v7では、`stale_no_agenda_span`、`agenda_reentry_missed`、
+`agenda_item_forced_to_no_agenda`、`unclassified_todo_after_agenda_reentry`、
+`parent_child_same_title`、`low_information_child`、
+`generic_question_without_subject`、`agenda_title_copied_as_item`、
+`meeting_end_as_decision`、`action_summary_missing_active_todos`を追加しました。
+no-agenda区間そのものは保存ツリーnodeではないため専用のclose operationは追加せず、
+保存済み誤配置は既存`move_item`、低情報itemは`rewrite_item` / `merge_items` /
+`deactivate_item`、冗長groupは`rename_group` / `remove_empty_group`で安全条件を
+満たすものだけ修復します。明確なagenda/dynamic重複はライブの決定的mergeを優先し、
+unsupportedの`merge_dynamic_topics`は引き続き適用しません。
+
+v8ではさらに`generic_topic_label`、`generic_candidate_label`、
+`topic_label_not_derived_from_children`、`single_child_generic_topic`、
+`risk_todo_subject_fragmentation`、`related_action_outside_risk_topic`、
+`leading_particle_fragment`、`anaphora_target_missing`、
+`incomplete_stt_segment_item`、`decision_missing_object`、
+`no_agenda_false_positive_from_modifier`を検出します。genericなagenda/dynamic
+topicは、子itemから具体名を復元できる場合に限り`rename_topic`で修復できます。
 
 ### move_node
 
@@ -136,12 +155,15 @@ dynamic topicへ昇格させます。既存の動的topicやagenda anchorと意�
 重複する場合は拒否され(`duplicate_topic`/`should_fold_into_fixed_agenda`)、
 fold_candidate_into_topicや既存agendaへの割当が推奨されます。
 
-### fold_candidate_into_topic / deactivate_candidate / rename_group / remove_empty_group
+### fold_candidate_into_topic / deactivate_candidate / rename_group / rename_topic / remove_empty_group
 
 fold_candidate_into_topicはcandidateのevidence itemを既存topicへ移し、
 candidateを非活性化します。deactivate_candidateはroundCount<=1の
 candidateを無条件で、それ以外は他条件を満たした場合のみ非活性化します。
 rename_groupはlabelの意味的cohesionが悪化しない場合のみ適用されます。
+rename_topicはagenda/dynamic topicだけを対象とし、node ID、parent、children、
+`agendaRefs`を維持します。子itemとのcohesionが悪化する名前、genericな新名称、
+root・`topic-unclassified`・action_summary・manual編集topicは拒否します。
 
 `remove_empty_group`は、子が0件のgroup、子が0件になった昇格済みdynamic
 topic、または空のsystem生成`topic-unclassified`(root・action_summary以外)を削除します。空のagenda materialized topicはdeterministic lifecycle処理がdematerializeします。子が1件以上残っている場合は
@@ -252,7 +274,7 @@ confidenceをそのままrisk classごとの閾値と比較します。
 
 - **safe**(閾値 = HCT − 0.20): `rewrite_item`, `rewrite_item_title`,
   `rewrite_item_description`, `reclassify_subtype`,
-  `change_evidence_role`, `rename_group`, `remove_empty_group`,
+  `change_evidence_role`, `rename_group`, `rename_topic`, `remove_empty_group`,
   `assign_item_to_candidate`
 - **moderate**(閾値 = HCT − 0.10): `move_item`, `restore_previous_parent`,
   `move_node`, `fold_candidate_into_topic`, `create_topic_from_candidate`,
