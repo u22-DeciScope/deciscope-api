@@ -101,7 +101,7 @@ func TestClassifyTreeAuditEvidenceKeepsPersistedPrimaryUtterance(t *testing.T) {
 		Items: []liveAnalysisItem{
 			{ID: "item-issue-investigation-cause", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "2階通信遅延の原因調査", Body: "2階の通信遅延の原因はvラン設定だけで説明できるか確認できていない", Status: "open",
 				EvidenceSequenceNos: []int64{9, 29},
-				EvidenceRoles: []liveEvidenceRoleRef{{SequenceNo: 9, Role: liveEvidencePrimary}, {SequenceNo: 29, Role: liveEvidenceReferenceRecap}}},
+				EvidenceRoles:       []liveEvidenceRoleRef{{SequenceNo: 9, Role: liveEvidencePrimary}, {SequenceNo: 29, Role: liveEvidenceReferenceRecap}}},
 		},
 	}
 	mixedSegments := []domain.TranscriptSegment{
@@ -2807,6 +2807,18 @@ func (r *internalAuditAnalysisRepository) GetMeetingAIAnalysis(_ context.Context
 	}
 	copy := analysis
 	return &copy, nil
+}
+
+func (r *internalAuditAnalysisRepository) ListMeetingAIAnalysesForSessions(_ context.Context, sessionIDs []string, analysisType domain.MeetingAIAnalysisType) ([]domain.MeetingAIAnalysis, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	items := make([]domain.MeetingAIAnalysis, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		if analysis, ok := r.store[sessionID]; ok && analysis.Type == analysisType {
+			items = append(items, analysis)
+		}
+	}
+	return items, nil
 }
 
 func (r *internalAuditAnalysisRepository) version(sessionID string) int64 {

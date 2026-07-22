@@ -29,6 +29,7 @@ type MeetingSessionUseCases interface {
 	CleanupStaleMeetingSessions(ctx context.Context) ([]domain.MeetingSession, error)
 	ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error)
 	RecordMeetingSessionHeartbeat(ctx context.Context, sessionID string) (*domain.MeetingSession, error)
+	DeleteMeetingSession(ctx context.Context, sessionID string) error
 }
 
 type TranscriptListUseCases interface {
@@ -37,6 +38,7 @@ type TranscriptListUseCases interface {
 
 type MeetingAIAnalysisUseCases interface {
 	GetMeetingAIAnalyses(ctx context.Context, sessionID string) (*application.MeetingAIAnalysesSnapshot, error)
+	ListFinalSummaryPreviews(ctx context.Context, sessionIDs []string) ([]application.MeetingFinalSummaryPreview, error)
 }
 
 type MeetingSessionAPI struct {
@@ -242,6 +244,36 @@ func (api *MeetingSessionAPI) ListForWorkspace(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, meetingSessionListResponse{Items: meetingSessionResponsesFromDomain(sessions)})
 }
 
+// GetWorkspaceFinalSummaryPreviews bulk-fetches a short preview of each
+// finished meeting's AI final summary for the workspace's meeting list, so
+// the dashboard/history cards don't need one request per session. Sessions
+// without a completed final summary yet are simply absent from the result.
+func (api *MeetingSessionAPI) GetWorkspaceFinalSummaryPreviews(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "workspace_code"))
+	if api.aiAnalysis == nil {
+		writeJSON(w, http.StatusOK, meetingFinalSummaryPreviewListResponse{Items: []meetingFinalSummaryPreviewResponse{}})
+		return
+	}
+	sessions, err := api.service.ListMeetingSessions(r.Context(), workspaceID, 500)
+	if err != nil {
+		writeMeetingSessionError(w, err)
+		return
+	}
+	sessionIDs := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		sessionIDs = append(sessionIDs, session.ID)
+	}
+	previews, err := api.aiAnalysis.ListFinalSummaryPreviews(r.Context(), sessionIDs)
+	if err != nil {
+		log.Printf("Workspace final summary previews fetch failed. workspaceId=%s error=%v", workspaceID, err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, meetingFinalSummaryPreviewListResponse{
+		Items: meetingFinalSummaryPreviewResponsesFromDomain(previews),
+	})
+}
+
 func (api *MeetingSessionAPI) GetForWorkspace(w http.ResponseWriter, r *http.Request) {
 	session, ok := api.workspaceMeetingSession(w, r)
 	if !ok {
@@ -288,6 +320,22 @@ func (api *MeetingSessionAPI) EndForWorkspace(w http.ResponseWriter, r *http.Req
 		return
 	}
 	api.end(w, r)
+}
+
+// DeleteForWorkspace permanently deletes a finished meeting session from the
+// workspace's history. Only terminal sessions can be deleted; the service
+// rejects anything still active with ErrInvalidArgument.
+func (api *MeetingSessionAPI) DeleteForWorkspace(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	if err := api.service.DeleteMeetingSession(r.Context(), session.ID); err != nil {
+		writeMeetingSessionError(w, err)
+		return
+	}
+	log.Printf("Meeting session deleted via workspace API. sessionId=%s workspaceId=%s", session.ID, session.WorkspaceID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (api *MeetingSessionAPI) ListWorkspaceTranscriptSegments(w http.ResponseWriter, r *http.Request) {
@@ -807,6 +855,26 @@ type meetingSessionCleanupResponse struct {
 
 type meetingSessionListResponse struct {
 	Items []meetingSessionResponse `json:"items"`
+}
+
+type meetingFinalSummaryPreviewResponse struct {
+	SessionID string `json:"sessionId"`
+	Overview  string `json:"overview"`
+}
+
+type meetingFinalSummaryPreviewListResponse struct {
+	Items []meetingFinalSummaryPreviewResponse `json:"items"`
+}
+
+func meetingFinalSummaryPreviewResponsesFromDomain(previews []application.MeetingFinalSummaryPreview) []meetingFinalSummaryPreviewResponse {
+	items := make([]meetingFinalSummaryPreviewResponse, 0, len(previews))
+	for _, preview := range previews {
+		items = append(items, meetingFinalSummaryPreviewResponse{
+			SessionID: preview.SessionID,
+			Overview:  preview.Overview,
+		})
+	}
+	return items
 }
 
 type meetingSessionDebugListResponse struct {

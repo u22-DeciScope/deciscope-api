@@ -54,6 +54,11 @@ type MeetingSessionRepository interface {
 	UpdateMeetingSessionMetadata(ctx context.Context, update domain.MeetingSessionMetadataUpdate) (*domain.MeetingSession, error)
 	MarkStaleMeetingSessions(ctx context.Context, staleBefore time.Time, updatedAt time.Time) ([]domain.MeetingSession, error)
 	ListMeetingSessionDebug(ctx context.Context, limit int) ([]domain.MeetingSessionDebug, error)
+	// DeleteMeetingSession permanently removes the session and its dependent
+	// transcript segments and AI analyses. Callers are responsible for
+	// deciding whether deletion is currently allowed (e.g. only terminal
+	// sessions); the repository performs the delete unconditionally.
+	DeleteMeetingSession(ctx context.Context, sessionID string) error
 	// TouchMeetingSessionBotSeen records that a heartbeat was received from the
 	// bot for sessionID at seenAt. It updates last_bot_status_at and updated_at
 	// only; it never changes status. The returned bool reports whether the
@@ -156,6 +161,11 @@ type MeetingSessionFinalizationRequest struct {
 type MeetingAIAnalysisRepository interface {
 	UpsertMeetingAIAnalysis(ctx context.Context, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, error)
 	GetMeetingAIAnalysis(ctx context.Context, sessionID string, analysisType domain.MeetingAIAnalysisType) (*domain.MeetingAIAnalysis, error)
+	// ListMeetingAIAnalysesForSessions bulk-fetches one analysis type across
+	// multiple sessions in a single query, for list/dashboard views (e.g. a
+	// workspace meeting history) that need a small preview per session
+	// without an N+1 fetch per card.
+	ListMeetingAIAnalysesForSessions(ctx context.Context, sessionIDs []string, analysisType domain.MeetingAIAnalysisType) ([]domain.MeetingAIAnalysis, error)
 }
 
 // MeetingAIAnalysisCompareAndSwapRepository is an optional stronger live-row

@@ -427,6 +427,41 @@ func (r *MeetingSessionRepository) ListMeetingSessionsForBotWatchdog(ctx context
 	return scanMeetingSessionRows(rows)
 }
 
+// DeleteMeetingSession permanently removes the session row along with its
+// transcript segments and AI analyses. meeting_tree_audit_runs cascades via
+// its own ON DELETE CASCADE foreign key, but transcript_segments and
+// meeting_session_ai_analyses were added without a FK constraint, so they
+// must be deleted explicitly in the same transaction.
+func (r *MeetingSessionRepository) DeleteMeetingSession(ctx context.Context, sessionID string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin meeting session delete: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM meeting_session_ai_analyses WHERE session_id = $1`, sessionID); err != nil {
+		return fmt.Errorf("delete meeting session ai analyses: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM transcript_segments WHERE session_id = $1`, sessionID); err != nil {
+		return fmt.Errorf("delete meeting session transcript segments: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM meeting_sessions WHERE id = $1`, sessionID)
+	if err != nil {
+		return fmt.Errorf("delete meeting session: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete meeting session rows affected: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: meeting session not found", domain.ErrNotFound)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit meeting session delete: %w", err)
+	}
+	return nil
+}
+
 type meetingSessionQueryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }

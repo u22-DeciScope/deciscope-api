@@ -856,6 +856,10 @@ func (f *fakeWatchdogRepository) TouchMeetingSessionBotSeen(context.Context, str
 	return nil, false, errors.New("not implemented")
 }
 
+func (f *fakeWatchdogRepository) DeleteMeetingSession(context.Context, string) error {
+	return errors.New("not implemented")
+}
+
 type fakeWatchdogEnder struct {
 	mu    sync.Mutex
 	calls []application.MeetingSessionStatusUpdateInput

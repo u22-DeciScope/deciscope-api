@@ -38,6 +38,18 @@ func (r *contextBarrierRepository) GetMeetingAIAnalysis(_ context.Context, sessi
 	return &saved, nil
 }
 
+func (r *contextBarrierRepository) ListMeetingAIAnalysesForSessions(_ context.Context, sessionIDs []string, analysisType domain.MeetingAIAnalysisType) ([]domain.MeetingAIAnalysis, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	items := make([]domain.MeetingAIAnalysis, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		if analysis, ok := r.store[sessionID+"|"+string(analysisType)]; ok {
+			items = append(items, analysis)
+		}
+	}
+	return items, nil
+}
+
 type contextBarrierCompleter struct {
 	mu      sync.Mutex
 	calls   int

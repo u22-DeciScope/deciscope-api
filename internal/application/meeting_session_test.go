@@ -535,6 +535,41 @@ func TestMeetingSessionServiceHeartbeatReturnsNotFoundForUnknownSession(t *testi
 	}
 }
 
+func TestMeetingSessionServiceDeletesFinishedSession(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionEnded
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{})
+
+	if err := service.DeleteMeetingSession(context.Background(), "session_1"); err != nil {
+		t.Fatalf("DeleteMeetingSession() error = %v", err)
+	}
+	if repository.deletedSessionID != "session_1" {
+		t.Fatalf("deletedSessionID = %q, want session_1", repository.deletedSessionID)
+	}
+}
+
+func TestMeetingSessionServiceRejectsDeleteOfActiveSession(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	repository.session.Status = domain.MeetingSessionActive
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{})
+
+	if err := service.DeleteMeetingSession(context.Background(), "session_1"); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("DeleteMeetingSession() error = %v, want invalid argument", err)
+	}
+	if repository.deletedSessionID != "" {
+		t.Fatalf("repository should not be called for a non-terminal session, deletedSessionID=%q", repository.deletedSessionID)
+	}
+}
+
+func TestMeetingSessionServiceDeleteReturnsNotFoundForUnknownSession(t *testing.T) {
+	repository := newFakeMeetingSessionRepository()
+	service := application.NewMeetingSessionService(repository, &fakeBotJoinCommander{})
+
+	if err := service.DeleteMeetingSession(context.Background(), "session_missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("DeleteMeetingSession() error = %v, want not found", err)
+	}
+}
+
 func isFakeTerminalMeetingSessionStatus(status domain.MeetingSessionStatus) bool {
 	switch status {
 	case domain.MeetingSessionEnded, domain.MeetingSessionFailed, domain.MeetingSessionStale:
@@ -585,6 +620,8 @@ type fakeMeetingSessionRepository struct {
 	touchedSessionID string
 	touchedSeenAt    time.Time
 	touchCallCount   int
+	deletedSessionID string
+	deleteErr        error
 }
 
 func newFakeMeetingSessionRepository() *fakeMeetingSessionRepository {
@@ -660,6 +697,14 @@ func (f *fakeMeetingSessionRepository) TouchMeetingSessionBotSeen(_ context.Cont
 
 func (f *fakeMeetingSessionRepository) ListMeetingSessionsForBotWatchdog(_ context.Context) ([]domain.MeetingSession, error) {
 	return f.watchdogSessions, nil
+}
+
+func (f *fakeMeetingSessionRepository) DeleteMeetingSession(_ context.Context, sessionID string) error {
+	f.deletedSessionID = sessionID
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return nil
 }
 
 func (f *fakeMeetingSessionRepository) ListMeetingSessionDebug(_ context.Context, _ int) ([]domain.MeetingSessionDebug, error) {

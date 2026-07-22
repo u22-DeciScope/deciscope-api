@@ -2412,6 +2412,64 @@ func (s *MeetingAnalysisService) GetMeetingAIAnalyses(ctx context.Context, sessi
 	}, nil
 }
 
+// finalSummaryPreviewMaxChars caps how much of the final summary's overview
+// text a list-view preview carries. It is a preview, not the full report;
+// the full text is fetched separately via GetMeetingAIAnalyses when a user
+// opens a specific meeting.
+const finalSummaryPreviewMaxChars = 200
+
+// MeetingFinalSummaryPreview is a lightweight, list-view projection of a
+// session's final AI summary: just the overview text, truncated to a preview
+// length. It intentionally omits decisions/actionItems/tree data that
+// GetMeetingAIAnalyses returns for a single session, since a workspace
+// history list needs one short line per card, not the full report.
+type MeetingFinalSummaryPreview struct {
+	SessionID string
+	Overview  string
+}
+
+// ListFinalSummaryPreviews bulk-fetches the "final" AI analysis's overview
+// text for the given sessions in a single query, so a workspace's meeting
+// history list can show a preview per card without one request per session.
+// Sessions with no completed final summary yet are simply omitted from the
+// result (not an error).
+func (s *MeetingAnalysisService) ListFinalSummaryPreviews(ctx context.Context, sessionIDs []string) ([]MeetingFinalSummaryPreview, error) {
+	if len(sessionIDs) == 0 {
+		return nil, nil
+	}
+	analyses, err := s.analysisRepo.ListMeetingAIAnalysesForSessions(ctx, sessionIDs, domain.MeetingAIAnalysisFinal)
+	if err != nil {
+		return nil, err
+	}
+	previews := make([]MeetingFinalSummaryPreview, 0, len(analyses))
+	for _, analysis := range analyses {
+		if analysis.Status != domain.MeetingAIAnalysisCompleted || len(analysis.Payload) == 0 {
+			continue
+		}
+		var payload finalAnalysisPayload
+		if err := json.Unmarshal(analysis.Payload, &payload); err != nil {
+			continue
+		}
+		overview := strings.TrimSpace(payload.Overview)
+		if overview == "" {
+			continue
+		}
+		previews = append(previews, MeetingFinalSummaryPreview{
+			SessionID: analysis.SessionID,
+			Overview:  truncateWithEllipsis(overview, finalSummaryPreviewMaxChars),
+		})
+	}
+	return previews, nil
+}
+
+func truncateWithEllipsis(value string, maxChars int) string {
+	runes := []rune(value)
+	if len(runes) <= maxChars {
+		return value
+	}
+	return string(runes[:maxChars]) + "…"
+}
+
 // sanitizeLiveAnalysisForDelivery upgrades legacy/corrupt stored payloads in
 // memory only. It does not write the database; callers receive a typed,
 // invariant-checked tree and an explicit degraded diagnostic.

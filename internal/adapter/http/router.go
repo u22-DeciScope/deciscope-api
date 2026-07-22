@@ -84,10 +84,12 @@ func NewRouter(deps RouterDependencies) http.Handler {
 				r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Delete("/invitations/{invitation_id}", deps.WorkspaceAPI.RevokeInvitation)
 				if deps.MeetingSessionAPI != nil {
 					r.Get("/meeting-sessions", deps.MeetingSessionAPI.ListForWorkspace)
+					r.Get("/meeting-sessions/final-summaries", deps.MeetingSessionAPI.GetWorkspaceFinalSummaryPreviews)
 					r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Post("/meeting-sessions", deps.MeetingSessionAPI.CreateForWorkspace)
 					r.Route("/meeting-sessions/{session_id}", func(r chi.Router) {
 						r.Get("/", deps.MeetingSessionAPI.GetForWorkspace)
 						r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Post("/end", deps.MeetingSessionAPI.EndForWorkspace)
+						r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Delete("/", deps.MeetingSessionAPI.DeleteForWorkspace)
 						r.Get("/transcript-segments", deps.MeetingSessionAPI.ListWorkspaceTranscriptSegments)
 						r.Get("/transcript-stream", deps.MeetingSessionAPI.StreamWorkspaceTranscriptSegments)
 						r.Get("/ai-analyses", deps.MeetingSessionAPI.GetWorkspaceAIAnalyses)

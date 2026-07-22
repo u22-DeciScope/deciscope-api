@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -85,6 +86,65 @@ func TestMeetingSessionRepositoryCreatesGetsAndUpdates(t *testing.T) {
 	}
 	if got.ID != session.ID || got.JoinURL != session.JoinURL || got.Status != domain.MeetingSessionRecording || got.BotCallID != "call-1" {
 		t.Fatalf("got = %+v", got)
+	}
+}
+
+func TestMeetingSessionRepositoryDeleteRemovesSessionAndDependentData(t *testing.T) {
+	repository, db := newTestMeetingSessionRepository(t)
+	resetTestDatabase(t, db)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC)
+	session := domain.MeetingSession{
+		ID:          "session_test",
+		JoinURL:     "https://teams.microsoft.com/l/meetup-join/abc",
+		JoinURLHash: "hash",
+		Status:      domain.MeetingSessionEnded,
+		RequestedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if _, err := repository.CreateMeetingSession(ctx, session); err != nil {
+		t.Fatalf("CreateMeetingSession() error = %v", err)
+	}
+
+	transcriptRepository := NewTranscriptSegmentRepository(db)
+	if _, err := transcriptRepository.SaveTranscriptSegment(ctx, validTranscriptSegment()); err != nil {
+		t.Fatalf("SaveTranscriptSegment() error = %v", err)
+	}
+	analysisRepository := NewMeetingAIAnalysisRepository(db)
+	if _, err := analysisRepository.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+		SessionID: "session_test",
+		Type:      domain.MeetingAIAnalysisLive,
+		Status:    domain.MeetingAIAnalysisCompleted,
+		Version:   1,
+		Payload:   json.RawMessage(`{"summary":"要約"}`),
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertMeetingAIAnalysis() error = %v", err)
+	}
+
+	if err := repository.DeleteMeetingSession(ctx, "session_test"); err != nil {
+		t.Fatalf("DeleteMeetingSession() error = %v", err)
+	}
+
+	if _, err := repository.GetMeetingSession(ctx, "session_test"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetMeetingSession() after delete error = %v, want not found", err)
+	}
+	if got := transcriptSegmentRowCount(t, db); got != 0 {
+		t.Fatalf("transcript_segments row count = %d, want 0", got)
+	}
+	if got := meetingAIAnalysisRowCount(t, db); got != 0 {
+		t.Fatalf("meeting_session_ai_analyses row count = %d, want 0", got)
+	}
+}
+
+func TestMeetingSessionRepositoryDeleteReturnsNotFoundForUnknownSession(t *testing.T) {
+	repository, db := newTestMeetingSessionRepository(t)
+	resetTestDatabase(t, db)
+	ctx := context.Background()
+
+	if err := repository.DeleteMeetingSession(ctx, "session_missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("DeleteMeetingSession() error = %v, want not found", err)
 	}
 }
 

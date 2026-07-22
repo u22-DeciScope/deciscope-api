@@ -1089,6 +1089,30 @@ func parseMetadataTime(value string) (time.Time, error) {
 	return parsed.UTC(), nil
 }
 
+// DeleteMeetingSession permanently removes a finished meeting session (and
+// its transcript segments / AI analyses) from history. Sessions that are
+// still active (not yet terminal) cannot be deleted, since a bot may still be
+// attached and the frontend never offers this action outside the history
+// list of finished meetings.
+func (s *MeetingSessionService) DeleteMeetingSession(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("%w: sessionId is required", domain.ErrInvalidArgument)
+	}
+	session, err := s.repository.GetMeetingSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if !isTerminalMeetingSessionStatus(session.Status) {
+		return fmt.Errorf("%w: meeting session is not finished yet", domain.ErrInvalidArgument)
+	}
+	if err := s.repository.DeleteMeetingSession(ctx, sessionID); err != nil {
+		return err
+	}
+	log.Printf("Meeting session deleted. sessionId=%s joinUrlHash=%s status=%s", session.ID, session.JoinURLHash, session.Status)
+	return nil
+}
+
 func (s *MeetingSessionService) CleanupStaleMeetingSessions(ctx context.Context) ([]domain.MeetingSession, error) {
 	now := s.now().UTC()
 	staleBefore := now.Add(-DefaultMeetingSessionStaleAfter)
