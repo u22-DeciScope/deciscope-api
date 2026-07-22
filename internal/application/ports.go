@@ -194,6 +194,14 @@ type MeetingAIAnalysisPublisher interface {
 	PublishMeetingAIAnalysis(analysis domain.MeetingAIAnalysis)
 }
 
+// MeetingAgendaProgressOverridesRepository persists one manual-override row
+// per session (meeting_session_agenda_progress_overrides). GetAgendaProgressOverrides
+// returns domain.ErrNotFound when the session has no overrides yet.
+type MeetingAgendaProgressOverridesRepository interface {
+	GetAgendaProgressOverrides(ctx context.Context, sessionID string) (json.RawMessage, error)
+	UpsertAgendaProgressOverrides(ctx context.Context, sessionID string, payload json.RawMessage, updatedAt time.Time) error
+}
+
 // AIChatRequest and AIChatResult keep the Azure OpenAI wire format out of
 // Application. Infrastructure adapters translate to/from the provider SDK.
 type AIChatRequest struct {

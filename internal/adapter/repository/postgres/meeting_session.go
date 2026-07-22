@@ -429,9 +429,10 @@ func (r *MeetingSessionRepository) ListMeetingSessionsForBotWatchdog(ctx context
 
 // DeleteMeetingSession permanently removes the session row along with its
 // transcript segments and AI analyses. meeting_tree_audit_runs cascades via
-// its own ON DELETE CASCADE foreign key, but transcript_segments and
-// meeting_session_ai_analyses were added without a FK constraint, so they
-// must be deleted explicitly in the same transaction.
+// its own ON DELETE CASCADE foreign key, but transcript_segments,
+// meeting_session_ai_analyses, and meeting_session_agenda_progress_overrides
+// were added without a FK constraint, so they must be deleted explicitly in
+// the same transaction.
 func (r *MeetingSessionRepository) DeleteMeetingSession(ctx context.Context, sessionID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -441,6 +442,9 @@ func (r *MeetingSessionRepository) DeleteMeetingSession(ctx context.Context, ses
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM meeting_session_ai_analyses WHERE session_id = $1`, sessionID); err != nil {
 		return fmt.Errorf("delete meeting session ai analyses: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM meeting_session_agenda_progress_overrides WHERE session_id = $1`, sessionID); err != nil {
+		return fmt.Errorf("delete meeting session agenda progress overrides: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM transcript_segments WHERE session_id = $1`, sessionID); err != nil {
 		return fmt.Errorf("delete meeting session transcript segments: %w", err)

@@ -93,6 +93,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 						r.Get("/transcript-segments", deps.MeetingSessionAPI.ListWorkspaceTranscriptSegments)
 						r.Get("/transcript-stream", deps.MeetingSessionAPI.StreamWorkspaceTranscriptSegments)
 						r.Get("/ai-analyses", deps.MeetingSessionAPI.GetWorkspaceAIAnalyses)
+						r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Patch("/agenda-progress", deps.MeetingSessionAPI.UpdateAgendaProgressForWorkspace)
 					})
 				}
 				r.Get("/meetings", deps.CoreAPI.ListMeetings)

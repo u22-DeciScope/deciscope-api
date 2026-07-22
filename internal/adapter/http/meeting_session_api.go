@@ -39,6 +39,7 @@ type TranscriptListUseCases interface {
 type MeetingAIAnalysisUseCases interface {
 	GetMeetingAIAnalyses(ctx context.Context, sessionID string) (*application.MeetingAIAnalysesSnapshot, error)
 	ListFinalSummaryPreviews(ctx context.Context, sessionIDs []string) ([]application.MeetingFinalSummaryPreview, error)
+	UpdateAgendaProgressOverride(ctx context.Context, sessionID string, input application.AgendaProgressOverrideInput) (json.RawMessage, error)
 }
 
 type MeetingSessionAPI struct {
@@ -401,6 +402,96 @@ func (api *MeetingSessionAPI) GetWorkspaceAIAnalyses(w http.ResponseWriter, r *h
 		return
 	}
 	writeJSON(w, http.StatusOK, meetingAIAnalysesResponseFromSnapshot(session.ID, snapshot))
+}
+
+// UpdateAgendaProgressForWorkspace applies exactly one manual agenda-progress
+// override (a per-entry status override, or a current-topic override) and
+// returns the freshly stamped agendaProgress projection. Role enforcement
+// (admin/owner only) is the router's requireWorkspaceAdminOrOwner middleware.
+func (api *MeetingSessionAPI) UpdateAgendaProgressForWorkspace(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	if api.aiAnalysis == nil {
+		writeError(w, http.StatusServiceUnavailable, "ai_analysis_unavailable", "AI analysis service is unavailable")
+		return
+	}
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+	var request agendaProgressOverrideRequest
+	if !decodeLimitedJSON(w, r, meetingSessionBodyLimitBytes, &request) {
+		return
+	}
+	input, err := request.toOverrideInput()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	stamped, err := api.aiAnalysis.UpdateAgendaProgressOverride(r.Context(), session.ID, input)
+	if err != nil {
+		if errors.Is(err, domain.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		log.Printf("Agenda progress override update failed. workspaceId=%s sessionId=%s error=%v", session.WorkspaceID, session.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, agendaProgressOverrideResponse{AgendaProgress: stamped})
+}
+
+type agendaProgressOverrideResponse struct {
+	AgendaProgress json.RawMessage `json:"agendaProgress"`
+}
+
+// agendaProgressOverrideRequest accepts exactly one operation (§1.3):
+//   - {"entryId": "...", "manualStatus": "discussed"|null}
+//   - {"manualCurrentTopicId": "..."|null}
+//
+// ManualStatus/ManualCurrentTopicID are kept as json.RawMessage so an
+// explicit JSON null (clear the override) can be distinguished from the
+// field being entirely absent (not this operation).
+type agendaProgressOverrideRequest struct {
+	EntryID              string          `json:"entryId,omitempty"`
+	ManualStatus         json.RawMessage `json:"manualStatus,omitempty"`
+	ManualCurrentTopicID json.RawMessage `json:"manualCurrentTopicId,omitempty"`
+}
+
+func (request agendaProgressOverrideRequest) toOverrideInput() (application.AgendaProgressOverrideInput, error) {
+	entryID := strings.TrimSpace(request.EntryID)
+	hasStatusOp := len(request.ManualStatus) > 0
+	hasCurrentOp := len(request.ManualCurrentTopicID) > 0
+	if hasStatusOp == hasCurrentOp {
+		return application.AgendaProgressOverrideInput{}, errors.New("exactly one of manualStatus or manualCurrentTopicId is required")
+	}
+	if hasStatusOp {
+		if entryID == "" {
+			return application.AgendaProgressOverrideInput{}, errors.New("entryId is required with manualStatus")
+		}
+		if string(request.ManualStatus) == "null" {
+			cleared := ""
+			return application.AgendaProgressOverrideInput{EntryID: entryID, ManualStatus: &cleared}, nil
+		}
+		var status string
+		if err := json.Unmarshal(request.ManualStatus, &status); err != nil || strings.TrimSpace(status) == "" {
+			return application.AgendaProgressOverrideInput{}, errors.New("manualStatus must be a status string or null")
+		}
+		return application.AgendaProgressOverrideInput{EntryID: entryID, ManualStatus: &status}, nil
+	}
+	if entryID != "" {
+		return application.AgendaProgressOverrideInput{}, errors.New("entryId cannot be combined with manualCurrentTopicId")
+	}
+	if string(request.ManualCurrentTopicID) == "null" {
+		return application.AgendaProgressOverrideInput{ManualCurrentSet: true}, nil
+	}
+	var currentID string
+	if err := json.Unmarshal(request.ManualCurrentTopicID, &currentID); err != nil || strings.TrimSpace(currentID) == "" {
+		return application.AgendaProgressOverrideInput{}, errors.New("manualCurrentTopicId must be an id string or null")
+	}
+	return application.AgendaProgressOverrideInput{ManualCurrentSet: true, ManualCurrentID: currentID}, nil
 }
 
 func (api *MeetingSessionAPI) CleanupStale(w http.ResponseWriter, r *http.Request) {

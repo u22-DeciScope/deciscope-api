@@ -122,6 +122,10 @@ func TestMeetingSessionRepositoryDeleteRemovesSessionAndDependentData(t *testing
 	}); err != nil {
 		t.Fatalf("UpsertMeetingAIAnalysis() error = %v", err)
 	}
+	overridesRepository := NewMeetingAgendaProgressOverridesRepository(db)
+	if err := overridesRepository.UpsertAgendaProgressOverrides(ctx, "session_test", json.RawMessage(`{"currentTopicId":"agenda-1"}`), now); err != nil {
+		t.Fatalf("UpsertAgendaProgressOverrides() error = %v", err)
+	}
 
 	if err := repository.DeleteMeetingSession(ctx, "session_test"); err != nil {
 		t.Fatalf("DeleteMeetingSession() error = %v", err)
@@ -135,6 +139,9 @@ func TestMeetingSessionRepositoryDeleteRemovesSessionAndDependentData(t *testing
 	}
 	if got := meetingAIAnalysisRowCount(t, db); got != 0 {
 		t.Fatalf("meeting_session_ai_analyses row count = %d, want 0", got)
+	}
+	if _, err := overridesRepository.GetAgendaProgressOverrides(ctx, "session_test"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetAgendaProgressOverrides() after delete error = %v, want not found", err)
 	}
 }
 

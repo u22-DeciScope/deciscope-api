@@ -439,14 +439,15 @@ func (c MeetingAnalysisConfig) finalFlushMaxAttempts() int {
 // make every operation a no-op when AI is not configured, so callers never
 // need nil checks.
 type MeetingAnalysisService struct {
-	analysisRepo   MeetingAIAnalysisRepository
-	completer      AIChatCompleter
-	publisher      MeetingAIAnalysisPublisher
-	transcriptRepo TranscriptSegmentRepository
-	sessionRepo    MeetingSessionRepository
-	config         MeetingAnalysisConfig
-	auditRepo      MeetingTreeAuditRepository
-	now            func() time.Time
+	analysisRepo                MeetingAIAnalysisRepository
+	completer                   AIChatCompleter
+	publisher                   MeetingAIAnalysisPublisher
+	transcriptRepo              TranscriptSegmentRepository
+	sessionRepo                 MeetingSessionRepository
+	config                      MeetingAnalysisConfig
+	auditRepo                   MeetingTreeAuditRepository
+	agendaProgressOverridesRepo MeetingAgendaProgressOverridesRepository
+	now                         func() time.Time
 
 	mu       sync.Mutex
 	sessions map[string]*liveAnalysisSessionState
@@ -471,6 +472,16 @@ type MeetingAnalysisService struct {
 func (s *MeetingAnalysisService) SetMeetingTreeAuditRepository(repository MeetingTreeAuditRepository) {
 	if s != nil {
 		s.auditRepo = repository
+	}
+}
+
+// SetMeetingAgendaProgressOverridesRepository injects the manual-override
+// persistence adapter without widening the long-standing constructor
+// signature used by existing callers (same pattern as
+// SetMeetingTreeAuditRepository).
+func (s *MeetingAnalysisService) SetMeetingAgendaProgressOverridesRepository(repository MeetingAgendaProgressOverridesRepository) {
+	if s != nil {
+		s.agendaProgressOverridesRepo = repository
 	}
 }
 
@@ -524,6 +535,13 @@ type liveAnalysisSessionState struct {
 	// auditClosed is set when the session enters ending. Live audits may finish
 	// for history, but cannot apply or schedule a follow-up after this boundary.
 	auditClosed bool
+	// overrides / overridesLoaded cache the session's agenda progress manual
+	// overrides so publishAnalysis's per-broadcast stamp does not need a
+	// repository round trip on every live update. overridesLoaded is set once
+	// the cache has been populated (successfully or as "no overrides exist"),
+	// even when overrides itself stays nil.
+	overrides       *AgendaProgressOverrides
+	overridesLoaded bool
 }
 
 const (
@@ -970,6 +988,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	agendaAssignmentsAccepted, agendaAssignmentsDeferred, agendaAssignmentsRejected := summarizeAgendaAssignmentOutcomes(treeStats.AssignmentDecisions)
 	log.Printf("Live agenda anchor lifecycle. sessionId=%s version=%d agendaRecordCount=%d agendaRecordsPreserved=%d agendaRecordIntegrityValid=%t plannedAgendaCount=%d materializedAgendaCount=%d discussedAgendaCount=%d mergedAgendaCount=%d notDiscussedAgendaCount=%d agendaTopicsMaterialized=%d agendaTopicsMerged=%d agendaTopicsSplit=%d agendaTopicsRenamed=%d agendaTopicsReparented=%d agendaTopicsDematerialized=%d agendaTopicIdsReused=%d legacyAgendaTopicIdsNormalized=%d agendaTopicIdCollisions=%d agendaNodeIdNamespaceValid=%t agendaAssignmentAccepted=%d agendaAssignmentDeferred=%d agendaAssignmentRejected=%d agendaAssignmentRejectedByNoAgendaSpan=%d agendaReferenceIntegrityValid=%t unknownAgendaRefs=%d orphanAgendaRefs=%d orphanMaterializedTopicIds=%d duplicateAgendaMaterializations=%d emptyAgendaTopicsBefore=%d emptyAgendaTopicsAfter=%d dynamicAgendaOverlapBefore=%d dynamicAgendaOverlapAfter=%d treeIntegrityValid=%t previousTreePreserved=%d",
 		sessionID, newVersion, treeStats.AgendaRecordCount, treeStats.AgendaRecordsPreserved, treeStats.AgendaRecordIntegrityValid, treeStats.PlannedAgendaCount, treeStats.MaterializedAgendaCount, treeStats.DiscussedAgendaCount, treeStats.MergedAgendaCount, treeStats.NotDiscussedAgendaCount, treeStats.AgendaTopicsMaterialized, treeStats.AgendaTopicsMerged, treeStats.AgendaTopicsSplit, treeStats.AgendaTopicsRenamed, treeStats.AgendaTopicsReparented, treeStats.AgendaTopicsDematerialized, treeStats.AgendaTopicIDsReused, treeStats.LegacyAgendaTopicIDsNormalized, treeStats.AgendaTopicIDCollisions, treeStats.AgendaNodeIDNamespaceValid, agendaAssignmentsAccepted, agendaAssignmentsDeferred, agendaAssignmentsRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, treeStats.AgendaReferenceIntegrityValid, treeStats.UnknownAgendaReferences, treeStats.OrphanAgendaReferences, treeStats.OrphanMaterializedTopicIDs, treeStats.DuplicateAgendaMaterializations, treeStats.EmptyAgendaTopicsBefore, treeStats.EmptyAgendaTopicsAfter, treeStats.DynamicAgendaOverlapBefore, treeStats.DynamicAgendaOverlapAfter, treeStats.TreeIntegrityValid, treeStats.PreviousTreePreserved)
+	log.Printf("Agenda progress evaluated. sessionId=%s version=%d agendaCount=%d currentTopicId=%s currentTopicChanged=%t statusTransitions=%s manualOverridesApplied=%d additionalTopicCandidates=%d additionalTopicsDisplayed=%d multiAgendaEvidenceCount=%d weights=%s",
+		sessionID, newVersion, treeStats.AgendaProgressAgendaCount, treeStats.AgendaProgressCurrentTopicID, treeStats.AgendaProgressCurrentTopicChanged, strings.Join(treeStats.AgendaProgressStatusTransitions, ","), 0, treeStats.AgendaProgressAdditionalTopicCandidates, treeStats.AgendaProgressAdditionalTopicsDisplayed, treeStats.AgendaProgressMultiAgendaEvidenceCount, strings.Join(treeStats.AgendaProgressWeights, ","))
 	log.Printf("Live AI analysis completed. sessionId=%s segmentCount=%d inputChars=%d version=%d promptTokens=%d completionTokens=%d elapsed=%s modelResolvedIds=%d resolvedItems=%d totalItems=%d resolvedNodes=%d totalNodes=%d diffItems=%d diffTreeNodes=%d diffTreeEdges=%d droppedNodes=%d droppedNodeReasons=%s synthesizedNodes=%d",
 		sessionID, len(segments), inputChars, newVersion, result.PromptTokens, result.CompletionTokens, elapsed,
 		modelResolvedIDCount, stats.ResolvedItems, stats.TotalItems, stats.ResolvedNodes, stats.TotalNodes,
@@ -1909,6 +1929,7 @@ func finalizeAgendaLifecyclePayload(payload json.RawMessage, mc *meetingContext,
 	state.Tree = mergeEquivalentAgendaDynamicTopicsInTree(state.Tree, mc, treeVersion, nil)
 	pruneEmptyAgendaTopics(state.Tree, mc, treeVersion, true, nil)
 	state.AgendaAnchors = reconcileAgendaAnchors(state.AgendaAnchors, mc, state.Tree, state.Items, treeVersion, true)
+	finalizeAgendaProgress(&state, mc, treeVersion)
 	state.TreeIntegrity = nil
 	integrity := validateTreeIntegrity(state.Tree, state.Items, mc, state.AgendaAnchors)
 	if !integrity.Valid {
@@ -2341,9 +2362,116 @@ func (s *MeetingAnalysisService) publishAnalysis(analysis domain.MeetingAIAnalys
 	if s.publisher != nil {
 		if analysis.Type == domain.MeetingAIAnalysisLive {
 			analysis.IntervalSeconds = s.LiveAnalysisIntervalSeconds()
+			if agendaProgressStampEligible(analysis.Status) {
+				overrides := s.sessionAgendaProgressOverrides(nil, analysis.SessionID)
+				if stamped, ok := stampAgendaProgressInLivePayload(analysis.Payload, overrides); ok {
+					analysis.Payload = stamped
+				}
+			}
 		}
 		s.publisher.PublishMeetingAIAnalysis(analysis)
 	}
+}
+
+// agendaProgressStampEligible reports whether a live analysis row's payload
+// is complete/current enough to carry a stamped agendaProgress projection.
+func agendaProgressStampEligible(status domain.MeetingAIAnalysisStatus) bool {
+	return status == domain.MeetingAIAnalysisCompleted || status == domain.MeetingAIAnalysisRunning
+}
+
+// agendaProgressOverridesFetchTimeout bounds the background repository fetch
+// publishAnalysis performs when a session's overrides are not yet cached
+// (publishAnalysis has no caller-supplied context to reuse).
+const agendaProgressOverridesFetchTimeout = 2 * time.Second
+
+// sessionAgendaProgressOverrides returns the session's manual agenda progress
+// overrides, preferring the sessionState cache and falling back to the
+// repository (marking the cache loaded either way) on a cache miss. A nil ctx
+// requests an internal bounded background context, for callers (publishAnalysis)
+// that do not carry one. Any repository error degrades to "no overrides"
+// (stamp is skipped, never fails a read/broadcast).
+func (s *MeetingAnalysisService) sessionAgendaProgressOverrides(ctx context.Context, sessionID string) *AgendaProgressOverrides {
+	if s == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	state, tracked := s.sessions[sessionID]
+	if tracked && state.overridesLoaded {
+		overrides := state.overrides
+		s.mu.Unlock()
+		return overrides
+	}
+	s.mu.Unlock()
+	if s.agendaProgressOverridesRepo == nil {
+		return nil
+	}
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), agendaProgressOverridesFetchTimeout)
+		defer cancel()
+	}
+	overrides, err := s.fetchAgendaProgressOverrides(ctx, sessionID)
+	if err != nil {
+		log.Printf("Agenda progress overrides load failed. sessionId=%s error=%v", sessionID, err)
+		return nil
+	}
+	s.mu.Lock()
+	cacheState := s.sessionStateLocked(sessionID)
+	cacheState.overrides = overrides
+	cacheState.overridesLoaded = true
+	s.mu.Unlock()
+	return overrides
+}
+
+// fetchAgendaProgressOverrides reads and decodes the session's overrides row.
+// A missing row is not an error: it returns (nil, nil).
+func (s *MeetingAnalysisService) fetchAgendaProgressOverrides(ctx context.Context, sessionID string) (*AgendaProgressOverrides, error) {
+	raw, err := s.agendaProgressOverridesRepo.GetAgendaProgressOverrides(ctx, sessionID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var overrides AgendaProgressOverrides
+	if err := json.Unmarshal(raw, &overrides); err != nil {
+		return nil, fmt.Errorf("parse agenda progress overrides: %w", err)
+	}
+	return &overrides, nil
+}
+
+// stampAgendaProgressInLivePayload replaces payload's "agendaProgress" field
+// (if present) with a manual-override-stamped copy, leaving every other field
+// byte-for-byte untouched. It returns ok=false (payload returned unchanged)
+// when there is no agendaProgress field to stamp or the payload cannot be
+// parsed, so a malformed/legacy row degrades to "no stamp" instead of
+// breaking delivery.
+func stampAgendaProgressInLivePayload(payload json.RawMessage, overrides *AgendaProgressOverrides) (json.RawMessage, bool) {
+	if len(payload) == 0 {
+		return payload, false
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return payload, false
+	}
+	rawProgress, exists := envelope["agendaProgress"]
+	if !exists || len(rawProgress) == 0 || string(rawProgress) == "null" {
+		return payload, false
+	}
+	var progress agendaProgressState
+	if err := json.Unmarshal(rawProgress, &progress); err != nil {
+		return payload, false
+	}
+	stampedRaw, err := json.Marshal(applyAgendaProgressOverrides(&progress, overrides))
+	if err != nil {
+		return payload, false
+	}
+	envelope["agendaProgress"] = stampedRaw
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return payload, false
+	}
+	return encoded, true
 }
 
 // LiveAnalysisIntervalSeconds returns the live analysis check interval in
@@ -2401,6 +2529,14 @@ func (s *MeetingAnalysisService) GetMeetingAIAnalyses(ctx context.Context, sessi
 	deterministic := buildMeetingContext(s.fetchSessionPreContext(ctx, sessionID))
 	mc = reconcileMeetingContextWithFallback(mc, deterministic)
 	live = sanitizeLiveAnalysisForDelivery(live, mc, s.config.TreeClassification)
+	if live != nil && agendaProgressStampEligible(live.Status) {
+		overrides := s.sessionAgendaProgressOverrides(ctx, sessionID)
+		if stamped, ok := stampAgendaProgressInLivePayload(live.Payload, overrides); ok {
+			liveCopy := *live
+			liveCopy.Payload = stamped
+			live = &liveCopy
+		}
+	}
 	tree = sanitizeTreeSnapshotForDelivery(tree, live, mc)
 	return &MeetingAIAnalysesSnapshot{
 		SessionID:           sessionID,
@@ -2410,6 +2546,167 @@ func (s *MeetingAnalysisService) GetMeetingAIAnalyses(ctx context.Context, sessi
 		Finalization:        finalization,
 		LiveIntervalSeconds: s.LiveAnalysisIntervalSeconds(),
 	}, nil
+}
+
+// AgendaProgressOverrideInput is exactly one manual-override operation (§1.3):
+// either a per-entry status override (EntryID + ManualStatus) or a current-
+// topic override (ManualCurrentSet + ManualCurrentID). ManualStatus nil means
+// "not this operation"; ManualStatus pointing at "" means "clear the status
+// override for EntryID" (the HTTP handler turns a JSON null into this).
+type AgendaProgressOverrideInput struct {
+	EntryID          string
+	ManualStatus     *string
+	ManualCurrentSet bool
+	ManualCurrentID  string
+}
+
+// agendaProgressValidEntryIDs is the set of ids an override's entryId /
+// manualCurrentTopicId may point at: every pre-meeting agenda id plus every
+// id already present in the current live payload's agendaProgress entries.
+func agendaProgressValidEntryIDs(mc *meetingContext, liveState *agendaProgressState) map[string]struct{} {
+	ids := make(map[string]struct{})
+	if mc != nil {
+		for _, agenda := range mc.Agenda {
+			if id := strings.TrimSpace(agenda.ID); id != "" {
+				ids[id] = struct{}{}
+			}
+		}
+	}
+	if liveState != nil {
+		for _, entry := range liveState.Entries {
+			ids[entry.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// UpdateAgendaProgressOverride validates and persists exactly one manual
+// override operation, then returns the freshly stamped agendaProgress
+// projection (marshaled) so the HTTP handler can respond with it directly.
+// When a live analysis already exists, the stored override is applied to it
+// and the update is broadcast over the existing live-analysis publisher
+// (WS clients see the same stamped projection). When no live analysis exists
+// yet, a not_started projection is synthesized from the meeting's agenda so
+// the caller still gets a usable response.
+func (s *MeetingAnalysisService) UpdateAgendaProgressOverride(ctx context.Context, sessionID string, input AgendaProgressOverrideInput) (json.RawMessage, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("%w: sessionId is required", domain.ErrInvalidArgument)
+	}
+	if s == nil || s.agendaProgressOverridesRepo == nil {
+		return nil, fmt.Errorf("%w: agenda progress overrides repository is not configured", domain.ErrInvalidArgument)
+	}
+	entryID := strings.TrimSpace(input.EntryID)
+	isStatusOp := input.ManualStatus != nil
+	if isStatusOp == input.ManualCurrentSet {
+		return nil, fmt.Errorf("%w: exactly one of manualStatus or manualCurrentTopicId is required", domain.ErrInvalidArgument)
+	}
+	if isStatusOp {
+		if entryID == "" {
+			return nil, fmt.Errorf("%w: entryId is required for a status override", domain.ErrInvalidArgument)
+		}
+		if manual := *input.ManualStatus; manual != "" && !isValidAgendaProgressStatus(manual) {
+			return nil, fmt.Errorf("%w: manualStatus must be not_started, discussing, or discussed", domain.ErrInvalidArgument)
+		}
+	}
+
+	// A synchronous REST write does not need runLiveAnalysis's async
+	// context-planning/wait machinery (sessionMeetingContext): it just reads
+	// whatever context is already durable, the same way GetMeetingAIAnalyses
+	// does, so an override request never blocks on context planning.
+	var mc *meetingContext
+	if contextAnalysis, contextErr := s.getOptionalAnalysis(ctx, sessionID, domain.MeetingAIAnalysisContext); contextErr == nil && contextAnalysis != nil {
+		mc = unmarshalMeetingContext(contextAnalysis.Payload)
+	}
+	mc = reconcileMeetingContextWithFallback(mc, buildMeetingContext(s.fetchSessionPreContext(ctx, sessionID)))
+	live, err := s.getOptionalAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive)
+	if err != nil {
+		return nil, err
+	}
+	var liveState *agendaProgressState
+	var liveAnchors []agendaAnchor
+	if live != nil && len(live.Payload) > 0 {
+		parsed := previousLiveAnalysisState(live.Payload)
+		liveState = parsed.AgendaProgress
+		liveAnchors = parsed.AgendaAnchors
+	}
+	validIDs := agendaProgressValidEntryIDs(mc, liveState)
+	targetID := entryID
+	manualCurrentID := strings.TrimSpace(input.ManualCurrentID)
+	if !isStatusOp {
+		targetID = manualCurrentID
+	}
+	if targetID != "" {
+		if _, ok := validIDs[targetID]; !ok {
+			return nil, fmt.Errorf("%w: unknown agenda progress entry id %q", domain.ErrInvalidArgument, targetID)
+		}
+	}
+
+	overrides, err := s.fetchAgendaProgressOverrides(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if overrides == nil {
+		overrides = &AgendaProgressOverrides{}
+	}
+	cleared := false
+	manualStatusLog := ""
+	if isStatusOp {
+		manualStatusLog = *input.ManualStatus
+		if manualStatusLog == "" {
+			cleared = true
+			if overrides.StatusOverrides != nil {
+				delete(overrides.StatusOverrides, entryID)
+			}
+		} else {
+			if overrides.StatusOverrides == nil {
+				overrides.StatusOverrides = make(map[string]string)
+			}
+			overrides.StatusOverrides[entryID] = manualStatusLog
+		}
+	} else {
+		cleared = manualCurrentID == ""
+		overrides.CurrentTopicID = manualCurrentID
+	}
+
+	encoded, err := json.Marshal(overrides)
+	if err != nil {
+		return nil, fmt.Errorf("marshal agenda progress overrides: %w", err)
+	}
+	if err := s.agendaProgressOverridesRepo.UpsertAgendaProgressOverrides(ctx, sessionID, encoded, s.now().UTC()); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	cacheState := s.sessionStateLocked(sessionID)
+	cacheState.overrides = overrides
+	cacheState.overridesLoaded = true
+	s.mu.Unlock()
+
+	log.Printf("Agenda progress override updated. sessionId=%s entryId=%s manualStatus=%s manualCurrentTopicId=%s cleared=%t",
+		sessionID, entryID, manualStatusLog, manualCurrentID, cleared)
+
+	projection := liveState
+	if projection == nil {
+		// legacy/未生成payload: anchorのライフサイクル状態があればそれを進捗へ
+		// 写像し、無ければ全項目not_startedのprojectionを合成する。
+		projection = synthesizeAgendaProgressFromAnchors(mc, liveAnchors, 0)
+	}
+	stamped := applyAgendaProgressOverrides(projection, overrides)
+	stampedRaw, err := json.Marshal(stamped)
+	if err != nil {
+		return nil, fmt.Errorf("marshal stamped agenda progress: %w", err)
+	}
+
+	if live != nil && agendaProgressStampEligible(live.Status) {
+		// WSへ再配信するpayloadはREST GETと同じsanitize済みの形にする。生の
+		// legacy payloadをそのまま流すと、クライアントが旧形式ツリーを同一
+		// versionで受け取って表示が劣化しうる(agendaProgress未保有の旧payload
+		// もsanitizeが§2.11の合成projectionを与える)。
+		s.publishAnalysis(*sanitizeLiveAnalysisForDelivery(live, mc, s.config.TreeClassification))
+	}
+
+	return stampedRaw, nil
 }
 
 // finalSummaryPreviewMaxChars caps how much of the final summary's overview
@@ -2488,6 +2785,13 @@ func sanitizeLiveAnalysisForDelivery(analysis *domain.MeetingAIAnalysis, mc *mee
 	selected, repairedIntegrity, rejected := preserveTreeOnIntegrityFailure(state.Tree, nil, state.Items, nil, mc, stats)
 	state.Tree = selected
 	state.AgendaAnchors = reconcileAgendaAnchors(state.AgendaAnchors, mc, state.Tree, state.Items, state.TreeVersion, false)
+	if state.AgendaProgress == nil {
+		if mc != nil && len(mc.Agenda) > 0 {
+			state.AgendaProgress = synthesizeAgendaProgressFromAnchors(mc, state.AgendaAnchors, state.TreeVersion)
+		}
+	} else {
+		refreshAgendaProgressNodeRefs(state.AgendaProgress, state.Tree)
+	}
 	degraded := !originalIntegrity.Valid || len(legacyAgendaRemap) > 0 || len(reservedRemap) > 0 || len(dedupRemap) > 0 || rejected
 	if degraded {
 		state.Degraded = true
@@ -3146,6 +3450,12 @@ type liveAnalysisPayload struct {
 	// exists independently of a discussion-tree topic: planned agendas do not
 	// appear in Tree until grounded discussion materializes them.
 	AgendaAnchors []agendaAnchor `json:"agendaAnchors,omitempty"`
+	// AgendaProgress is the server-computed "アジェンダ進捗" projection
+	// (ai_agenda_progress.go). It is populated only by evaluateAgendaProgress
+	// from the previous round's AgendaProgress plus this round's merged
+	// tree/items/anchors; any agendaProgress the model itself emits in its
+	// diff output is unmarshaled into a separate value and never read.
+	AgendaProgress *agendaProgressState `json:"agendaProgress,omitempty"`
 	// ItemTombstones are session-scoped, server-owned resurrection guards.
 	// They live with the canonical live snapshot so audit application and the
 	// next live CAS update remain atomic without a second persistence table.
@@ -4026,6 +4336,18 @@ type liveAnalysisTreeMergeStats struct {
 	GroupsSkipped         int
 	GroupSkipReasons      map[string]int
 	GroupDecisions        []groupCandidateDecision
+	// AgendaProgress* are observability fields populated by
+	// evaluateAgendaProgress (ai_agenda_progress.go) for the "Agenda progress
+	// evaluated." log line, which runLiveAnalysis emits alongside its other
+	// per-round diagnostics (sessionId/version are only known there).
+	AgendaProgressAgendaCount               int
+	AgendaProgressCurrentTopicID            string
+	AgendaProgressCurrentTopicChanged       bool
+	AgendaProgressStatusTransitions         []string
+	AgendaProgressAdditionalTopicCandidates int
+	AgendaProgressAdditionalTopicsDisplayed int
+	AgendaProgressMultiAgendaEvidenceCount  int
+	AgendaProgressWeights                   []string
 }
 
 type itemLifecycleEvaluation struct {
@@ -4429,6 +4751,21 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	selectedTree, integrity, degraded := preserveTreeOnIntegrityFailure(merged.Tree, previous.Tree, merged.Items, previous.Items, mc, treeStats)
 	merged.Tree = selectedTree
 	merged.AgendaAnchors = reconcileAgendaAnchors(previous.AgendaAnchors, mc, merged.Tree, merged.Items, treeVersion, false)
+	merged.AgendaProgress = evaluateAgendaProgress(agendaProgressInputs{
+		Previous:    previous.AgendaProgress,
+		MC:          mc,
+		Tree:        merged.Tree,
+		Items:       merged.Items,
+		Anchors:     merged.AgendaAnchors,
+		Emerging:    merged.EmergingTopics,
+		Spans:       agendaSpans,
+		Timeline:    timeline,
+		Scope:       evidenceScope,
+		RoundSeqNos: roundSeqNos,
+		DiffItems:   diffItems,
+		TreeVersion: treeVersion,
+		Stats:       treeStats,
+	})
 	if treeStats != nil {
 		currentAgendaMetrics := observeAgendaTree(merged.Tree, mc)
 		treeStats.EmptyAgendaTopicsAfter = currentAgendaMetrics.EmptyTopics
