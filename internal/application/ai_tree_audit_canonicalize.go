@@ -175,6 +175,184 @@ func (spaces treeAuditCanonicalIDSpaces) resolveAnyField(raw string) (id string,
 	return resolution.id, resolution.id != trimmed, ""
 }
 
+// normalizeTreeAuditOperationFields zeroes (or, for two narrow rescues,
+// migrates) any ID-shaped field of operation that its own applier
+// (applyOneTreeAuditOperation) never reads for operation.Type, before the
+// per-field canonical-ID resolution in canonicalizeTreeAuditResponse runs.
+//
+// Every operation type exposes the full v3 schema's ID fields
+// (TargetCanonicalItemID, TargetCanonicalNodeID, TargetCanonicalItemIDs,
+// TargetCandidateID, FromParentCanonicalNodeID, ToParentCanonicalNodeID)
+// even though a given operation type only ever consumes a subset of them.
+// Before this normalization pass existed, every field was resolved
+// unconditionally regardless of operation type, so a stray value the model
+// left in a field it does not use for this operation - most often by
+// redundantly repeating the same ID it already supplied correctly in the
+// field it does use - could still fail that field's own context check
+// (typically target_not_node, since TargetCanonicalNodeID is resolved with
+// requireContainer=true) and discard the whole operation, even though every
+// field the applier actually reads was correct. This mirrors an anomaly
+// observed in a real production run: a move_item operation correctly set
+// targetCanonicalItemId to a detail item, but the model also copied that
+// same item ID into the unused targetCanonicalNodeId field, and the old
+// unconditional resolution rejected the entire operation on
+// target_not_node for a field move_item never reads in the first place.
+//
+// Two operation types get a narrow rescue instead of a plain clear, applied
+// before the field is zeroed:
+//   - merge_items: if the model put its one non-first merge target in the
+//     singular TargetCanonicalItemID field alongside a single-element
+//     TargetCanonicalItemIDs, the two are combined into a two-element
+//     TargetCanonicalItemIDs before TargetCanonicalItemID is cleared.
+//   - rewrite_item/rewrite_item_title/rewrite_item_description/
+//     reclassify_kind/reclassify_subtype/deactivate_item/
+//     change_evidence_role: if TargetCanonicalItemID is blank but
+//     TargetCanonicalNodeID resolves to a detail item, that value is moved
+//     over before TargetCanonicalNodeID is cleared.
+//   - fold_candidate_into_topic: applyOneTreeAuditOperation and
+//     treeAuditEffectiveConfidence both read ToParentCanonicalNodeID (not
+//     TargetCanonicalNodeID) as the destination topic; if the model put the
+//     destination in TargetCanonicalNodeID instead and left
+//     ToParentCanonicalNodeID blank, the value is copied over before
+//     TargetCanonicalNodeID is cleared.
+//
+// Every clear or rescue that actually changes a field increments *changed,
+// the same counter canonicalizeTreeAuditResponse's per-operation field
+// resolution loop uses toward response.CanonicalizationCount - this pass
+// never rejects an operation by itself, it only records that a
+// normalization happened. It never touches Label, Kind, Subtype, Reason,
+// Confidence, EvidenceSequenceNos, or DependsOnOperationIDs.
+func normalizeTreeAuditOperationFields(operation *treeAuditOperation, spaces treeAuditCanonicalIDSpaces, changed *int) {
+	clearItemID := func() {
+		if strings.TrimSpace(operation.TargetCanonicalItemID) != "" {
+			operation.TargetCanonicalItemID = ""
+			*changed++
+		}
+	}
+	clearNodeID := func() {
+		if strings.TrimSpace(operation.TargetCanonicalNodeID) != "" {
+			operation.TargetCanonicalNodeID = ""
+			*changed++
+		}
+	}
+	clearItemIDs := func() {
+		if len(operation.TargetCanonicalItemIDs) != 0 {
+			operation.TargetCanonicalItemIDs = nil
+			*changed++
+		}
+	}
+	clearCandidateID := func() {
+		if strings.TrimSpace(operation.TargetCandidateID) != "" {
+			operation.TargetCandidateID = ""
+			*changed++
+		}
+	}
+	clearFrom := func() {
+		if strings.TrimSpace(operation.FromParentCanonicalNodeID) != "" {
+			operation.FromParentCanonicalNodeID = ""
+			*changed++
+		}
+	}
+	clearTo := func() {
+		if strings.TrimSpace(operation.ToParentCanonicalNodeID) != "" {
+			operation.ToParentCanonicalNodeID = ""
+			*changed++
+		}
+	}
+
+	switch operation.Type {
+	case TreeAuditMoveItem, TreeAuditRestorePreviousParent:
+		// Used: TargetCanonicalItemID, FromParentCanonicalNodeID, ToParentCanonicalNodeID.
+		clearNodeID()
+		clearItemIDs()
+		clearCandidateID()
+
+	case TreeAuditMoveNode:
+		// Used: TargetCanonicalNodeID, FromParentCanonicalNodeID, ToParentCanonicalNodeID.
+		clearItemID()
+		clearItemIDs()
+		clearCandidateID()
+
+	case TreeAuditMergeItems:
+		// Used: TargetCanonicalItemIDs. Rescue: a lone second target left in
+		// the singular field is folded into the plural one first.
+		if len(operation.TargetCanonicalItemIDs) == 1 {
+			solo := strings.TrimSpace(operation.TargetCanonicalItemID)
+			first := strings.TrimSpace(operation.TargetCanonicalItemIDs[0])
+			if solo != "" && solo != first {
+				operation.TargetCanonicalItemIDs = []string{operation.TargetCanonicalItemID, operation.TargetCanonicalItemIDs[0]}
+				*changed++
+			}
+		}
+		clearItemID()
+		clearNodeID()
+		clearCandidateID()
+		clearFrom()
+		clearTo()
+
+	case TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
+		TreeAuditReclassifyKind, TreeAuditReclassifySubtype, TreeAuditDeactivateItem, TreeAuditChangeEvidenceRole:
+		// Used: TargetCanonicalItemID (+Label/Kind/Subtype). Rescue: an item
+		// ID left in TargetCanonicalNodeID is moved over when the item field
+		// itself is blank.
+		if strings.TrimSpace(operation.TargetCanonicalItemID) == "" {
+			if raw := strings.TrimSpace(operation.TargetCanonicalNodeID); raw != "" {
+				if resolvedID, _, reason := spaces.resolveItemField(raw); reason == "" {
+					operation.TargetCanonicalItemID = resolvedID
+					*changed++
+				}
+			}
+		}
+		clearNodeID()
+		clearItemIDs()
+		clearCandidateID()
+		clearFrom()
+		clearTo()
+
+	case TreeAuditAssignItemToCandidate:
+		// Used: TargetCanonicalItemID, TargetCandidateID.
+		clearNodeID()
+		clearItemIDs()
+		clearFrom()
+		clearTo()
+
+	case TreeAuditFoldCandidateIntoTopic:
+		// Used: TargetCandidateID, ToParentCanonicalNodeID (the fold
+		// destination topic - both applyOneTreeAuditOperation and
+		// treeAuditEffectiveConfidence read ToParentCanonicalNodeID, never
+		// TargetCanonicalNodeID). TargetCanonicalItemIDs is kept: both the
+		// applier and treeAuditEffectiveConfidence read it (falling back to
+		// the candidate's own EvidenceItemIDs when empty). Rescue: a
+		// destination left in TargetCanonicalNodeID is copied over when
+		// ToParentCanonicalNodeID itself is blank.
+		if strings.TrimSpace(operation.ToParentCanonicalNodeID) == "" {
+			if raw := strings.TrimSpace(operation.TargetCanonicalNodeID); raw != "" {
+				operation.ToParentCanonicalNodeID = operation.TargetCanonicalNodeID
+				*changed++
+			}
+		}
+		clearNodeID()
+		clearItemID()
+		clearFrom()
+
+	case TreeAuditCreateTopicFromCandidate, TreeAuditDeactivateCandidate:
+		// Used: TargetCandidateID.
+		clearItemID()
+		clearNodeID()
+		clearItemIDs()
+		clearFrom()
+		clearTo()
+
+	case TreeAuditRenameGroup, TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup:
+		// Used: TargetCanonicalNodeID (+Label for rename operations).
+		clearItemID()
+		clearItemIDs()
+		clearCandidateID()
+		clearFrom()
+		clearTo()
+	}
+}
+
 // canonicalizeTreeAuditResponse resolves every ID-shaped field in the
 // parsed response's findings and operations against the live tree's
 // canonical ID spaces. It runs after parseTreeAuditResponse (which only
@@ -238,6 +416,13 @@ func canonicalizeTreeAuditResponse(response *treeAuditResponse, state liveAnalys
 		localCount := 0
 		rejected := ""
 
+		// Clear/migrate whatever ID fields updated.Type's own applier never
+		// reads before resolving the fields it does read below, so a stray
+		// value in an unused field can no longer fail its own field-context
+		// check and discard an otherwise-valid operation. See
+		// normalizeTreeAuditOperationFields.
+		normalizeTreeAuditOperationFields(&updated, spaces, &localCount)
+
 		resolveField := func(raw string, resolver func(string) (string, bool, string)) string {
 			if rejected != "" {
 				return raw
@@ -253,21 +438,21 @@ func canonicalizeTreeAuditResponse(response *treeAuditResponse, state liveAnalys
 			return resolvedID
 		}
 
-		updated.TargetCanonicalItemID = resolveField(operation.TargetCanonicalItemID, spaces.resolveItemField)
-		updated.TargetCanonicalNodeID = resolveField(operation.TargetCanonicalNodeID, func(raw string) (string, bool, string) {
+		updated.TargetCanonicalItemID = resolveField(updated.TargetCanonicalItemID, spaces.resolveItemField)
+		updated.TargetCanonicalNodeID = resolveField(updated.TargetCanonicalNodeID, func(raw string) (string, bool, string) {
 			return spaces.resolveNodeField(raw, true)
 		})
-		updated.FromParentCanonicalNodeID = resolveField(operation.FromParentCanonicalNodeID, func(raw string) (string, bool, string) {
+		updated.FromParentCanonicalNodeID = resolveField(updated.FromParentCanonicalNodeID, func(raw string) (string, bool, string) {
 			return spaces.resolveNodeField(raw, false)
 		})
-		updated.ToParentCanonicalNodeID = resolveField(operation.ToParentCanonicalNodeID, func(raw string) (string, bool, string) {
+		updated.ToParentCanonicalNodeID = resolveField(updated.ToParentCanonicalNodeID, func(raw string) (string, bool, string) {
 			return spaces.resolveNodeField(raw, false)
 		})
-		updated.TargetCandidateID = resolveField(operation.TargetCandidateID, spaces.resolveCandidateField)
+		updated.TargetCandidateID = resolveField(updated.TargetCandidateID, spaces.resolveCandidateField)
 
-		if rejected == "" && len(operation.TargetCanonicalItemIDs) > 0 {
-			resolvedIDs := make([]string, len(operation.TargetCanonicalItemIDs))
-			for index, raw := range operation.TargetCanonicalItemIDs {
+		if rejected == "" && len(updated.TargetCanonicalItemIDs) > 0 {
+			resolvedIDs := make([]string, len(updated.TargetCanonicalItemIDs))
+			for index, raw := range updated.TargetCanonicalItemIDs {
 				resolvedID, changed, reason := spaces.resolveItemField(raw)
 				if reason != "" {
 					rejected = reason
@@ -291,4 +476,5 @@ func canonicalizeTreeAuditResponse(response *treeAuditResponse, state liveAnalys
 		validOperations = append(validOperations, updated)
 	}
 	response.Operations = validOperations
+	response.CanonicalizedOperationCount = len(validOperations)
 }

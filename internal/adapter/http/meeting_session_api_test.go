@@ -256,6 +256,79 @@ func TestMeetingSessionAPIEndsSession(t *testing.T) {
 	}
 }
 
+func TestMeetingSessionAPIDeleteForWorkspaceDeletesSession(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionEnded,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:02Z"),
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithWorkspaceSessionParams(http.MethodDelete, "/v1/workspaces/workspace_1/meeting-sessions/session_1", "")
+	resp := httptest.NewRecorder()
+
+	api.DeleteForWorkspace(resp, req)
+
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.deletedSessionID != "session_1" {
+		t.Fatalf("deletedSessionID = %q, want session_1", service.deletedSessionID)
+	}
+}
+
+func TestMeetingSessionAPIDeleteForWorkspaceRejectsWorkspaceMismatch(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_other",
+			Status:      domain.MeetingSessionEnded,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:02Z"),
+		},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithWorkspaceSessionParams(http.MethodDelete, "/v1/workspaces/workspace_1/meeting-sessions/session_1", "")
+	resp := httptest.NewRecorder()
+
+	api.DeleteForWorkspace(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if service.deletedSessionID != "" {
+		t.Fatalf("service should not be called on workspace mismatch, deletedSessionID=%q", service.deletedSessionID)
+	}
+}
+
+func TestMeetingSessionAPIDeleteForWorkspaceMapsServiceRejection(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionActive,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:02Z"),
+		},
+		deleteErr: fmt.Errorf("%w: meeting session is not finished yet", domain.ErrInvalidArgument),
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithWorkspaceSessionParams(http.MethodDelete, "/v1/workspaces/workspace_1/meeting-sessions/session_1", "")
+	resp := httptest.NewRecorder()
+
+	api.DeleteForWorkspace(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestMeetingSessionAPIRecordBotHeartbeatRequiresAPIKey(t *testing.T) {
 	api := NewMeetingSessionAPI(&fakeMeetingSessionUseCases{}, testTranscriptAPIKey)
 	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", `{"botCallId":"call-1"}`)
@@ -602,10 +675,265 @@ func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsNotFoundForOtherWorkspace
 	}
 }
 
+func meetingSessionForAgendaProgress(t *testing.T) *fakeMeetingSessionUseCases {
+	t.Helper()
+	return &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionRecording,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+}
+
+func TestMeetingSessionAPIUpdateAgendaProgressSetsManualStatus(t *testing.T) {
+	service := meetingSessionForAgendaProgress(t)
+	analysis := &fakeMeetingAIAnalysisUseCases{overrideResult: json.RawMessage(`{"computedCurrentTopicId":"agenda-1","entries":[]}`)}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPatch, "/v1/workspaces/workspace_1/meeting-sessions/session_1/agenda-progress", `{"entryId":"agenda-1","manualStatus":"discussed"}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.UpdateAgendaProgressForWorkspace(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if analysis.gotOverrideSessionID != "session_1" {
+		t.Fatalf("gotOverrideSessionID = %q", analysis.gotOverrideSessionID)
+	}
+	if analysis.gotOverrideInput.EntryID != "agenda-1" || analysis.gotOverrideInput.ManualStatus == nil || *analysis.gotOverrideInput.ManualStatus != "discussed" || analysis.gotOverrideInput.ManualCurrentSet {
+		t.Fatalf("gotOverrideInput = %+v", analysis.gotOverrideInput)
+	}
+	var body agendaProgressOverrideResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(string(body.AgendaProgress), "agenda-1") {
+		t.Fatalf("body.AgendaProgress = %s", string(body.AgendaProgress))
+	}
+}
+
+func TestMeetingSessionAPIUpdateAgendaProgressClearsManualStatus(t *testing.T) {
+	service := meetingSessionForAgendaProgress(t)
+	analysis := &fakeMeetingAIAnalysisUseCases{overrideResult: json.RawMessage(`{"entries":[]}`)}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPatch, "/v1/workspaces/workspace_1/meeting-sessions/session_1/agenda-progress", `{"entryId":"agenda-1","manualStatus":null}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.UpdateAgendaProgressForWorkspace(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if analysis.gotOverrideInput.ManualStatus == nil || *analysis.gotOverrideInput.ManualStatus != "" {
+		t.Fatalf("gotOverrideInput.ManualStatus = %v, want pointer to empty string", analysis.gotOverrideInput.ManualStatus)
+	}
+}
+
+func TestMeetingSessionAPIUpdateAgendaProgressSetsManualCurrentTopic(t *testing.T) {
+	service := meetingSessionForAgendaProgress(t)
+	analysis := &fakeMeetingAIAnalysisUseCases{overrideResult: json.RawMessage(`{"entries":[]}`)}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPatch, "/v1/workspaces/workspace_1/meeting-sessions/session_1/agenda-progress", `{"manualCurrentTopicId":"agenda-2"}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.UpdateAgendaProgressForWorkspace(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if !analysis.gotOverrideInput.ManualCurrentSet || analysis.gotOverrideInput.ManualCurrentID != "agenda-2" || analysis.gotOverrideInput.EntryID != "" {
+		t.Fatalf("gotOverrideInput = %+v", analysis.gotOverrideInput)
+	}
+}
+
+func TestMeetingSessionAPIUpdateAgendaProgressClearsManualCurrentTopic(t *testing.T) {
+	service := meetingSessionForAgendaProgress(t)
+	analysis := &fakeMeetingAIAnalysisUseCases{overrideResult: json.RawMessage(`{"entries":[]}`)}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPatch, "/v1/workspaces/workspace_1/meeting-sessions/session_1/agenda-progress", `{"manualCurrentTopicId":null}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.UpdateAgendaProgressForWorkspace(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if !analysis.gotOverrideInput.ManualCurrentSet || analysis.gotOverrideInput.ManualCurrentID != "" {
+		t.Fatalf("gotOverrideInput = %+v", analysis.gotOverrideInput)
+	}
+}
+
+func TestMeetingSessionAPIUpdateAgendaProgressRejectsCombinedFields(t *testing.T) {
+	service := meetingSessionForAgendaProgress(t)
+	analysis := &fakeMeetingAIAnalysisUseCases{overrideResult: json.RawMessage(`{"entries":[]}`)}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPatch, "/v1/workspaces/workspace_1/meeting-sessions/session_1/agenda-progress", `{"entryId":"agenda-1","manualStatus":"discussed","manualCurrentTopicId":"agenda-2"}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.UpdateAgendaProgressForWorkspace(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if analysis.gotOverrideSessionID != "" {
+		t.Fatalf("service should not be called: gotOverrideSessionID = %q", analysis.gotOverrideSessionID)
+	}
+}
+
+func TestMeetingSessionAPIUpdateAgendaProgressRejectsEmptyBody(t *testing.T) {
+	service := meetingSessionForAgendaProgress(t)
+	analysis := &fakeMeetingAIAnalysisUseCases{overrideResult: json.RawMessage(`{"entries":[]}`)}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPatch, "/v1/workspaces/workspace_1/meeting-sessions/session_1/agenda-progress", `{}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.UpdateAgendaProgressForWorkspace(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIUpdateAgendaProgressRejectsWrongContentType(t *testing.T) {
+	service := meetingSessionForAgendaProgress(t)
+	analysis := &fakeMeetingAIAnalysisUseCases{overrideResult: json.RawMessage(`{"entries":[]}`)}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPatch, "/v1/workspaces/workspace_1/meeting-sessions/session_1/agenda-progress", `{"entryId":"agenda-1","manualStatus":"discussed"}`)
+	req.Header.Set("Content-Type", "text/plain")
+	resp := httptest.NewRecorder()
+
+	api.UpdateAgendaProgressForWorkspace(resp, req)
+
+	if resp.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIUpdateAgendaProgressMapsInvalidArgumentToBadRequest(t *testing.T) {
+	service := meetingSessionForAgendaProgress(t)
+	analysis := &fakeMeetingAIAnalysisUseCases{overrideErr: fmt.Errorf("%w: unknown agenda progress entry id", domain.ErrInvalidArgument)}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPatch, "/v1/workspaces/workspace_1/meeting-sessions/session_1/agenda-progress", `{"entryId":"agenda-unknown","manualStatus":"discussed"}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.UpdateAgendaProgressForWorkspace(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIUpdateAgendaProgressReturnsServiceUnavailableWhenNotWired(t *testing.T) {
+	service := meetingSessionForAgendaProgress(t)
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithWorkspaceSessionParams(http.MethodPatch, "/v1/workspaces/workspace_1/meeting-sessions/session_1/agenda-progress", `{"entryId":"agenda-1","manualStatus":"discussed"}`)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	api.UpdateAgendaProgressForWorkspace(resp, req)
+
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIGetWorkspaceFinalSummaryPreviews(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionEnded,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+	analysis := &fakeMeetingAIAnalysisUseCases{
+		previews: []application.MeetingFinalSummaryPreview{{SessionID: "session_1", Overview: "概要です"}},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/final-summaries", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceFinalSummaryPreviews(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	if len(analysis.gotPreviewIDs) != 1 || analysis.gotPreviewIDs[0] != "session_1" {
+		t.Fatalf("gotPreviewIDs = %#v", analysis.gotPreviewIDs)
+	}
+	var body meetingFinalSummaryPreviewListResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Items) != 1 || body.Items[0].SessionID != "session_1" || body.Items[0].Overview != "概要です" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestMeetingSessionAPIGetWorkspaceFinalSummaryPreviewsWithoutAIAnalysisServiceReturnsEmpty(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{ID: "session_1", WorkspaceID: "workspace_1"},
+	}
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey)
+	req := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/final-summaries", "")
+	resp := httptest.NewRecorder()
+
+	api.GetWorkspaceFinalSummaryPreviews(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	var body meetingFinalSummaryPreviewListResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Items) != 0 {
+		t.Fatalf("body.Items = %+v, want empty", body.Items)
+	}
+}
+
 type fakeMeetingAIAnalysisUseCases struct {
-	snapshot     *application.MeetingAIAnalysesSnapshot
-	err          error
-	gotSessionID string
+	snapshot      *application.MeetingAIAnalysesSnapshot
+	err           error
+	gotSessionID  string
+	previews      []application.MeetingFinalSummaryPreview
+	gotPreviewIDs []string
+	previewErr    error
+
+	overrideResult       json.RawMessage
+	overrideErr          error
+	gotOverrideSessionID string
+	gotOverrideInput     application.AgendaProgressOverrideInput
+}
+
+func (f *fakeMeetingAIAnalysisUseCases) UpdateAgendaProgressOverride(_ context.Context, sessionID string, input application.AgendaProgressOverrideInput) (json.RawMessage, error) {
+	f.gotOverrideSessionID = sessionID
+	f.gotOverrideInput = input
+	if f.overrideErr != nil {
+		return nil, f.overrideErr
+	}
+	return f.overrideResult, nil
+}
+
+func (f *fakeMeetingAIAnalysisUseCases) ListFinalSummaryPreviews(_ context.Context, sessionIDs []string) ([]application.MeetingFinalSummaryPreview, error) {
+	f.gotPreviewIDs = sessionIDs
+	if f.previewErr != nil {
+		return nil, f.previewErr
+	}
+	return f.previews, nil
 }
 
 func (f *fakeMeetingAIAnalysisUseCases) GetMeetingAIAnalyses(_ context.Context, sessionID string) (*application.MeetingAIAnalysesSnapshot, error) {
@@ -624,6 +952,8 @@ type fakeMeetingSessionUseCases struct {
 	update             application.MeetingSessionStatusUpdateInput
 	reused             bool
 	heartbeatSessionID string
+	deletedSessionID   string
+	deleteErr          error
 }
 
 func (f *fakeMeetingSessionUseCases) CreateMeetingSession(_ context.Context, input application.MeetingSessionCreateInput) (*application.MeetingSessionCreateResult, error) {
@@ -700,6 +1030,11 @@ func (f *fakeMeetingSessionUseCases) ListMeetingSessionDebug(_ context.Context, 
 		return nil, f.err
 	}
 	return []domain.MeetingSessionDebug{{MeetingSession: f.session}}, nil
+}
+
+func (f *fakeMeetingSessionUseCases) DeleteMeetingSession(_ context.Context, sessionID string) error {
+	f.deletedSessionID = sessionID
+	return f.deleteErr
 }
 
 func (f *fakeMeetingSessionUseCases) RecordMeetingSessionHeartbeat(_ context.Context, sessionID string) (*domain.MeetingSession, error) {

@@ -72,6 +72,60 @@ func TestMeetingAIAnalysisRepositoryUpsertsInPlace(t *testing.T) {
 	}
 }
 
+func TestMeetingAIAnalysisRepositoryListsForSessions(t *testing.T) {
+	repository, _ := newTestMeetingAIAnalysisRepository(t)
+	ctx := context.Background()
+
+	if _, err := repository.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+		SessionID: "session_a", Type: domain.MeetingAIAnalysisFinal, Status: domain.MeetingAIAnalysisCompleted,
+		Version: 1, Payload: json.RawMessage(`{"overview":"Aの概要"}`), UpdatedAt: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("seed session_a final: %v", err)
+	}
+	if _, err := repository.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+		SessionID: "session_a", Type: domain.MeetingAIAnalysisLive, Status: domain.MeetingAIAnalysisCompleted,
+		Version: 1, Payload: json.RawMessage(`{"summary":"ライブ要約"}`), UpdatedAt: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("seed session_a live: %v", err)
+	}
+	if _, err := repository.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+		SessionID: "session_b", Type: domain.MeetingAIAnalysisFinal, Status: domain.MeetingAIAnalysisCompleted,
+		Version: 1, Payload: json.RawMessage(`{"overview":"Bの概要"}`), UpdatedAt: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("seed session_b final: %v", err)
+	}
+	// session_c has no rows at all and should simply be absent from the result.
+
+	results, err := repository.ListMeetingAIAnalysesForSessions(ctx, []string{"session_a", "session_b", "session_c"}, domain.MeetingAIAnalysisFinal)
+	if err != nil {
+		t.Fatalf("ListMeetingAIAnalysesForSessions() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %+v, want 2 (final analyses for session_a and session_b only)", results)
+	}
+	bySessionID := make(map[string]domain.MeetingAIAnalysis, len(results))
+	for _, result := range results {
+		bySessionID[result.SessionID] = result
+	}
+	if !jsonPayloadEqual(t, bySessionID["session_a"].Payload, `{"overview":"Aの概要"}`) {
+		t.Fatalf("session_a payload = %s", string(bySessionID["session_a"].Payload))
+	}
+	if !jsonPayloadEqual(t, bySessionID["session_b"].Payload, `{"overview":"Bの概要"}`) {
+		t.Fatalf("session_b payload = %s", string(bySessionID["session_b"].Payload))
+	}
+}
+
+func TestMeetingAIAnalysisRepositoryListForSessionsWithEmptyIDsReturnsEmpty(t *testing.T) {
+	repository, _ := newTestMeetingAIAnalysisRepository(t)
+	results, err := repository.ListMeetingAIAnalysesForSessions(context.Background(), nil, domain.MeetingAIAnalysisFinal)
+	if err != nil {
+		t.Fatalf("ListMeetingAIAnalysesForSessions() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("results = %+v, want empty", results)
+	}
+}
+
 func jsonPayloadEqual(t *testing.T, payload json.RawMessage, want string) bool {
 	t.Helper()
 	var gotValue, wantValue any

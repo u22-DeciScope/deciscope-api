@@ -268,6 +268,7 @@ func aiConfigFromEnv() AIConfig {
 			RequiredImprovementMargin:  floatFromEnv(os.Getenv("TREE_AUDIT_REQUIRED_IMPROVEMENT_MARGIN")),
 			CohesionThreshold:          floatFromEnv(os.Getenv("TREE_AUDIT_COHESION_THRESHOLD")),
 			TentativeMaxVersions:       int64(positiveIntFromEnv(os.Getenv("TREE_AUDIT_TENTATIVE_MAX_VERSIONS"), 3)),
+			UnappliedWarningThreshold:  positiveIntFromEnv(os.Getenv("TREE_AUDIT_UNAPPLIED_WARNING_THRESHOLD"), 3),
 		},
 		TreeAuditEnabledInvalid: treeAuditEnabledInvalid,
 		TreeAuditModeDeprecated: strings.TrimSpace(os.Getenv("TREE_AUDIT_MODE")) != "",

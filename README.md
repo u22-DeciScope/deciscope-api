@@ -106,6 +106,8 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
   通常triggerのsession上限・1時間上限。既定値は`20`, `12`
 - `TREE_AUDIT_HIGH_SEVERITY_MIN_INTERVAL_SECONDS`, `TREE_AUDIT_HIGH_SEVERITY_MAX_RUNS_PER_HOUR`:
   deterministicな重大異常triggerの別枠debounce・1時間上限。既定値は`60`, `4`
+- `TREE_AUDIT_UNAPPLIED_WARNING_THRESHOLD`: findingを検出したままoperation適用0件が
+  連続した場合の警告閾値。既定値は`3`
 - 入力・頻度・timeout上限の詳細は [docs/tree-auditor.md](docs/tree-auditor.md) を参照してください
 
 `DECISCOPE_TRANSCRIPT_ONLY=true` のtranscript-onlyモードでは、AI分析機能は組み込まれません。

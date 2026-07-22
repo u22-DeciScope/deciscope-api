@@ -477,6 +477,53 @@ func TestMeetingAnalysisServiceGetMeetingAIAnalysesReturnsStoredValues(t *testin
 	}
 }
 
+func TestMeetingAnalysisServiceListFinalSummaryPreviews(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	repository.seed(domain.MeetingAIAnalysis{
+		SessionID: "session_1",
+		Type:      domain.MeetingAIAnalysisFinal,
+		Status:    domain.MeetingAIAnalysisCompleted,
+		Payload:   json.RawMessage(finalAnalysisResultJSON),
+	})
+	repository.seed(domain.MeetingAIAnalysis{
+		SessionID: "session_2",
+		Type:      domain.MeetingAIAnalysisFinal,
+		Status:    domain.MeetingAIAnalysisRunning,
+		Payload:   json.RawMessage(finalAnalysisResultJSON),
+	})
+	longOverview := strings.Repeat("あ", 250)
+	repository.seed(domain.MeetingAIAnalysis{
+		SessionID: "session_3",
+		Type:      domain.MeetingAIAnalysisFinal,
+		Status:    domain.MeetingAIAnalysisCompleted,
+		Payload:   json.RawMessage(`{"overview":"` + longOverview + `"}`),
+	})
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, &fakeAIChatCompleter{},
+		testLiveOnlyConfig(time.Second, 1),
+	)
+
+	previews, err := service.ListFinalSummaryPreviews(context.Background(), []string{"session_1", "session_2", "session_3", "session_missing"})
+	if err != nil {
+		t.Fatalf("ListFinalSummaryPreviews() error = %v", err)
+	}
+	bySessionID := make(map[string]application.MeetingFinalSummaryPreview, len(previews))
+	for _, preview := range previews {
+		bySessionID[preview.SessionID] = preview
+	}
+	if len(bySessionID) != 2 {
+		t.Fatalf("previews = %+v, want entries for session_1 and session_3 only (session_2 is running, session_missing has none)", previews)
+	}
+	if bySessionID["session_1"].Overview != "概要です" {
+		t.Fatalf("session_1 overview = %q", bySessionID["session_1"].Overview)
+	}
+	truncated := bySessionID["session_3"].Overview
+	truncatedRunes := []rune(truncated)
+	if truncatedRunes[len(truncatedRunes)-1] != '…' || len(truncatedRunes) >= len([]rune(longOverview)) {
+		t.Fatalf("session_3 overview not truncated with ellipsis: %q (len=%d)", truncated, len(truncatedRunes))
+	}
+}
+
 func testLiveOnlyConfig(interval time.Duration, minChars int) application.MeetingAnalysisConfig {
 	return application.MeetingAnalysisConfig{
 		Enabled:           true,
@@ -550,6 +597,18 @@ func (f *fakeAIAnalysisRepository) GetMeetingAIAnalysis(_ context.Context, sessi
 	}
 	saved := analysis
 	return &saved, nil
+}
+
+func (f *fakeAIAnalysisRepository) ListMeetingAIAnalysesForSessions(_ context.Context, sessionIDs []string, analysisType domain.MeetingAIAnalysisType) ([]domain.MeetingAIAnalysis, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	items := make([]domain.MeetingAIAnalysis, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		if analysis, ok := f.store[aiAnalysisKey(sessionID, analysisType)]; ok {
+			items = append(items, analysis)
+		}
+	}
+	return items, nil
 }
 
 func (f *fakeAIAnalysisRepository) upsertCount() int {
@@ -803,6 +862,10 @@ func (f *fakeAnalysisSessionRepository) TouchMeetingSessionBotSeen(context.Conte
 
 func (f *fakeAnalysisSessionRepository) ListMeetingSessionsForBotWatchdog(context.Context) ([]domain.MeetingSession, error) {
 	return nil, nil
+}
+
+func (f *fakeAnalysisSessionRepository) DeleteMeetingSession(context.Context, string) error {
+	return errors.New("not implemented")
 }
 
 type fakeAnalysisTranscriptRepository struct {

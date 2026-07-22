@@ -56,7 +56,7 @@ func TestResolutionUpdatesApplyOnlyGroundedItemAndRejectMassLegacy(t *testing.T)
 	}
 }
 
-func TestIssueRecapReopensExistingQuestionAndOpenIssue(t *testing.T) {
+func TestIssueRecapReopensExistingQuestionAndDiscussionIssue(t *testing.T) {
 	previous := liveAnalysisPayload{Items: []liveAnalysisItem{
 		{ID: "question-wind", Kind: "question", Severity: "high", Title: "強風日の風速基準は何m/sか", Body: "基準風速を決める", Status: "resolved", ResolvedAtVersion: 4},
 		{ID: "open-wind", Kind: "open_issue", Severity: "high", Title: "強風日の風速基準が未決定", Body: "基準風速を決める必要がある", Status: "resolved", ResolvedAtVersion: 4},
@@ -79,12 +79,14 @@ func TestIssueRecapReopensExistingQuestionAndOpenIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.Items) != 1 {
+	if len(state.Items) != 2 {
 		t.Fatalf("recap created duplicate items: %+v", state.Items)
 	}
-	item := findItemByID(state.Items, "open-wind")
-	if item == nil || item.Status != "open" || item.ReopenedAtVersion != 5 || !equalInt64s(item.ReopenEvidenceSequenceNos, []int64{35}) || len(item.RelatedQuestions) != 1 {
-		t.Fatalf("reopened canonical issue=%+v", item)
+	for _, expected := range []struct{ id, subtype string }{{"question-wind", issueSubtypeQuestion}, {"open-wind", issueSubtypeDiscussion}} {
+		item := findItemByID(state.Items, expected.id)
+		if item == nil || item.Kind != "issue" || item.Subtype != expected.subtype || item.Status != "open" || item.ReopenedAtVersion != 5 || !equalInt64s(item.ReopenEvidenceSequenceNos, []int64{35}) {
+			t.Fatalf("reopened issue %s=%+v", expected.id, item)
+		}
 	}
 }
 
@@ -133,7 +135,8 @@ func TestActiveAgendaSpanPlacesResidentMaterialUnderAgendaThree(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if got := itemTopicID(state.Tree, "question-public"); got != "agenda-3" {
+	agendaTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	if got := itemTopicID(state.Tree, "question-public"); agendaTopic == nil || got != agendaTopic.ID {
 		t.Fatalf("topic=%q tree=%+v assignments=%+v", got, state.Tree, stats.AssignmentDecisions)
 	}
 	if item := findItemByID(state.Items, "question-public"); item == nil || item.AssignmentSource != assignmentSourceActiveSpan {
@@ -157,16 +160,22 @@ func TestAgendaRoleInferenceAndPrimaryDistinction(t *testing.T) {
 	}
 }
 
-func TestReorganizerRejectsCrossPrimaryAgendaMove(t *testing.T) {
+func TestReorganizerAllowsCrossMaterializedAgendaMove(t *testing.T) {
+	agenda2TopicID := stableAgendaTopicID("agenda-2", 0)
+	agenda3TopicID := stableAgendaTopicID("agenda-3", 0)
+	mc := &meetingContext{Agenda: []agendaItem{
+		{ID: "agenda-2", Title: "騒音", Role: agendaRolePrimary},
+		{ID: "agenda-3", Title: "住民資料", Role: agendaRolePrimary},
+	}}
 	tree := &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
 		{ID: treeRootNodeID, Kind: "topic", Label: "会議"},
-		{ID: "agenda-2", Kind: "topic", ParentID: treeRootNodeID, Label: "騒音", Origin: topicOriginAgenda},
-		{ID: "agenda-3", Kind: "topic", ParentID: treeRootNodeID, Label: "住民資料", Origin: topicOriginAgenda},
-		{ID: "question-public", Kind: "question", ParentID: "agenda-3", Label: "公開方法"},
+		{ID: agenda2TopicID, Kind: "topic", ParentID: treeRootNodeID, Label: "騒音", Origin: topicOriginAgenda, AgendaRefs: []string{"agenda-2"}},
+		{ID: agenda3TopicID, Kind: "topic", ParentID: treeRootNodeID, Label: "住民資料", Origin: topicOriginAgenda, AgendaRefs: []string{"agenda-3"}},
+		{ID: "question-public", Kind: "question", ParentID: agenda3TopicID, Label: "公開方法"},
 	}}
 	stats := &liveAnalysisTreeMergeStats{}
-	result, applied := applyTreeOperations(tree, nil, []treeOperation{{Type: "move_node", NodeID: "question-public", ToParentID: "agenda-2"}}, TreeClassificationConfig{}, stats, 2)
-	if applied != 0 || parentOf(result, "question-public") != "agenda-3" || stats.ReorganizeRejections["cross_primary_agenda"] != 1 {
+	result, applied := applyTreeOperations(tree, mc, []treeOperation{{Type: "move_node", NodeID: "question-public", ToParentID: agenda2TopicID}}, TreeClassificationConfig{}, stats, 2)
+	if applied != 1 || parentOf(result, "question-public") != agenda2TopicID || stats.ReorganizeRejections["cross_primary_agenda"] != 0 {
 		t.Fatalf("applied=%d parent=%s stats=%+v", applied, parentOf(result, "question-public"), stats)
 	}
 }
@@ -276,15 +285,16 @@ func TestSession0f1ade26ee8babedDeterministicReplay(t *testing.T) {
 			t.Fatalf("item %s must remain open/active: %+v", id, item)
 		}
 	}
-	for _, id := range []string{"open-wind", "open-date"} {
-		if item := findItemByID(state.Items, id); item == nil || len(item.NextActions) == 0 {
-			t.Fatalf("canonical issue %s lost next action: %+v", id, item)
+	for _, pair := range [][2]string{{"open-wind", "todo-weather"}, {"open-date", "todo-date"}} {
+		if issue, todo := findItemByID(state.Items, pair[0]), findItemByID(state.Items, pair[1]); issue == nil || issue.Kind != "issue" || issue.Subtype != issueSubtypeDiscussion || todo == nil || todo.Kind != "todo" {
+			t.Fatalf("issue/TODO independence lost: issue=%+v todo=%+v", issue, todo)
 		}
 	}
 	if item := findItemByID(state.Items, "question-count"); item == nil || item.Status != "resolved" {
 		t.Fatalf("measurement-count question=%+v resolutions=%+v", item, stats.ResolutionDecisions)
 	}
-	if got := itemTopicID(state.Tree, "question-public"); got != "agenda-3" {
+	agendaTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	if got := itemTopicID(state.Tree, "question-public"); agendaTopic == nil || got != agendaTopic.ID {
 		t.Fatalf("resident-material parent=%q, want agenda-3", got)
 	}
 	if item := findItemByID(state.Items, "question-public"); item == nil || item.AssignmentSource != assignmentSourceActiveSpan {

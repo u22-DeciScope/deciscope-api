@@ -13,8 +13,12 @@ import (
 
 type issueCandidate struct {
 	SequenceNo int64
-	Kind       string
+	Subtype    string
 	Statement  string
+	// Recap marks a candidate whose utterance the discourse timeline placed
+	// in a recap span (set by the caller from classifyDiscourseTimeline,
+	// distinct from the narrower issueRecapPattern text match below).
+	Recap bool
 }
 
 type issueExtractionAudit struct {
@@ -47,20 +51,26 @@ func detectIssueCandidates(segments []domain.TranscriptSegment) []issueCandidate
 			if clause == "" {
 				continue
 			}
-			kinds := make([]string, 0, 2)
+			var candidatesForClause []issueCandidate
 			if openIssueMarkerPattern.MatchString(clause) {
-				kinds = append(kinds, "open_issue")
+				statements := splitCollapsedOpenIssueStatement(clause)
+				if len(statements) == 0 {
+					statements = []string{clause}
+				}
+				for _, statement := range statements {
+					candidatesForClause = append(candidatesForClause, issueCandidate{SequenceNo: segment.SequenceNo, Subtype: inferIssueSubtype(statement, issueSubtypeDiscussion), Statement: statement})
+				}
 			}
 			if questionMarkerPattern.MatchString(clause) {
-				kinds = append(kinds, "question")
+				candidatesForClause = append(candidatesForClause, issueCandidate{SequenceNo: segment.SequenceNo, Subtype: issueSubtypeQuestion, Statement: clause})
 			}
-			for _, kind := range kinds {
-				key := kind + "\x00" + semanticIssueKey(clause) + "\x00" + strconv.FormatInt(segment.SequenceNo, 10)
+			for _, candidate := range candidatesForClause {
+				key := candidate.Subtype + "\x00" + semanticIssueKey(candidate.Statement) + "\x00" + strconv.FormatInt(segment.SequenceNo, 10)
 				if _, duplicate := seen[key]; duplicate {
 					continue
 				}
 				seen[key] = struct{}{}
-				candidates = append(candidates, issueCandidate{SequenceNo: segment.SequenceNo, Kind: kind, Statement: clause})
+				candidates = append(candidates, candidate)
 			}
 		}
 	}
@@ -74,28 +84,56 @@ func reconcileIssueCandidates(content string, previousPayload json.RawMessage, c
 	if err := json.Unmarshal([]byte(cleaned), &diff); err != nil {
 		return content, audit, err
 	}
+	for i := range diff.Items {
+		diff.Items[i].Kind, diff.Items[i].Subtype, diff.Items[i].Status, _ = normalizeSemanticClassification(diff.Items[i].Kind, diff.Items[i].Subtype, diff.Items[i].Status)
+	}
 	if len(candidates) == 0 {
 		return cleaned, audit, nil
 	}
 	previous := previousLiveAnalysisState(previousPayload)
 	for _, candidate := range candidates {
-		if candidate.Kind == "question" {
+		if candidate.Subtype == issueSubtypeQuestion {
 			audit.QuestionCandidates++
 		} else {
 			audit.OpenIssueCandidates++
 		}
-		if issueRecapPattern.MatchString(candidate.Statement) && mergeIssueRecap(&diff, previous.Items, candidate) {
+		if (candidate.Recap || issueRecapPattern.MatchString(candidate.Statement)) && mergeIssueRecap(&diff, previous.Items, candidate) {
 			audit.ExistingMerged++
 			audit.RecapMerged++
 			continue
 		}
-		if at, score := bestSameKindMatch(diff.Items, candidate); at >= 0 && score >= 0.16 {
+		if candidate.Recap {
+			// 談話タイムライン由来のrecap候補はmerge-onlyとする。
+			// mergeIssueRecapで拾えなかった場合に限り、subtype不問の
+			// same-kind(issue)マッチを追加で試す。それでもマッチしなければ
+			// 新規item・assignmentを作らずスキップする(非recap時の新規作成
+			// パスへは落とさない)。
+			if at, score := bestSameKindMatch(diff.Items, candidate, true); at >= 0 && score >= 0.16 {
+				diff.Items[at].EvidenceSequenceNos = appendUniqueSequence(diff.Items[at].EvidenceSequenceNos, candidate.SequenceNo)
+				appendIssueOpenUpdate(&diff, modelItemReference(diff.Items[at]), candidate)
+				audit.ExistingMerged++
+				audit.RecapMerged++
+				continue
+			}
+			if at, score := bestSameKindMatch(previous.Items, candidate, true); at >= 0 && score >= 0.16 {
+				updated := previous.Items[at]
+				updated.Status = "updated"
+				updated.EvidenceSequenceNos = []int64{candidate.SequenceNo}
+				diff.Items = append(diff.Items, updated)
+				appendIssueOpenUpdate(&diff, updated.ID, candidate)
+				audit.ExistingMerged++
+				audit.RecapMerged++
+				continue
+			}
+			continue
+		}
+		if at, score := bestSameKindMatch(diff.Items, candidate, false); at >= 0 && score >= 0.16 {
 			diff.Items[at].EvidenceSequenceNos = appendUniqueSequence(diff.Items[at].EvidenceSequenceNos, candidate.SequenceNo)
 			appendIssueOpenUpdate(&diff, modelItemReference(diff.Items[at]), candidate)
 			audit.ExistingMerged++
 			continue
 		}
-		if at, score := bestSameKindMatch(previous.Items, candidate); at >= 0 && score >= 0.22 {
+		if at, score := bestSameKindMatch(previous.Items, candidate, false); at >= 0 && score >= 0.22 {
 			updated := previous.Items[at]
 			updated.Status = "updated"
 			updated.EvidenceSequenceNos = []int64{candidate.SequenceNo}
@@ -105,7 +143,7 @@ func reconcileIssueCandidates(content string, previousPayload json.RawMessage, c
 			continue
 		}
 
-		id := stableIssueID(candidate.Kind, candidate.Statement)
+		id := stableIssueID(candidate.Subtype, candidate.Statement)
 		if existing := findItemByID(previous.Items, id); existing != nil {
 			updated := *existing
 			updated.Status = "updated"
@@ -117,12 +155,12 @@ func reconcileIssueCandidates(content string, previousPayload json.RawMessage, c
 		}
 		parentID := relatedCandidateParent(diff, candidate.Statement)
 		diff.Items = append(diff.Items, liveAnalysisItem{
-			ID: id, Kind: candidate.Kind, Severity: "medium",
+			ID: id, Kind: "issue", Subtype: candidate.Subtype, Severity: "medium",
 			Title: issueCandidateTitle(candidate), Body: candidate.Statement,
-			Status: "open", EvidenceSequenceNos: []int64{candidate.SequenceNo},
+			Status: "open", InformationStatus: informationStatusGrounded, EvidenceSequenceNos: []int64{candidate.SequenceNo},
 		})
 		diff.Assignments = append(diff.Assignments, treeAssignment{NodeID: id, ParentTopicID: parentID, Confidence: 0.6, Reason: "server unresolved candidate"})
-		if candidate.Kind == "question" {
+		if candidate.Subtype == issueSubtypeQuestion {
 			audit.QuestionsAccepted++
 		} else {
 			audit.OpenIssuesAccepted++
@@ -140,7 +178,7 @@ func mergeIssueRecap(diff *liveAnalysisPayload, previous []liveAnalysisItem, can
 	seen := make(map[string]struct{}, len(diff.Items))
 	recapKind := func(kind string) bool {
 		switch strings.ToLower(strings.TrimSpace(kind)) {
-		case "question", "open_issue", "issue", "risk":
+		case "issue", "risk":
 			return true
 		default:
 			return false
@@ -192,10 +230,19 @@ func appendIssueOpenUpdate(diff *liveAnalysisPayload, itemID string, candidate i
 	})
 }
 
-func bestSameKindMatch(items []liveAnalysisItem, candidate issueCandidate) (int, float64) {
+// bestSameKindMatch finds the best issue match for candidate. allowAnySubtype
+// disables the subtype equality check; it is only set true for recap
+// candidates, where a discussion issue may legitimately be the canonical
+// target for a recap statement whose own subtype classifier guessed
+// differently (e.g. a recap clause split into an "investigation" statement
+// that really refers to an existing "discussion" issue).
+func bestSameKindMatch(items []liveAnalysisItem, candidate issueCandidate, allowAnySubtype bool) (int, float64) {
 	bestAt, bestScore := -1, 0.0
 	for i, item := range items {
-		if strings.ToLower(strings.TrimSpace(item.Kind)) != candidate.Kind {
+		if strings.ToLower(strings.TrimSpace(item.Kind)) != "issue" {
+			continue
+		}
+		if !allowAnySubtype && item.Subtype != candidate.Subtype {
 			continue
 		}
 		score := semanticItemSimilarity(item.Title+" "+item.Body, candidate.Statement)
@@ -239,13 +286,19 @@ func semanticIssueKey(value string) string {
 func stableIssueID(kind, statement string) string {
 	sum := sha256.Sum256([]byte(kind + "\x00" + semanticIssueKey(statement)))
 	prefix := strings.ReplaceAll(kind, "_", "-")
-	return prefix + "-auto-" + hex.EncodeToString(sum[:6])
+	return "issue-" + prefix + "-auto-" + hex.EncodeToString(sum[:6])
 }
 
 func issueCandidateTitle(candidate issueCandidate) string {
 	title := strings.Trim(strings.TrimSpace(candidate.Statement), "、。？? ")
-	if candidate.Kind == "open_issue" && !strings.Contains(title, "未確定") && openIssueMarkerPattern.MatchString(title) {
+	if candidate.Subtype != issueSubtypeQuestion && !strings.Contains(title, "未確定") && openIssueMarkerPattern.MatchString(title) {
 		title = openIssueMarkerPattern.ReplaceAllString(title, "未確定")
 	}
 	return truncateRunes(title, 40)
+}
+
+func splitCollapsedOpenIssueStatement(statement string) []string {
+	item := liveAnalysisItem{Kind: "issue", Subtype: issueSubtypeDiscussion, EvidenceSequenceNos: []int64{1}}
+	scope := liveEvidenceScope{TranscriptText: map[int64]string{1: statement}}
+	return concreteIssueStatements(item, scope)
 }

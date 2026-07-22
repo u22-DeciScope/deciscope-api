@@ -41,6 +41,9 @@ func TestMeetingTreeAuditRepositoryPersistsHistoryAndAppliesCAS(t *testing.T) {
 		Task: "tree_audit", Deployment: "mini-deployment", ProviderCalled: true,
 		Model: "gpt-5-mini", PromptVersion: "v1", SnapshotHash: "snapshot",
 		Status: domain.MeetingTreeAuditCompleted, Result: "applied",
+		ResultClassification: domain.MeetingTreeAuditResultApplied,
+		OperationsProposed:   1, OperationsCanonicalized: 1, OperationsValid: 1,
+		OperationsApplied: 1, RejectionReasons: json.RawMessage(`{"stale_tree_version":1}`),
 		Findings: json.RawMessage(`[]`), Operations: json.RawMessage(`[]`),
 		ValidatorResult: json.RawMessage(`{"treeIntegrityValid":true}`),
 		CreatedAt:       now, CompletedAt: &completed,
@@ -55,7 +58,8 @@ func TestMeetingTreeAuditRepositoryPersistsHistoryAndAppliesCAS(t *testing.T) {
 		t.Fatalf("ApplyMeetingTreeAudit() saved=%+v applied=%t err=%v", saved, applied, err)
 	}
 	latest, err := repository.GetLatestMeetingTreeAuditRun(ctx, "session_audit")
-	if err != nil || latest.ID != "audit-1" || latest.ResultingTreeVersion != 5 {
+	if err != nil || latest.ID != "audit-1" || latest.ResultingTreeVersion != 5 ||
+		latest.ResultClassification != domain.MeetingTreeAuditResultApplied || latest.OperationsApplied != 1 || len(latest.RejectionReasons) == 0 {
 		t.Fatalf("latest run=%+v err=%v", latest, err)
 	}
 	if count, err := repository.CountMeetingTreeAuditProviderCalls(ctx, "session_audit", domain.MeetingTreeAuditTriggerNormal, time.Time{}); err != nil || count != 1 {
@@ -77,10 +81,68 @@ func TestMeetingTreeAuditRepositoryPersistsHistoryAndAppliesCAS(t *testing.T) {
 	}
 }
 
+func TestMeetingTreeAuditRepositoryReloadsConsecutiveUnappliedStreak(t *testing.T) {
+	_, db := newTestMeetingAIAnalysisRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 19, 3, 0, 0, 0, time.UTC)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO meeting_sessions (id, join_url, join_url_hash, status, requested_at, created_at, updated_at)
+		VALUES ('session_audit_streak', 'https://example.test/streak', 'hash-streak', 'recording', $1, $1, $1)
+	`, now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert streak meeting session: %v", err)
+	}
+
+	repository := NewMeetingTreeAuditRepository(db)
+	completed := now.Add(time.Second)
+	findingsOnly := domain.MeetingTreeAuditRun{
+		ID: "audit-streak-2", SessionID: "session_audit_streak", BasedOnTreeVersion: 2,
+		TriggerReason: "test", TriggerClass: domain.MeetingTreeAuditTriggerNormal,
+		Task: "tree_audit", Deployment: "ds-gpt-5-mini", PromptVersion: "v4", SnapshotHash: "streak-2",
+		Status: domain.MeetingTreeAuditCompleted, Result: "no_operations", Disposition: "none",
+		ResultClassification: domain.MeetingTreeAuditResultFindingsOnly, ConsecutiveUnappliedRuns: 2,
+		Findings: json.RawMessage(`[{"type":"discourse_only_item"}]`), Operations: json.RawMessage(`[]`),
+		CreatedAt: now, CompletedAt: &completed,
+	}
+	if err := repository.SaveMeetingTreeAuditRun(ctx, findingsOnly); err != nil {
+		t.Fatalf("save findings-only streak: %v", err)
+	}
+
+	// A new repository instance represents the state observed after an API
+	// restart. The next classifier receives this persisted value as its base.
+	reloaded := NewMeetingTreeAuditRepository(db)
+	latest, err := reloaded.GetLatestMeetingTreeAuditRun(ctx, "session_audit_streak")
+	if err != nil || latest.ResultClassification != domain.MeetingTreeAuditResultFindingsOnly || latest.ConsecutiveUnappliedRuns != 2 {
+		t.Fatalf("reloaded findings-only streak = %+v error=%v", latest, err)
+	}
+
+	rejected := findingsOnly
+	rejected.ID = "audit-streak-3"
+	rejected.BasedOnTreeVersion = 3
+	rejected.SnapshotHash = "streak-3"
+	rejected.Result = "no_safe_operations"
+	rejected.Disposition = "rejected"
+	rejected.ResultClassification = domain.MeetingTreeAuditResultRejected
+	rejected.ConsecutiveUnappliedRuns = 3
+	rejected.OperationsProposed = 1
+	rejected.OperationsRejected = 1
+	rejected.RejectionReasons = json.RawMessage(`{"low_confidence":1}`)
+	rejected.CreatedAt = now.Add(2 * time.Second)
+	rejected.CompletedAt = ptrTime(now.Add(3 * time.Second))
+	if err := reloaded.SaveMeetingTreeAuditRun(ctx, rejected); err != nil {
+		t.Fatalf("save rejected streak continuation: %v", err)
+	}
+	latest, err = NewMeetingTreeAuditRepository(db).GetLatestMeetingTreeAuditRun(ctx, "session_audit_streak")
+	if err != nil || latest.ResultClassification != domain.MeetingTreeAuditResultRejected || latest.ConsecutiveUnappliedRuns != 3 || latest.OperationsRejected != 1 {
+		t.Fatalf("reloaded rejected streak = %+v error=%v", latest, err)
+	}
+}
+
+func ptrTime(value time.Time) *time.Time { return &value }
+
 // TestMeetingTreeAuditRunLifecycleOnPostgreSQL exercises the exact INSERT /
 // upsert paths that failed in session_497ed2b0aedf9dc6 with
 // "INSERT has more expressions than target columns" (SQLSTATE 42601):
-// migration 00011適用済みの実PostgreSQLに対し、audit runのclaim INSERT、
+// migration 00013まで適用済みの実PostgreSQLに対し、audit runのclaim INSERT、
 // 冪等claim、raw input/response・findings・operations・validator保存、
 // disposition更新、provider error更新、final tree review保存、rollbackを検証する。
 func TestMeetingTreeAuditRunLifecycleOnPostgreSQL(t *testing.T) {
@@ -134,6 +196,13 @@ func TestMeetingTreeAuditRunLifecycleOnPostgreSQL(t *testing.T) {
 	run.Status = domain.MeetingTreeAuditCompleted
 	run.Result = "applied"
 	run.Disposition = "applied"
+	run.ResultClassification = domain.MeetingTreeAuditResultApplied
+	run.OperationsProposed = 2
+	run.OperationsCanonicalized = 2
+	run.OperationsValid = 1
+	run.OperationsApplied = 1
+	run.OperationsRejected = 1
+	run.RejectionReasons = json.RawMessage(`{"manual_edit_protected":1}`)
 	run.CompletedAt = &completed
 	if err := repository.SaveMeetingTreeAuditRun(ctx, run); err != nil {
 		t.Fatalf("SaveMeetingTreeAuditRun(completed) error = %v", err)
@@ -144,7 +213,10 @@ func TestMeetingTreeAuditRunLifecycleOnPostgreSQL(t *testing.T) {
 	}
 	if latest.ID != "audit-run-1" || latest.Result != "applied" || latest.Disposition != "applied" ||
 		!latest.ProviderCalled || latest.RawResponse == "" || len(latest.Findings) == 0 ||
-		len(latest.Operations) == 0 || len(latest.ValidatorResult) == 0 || len(latest.InputPayload) == 0 {
+		len(latest.Operations) == 0 || len(latest.ValidatorResult) == 0 || len(latest.InputPayload) == 0 ||
+		latest.ResultClassification != domain.MeetingTreeAuditResultApplied || latest.OperationsProposed != 2 ||
+		latest.OperationsCanonicalized != 2 || latest.OperationsValid != 1 || latest.OperationsApplied != 1 ||
+		latest.OperationsRejected != 1 || len(latest.RejectionReasons) == 0 {
 		t.Fatalf("latest audit run = %+v, want persisted fields", latest)
 	}
 	// disposition完了後は同一キーで再claimできる(部分uniqueはstatus=runningのみ)。

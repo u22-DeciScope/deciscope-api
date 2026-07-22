@@ -89,7 +89,8 @@ func TestClassificationAssignsClearAgendaMatch(t *testing.T) {
 	merged := mergeForTestWithContext(t, diff, nil, mc)
 	assertTreeInvariants(t, merged.Tree)
 	node := treeNodeByID(merged.Tree, "todo-final-transcript-check")
-	if node == nil || node.ParentID != "agenda-2" {
+	agendaTopic := agendaTopicNodeByRef(merged.Tree, "agenda-2")
+	if node == nil || agendaTopic == nil || node.ParentID != agendaTopic.ID {
 		t.Fatalf("node = %+v, want assigned to agenda-2", node)
 	}
 	item := itemByID(merged.Items, "todo-final-transcript-check")
@@ -124,15 +125,16 @@ func TestClassificationKeepsSinglePrimaryParentForMultiAgendaItem(t *testing.T) 
 	merged := mergeForTestWithContext(t, diff, nil, mc)
 	assertTreeInvariants(t, merged.Tree)
 	node := treeNodeByID(merged.Tree, "todo-endflow-to-checklist")
-	if node == nil || node.ParentID != "agenda-2" {
+	primaryTopic := agendaTopicNodeByRef(merged.Tree, "agenda-2")
+	if node == nil || primaryTopic == nil || node.ParentID != primaryTopic.ID {
 		t.Fatalf("node = %+v, want primary parent agenda-2", node)
 	}
 	item := itemByID(merged.Items, "todo-endflow-to-checklist")
 	if item == nil || item.ClassificationStatus != classificationAssigned {
 		t.Fatalf("item = %+v, want assigned", item)
 	}
-	if item.CandidateTopicID != "agenda-1" {
-		t.Fatalf("candidateTopicId = %q, want related agenda-1 retained", item.CandidateTopicID)
+	if item.CandidateTopicID != "" || agendaTopicNodeByRef(merged.Tree, "agenda-1") != nil {
+		t.Fatalf("secondary agenda must remain a logical record without an empty topic: item=%+v tree=%+v", item, merged.Tree)
 	}
 	incoming := 0
 	for _, edge := range merged.Tree.Edges {
@@ -277,7 +279,8 @@ func TestClassificationAliasesNewTopicMatchingAgendaLabel(t *testing.T) {
 		t.Fatalf("agenda-equivalent topic must not be duplicated: %+v", merged.Tree.Nodes)
 	}
 	node := treeNodeByID(merged.Tree, "issue-ending-loading")
-	if node == nil || node.ParentID != "agenda-1" {
+	agendaTopic := agendaTopicNodeByRef(merged.Tree, "agenda-1")
+	if node == nil || agendaTopic == nil || node.ParentID != agendaTopic.ID {
 		t.Fatalf("node = %+v, want aliased into agenda-1", node)
 	}
 	if len(merged.EmergingTopics) != 0 {
@@ -310,7 +313,7 @@ func TestClassificationDefersAmbiguousLowConfidence(t *testing.T) {
 		t.Fatalf("item = %+v, want tentative", item)
 	}
 	// 後から再評価できるよう、候補とconfidenceが保持される。
-	if item.CandidateTopicID != "agenda-1" || item.AssignmentConfidence != 0.3 {
+	if item.CandidateTopicID != stableAgendaTopicID("agenda-1", 0) || item.AssignmentConfidence != 0.3 {
 		t.Fatalf("item = %+v, want candidate agenda-1 with confidence 0.3 retained", item)
 	}
 }
@@ -460,7 +463,8 @@ func TestClassificationReparentsTentativeOnRepeatProposal(t *testing.T) {
 	state2 := mergeForTestAtRound(t, round2, marshalPayloadForTest(t, state1), mc, 2)
 	assertTreeInvariants(t, state2.Tree)
 	node2 := treeNodeByID(state2.Tree, "question-x")
-	if node2 == nil || node2.ParentID != "agenda-2" {
+	agendaTopic := agendaTopicNodeByRef(state2.Tree, "agenda-2")
+	if node2 == nil || agendaTopic == nil || node2.ParentID != agendaTopic.ID {
 		t.Fatalf("round2 node = %+v, want reparented to agenda-2 on repeat", node2)
 	}
 	item := itemByID(state2.Items, "question-x")
@@ -479,6 +483,8 @@ func TestClassificationReparentsTentativeOnRepeatProposal(t *testing.T) {
 
 func TestClassificationHysteresisDefersAssignedMove(t *testing.T) {
 	mc := classificationFixtureContext()
+	agenda1TopicID := stableAgendaTopicID("agenda-1", 0)
+	agenda2TopicID := stableAgendaTopicID("agenda-2", 0)
 	previous := liveAnalysisPayload{
 		Summary: "前回",
 		Items: []liveAnalysisItem{
@@ -488,9 +494,9 @@ func TestClassificationHysteresisDefersAssignedMove(t *testing.T) {
 		Tree: &liveAnalysisTree{
 			Nodes: []liveAnalysisTreeNode{
 				{ID: treeRootNodeID, Kind: "topic", Label: "検証会議"},
-				{ID: "agenda-1", Kind: "topic", ParentID: treeRootNodeID, Label: "会議終了処理の確認", Origin: topicOriginAgenda},
-				{ID: "agenda-2", Kind: "topic", ParentID: treeRootNodeID, Label: "今後の検証項目", Origin: topicOriginAgenda},
-				{ID: "issue-a", Kind: "issue", ParentID: "agenda-1", Label: "課題A"},
+				{ID: agenda1TopicID, Kind: "topic", ParentID: treeRootNodeID, Label: "会議終了処理の確認", Origin: topicOriginAgenda, AgendaRefs: []string{"agenda-1"}, Materialized: true},
+				{ID: agenda2TopicID, Kind: "topic", ParentID: treeRootNodeID, Label: "今後の検証項目", Origin: topicOriginAgenda, AgendaRefs: []string{"agenda-2"}, Materialized: true},
+				{ID: "issue-a", Kind: "issue", ParentID: agenda1TopicID, Label: "課題A"},
 			},
 		},
 	}
@@ -505,11 +511,11 @@ func TestClassificationHysteresisDefersAssignedMove(t *testing.T) {
 	}`
 	state1 := mergeForTestAtRound(t, round1, marshalPayloadForTest(t, previous), mc, 2)
 	node1 := treeNodeByID(state1.Tree, "issue-a")
-	if node1 == nil || node1.ParentID != "agenda-1" {
+	if node1 == nil || node1.ParentID != agenda1TopicID {
 		t.Fatalf("node = %+v, want move deferred (hysteresis)", node1)
 	}
 	item1 := itemByID(state1.Items, "issue-a")
-	if item1 == nil || item1.CandidateTopicID != "agenda-2" {
+	if item1 == nil || item1.CandidateTopicID != agenda2TopicID {
 		t.Fatalf("item = %+v, want move candidate recorded", item1)
 	}
 
@@ -525,7 +531,7 @@ func TestClassificationHysteresisDefersAssignedMove(t *testing.T) {
 	state2 := mergeForTestAtRound(t, round2, marshalPayloadForTest(t, state1), mc, 3)
 	assertTreeInvariants(t, state2.Tree)
 	node2 := treeNodeByID(state2.Tree, "issue-a")
-	if node2 == nil || node2.ParentID != "agenda-2" {
+	if node2 == nil || node2.ParentID != agenda2TopicID {
 		t.Fatalf("node = %+v, want moved after repeated proposal", node2)
 	}
 }
@@ -557,11 +563,13 @@ func TestClassificationIgnoresModelSuppliedItemMetadata(t *testing.T) {
 // --- シナリオ9: 最終reorganizerの制約 ------------------------------------------
 
 func TestApplyTreeOperationsEnforcesClassificationConstraints(t *testing.T) {
+	topic1ID := "topic-agenda-one"
+	topic2ID := "topic-agenda-two"
 	tree := &liveAnalysisTree{
 		Nodes: []liveAnalysisTreeNode{
 			{ID: treeRootNodeID, Kind: "topic", Label: "検証会議"},
-			{ID: "agenda-1", Kind: "topic", ParentID: treeRootNodeID, Label: "会議終了処理の確認"},
-			{ID: "agenda-2", Kind: "topic", ParentID: treeRootNodeID, Label: "今後の検証項目"},
+			{ID: topic1ID, Kind: "topic", ParentID: treeRootNodeID, Label: "会議終了処理の確認"},
+			{ID: topic2ID, Kind: "topic", ParentID: treeRootNodeID, Label: "今後の検証項目"},
 			{ID: treeUnclassifiedTopicID, Kind: "topic", ParentID: treeRootNodeID, Label: treeUnclassifiedTopicLabel},
 			{ID: "todo-1", Kind: "todo", ParentID: treeUnclassifiedTopicID, Label: "検証TODO"},
 			{ID: "issue-2", Kind: "issue", ParentID: treeUnclassifiedTopicID, Label: "論点2"},
@@ -576,30 +584,30 @@ func TestApplyTreeOperationsEnforcesClassificationConstraints(t *testing.T) {
 	stats := &liveAnalysisTreeMergeStats{}
 	ops := []treeOperation{
 		// 未分類ノードのアジェンダへの再配置は許可される。
-		{Type: "move_node", NodeID: "todo-1", ToParentID: "agenda-2"},
+		{Type: "move_node", NodeID: "todo-1", ToParentID: topic2ID},
 		// 1ノードのためのcreate_topicは拒否される(実セッションのゴミtopic対策)。
 		{Type: "create_topic", TopicID: "topic-lonely", Label: "単発の話題"},
 		{Type: "move_node", NodeID: "issue-2", ToParentID: "topic-lonely"},
-		// アジェンダtopicのrenameは拒否される。
-		{Type: "rename_topic", TopicID: "agenda-1", Label: "勝手な改名"},
+		// materialized agenda topicのrenameは許可される。
+		{Type: "rename_topic", TopicID: topic1ID, Label: "勝手な改名"},
 	}
 	rebuilt, applied := applyTreeOperations(tree, nil, ops, TreeClassificationConfig{}, stats)
 	assertTreeInvariants(t, rebuilt)
-	if applied != 1 {
-		t.Fatalf("applied = %d, want only the agenda move", applied)
+	if applied != 2 {
+		t.Fatalf("applied = %d, want agenda move and materialized-topic rename", applied)
 	}
 	moved := treeNodeByID(rebuilt, "todo-1")
-	if moved == nil || moved.ParentID != "agenda-2" {
+	if moved == nil || moved.ParentID != topic2ID {
 		t.Fatalf("moved = %+v, want reparented to agenda-2", moved)
 	}
 	if treeNodeByID(rebuilt, "topic-lonely") != nil {
 		t.Fatalf("single-node topic must be rejected")
 	}
-	renamed := treeNodeByID(rebuilt, "agenda-1")
-	if renamed == nil || renamed.Label != "会議終了処理の確認" {
-		t.Fatalf("agenda label = %+v, want unchanged", renamed)
+	renamed := treeNodeByID(rebuilt, topic1ID)
+	if renamed == nil || renamed.Label != "勝手な改名" {
+		t.Fatalf("agenda label = %+v, want concrete renamed label", renamed)
 	}
-	if stats.ReorganizeRejections["create_topic_insufficient_moves"] != 1 || stats.ReorganizeRejections["rename_agenda_topic"] != 1 {
+	if stats.ReorganizeRejections["create_topic_insufficient_moves"] != 1 || stats.ReorganizeRejections["rename_agenda_topic"] != 0 {
 		t.Fatalf("rejections = %+v, want per-reason counts", stats.ReorganizeRejections)
 	}
 
@@ -654,6 +662,8 @@ func TestApplyTreeOperationsRespectsDynamicTopicCap(t *testing.T) {
 
 func TestClassificationRejectsUnknownParentWithoutBreakingPlacement(t *testing.T) {
 	mc := classificationFixtureContext()
+	agenda1TopicID := stableAgendaTopicID("agenda-1", 0)
+	agenda2TopicID := stableAgendaTopicID("agenda-2", 0)
 	previous := liveAnalysisPayload{
 		Summary: "前回",
 		Items: []liveAnalysisItem{
@@ -663,9 +673,9 @@ func TestClassificationRejectsUnknownParentWithoutBreakingPlacement(t *testing.T
 		Tree: &liveAnalysisTree{
 			Nodes: []liveAnalysisTreeNode{
 				{ID: treeRootNodeID, Kind: "topic", Label: "検証会議"},
-				{ID: "agenda-1", Kind: "topic", ParentID: treeRootNodeID, Label: "会議終了処理の確認", Origin: topicOriginAgenda},
-				{ID: "agenda-2", Kind: "topic", ParentID: treeRootNodeID, Label: "今後の検証項目", Origin: topicOriginAgenda},
-				{ID: "issue-a", Kind: "issue", ParentID: "agenda-1", Label: "課題A"},
+				{ID: agenda1TopicID, Kind: "topic", ParentID: treeRootNodeID, Label: "会議終了処理の確認", Origin: topicOriginAgenda, AgendaRefs: []string{"agenda-1"}, Materialized: true},
+				{ID: agenda2TopicID, Kind: "topic", ParentID: treeRootNodeID, Label: "今後の検証項目", Origin: topicOriginAgenda, AgendaRefs: []string{"agenda-2"}, Materialized: true},
+				{ID: "issue-a", Kind: "issue", ParentID: agenda1TopicID, Label: "課題A"},
 			},
 		},
 	}
@@ -689,7 +699,7 @@ func TestClassificationRejectsUnknownParentWithoutBreakingPlacement(t *testing.T
 	}
 	assertTreeInvariants(t, merged.Tree)
 	node := treeNodeByID(merged.Tree, "issue-a")
-	if node == nil || node.ParentID != "agenda-1" {
+	if node == nil || node.ParentID != agenda1TopicID {
 		t.Fatalf("node = %+v, want placement kept despite invalid parent id", node)
 	}
 	found := false
@@ -740,7 +750,8 @@ func TestClassificationSurvivesDuplicateItemMerge(t *testing.T) {
 		t.Fatalf("item = %+v, want classification preserved across dedup", item)
 	}
 	node := treeNodeByID(state2.Tree, "issue-dup")
-	if node == nil || node.ParentID != "agenda-1" {
+	agendaTopic := agendaTopicNodeByRef(state2.Tree, "agenda-1")
+	if node == nil || agendaTopic == nil || node.ParentID != agendaTopic.ID {
 		t.Fatalf("node = %+v, want parent preserved across dedup", node)
 	}
 }

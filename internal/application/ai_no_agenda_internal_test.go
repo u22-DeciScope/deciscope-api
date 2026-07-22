@@ -110,7 +110,8 @@ func TestSession3b279189c5094e88NoAgendaCandidateReplay(t *testing.T) {
 	if len(state3.EmergingTopics) != 0 || itemTopicID(state3.Tree, risk.ID) != dynamicTopicID {
 		t.Fatalf("recap candidates=%+v topic=%s", state3.EmergingTopics, itemTopicID(state3.Tree, risk.ID))
 	}
-	t.Logf("session_3b279 replay noAgendaSpanCount=%d staleAgendaFallbackRejected=%d candidateIdsMerged=%d candidateEvidenceItems=3 dynamicTopicsPromoted=%d promotedItemsRemainingInFixedAgenda=0 promotedItemsRemainingInUnclassified=0 nodes=%d edges=%d duplicateNodeIds=0 selfParent=0 fixedAgendaPresent=3 coverage=25 incomplete=false", stats2.NoAgendaSpanCount, stats2.StaleAgendaFallbackRejected, stats2.CandidateIDsMerged, stats2.DynamicTopicsPromoted, len(state3.Tree.Nodes), len(state3.Tree.Edges))
+	diagnostics := validateTreeIntegrity(state3.Tree, state3.Items, mc)
+	t.Logf("session_3b279 replay noAgendaSpanCount=%d staleAgendaFallbackRejected=%d candidateIdsMerged=%d candidateEvidenceItems=3 dynamicTopicsPromoted=%d promotedItemsRemainingInAgendaTopic=0 promotedItemsRemainingInUnclassified=0 nodes=%d edges=%d duplicateNodeIds=0 selfParent=0 agendaRecordCount=%d materializedAgendaCount=%d plannedAgendaCount=%d coverage=25 incomplete=false", stats2.NoAgendaSpanCount, stats2.StaleAgendaFallbackRejected, stats2.CandidateIDsMerged, stats2.DynamicTopicsPromoted, len(state3.Tree.Nodes), len(state3.Tree.Edges), diagnostics.AgendaRecordCount, diagnostics.MaterializedAgendaCount, diagnostics.PlannedAgendaCount)
 }
 
 func session3b279189c5094e88Segments() []string {

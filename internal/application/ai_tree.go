@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -124,8 +126,30 @@ func (h treeHealth) needsReorganization() bool {
 	return h.UnclassifiedChildren >= treeReorganizeUnclassifiedMin
 }
 
+func (h treeHealth) reorganizationReasons() []string {
+	reasons := make([]string, 0, 4)
+	if h.MaxTopicChildren >= treeReorganizeMaxTopicChildren {
+		reasons = append(reasons, "max_topic_children")
+	}
+	if h.MaxGroupChildren >= treeMaxChildrenBeforeGrouping {
+		reasons = append(reasons, "max_group_children")
+	}
+	if h.DetailCount >= treeReorganizeConcentrationDetails && h.MaxConcentration >= treeReorganizeConcentrationMin {
+		reasons = append(reasons, "topic_concentration")
+	}
+	if h.UnclassifiedChildren >= treeReorganizeUnclassifiedMin {
+		reasons = append(reasons, "unclassified_backlog")
+	}
+	return reasons
+}
+
 func (h treeHealth) String() string {
-	return fmt.Sprintf("topics=%d groups=%d nestedGroups=%d details=%d unclassified=%d maxTopicChildren=%d maxTopicId=%s maxGroupChildren=%d maxGroupId=%s maxChildren=%d maxChildrenParentId=%s maxConcentration=%.2f flatTopics=%d singleChildGroups=%d averageDepth=%.2f averageBranchingFactor=%.2f",
+	// unclassifiedStagingChildren counts nodes directly under the
+	// topic-unclassified staging topic (h.UnclassifiedChildren); it is a tree
+	// node count, distinct from trueUnclassifiedItems (an item-level
+	// ClassificationStatus count logged elsewhere). The old "unclassified="
+	// name read as if it were that item count, which it is not (H3).
+	return fmt.Sprintf("topics=%d groups=%d nestedGroups=%d details=%d unclassifiedStagingChildren=%d maxTopicChildren=%d maxTopicId=%s maxGroupChildren=%d maxGroupId=%s maxChildren=%d maxChildrenParentId=%s maxConcentration=%.2f flatTopics=%d singleChildGroups=%d averageDepth=%.2f averageBranchingFactor=%.2f",
 		h.TopicCount, h.GroupCount, h.NestedGroupCount, h.DetailCount, h.UnclassifiedChildren, h.MaxTopicChildren, h.MaxTopicID, h.MaxGroupChildren, h.MaxGroupID, h.MaxChildren, h.MaxChildrenParentID, h.MaxConcentration, h.FlatTopicCount, h.SingleChildGroupCount, h.AverageDepth, h.AverageBranchingFactor)
 }
 
@@ -199,7 +223,7 @@ func treeStateFromPayloadTree(tree *liveAnalysisTree) (nodes []liveAnalysisTreeN
 }
 
 // rebuildDiscussionTree is the single write path for the discussion tree. It
-// merges the previous tree, the meeting context (agenda topics), the merged
+// merges the previous tree, the meeting context (agenda anchors), the merged
 // item list, and the model's proposals (new topics + parent assignments)
 // into a tree that always satisfies the invariants listed in the file
 // header. stats may be nil.
@@ -220,6 +244,9 @@ func rebuildDiscussionTree(
 	cfg TreeClassificationConfig,
 	stats *liveAnalysisTreeMergeStats,
 ) (*liveAnalysisTree, []liveAnalysisItem, []emergingTopicCandidate) {
+	compatibilityState := liveAnalysisPayload{Tree: previous, Items: append([]liveAnalysisItem(nil), items...), EmergingTopics: append([]emergingTopicCandidate(nil), priorCandidates...)}
+	normalizeLegacyAgendaTopicIDs(&compatibilityState, mc, stats)
+	previous, items, priorCandidates = compatibilityState.Tree, compatibilityState.Items, compatibilityState.EmergingTopics
 	cfg = cfg.normalized()
 	prevNodes, parents, relations := treeStateFromPayloadTree(previous)
 	previousParents := make(map[string]string, len(parents))
@@ -280,11 +307,9 @@ func rebuildDiscussionTree(
 		}
 	}
 
-	agendaIDs := make(map[string]struct{})
 	actionSummaryIDs := make(map[string]struct{})
 	if mc != nil {
 		for _, item := range mc.Agenda {
-			agendaIDs[item.ID] = struct{}{}
 			if effectiveAgendaRole(item.Role, item.Title, "") == agendaRoleActionSummary {
 				actionSummaryIDs[item.ID] = struct{}{}
 			}
@@ -295,8 +320,19 @@ func rebuildDiscussionTree(
 	// normal assignment/rescue pass can place them under a content topic.
 	if len(actionSummaryIDs) > 0 {
 		filtered := topicOrder[:0]
+		removedActionTopicIDs := make(map[string]struct{})
 		for _, id := range topicOrder {
-			if _, actionSummary := actionSummaryIDs[id]; actionSummary {
+			topic := topics[id]
+			actionSummary := topic.AgendaRole == agendaRoleActionSummary
+			if !actionSummary {
+				for _, ref := range topicAgendaRefs(topic, agendaRecordMap(mc)) {
+					if _, actionSummary = actionSummaryIDs[ref]; actionSummary {
+						break
+					}
+				}
+			}
+			if actionSummary {
+				removedActionTopicIDs[id] = struct{}{}
 				delete(topics, id)
 				delete(parents, id)
 				continue
@@ -305,47 +341,89 @@ func rebuildDiscussionTree(
 		}
 		topicOrder = filtered
 		for id, parentID := range parents {
-			if _, actionSummary := actionSummaryIDs[parentID]; actionSummary {
+			if _, actionSummary := removedActionTopicIDs[parentID]; actionSummary {
 				parents[id] = ""
 			}
 		}
 	}
 
-	// Agenda topics are immutable server-owned containers. Reassert every
-	// field and root parent each round so a legacy rename, move, or kind
-	// collision cannot survive the next canonical rebuild.
-	if mc != nil {
-		for _, item := range mc.Agenda {
-			if effectiveAgendaRole(item.Role, item.Title, "") == agendaRoleActionSummary {
+	// Agenda records are durable, but their topics are not. Backfill references
+	// on legacy materialized nodes and remove empty nodes produced by the old
+	// fixed-skeleton design. A later grounded assignment can materialize the
+	// same agenda again without losing its logical record.
+	agendaRecords := agendaRecordMap(mc)
+	// A model may restate a planned agenda as a new topic proposal. Resolve the
+	// proposal ID back to the agenda anchor before materialization so it cannot
+	// create a redundant dynamic candidate.
+	plannedTopicAliases := make(map[string]string)
+	for _, proposed := range newTopics {
+		for agendaID, agenda := range agendaRecords {
+			if effectiveAgendaRole(agenda.Role, agenda.Title, "") == agendaRoleActionSummary {
 				continue
 			}
-			if previousTopic, exists := topics[item.ID]; exists && stats != nil {
-				if previousTopic.Kind != "topic" || previousTopic.Label != item.Title || parents[item.ID] != treeRootNodeID {
-					stats.FixedAgendaMutationRejected++
-				}
+			if normalizeForMatch(proposed.Label) == normalizeForMatch(agenda.Title) || semanticItemSimilarity(proposed.Label, agenda.Title) >= 0.82 {
+				plannedTopicAliases[proposed.ID] = agendaID
+				break
 			}
-			addTopic(liveAnalysisTreeNode{ID: item.ID, Kind: "topic", Label: item.Title, Origin: topicOriginAgenda, AgendaRole: agendaRolePrimary})
-			parents[item.ID] = treeRootNodeID
 		}
 	}
+	for index := range assignments {
+		if agendaID, alias := plannedTopicAliases[assignments[index].ParentTopicID]; alias {
+			assignments[index].ParentTopicID = agendaID
+		}
+	}
+	filteredTopicOrder := topicOrder[:0]
+	for _, id := range topicOrder {
+		topic := topics[id]
+		refs := topicAgendaRefs(topic, agendaRecords)
+		if len(refs) > 0 {
+			primaryRefs := refs[:0]
+			for _, ref := range refs {
+				if agenda := agendaRecords[ref]; effectiveAgendaRole(agenda.Role, agenda.Title, "") != agendaRoleActionSummary {
+					primaryRefs = append(primaryRefs, ref)
+				}
+			}
+			refs = primaryRefs
+		}
+		if len(refs) > 0 {
+			topic.AgendaRefs = append([]string(nil), refs...)
+			topic.Materialized = true
+			if topic.Origin == "" {
+				topic.Origin = topicOriginAgenda
+			}
+			if topic.AgendaRole == "" {
+				topic.AgendaRole = agendaRolePrimary
+			}
+			topics[id] = topic
+			withinGrace := topic.CreatedAtVersion > 0 && round >= topic.CreatedAtVersion && round-topic.CreatedAtVersion < agendaDematerializeGraceRounds
+			if !topicHasDescendants(id, parents) && !withinGrace {
+				delete(topics, id)
+				delete(parents, id)
+				if stats != nil {
+					stats.AgendaTopicsDematerialized++
+				}
+				continue
+			}
+		}
+		filteredTopicOrder = append(filteredTopicOrder, id)
+	}
+	topicOrder = filteredTopicOrder
+
+	materializePlannedAgendaTopics(mc, items, assignments, topics, parents, addTopic, round, cfg, stats)
+
 	// origin未設定の既存topic(旧payload)へ由来をバックフィルする。
 	dynamicTopicCount := 0
 	for id, topic := range topics {
 		if topic.Origin == "" {
-			topic.Origin = deriveTopicOrigin(id, agendaIDs)
+			topic.Origin = deriveTopicOrigin(topic)
 			topics[id] = topic
 		}
 		if topic.Origin == topicOriginDynamic {
 			dynamicTopicCount++
 		}
-		if _, isAgenda := agendaIDs[id]; isAgenda && topic.AgendaRole == "" && mc != nil {
-			for _, item := range mc.Agenda {
-				if item.ID == id {
-					topic.AgendaRole = normalizeAgendaRole(item.Role)
-					topics[id] = topic
-					break
-				}
-			}
+		if len(topicAgendaRefs(topic, agendaRecords)) > 0 && topic.AgendaRole == "" {
+			topic.AgendaRole = agendaRolePrimary
+			topics[id] = topic
 		}
 	}
 
@@ -353,6 +431,12 @@ func rebuildDiscussionTree(
 	// 作成する(全ノードが追加論点に沈むよりも良い)。topicが1つでもできたら
 	// 以降は emerging 候補フローに従う。
 	bootstrap := true
+	for _, agenda := range agendaRecords {
+		if effectiveAgendaRole(agenda.Role, agenda.Title, "") != agendaRoleActionSummary {
+			bootstrap = false
+			break
+		}
+	}
 	for id := range topics {
 		if id != treeUnclassifiedTopicID {
 			bootstrap = false
@@ -363,11 +447,16 @@ func rebuildDiscussionTree(
 	// Detail nodes are upserted 1:1 from the merged items, so every card has
 	// a matching tree node and vice versa. Nodes from previous rounds whose
 	// item was evicted by the item cap survive as-is.
-	itemIDs := liveAnalysisItemIDSet(items)
+	itemIDs := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		if item.ID == "" || item.Status == "dismissed" {
+		if item.ID == "" || item.Status == "dismissed" || item.Inactive || item.MergedIntoID != "" {
+			if item.ID != "" {
+				delete(details, item.ID)
+				delete(parents, item.ID)
+			}
 			continue
 		}
+		itemIDs[item.ID] = struct{}{}
 		if _, collision := topics[item.ID]; collision {
 			if stats != nil {
 				stats.CrossKindIDCollisions++
@@ -384,13 +473,15 @@ func rebuildDiscussionTree(
 		}
 		node, exists := details[item.ID]
 		if !exists {
-			node = liveAnalysisTreeNode{ID: item.ID}
+			node = liveAnalysisTreeNode{ID: item.ID, CreatedAtVersion: round}
 			if stats != nil {
 				stats.SynthesizedNodes++
 			}
 		}
 		node.Kind = liveAnalysisTreeNodeKindForItem(item.Kind)
+		node.Subtype = item.Subtype
 		node.Label = truncateRunes(item.Title, 40)
+		node.UpdatedAtVersion = round
 		if body := truncateRunes(strings.TrimSpace(item.Body), liveAnalysisTreeDescriptionMaxRunes); body != "" {
 			node.Description = body
 		}
@@ -424,7 +515,15 @@ func rebuildDiscussionTree(
 	// (bootstrap時を除く)。candidateAlias maps a re-proposed id onto the
 	// tracked candidate so assignments keep working.
 	topicAlias := make(map[string]string)
+	for alias, agendaID := range plannedTopicAliases {
+		topicAlias[alias] = agendaID
+	}
 	for id, topic := range topics {
+		for _, agendaRef := range topic.AgendaRefs {
+			if agendaRef != "" && agendaRef != id {
+				topicAlias[agendaRef] = id
+			}
+		}
 		for _, alias := range topic.ModelTopicIDs {
 			if alias != "" && alias != id {
 				topicAlias[alias] = id
@@ -528,12 +627,8 @@ func rebuildDiscussionTree(
 		if proposedID == "" {
 			continue
 		}
-		// 実在しないagenda IDを新topicとして名乗らせない(stable IDの保護)。
-		if strings.HasPrefix(proposedID, agendaTopicIDPrefix) {
-			if _, isAgenda := agendaIDs[proposedID]; !isAgenda {
-				proposedID = "topic-" + normalizeForMatch(label)
-			}
-		}
+		// Model IDs are normalized into the topic namespace; logical agenda IDs
+		// can only reach a concrete node through AgendaRefs-derived resolution.
 		if _, isDetail := details[proposedID]; isDetail {
 			// 既存詳細ノードのidをtopicとして再利用させない(型の安定性)。
 			continue
@@ -542,6 +637,18 @@ func rebuildDiscussionTree(
 			if existingID != proposedID {
 				topicAlias[proposedID] = existingID
 			}
+			continue
+		}
+		// ラベル完全一致では捉えられない意味的重複(例: 「VPN装置証明書の期限切れ
+		// 対策の検討」に対する「vpnと証明書」)を、新規candidateを作る前に既存
+		// topicへ折り畳む。モデルの割当(requestedParentId)はaliasを通じて通常の
+		// hysteresis/assignment検証へそのまま流れる。
+		if existingID := semanticExistingTopicID(label, truncateRunes(strings.TrimSpace(proposed.Description), liveAnalysisTreeDescriptionMaxRunes), topics); existingID != "" {
+			topicAlias[proposedID] = existingID
+			if stats != nil {
+				stats.CandidateFoldedIntoAgenda++
+			}
+			recordEmerging(emergingDecision{CandidateID: proposedID, Decision: emergingFoldedIntoExisting, TopicID: existingID, Reason: "proposal_matches_existing_topic"})
 			continue
 		}
 		if _, exists := topics[proposedID]; exists {
@@ -629,6 +736,7 @@ func rebuildDiscussionTree(
 			ID:              candidateID,
 			Label:           label,
 			Description:     description,
+			SubjectKey:      subjectKey,
 			OriginalSubject: strings.TrimSpace(label + " " + description),
 			CurrentSubject:  strings.TrimSpace(label + " " + description),
 			SubjectHistory:  []string{strings.TrimSpace(label + " " + description)},
@@ -659,6 +767,15 @@ func rebuildDiscussionTree(
 		round:          round,
 		cfg:            cfg,
 		stats:          stats,
+		plannedAgendaIDs: func() map[string]struct{} {
+			ids := make(map[string]struct{})
+			for id, agenda := range agendaRecords {
+				if effectiveAgendaRole(agenda.Role, agenda.Title, "") != agendaRoleActionSummary {
+					ids[id] = struct{}{}
+				}
+			}
+			return ids
+		}(),
 	})
 	reconcileCandidateCompanions(items, parents, candidates, round, stats)
 
@@ -711,11 +828,16 @@ func rebuildDiscussionTree(
 			parents[items[i].ID] = treeUnclassifiedTopicID
 		}
 	}
+	// Rewrite staging/meta topic names before semantic parent reconciliation.
+	// Otherwise a concrete child can be pulled out of its correct topic merely
+	// because labels such as 「追加論点」 provide no lexical subject signal.
+	repairGenericTopicLabels(items, topics, parents, round, stats)
 
 	// Reconciliation-created question/open_issue items and low-confidence
 	// model items can arrive without a usable parent proposal. Inherit the
 	// primary topic of a strong semantic companion before grouping/promotion.
 	reconcileSemanticItemParents(items, parents, topics, groups, stats)
+	repairGenericCandidateLabels(candidates, items, stats)
 
 	// 昇格判定: 証拠が揃った候補だけを dynamic topic にする。
 	candidates = promoteEmergingCandidates(promotionContext{
@@ -730,15 +852,20 @@ func rebuildDiscussionTree(
 		round:             round,
 		cfg:               cfg,
 		stats:             stats,
+		mc:                mc,
 	})
+	topicOrder = mergeEquivalentAgendaDynamicTopics(topics, topicOrder, parents, round, stats)
 	// Promotion/folding can create the first assigned peer for another item in
 	// the same discussion cluster. Reconcile once more so companions move in
 	// the same canonical tree version.
 	reconcileSemanticItemParents(items, parents, topics, groups, stats)
+	repairRelatedSubjectFragmentation(items, topics, groups, parents, stats)
+	repairGenericTopicLabels(items, topics, parents, round, stats)
 	candidates = capEmergingCandidates(candidates, maxEmergingCandidates)
 	syncCandidateInactive(items, candidates)
 
 	groupOrder = createSemanticDiscussionGroups(items, topics, groups, groupOrder, details, parents, round, stats)
+	groupOrder = flattenLowInformationSingleChildGroups(items, groups, groupOrder, details, parents, stats)
 
 	// Cap detail nodes (active/resolved separately, topics never evicted).
 	detailNodes := make([]liveAnalysisTreeNode, 0, len(detailOrder))
@@ -748,6 +875,7 @@ func rebuildDiscussionTree(
 	detailNodes = capLiveAnalysisTreeNodes(detailNodes, liveAnalysisTreeMaxNodes, liveAnalysisTreeMaxResolvedNodes)
 
 	tree := assembleTree(mc, topics, topicOrder, groups, groupOrder, detailNodes, parents, previousParents, relations, round, stats)
+	pruneEmptyAgendaTopics(tree, mc, round, false, stats)
 	syncItemClassificationWithTree(items, tree)
 	syncRelatedAgendaIDs(items, mc, tree, stats)
 	return tree, items, candidates
@@ -756,17 +884,18 @@ func rebuildDiscussionTree(
 // assignmentContext bundles the state applyAssignments mutates: the parents
 // map, item classification metadata, and candidate evidence.
 type assignmentContext struct {
-	assignments    []treeAssignment
-	parents        map[string]string
-	topics         map[string]liveAnalysisTreeNode
-	details        map[string]liveAnalysisTreeNode
-	topicAlias     map[string]string
-	candidateAlias map[string]string
-	candidates     []emergingTopicCandidate
-	itemAt         func(string) *liveAnalysisItem
-	round          int64
-	cfg            TreeClassificationConfig
-	stats          *liveAnalysisTreeMergeStats
+	assignments      []treeAssignment
+	parents          map[string]string
+	topics           map[string]liveAnalysisTreeNode
+	details          map[string]liveAnalysisTreeNode
+	topicAlias       map[string]string
+	candidateAlias   map[string]string
+	candidates       []emergingTopicCandidate
+	itemAt           func(string) *liveAnalysisItem
+	round            int64
+	cfg              TreeClassificationConfig
+	stats            *liveAnalysisTreeMergeStats
+	plannedAgendaIDs map[string]struct{}
 }
 
 func semanticPrimaryTopic(item *liveAnalysisItem, topics map[string]liveAnalysisTreeNode, agendaOnly bool) (string, float64) {
@@ -779,7 +908,7 @@ func semanticPrimaryTopic(item *liveAnalysisItem, topics map[string]liveAnalysis
 		if id == treeUnclassifiedTopicID || topic.AgendaRole == agendaRoleActionSummary {
 			continue
 		}
-		if agendaOnly && topic.Origin != topicOriginAgenda && !strings.HasPrefix(id, agendaTopicIDPrefix) {
+		if agendaOnly && topic.Origin != topicOriginAgenda && topic.Origin != topicOriginMixed && len(topic.AgendaRefs) == 0 {
 			continue
 		}
 		score := semanticItemSimilarity(topic.Label+" "+topic.Description, text)
@@ -813,6 +942,90 @@ func emergingTopicCore(value string) string {
 		core = strings.ReplaceAll(core, generic, "")
 	}
 	return core
+}
+
+// latinTokenSetPattern extracts alphanumeric tokens (english acronyms/words
+// such as "vpn", "ssl") that survive normalizeForMatch's lowercasing. Tokens
+// must start with a letter and be at least 2 runes long so that stray single
+// characters don't trigger a false conflict.
+var latinTokenSetPattern = regexp.MustCompile(`[a-z][a-z0-9]+`)
+
+// latinTokenConflict reports whether a and b (already free-form text, not
+// pre-normalized) each contain at least one latin token (e.g. "vpn", "ssl")
+// and share none of them. It is used to keep semanticExistingTopicID's loose
+// shared-subject-term rule from folding "SSL証明書の管理" into "VPN装置証明書
+// の期限切れ対策" just because both mention 証明書.
+func latinTokenConflict(a, b string) bool {
+	aTokens := latinTokenSetPattern.FindAllString(normalizeForMatch(a), -1)
+	bTokens := latinTokenSetPattern.FindAllString(normalizeForMatch(b), -1)
+	if len(aTokens) == 0 || len(bTokens) == 0 {
+		return false
+	}
+	bSet := make(map[string]struct{}, len(bTokens))
+	for _, token := range bTokens {
+		bSet[token] = struct{}{}
+	}
+	for _, token := range aTokens {
+		if _, shared := bSet[token]; shared {
+			return false
+		}
+	}
+	return true
+}
+
+// semanticExistingTopicID returns the ID of an existing topic that the
+// proposed label/description semantically duplicates, or "" if none matches.
+// It is shared by candidate creation (before a new emerging candidate is
+// spun up) and by candidate promotion (before a stable candidate becomes its
+// own dynamic topic), so both paths route into an already-materialized topic
+// under the same rules instead of drifting into duplicate topics for the
+// same subject (e.g. 「VPN装置証明書の期限切れ対策の検討」 vs 「vpnと証明書」).
+func semanticExistingTopicID(label, description string, topics map[string]liveAnalysisTreeNode) string {
+	candidateText := strings.TrimSpace(label + " " + description)
+	candidateCore := semanticTopicCore(label)
+	// candidateSubjectFloor is the label with generic staging words ("話題"
+	// "論点" 等) stripped. Two labels that only agree on such a scaffolding
+	// word once it is removed (e.g. 「話題A」 vs 「話題B」, differing solely by
+	// a trailing single-letter suffix) have no real shared subject, so the
+	// loose fold rule below requires both sides to retain enough residual
+	// content for sharedTreeAuditSubjectTerm's match to mean anything.
+	candidateSubjectFloor := emergingTopicCore(label)
+	bestID, bestScore := "", 0.0
+	looseBestID, looseBestScore := "", 0.0
+	for id, topic := range topics {
+		if id == treeRootNodeID || id == treeUnclassifiedTopicID || topic.AgendaRole == agendaRoleActionSummary {
+			continue
+		}
+		topicText := topic.Label + " " + topic.Description
+		score := semanticItemSimilarity(candidateText, topicText)
+		if labelScore := semanticItemSimilarity(label, topic.Label); labelScore > score {
+			score = labelScore
+		}
+		topicCore := semanticTopicCore(topic.Label)
+		if len([]rune(candidateCore)) >= 4 && len([]rune(topicCore)) >= 4 &&
+			(strings.Contains(candidateCore, topicCore) || strings.Contains(topicCore, candidateCore)) && score < 0.90 {
+			score = 0.90
+		}
+		if score > bestScore {
+			bestID, bestScore = id, score
+		}
+		// 追加ルール: 主題語を共有し、英字トークン(vpn/ssl等)が衝突せず、数値署名
+		// (階数・vlan番号等)も衝突しない場合に限り、より緩い閾値でfoldを許す。
+		if score >= 0.40 && sharedTreeAuditSubjectTerm(candidateText, topicText) &&
+			!latinTokenConflict(candidateText, topicText) && !numericSignatureIncompatible(candidateText, topicText) &&
+			len([]rune(candidateSubjectFloor)) >= 2 && len([]rune(emergingTopicCore(topic.Label))) >= 2 {
+			if score > looseBestScore {
+				looseBestID, looseBestScore = id, score
+			}
+		}
+	}
+	if bestScore >= 0.72 {
+		return bestID
+	}
+	if looseBestScore >= 0.40 {
+		return looseBestID
+	}
+	return ""
 }
 
 // candidateSubjectCoherenceThreshold は candidate label と証拠itemが同一主題と
@@ -889,7 +1102,10 @@ func sharesSubjectBigram(subjectCore, text string) bool {
 }
 
 func canonicalCandidateID(label, description string) (string, string) {
-	subjectKey := emergingTopicCore(label)
+	subjectKey := ""
+	if !genericTopicLabel(label) {
+		subjectKey = emergingTopicCore(label)
+	}
 	if subjectKey == "" {
 		subjectKey = emergingTopicCore(description)
 	}
@@ -923,6 +1139,14 @@ func applyAssignments(ac assignmentContext) {
 			}
 			if d.AssignmentReason == "" {
 				d.AssignmentReason = d.Decision
+			}
+			if topic, exists := ac.topics[d.SelectedParentID]; exists {
+				d.AgendaMaterialized = len(topic.AgendaRefs) > 0 || topic.Origin == topicOriginAgenda || topic.Origin == topicOriginMixed
+				d.CandidateComparison = "existing_concrete_topic"
+			} else if _, planned := ac.plannedAgendaIDs[d.RequestedParentID]; planned {
+				d.CandidateComparison = "planned_agenda_anchor"
+			} else if d.CandidateTopicID != "" {
+				d.CandidateComparison = "emerging_dynamic_candidate"
 			}
 			ac.stats.AssignmentDecisions = append(ac.stats.AssignmentDecisions, d)
 		}
@@ -1079,7 +1303,7 @@ func applyAssignments(ac assignmentContext) {
 			}
 			// An explicit no-agenda span is still authoritative when a candidate
 			// proposal was invalid. Keep the item staged rather than reviving a
-			// stale fixed agenda.
+			// stale agenda topic.
 			ac.parents[nodeID] = treeUnclassifiedTopicID
 			setMeta(item, classificationUnclassified, assignmentSourceNoAgendaSpan, "", confidence, reason)
 			record(assignmentDecision{ModelItemID: modelNodeID, ItemID: nodeID, RequestedParentID: originalRequested, SelectedParentID: treeUnclassifiedTopicID, Confidence: confidence, Source: assignmentSourceNoAgendaSpan, Decision: assignmentAcceptedNoAgendaSpan, Status: classificationUnclassified, EvidenceSequenceNos: append([]int64(nil), assignment.EvidenceSequenceNos...), ResolvedAgendaSpanMode: assignment.ResolvedAgendaSpanMode, AssignmentReason: reason})
@@ -1093,7 +1317,7 @@ func applyAssignments(ac assignmentContext) {
 				record(assignmentDecision{ModelItemID: modelNodeID, ItemID: nodeID, RequestedParentID: originalRequested, SelectedParentID: current, Confidence: confidence, Source: assignmentSourceActiveSpan, Decision: assignmentDeferredEmerging, Status: classificationTentative, CandidateTopicID: item.CandidateTopicID})
 				continue
 			}
-			if topic, exists := ac.topics[requested]; exists && requested != treeUnclassifiedTopicID && topic.Origin == topicOriginAgenda && topic.AgendaRole != agendaRoleActionSummary {
+			if topic, exists := ac.topics[requested]; exists && requested != treeUnclassifiedTopicID && (topic.Origin == topicOriginAgenda || topic.Origin == topicOriginMixed || len(topic.AgendaRefs) > 0) && topic.AgendaRole != agendaRoleActionSummary {
 				ac.parents[nodeID] = requested
 				setMeta(item, classificationAssigned, assignmentSourceActiveSpan, "", confidence, reason)
 				record(assignmentDecision{ModelItemID: modelNodeID, ItemID: nodeID, RequestedParentID: originalRequested, SelectedParentID: requested, Confidence: confidence, Source: assignmentSourceActiveSpan, Decision: assignmentAcceptedActiveSpan, Status: classificationAssigned})
@@ -1113,7 +1337,7 @@ func applyAssignments(ac assignmentContext) {
 		// An explicit emerging-topic reference is typed and evidence-bearing.
 		// Stage it before semantic agenda correction; otherwise weak generic
 		// overlap (for example "調査") can pull an agenda-external subject into
-		// an unrelated fixed agenda and prevent promotion entirely.
+		// an unrelated materialized agenda topic and prevent promotion entirely.
 		if candidate := candidateAt(requested); candidate != nil {
 			beforeEvidence := len(candidate.EvidenceItemIDs)
 			candidate.addEvidence(nodeID, ac.round)
@@ -1171,6 +1395,13 @@ func applyAssignments(ac assignmentContext) {
 			}
 		}
 		if _, isTopic := ac.topics[requested]; !isTopic || requested == treeUnclassifiedTopicID {
+			if _, plannedAgenda := ac.plannedAgendaIDs[requested]; plannedAgenda {
+				candidateTopicID, _ := availableAgendaTopicID(requested, ac.topics, nil)
+				ac.parents[nodeID] = treeUnclassifiedTopicID
+				setMeta(item, classificationTentative, assignmentSourceModel, candidateTopicID, confidence, reason)
+				record(assignmentDecision{ItemID: nodeID, RequestedParentID: requested, SelectedParentID: treeUnclassifiedTopicID, Confidence: confidence, Source: assignmentSourceModel, Decision: assignmentDeferredLowConf, Status: classificationTentative, CandidateTopicID: candidateTopicID})
+				continue
+			}
 			// 存在しない親: 未割当なら追加論点へ、配置済みなら現状維持。
 			if requested != treeUnclassifiedTopicID {
 				selected := current
@@ -1518,7 +1749,7 @@ func createSemanticDiscussionGroups(items []liveAnalysisItem, topics map[string]
 			}
 			if item, ok := itemByID[id]; ok {
 				switch item.Kind {
-				case "question", "open_issue", "issue", "risk", "todo", "decision", "fact":
+				case "issue", "risk", "todo", "decision", "fact":
 				default:
 					decisionBase.ExcludedByKind++
 					continue
@@ -1659,7 +1890,7 @@ func semanticGroupAnchor(items []liveAnalysisItem) liveAnalysisItem {
 	if len(items) == 0 {
 		return liveAnalysisItem{}
 	}
-	priority := map[string]int{"issue": 0, "risk": 1, "open_issue": 2, "question": 3, "decision": 4, "todo": 5, "fact": 6}
+	priority := map[string]int{"issue": 0, "risk": 1, "decision": 4, "todo": 5, "fact": 6}
 	best := items[0]
 	for _, item := range items[1:] {
 		bestPriority, ok := priority[best.Kind]
@@ -1670,11 +1901,70 @@ func semanticGroupAnchor(items []liveAnalysisItem) liveAnalysisItem {
 		if !ok {
 			itemPriority = 100
 		}
-		if itemPriority < bestPriority || (itemPriority == bestPriority && len([]rune(item.Title)) < len([]rune(best.Title))) {
+		bestLowInformation := issueTextNeedsReferent(best.Title) || metaOnlyLiveItemText(best.Title)
+		itemLowInformation := issueTextNeedsReferent(item.Title) || metaOnlyLiveItemText(item.Title)
+		if (bestLowInformation && !itemLowInformation) ||
+			(bestLowInformation == itemLowInformation && (itemPriority < bestPriority || (itemPriority == bestPriority && len([]rune(item.Title)) < len([]rune(best.Title))))) {
 			best = item
 		}
 	}
 	return best
+}
+
+// flattenLowInformationSingleChildGroups removes a legacy grouping container
+// that contributes only a referent-free label such as 「何が原因でしたか」 and
+// has exactly one detail child. The canonical item and its evidence remain
+// untouched; only the redundant parent layer is removed.
+func flattenLowInformationSingleChildGroups(items []liveAnalysisItem, groups map[string]liveAnalysisTreeNode, groupOrder []string, details map[string]liveAnalysisTreeNode, parents map[string]string, stats *liveAnalysisTreeMergeStats) []string {
+	itemByID := make(map[string]liveAnalysisItem, len(items))
+	for _, item := range items {
+		itemByID[item.ID] = item
+	}
+	removed := make(map[string]struct{})
+	for _, groupID := range groupOrder {
+		group, exists := groups[groupID]
+		if !exists || (!issueTextNeedsReferent(group.Label) && !metaOnlyLiveItemText(group.Label)) {
+			continue
+		}
+		children := make([]string, 0, 2)
+		for childID, parentID := range parents {
+			if parentID == groupID {
+				children = append(children, childID)
+			}
+		}
+		if len(children) != 1 {
+			continue
+		}
+		childID := children[0]
+		if _, detail := details[childID]; !detail {
+			continue
+		}
+		item, exists := itemByID[childID]
+		if !exists || item.Inactive || item.MergedIntoID != "" {
+			continue
+		}
+		parentID := strings.TrimSpace(parents[groupID])
+		if parentID == "" || parentID == groupID {
+			continue
+		}
+		parents[childID] = parentID
+		delete(parents, groupID)
+		delete(groups, groupID)
+		removed[groupID] = struct{}{}
+		if stats != nil {
+			stats.GroupsFlattened++
+		}
+	}
+	if len(removed) == 0 {
+		return groupOrder
+	}
+	kept := groupOrder[:0]
+	for _, groupID := range groupOrder {
+		if _, drop := removed[groupID]; !drop {
+			kept = append(kept, groupID)
+		}
+	}
+	return kept
 }
 
 func semanticGroupLabel(value string) string {
@@ -1701,6 +1991,30 @@ type promotionContext struct {
 	round             int64
 	cfg               TreeClassificationConfig
 	stats             *liveAnalysisTreeMergeStats
+	mc                *meetingContext
+}
+
+// resolveRootTopic walks nodeID's parent chain (through nested groups, up to
+// a small depth bound against cycles) until it reaches a topic id present in
+// topics, returning that topic's id. It returns "" when the chain is
+// incomplete (missing/root parent) or resolves to topic-unclassified: both
+// cases mean nodeID is not actually placed under a real topic yet.
+func resolveRootTopic(nodeID string, parents map[string]string, topics map[string]liveAnalysisTreeNode) string {
+	current := nodeID
+	for i := 0; i < 8; i++ {
+		parent := strings.TrimSpace(parents[current])
+		if parent == "" || parent == treeRootNodeID {
+			return ""
+		}
+		if _, isTopic := topics[parent]; isTopic {
+			if parent == treeUnclassifiedTopicID {
+				return ""
+			}
+			return parent
+		}
+		current = parent
+	}
+	return ""
 }
 
 // promoteEmergingCandidates promotes candidates that satisfy the evidence
@@ -1759,26 +2073,43 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 		}
 	}
 	semanticExistingTopic := func(candidate emergingTopicCandidate) string {
-		bestID, bestScore := "", 0.0
-		candidateCore := semanticTopicCore(candidate.Label)
-		for id, topic := range pc.topics {
-			if id == treeUnclassifiedTopicID || topic.AgendaRole == agendaRoleActionSummary {
-				continue
-			}
-			score := semanticItemSimilarity(candidate.Label+" "+candidate.Description, topic.Label+" "+topic.Description)
-			if labelScore := semanticItemSimilarity(candidate.Label, topic.Label); labelScore > score {
-				score = labelScore
-			}
-			topicCore := semanticTopicCore(topic.Label)
-			if len([]rune(candidateCore)) >= 4 && len([]rune(topicCore)) >= 4 &&
-				(strings.Contains(candidateCore, topicCore) || strings.Contains(topicCore, candidateCore)) && score < 0.90 {
-				score = 0.90
-			}
-			if score > bestScore {
-				bestID, bestScore = id, score
+		return semanticExistingTopicID(candidate.Label, candidate.Description, pc.topics)
+	}
+	plannedAgendaMatch := func(candidate emergingTopicCandidate) string {
+		if pc.mc == nil {
+			return ""
+		}
+		for _, itemID := range candidate.EvidenceItemIDs {
+			if item := pc.itemAt(itemID); item != nil && item.AssignmentSource == assignmentSourceNoAgendaSpan {
+				return ""
 			}
 		}
-		if bestScore < 0.72 {
+		records := agendaRecordMap(pc.mc)
+		candidateText := candidate.Label + " " + candidate.Description
+		bestID, bestScore := "", 0.0
+		for _, agenda := range pc.mc.Agenda {
+			if effectiveAgendaRole(agenda.Role, agenda.Title, "") == agendaRoleActionSummary {
+				continue
+			}
+			alreadyMaterialized := false
+			for _, topic := range pc.topics {
+				if containsExactString(topicAgendaRefs(topic, records), agenda.ID) {
+					alreadyMaterialized = true
+					break
+				}
+			}
+			if alreadyMaterialized {
+				continue
+			}
+			score := semanticItemSimilarity(candidateText, agenda.Title)
+			if sharedTreeAuditSubjectTerm(candidateText, agenda.Title) && score < 0.55 {
+				score = 0.55
+			}
+			if score > bestScore {
+				bestID, bestScore = agenda.ID, score
+			}
+		}
+		if bestScore < 0.55 {
 			return ""
 		}
 		return bestID
@@ -1802,7 +2133,59 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			continue
 		}
 		stableLongEnough := candidate.RoundCount >= pc.cfg.PromotionMinRounds
-		evidenceCount := candidatePromotionEvidenceCount(*candidate)
+		// 証拠itemを現在の親で仕分ける: 既に(unclassified以外の)実topic配下に
+		// 置かれているitemは"placed"、追加論点のまま(親が空またはtopic-
+		// unclassified)のitemは"unplaced"とする。起点itemがsemantic dedupで
+		// 既存topic配下のitemへ統合された場合など、candidateのevidenceが実質
+		// 既存topicのものになっているケースを昇格根拠から除外するため。
+		placedTopics := make(map[string]struct{})
+		unplacedCount := 0
+		for _, itemID := range candidate.EvidenceItemIDs {
+			if topicID := resolveRootTopic(itemID, pc.parents, pc.topics); topicID != "" {
+				placedTopics[topicID] = struct{}{}
+				continue
+			}
+			unplacedCount++
+		}
+		// foldはcandidateが昇格判定に届くだけの安定度(PromotionMinRounds)を
+		// 満たした後にのみ行う。生まれたばかりの候補が、たまたま既存topicに
+		// 残っている関連item(companion)を1件evidenceに持つだけで即座に消える
+		// ことを防ぐ(会議冒頭で品質候補が進捗確認topic配下のitem-aを参照する
+		// ケース等)。また、candidateの主題とplaced先topicの主題が無関係な場合
+		// (テスト用fixtureの使い回しitem等)まで畳まないよう、主題語を共有する
+		// 場合に限定する。
+		if stableLongEnough && len(placedTopics) == 1 && unplacedCount < pc.cfg.PromotionMinItems {
+			var placedTopicID string
+			for id := range placedTopics {
+				placedTopicID = id
+			}
+			placedTopic := pc.topics[placedTopicID]
+			if sharedTreeAuditSubjectTerm(candidate.Label+" "+candidate.Description, placedTopic.Label+" "+placedTopic.Description) {
+				reparentEvidence(*candidate, placedTopicID)
+				removed[candidate.ID] = struct{}{}
+				if pc.stats != nil {
+					pc.stats.CandidateFoldedIntoAgenda++
+				}
+				record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingFoldedIntoExisting, TopicID: placedTopicID, Reason: "evidence_already_in_topic"})
+				continue
+			}
+		}
+		// 昇格判定のevidence数はunplacedのみで数える。OriginItemIDsフォール
+		// バック(candidatePromotionEvidenceCount本体の定義は変えない)も同様に
+		// 既に実topicへplacedなidを除外する。
+		evidenceCount := unplacedCount
+		if originIDs := uniqueNonEmptyIDs(candidate.OriginItemIDs); len(originIDs) > 0 {
+			unplacedOriginCount := 0
+			for _, id := range originIDs {
+				if resolveRootTopic(id, pc.parents, pc.topics) != "" {
+					continue
+				}
+				unplacedOriginCount++
+			}
+			if unplacedOriginCount > evidenceCount {
+				evidenceCount = unplacedOriginCount
+			}
+		}
 		if evidenceCount < pc.cfg.PromotionMinItems || !stableLongEnough {
 			if candidate.LastRound > 0 && pc.round-candidate.LastRound >= 4 &&
 				(evidenceCount < pc.cfg.PromotionMinItems || !stableLongEnough) {
@@ -1842,6 +2225,34 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 				pc.stats.CandidateSubjectIncoherentDeferred++
 			}
 			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingWaitingEvidence, Reason: reason})
+			continue
+		}
+		if agendaID := plannedAgendaMatch(*candidate); agendaID != "" {
+			records := agendaRecordMap(pc.mc)
+			topicID, reused := availableAgendaTopicID(agendaID, pc.topics, records)
+			pc.addTopic(liveAnalysisTreeNode{
+				ID: topicID, Kind: "topic", Label: candidate.Label, Description: candidate.Description,
+				ModelTopicIDs: append([]string(nil), candidate.ModelTopicIDs...),
+				Origin:        topicOriginAgenda, AgendaRole: agendaRolePrimary,
+				AgendaRefs: []string{agendaID}, Materialized: true,
+				CreatedAtVersion: pc.round, UpdatedAtVersion: pc.round,
+			})
+			pc.parents[topicID] = treeRootNodeID
+			pc.labelIndex[normalizeForMatch(candidate.Label)] = topicID
+			reparentEvidence(*candidate, topicID)
+			removed[candidate.ID] = struct{}{}
+			log.Printf("Agenda topic materialized from emerging candidate. agendaId=%s materializedTopicId=%s agendaTopicIdReused=%t agendaTopicIdCollision=%t", agendaID, topicID, reused, agendaID == topicID)
+			if pc.stats != nil {
+				pc.stats.AgendaTopicsMaterialized++
+				pc.stats.CandidateFoldedIntoAgenda++
+				if reused {
+					pc.stats.AgendaTopicIDsReused++
+				}
+				if agendaID == topicID {
+					pc.stats.AgendaTopicIDCollisions++
+				}
+			}
+			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingFoldedIntoExisting, TopicID: topicID, Reason: "planned_agenda_materialized_from_candidate"})
 			continue
 		}
 		if promotions >= maxPromotionsPerRound {
@@ -1972,8 +2383,12 @@ func syncRelatedAgendaIDs(items []liveAnalysisItem, mc *meetingContext, tree *li
 	if len(statsValues) > 0 {
 		stats = statsValues[0]
 	}
+	// Direct callers may provide a pre-migration payload. Keep this projection
+	// backward compatible even when it is used outside the main merge path.
+	compatibilityState := liveAnalysisPayload{Items: items, Tree: tree}
+	normalizePersistedSemanticClassifications(&compatibilityState)
 	actionSummaryIDs := mc.actionSummaryAgendaIDs()
-	logicalActionSummaryID := mc.logicalActionSummaryAgendaID()
+	logicalActionSummaryID := mc.actionSummaryProjectionID()
 	if stats != nil {
 		stats.SourceActionSummaryAgendaCount = len(actionSummaryIDs)
 		if logicalActionSummaryID != "" {
@@ -2044,6 +2459,12 @@ func syncRelatedAgendaIDs(items []liveAnalysisItem, mc *meetingContext, tree *li
 			}
 			continue
 		}
+		if items[i].Inactive || items[i].CandidateInactive {
+			continue
+		}
+		if items[i].ClassificationStatus == classificationTentative || items[i].ClassificationStatus == classificationUnclassified {
+			continue
+		}
 		if items[i].Kind == "todo" {
 			activeTodos = append(activeTodos, i)
 			if stats != nil {
@@ -2053,7 +2474,7 @@ func syncRelatedAgendaIDs(items []liveAnalysisItem, mc *meetingContext, tree *li
 	}
 	representatives = append(representatives, activeTodos...)
 	for i := range items {
-		if items[i].Status == "resolved" || items[i].Kind != "open_issue" || items[i].ClassificationStatus == classificationUnclassified {
+		if items[i].Status == "resolved" || items[i].Inactive || items[i].CandidateInactive || items[i].Kind != "issue" || items[i].ClassificationStatus == classificationUnclassified || items[i].ClassificationStatus == classificationTentative {
 			continue
 		}
 		if stats != nil {
@@ -2164,10 +2585,48 @@ func assembleTree(
 		topicIDs[id] = struct{}{}
 	}
 
-	// Groups may nest, but only through other groups. Depth is resolved from
-	// the typed parent chain; cycles, detail parents, unknown parents, and a
-	// group depth that would force detail nodes beyond the hard limit are
-	// discarded. root=0/topic=1, so the deepest valid group is depth 4.
+	// Materialized/dynamic topics may be reparented below another topic. Resolve
+	// their typed chain first; cycles, group/detail parents and excessive depth
+	// fall back to root. Groups then resolve from the actual topic depth.
+	topicParents := make(map[string]string, len(topics))
+	topicDepths := make(map[string]int, len(topics))
+	resolvingTopics := make(map[string]bool, len(topics))
+	var resolveTopicDepth func(string) (int, bool)
+	resolveTopicDepth = func(id string) (int, bool) {
+		if depth, cached := topicDepths[id]; cached {
+			return depth, true
+		}
+		if _, exists := topics[id]; !exists || resolvingTopics[id] {
+			return 0, false
+		}
+		resolvingTopics[id] = true
+		defer delete(resolvingTopics, id)
+		parent := strings.TrimSpace(parents[id])
+		if parent == "" || parent == treeRootNodeID || parent == id {
+			topicParents[id] = treeRootNodeID
+			topicDepths[id] = 1
+			return 1, true
+		}
+		if _, parentExists := topics[parent]; !parentExists {
+			topicParents[id] = treeRootNodeID
+			topicDepths[id] = 1
+			return 1, true
+		}
+		parentDepth, valid := resolveTopicDepth(parent)
+		if !valid || parentDepth+1 >= treeHardMaxDepth {
+			topicParents[id] = treeRootNodeID
+			topicDepths[id] = 1
+			return 1, true
+		}
+		topicParents[id] = parent
+		topicDepths[id] = parentDepth + 1
+		return parentDepth + 1, true
+	}
+	for id := range topics {
+		_, _ = resolveTopicDepth(id)
+	}
+
+	// Groups may nest through other groups and start under any topic.
 	validGroups := make(map[string]liveAnalysisTreeNode, len(groups))
 	groupParents := make(map[string]string, len(groups))
 	groupDepths := make(map[string]int, len(groups))
@@ -2186,7 +2645,7 @@ func assembleTree(
 		parent := strings.TrimSpace(parents[id])
 		depth := 0
 		if _, isTopic := topicIDs[parent]; isTopic && parent != treeRootNodeID {
-			depth = 2
+			depth = topicDepths[parent] + 1
 		} else if _, isGroup := groups[parent]; isGroup {
 			parentDepth, valid := resolveGroupDepth(parent)
 			if !valid {
@@ -2234,9 +2693,8 @@ func assembleTree(
 	needsUnclassified := false
 	enforcedParents := make(map[string]string, len(detailNodes)+len(topics)+len(validGroups))
 
-	// topicの親は常にroot(型逆転・topic循環をここで遮断)。
 	for id := range topics {
-		enforcedParents[id] = treeRootNodeID
+		enforcedParents[id] = topicParents[id]
 	}
 	for id, parent := range groupParents {
 		enforcedParents[id] = parent
@@ -2678,7 +3136,7 @@ const treeReorganizeMaxOperations = 24
 //   - create_topicは、同じバッチ内でPromotionMinItems件以上のmove_nodeが
 //     そのtopicへ移される場合だけ有効(1ノードのための新topicを作らせない)。
 //   - dynamic topic数はMaxDynamicTopicsを超えない。
-//   - agenda topicはrename・merge元にできない(stable IDとユーザー入力の保護)。
+//   - agenda recordは保護するが、materialized topicはrename・merge可能。
 //
 // applyTreeOperations is the v4 reorganizer write path. Every proposed
 // operation receives exactly one applied/noop/rejected/invalid evaluation;
@@ -2689,12 +3147,42 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 	if tree == nil {
 		return nil, 0
 	}
+	compatibilityState := liveAnalysisPayload{Tree: tree}
+	legacyAgendaTopicRemap := normalizeLegacyAgendaTopicIDs(&compatibilityState, mc, stats)
+	tree = compatibilityState.Tree
+	if len(legacyAgendaTopicRemap) > 0 {
+		for index := range operations {
+			op := &operations[index]
+			remap := func(id string) string {
+				if canonical := legacyAgendaTopicRemap[strings.TrimSpace(id)]; canonical != "" {
+					return canonical
+				}
+				return id
+			}
+			op.NodeID = remap(op.NodeID)
+			op.ToParentID = remap(op.ToParentID)
+			op.ParentTopicID = remap(op.ParentTopicID)
+			op.ParentID = remap(op.ParentID)
+			op.FromTopicID = remap(op.FromTopicID)
+			op.IntoTopicID = remap(op.IntoTopicID)
+			typeName := strings.ToLower(strings.TrimSpace(op.Type))
+			if typeName != "create_topic" && typeName != "split_topic" {
+				op.TopicID = remap(op.TopicID)
+			}
+		}
+	}
 	cfg = cfg.normalized()
 	treeVersion := int64(1)
 	if len(versions) > 0 && versions[0] > 0 {
 		treeVersion = versions[0]
 	}
 	nodes, parents, relations := treeStateFromPayloadTree(tree)
+	for index := range nodes {
+		if nodes[index].Kind == "topic" || nodes[index].Kind == "group" {
+			continue
+		}
+		nodes[index].Kind, nodes[index].Subtype, nodes[index].Status, _ = normalizeSemanticClassification(nodes[index].Kind, nodes[index].Subtype, nodes[index].Status)
+	}
 	topicOrder, groupOrder, detailOrder := []string{}, []string{}, []string{}
 	topics := make(map[string]liveAnalysisTreeNode)
 	groups := make(map[string]liveAnalysisTreeNode)
@@ -2718,25 +3206,16 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 		previousParents[id] = parent
 	}
 
-	agendaIDs := make(map[string]struct{})
-	fixedAgendaIDs := make(map[string]struct{})
-	if mc != nil {
-		for _, item := range mc.Agenda {
-			agendaIDs[item.ID] = struct{}{}
-			if effectiveAgendaRole(item.Role, item.Title, "") != agendaRoleActionSummary {
-				fixedAgendaIDs[item.ID] = struct{}{}
-			}
-		}
-	}
+	agendaRecords := agendaRecordMap(mc)
 	isAgendaTopic := func(id string) bool {
-		_, ok := agendaIDs[id]
-		return ok || strings.HasPrefix(id, agendaTopicIDPrefix)
+		topic, ok := topics[id]
+		return ok && len(topicAgendaRefs(topic, agendaRecords)) > 0
 	}
 	dynamicTopicCount := 0
 	for id, topic := range topics {
 		if topic.Origin == "" {
-			topic.Origin = deriveTopicOrigin(id, agendaIDs)
-			if isAgendaTopic(id) {
+			topic.Origin = deriveTopicOrigin(topic)
+			if isAgendaTopic(id) || len(topic.AgendaRefs) > 0 {
 				topic.Origin = topicOriginAgenda
 			}
 			topics[id] = topic
@@ -2891,14 +3370,6 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 			record(index, op, treeOperationRejected, "self_parent")
 			continue
 		}
-		if operationMutatesFixedAgenda(op, fixedAgendaIDs) {
-			if stats != nil {
-				stats.FixedAgendaOperationsRejected++
-				stats.FixedAgendaMutationRejected++
-			}
-			record(index, op, treeOperationRejected, "fixed_agenda_immutable")
-			continue
-		}
 		switch typeName {
 		case "create_group":
 			label := truncateRunes(strings.TrimSpace(firstNonEmptyTrimmed(op.Label, op.Title)), liveAnalysisTopicLabelMaxRunes)
@@ -3020,10 +3491,6 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 				continue
 			}
 			invalid := false
-			targetTopicID := toParent
-			if isGroup {
-				targetTopicID = topicAncestor(toParent)
-			}
 			for _, nodeID := range targetIDs {
 				if _, exists := details[nodeID]; !exists {
 					record(index, op, treeOperationInvalid, "unknown_node_id")
@@ -3032,16 +3499,6 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 				}
 				if isGroup && topicAncestor(nodeID) != topicAncestor(toParent) {
 					record(index, op, treeOperationRejected, "cross_topic_group_move")
-					invalid = true
-					break
-				}
-				sourceTopicID := topicAncestor(nodeID)
-				_, sourceAgenda := topics[sourceTopicID]
-				_, targetAgenda := topics[targetTopicID]
-				sourceAgenda = sourceAgenda && strings.HasPrefix(sourceTopicID, agendaTopicIDPrefix)
-				targetAgenda = targetAgenda && strings.HasPrefix(targetTopicID, agendaTopicIDPrefix)
-				if sourceAgenda && targetAgenda && sourceTopicID != targetTopicID {
-					record(index, op, treeOperationRejected, "cross_primary_agenda")
 					invalid = true
 					break
 				}
@@ -3154,8 +3611,8 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 				record(index, op, treeOperationInvalid, "unknown_topic_or_missing_label")
 				continue
 			}
-			if isAgendaTopic(id) || id == treeUnclassifiedTopicID {
-				record(index, op, treeOperationRejected, "rename_agenda_topic")
+			if id == treeUnclassifiedTopicID || id == treeRootNodeID {
+				record(index, op, treeOperationRejected, "rename_protected_topic")
 				continue
 			}
 			if normalizeForMatch(topic.Label) == normalizeForMatch(label) {
@@ -3182,16 +3639,122 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 				record(index, op, treeOperationInvalid, "unknown_target_topic")
 				continue
 			}
-			if isAgendaTopic(fromID) || fromID == treeUnclassifiedTopicID {
+			if fromID == treeUnclassifiedTopicID || fromID == treeRootNodeID || topics[fromID].AgendaRole == agendaRoleActionSummary {
 				record(index, op, treeOperationRejected, "merge_protected_topic")
 				continue
 			}
+			fromTopic := topics[fromID]
+			intoTopic := topics[intoID]
 			for nodeID, parent := range parents {
 				if parent == fromID {
 					parents[nodeID] = intoID
 				}
 			}
+			intoTopic.AgendaRefs = appendUniqueStrings(intoTopic.AgendaRefs, fromTopic.AgendaRefs...)
+			intoTopic.MergedFromNodeIDs = appendUniqueStrings(intoTopic.MergedFromNodeIDs, fromID)
+			intoTopic.MergedFromNodeIDs = appendUniqueStrings(intoTopic.MergedFromNodeIDs, fromTopic.MergedFromNodeIDs...)
+			if intoTopic.AgendaSplitGroupID == "" {
+				intoTopic.AgendaSplitGroupID = fromTopic.AgendaSplitGroupID
+			} else if fromTopic.AgendaSplitGroupID != "" && intoTopic.AgendaSplitGroupID != fromTopic.AgendaSplitGroupID {
+				intoTopic.AgendaSplitGroupID = ""
+			}
+			if len(intoTopic.AgendaRefs) > 0 {
+				intoTopic.Origin = topicOriginMixed
+				intoTopic.Materialized = true
+			}
+			intoTopic.UpdatedAtVersion = treeVersion
+			topics[intoID] = intoTopic
 			delete(topics, fromID)
+			delete(parents, fromID)
+			if stats != nil && (len(fromTopic.AgendaRefs) > 0 || isAgendaTopic(fromID)) {
+				stats.AgendaTopicsMerged++
+				stats.AgendaTopicsDematerialized++
+			}
+			applied++
+			record(index, op, treeOperationApplied, "")
+
+		case "split_topic":
+			fromID := strings.TrimSpace(op.FromTopicID)
+			label := truncateRunes(strings.TrimSpace(firstNonEmptyTrimmed(op.Label, op.Title)), liveAnalysisTopicLabelMaxRunes)
+			newID := normalizeProposedTopicID(op.TopicID, label)
+			fromTopic, exists := topics[fromID]
+			if !exists || fromID == treeUnclassifiedTopicID || fromID == treeRootNodeID || fromTopic.AgendaRole == agendaRoleActionSummary {
+				record(index, op, treeOperationInvalid, "unknown_or_protected_split_source")
+				continue
+			}
+			refs := topicAgendaRefs(fromTopic, agendaRecordMap(mc))
+			if len(refs) == 0 {
+				record(index, op, treeOperationRejected, "split_source_has_no_agenda_refs")
+				continue
+			}
+			if label == "" || newID == "" || !strings.HasPrefix(newID, "topic-") {
+				record(index, op, treeOperationInvalid, "missing_split_topic_identity")
+				continue
+			}
+			if _, collision := topics[newID]; collision {
+				record(index, op, treeOperationInvalid, "split_topic_id_collision")
+				continue
+			}
+			if _, collision := groups[newID]; collision {
+				record(index, op, treeOperationInvalid, "split_topic_id_collision")
+				continue
+			}
+			if _, collision := details[newID]; collision {
+				record(index, op, treeOperationInvalid, "split_topic_id_collision")
+				continue
+			}
+			targetIDs := uniqueNonEmptyIDs(firstNonEmptyIDs(op.EvidenceItemIDs, op.NodeIDs))
+			if len(targetIDs) < cfg.PromotionMinItems {
+				record(index, op, treeOperationRejected, "split_topic_insufficient_evidence")
+				continue
+			}
+			validTargets := true
+			for _, nodeID := range targetIDs {
+				if _, detail := details[nodeID]; !detail || parents[nodeID] != fromID {
+					validTargets = false
+					break
+				}
+			}
+			if !validTargets {
+				record(index, op, treeOperationRejected, "split_topic_requires_direct_detail_children")
+				continue
+			}
+			if directChildCount(fromID)-len(targetIDs) < 1 {
+				record(index, op, treeOperationRejected, "split_topic_would_empty_source")
+				continue
+			}
+			splitGroupID := strings.TrimSpace(fromTopic.AgendaSplitGroupID)
+			if splitGroupID == "" {
+				splitGroupID = fromID
+			}
+			fromTopic.AgendaRefs = append([]string(nil), refs...)
+			fromTopic.AgendaSplitGroupID = splitGroupID
+			fromTopic.Materialized = true
+			fromTopic.UpdatedAtVersion = treeVersion
+			topics[fromID] = fromTopic
+			origin := fromTopic.Origin
+			if origin == "" || origin == topicOriginDynamic {
+				origin = topicOriginMixed
+			}
+			topics[newID] = liveAnalysisTreeNode{
+				ID: newID, Kind: "topic", Label: label,
+				Description:        truncateRunes(strings.TrimSpace(op.Description), liveAnalysisTreeDescriptionMaxRunes),
+				Origin:             origin,
+				AgendaRole:         agendaRolePrimary,
+				AgendaRefs:         append([]string(nil), refs...),
+				AgendaSplitGroupID: splitGroupID,
+				Materialized:       true,
+				CreatedAtVersion:   treeVersion,
+				UpdatedAtVersion:   treeVersion,
+			}
+			topicOrder = append(topicOrder, newID)
+			parents[newID] = treeRootNodeID
+			for _, nodeID := range targetIDs {
+				parents[nodeID] = newID
+			}
+			if stats != nil {
+				stats.AgendaTopicsSplit++
+			}
 			applied++
 			record(index, op, treeOperationApplied, "")
 
@@ -3317,6 +3880,10 @@ func canonicalizeTreeOperation(op treeOperation, knownIDs map[string]struct{}, r
 		op.FromTopicID = resolve(op.FromTopicID)
 		op.TopicID = resolve(op.TopicID)
 		op.IntoTopicID = resolve(op.IntoTopicID)
+	case "split_topic":
+		op.FromTopicID = resolve(op.FromTopicID)
+		op.EvidenceItemIDs = resolveMany(op.EvidenceItemIDs)
+		op.NodeIDs = resolveMany(op.NodeIDs)
 	}
 	return op
 }
@@ -3328,28 +3895,6 @@ func operationHasSelfParent(op treeOperation) bool {
 	}
 	for _, id := range operationTargetIDs(op) {
 		if id == parentID {
-			return true
-		}
-	}
-	return false
-}
-
-func operationMutatesFixedAgenda(op treeOperation, fixedAgendaIDs map[string]struct{}) bool {
-	if len(fixedAgendaIDs) == 0 {
-		return false
-	}
-	typeName := strings.ToLower(strings.TrimSpace(op.Type))
-	var targets []string
-	switch typeName {
-	case "move_node", "move_nodes", "rename_topic", "rename_group", "delete_empty_group":
-		targets = operationTargetIDs(op)
-	case "merge_topic":
-		targets = []string{firstNonEmptyTrimmed(op.FromTopicID, op.TopicID), op.IntoTopicID}
-	default:
-		return false
-	}
-	for _, id := range targets {
-		if _, fixed := fixedAgendaIDs[strings.TrimSpace(id)]; fixed {
 			return true
 		}
 	}

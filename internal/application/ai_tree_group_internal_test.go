@@ -22,23 +22,24 @@ func discussionTreeFixture(topicID string, itemKinds ...string) *liveAnalysisTre
 }
 
 func TestCreateGroupBuildsControlledDepthThreeTree(t *testing.T) {
-	tree := discussionTreeFixture("agenda-1", "risk", "fact", "decision")
+	topicID := "topic-agenda-one"
+	tree := discussionTreeFixture(topicID, "risk", "fact", "decision")
 	stats := &liveAnalysisTreeMergeStats{}
 	rebuilt, applied := applyTreeOperations(tree, nil, []treeOperation{{
-		Type: "create_group", ParentTopicID: "agenda-1", Label: "観測地点の不足",
+		Type: "create_group", ParentTopicID: topicID, Label: "観測地点の不足",
 		EvidenceItemIDs: []string{"item-a", "item-b", "item-c"},
 	}}, TreeClassificationConfig{}, stats)
 	if applied != 1 || stats.ReorganizeApplied != 1 {
 		t.Fatalf("applied=%d stats=%+v", applied, stats)
 	}
-	groupID := stableGroupID("agenda-1", "観測地点の不足")
+	groupID := stableGroupID(topicID, "観測地点の不足")
 	parents := map[string]string{}
 	kinds := map[string]string{}
 	for _, node := range rebuilt.Nodes {
 		parents[node.ID] = node.ParentID
 		kinds[node.ID] = node.Kind
 	}
-	if kinds[groupID] != "group" || parents[groupID] != "agenda-1" {
+	if kinds[groupID] != "group" || parents[groupID] != topicID {
 		t.Fatalf("group kind/parent = %q/%q", kinds[groupID], parents[groupID])
 	}
 	for _, id := range []string{"item-a", "item-b", "item-c"} {
@@ -53,10 +54,11 @@ func TestCreateGroupBuildsControlledDepthThreeTree(t *testing.T) {
 }
 
 func TestCreateGroupRejectsSingleEvidenceItem(t *testing.T) {
-	tree := discussionTreeFixture("agenda-1", "risk")
+	topicID := "topic-agenda-one"
+	tree := discussionTreeFixture(topicID, "risk")
 	stats := &liveAnalysisTreeMergeStats{}
 	rebuilt, applied := applyTreeOperations(tree, nil, []treeOperation{{
-		Type: "create_group", ParentTopicID: "agenda-1", Label: "単発group", EvidenceItemIDs: []string{"item-a"},
+		Type: "create_group", ParentTopicID: topicID, Label: "単発group", EvidenceItemIDs: []string{"item-a"},
 	}}, TreeClassificationConfig{}, stats)
 	if applied != 0 || rebuilt != tree {
 		t.Fatalf("single evidence group must be unchanged")
@@ -67,14 +69,15 @@ func TestCreateGroupRejectsSingleEvidenceItem(t *testing.T) {
 }
 
 func TestTreeOperationEvaluationSeparatesAppliedNoopRejectedInvalid(t *testing.T) {
-	tree := discussionTreeFixture("agenda-1", "risk", "fact", "decision")
-	groupID := stableGroupID("agenda-1", "観測地点")
+	topicID := "topic-agenda-one"
+	tree := discussionTreeFixture(topicID, "risk", "fact", "decision")
+	groupID := stableGroupID(topicID, "観測地点")
 	stats := &liveAnalysisTreeMergeStats{}
 	_, applied := applyTreeOperations(tree, nil, []treeOperation{
-		{Type: "create_group", ParentTopicID: "agenda-1", Label: "観測地点", EvidenceItemIDs: []string{"item-a", "item-b"}},
+		{Type: "create_group", ParentTopicID: topicID, Label: "観測地点", EvidenceItemIDs: []string{"item-a", "item-b"}},
 		{Type: "move_nodes", ToParentID: groupID, NodeIDs: []string{"item-a", "item-b"}},
-		{Type: "create_group", ParentTopicID: "agenda-1", Label: "一子", EvidenceItemIDs: []string{"item-c"}},
-		{Type: "move_node", NodeID: "missing", ToParentID: "agenda-1"},
+		{Type: "create_group", ParentTopicID: topicID, Label: "一子", EvidenceItemIDs: []string{"item-c"}},
+		{Type: "move_node", NodeID: "missing", ToParentID: topicID},
 	}, TreeClassificationConfig{}, stats)
 	if applied != 1 {
 		t.Fatalf("applied=%d, want 1", applied)
@@ -88,14 +91,15 @@ func TestTreeOperationEvaluationSeparatesAppliedNoopRejectedInvalid(t *testing.T
 }
 
 func TestReorganizationReducesFlatTopicChildrenWithTwoGroups(t *testing.T) {
-	tree := discussionTreeFixture("agenda-2", "risk", "question", "fact", "decision", "todo", "issue", "question")
+	topicID := "topic-agenda-two"
+	tree := discussionTreeFixture(topicID, "risk", "question", "fact", "decision", "todo", "issue", "question")
 	before := computeTreeHealth(tree)
 	if !before.needsReorganization() || before.MaxTopicChildren != 7 {
 		t.Fatalf("before=%+v", before)
 	}
 	rebuilt, applied := applyTreeOperations(tree, nil, []treeOperation{
-		{Type: "create_group", ParentTopicID: "agenda-2", Label: "測定回数", EvidenceItemIDs: []string{"item-a", "item-b", "item-c"}},
-		{Type: "create_group", ParentTopicID: "agenda-2", Label: "強風日の条件", EvidenceItemIDs: []string{"item-d", "item-e", "item-f"}},
+		{Type: "create_group", ParentTopicID: topicID, Label: "測定回数", EvidenceItemIDs: []string{"item-a", "item-b", "item-c"}},
+		{Type: "create_group", ParentTopicID: topicID, Label: "強風日の条件", EvidenceItemIDs: []string{"item-d", "item-e", "item-f"}},
 	}, TreeClassificationConfig{}, &liveAnalysisTreeMergeStats{})
 	if applied != 2 {
 		t.Fatalf("applied=%d", applied)
@@ -108,17 +112,19 @@ func TestReorganizationReducesFlatTopicChildrenWithTwoGroups(t *testing.T) {
 }
 
 func TestCreateGroupDoesNotCombineItemsAcrossTopics(t *testing.T) {
-	tree := discussionTreeFixture("agenda-1", "risk")
+	topic1ID := "topic-agenda-one"
+	topic2ID := "topic-agenda-two"
+	tree := discussionTreeFixture(topic1ID, "risk")
 	tree.Nodes = append(tree.Nodes,
-		liveAnalysisTreeNode{ID: "agenda-2", Kind: "topic", ParentID: treeRootNodeID, Label: "別議題", Origin: topicOriginAgenda},
-		liveAnalysisTreeNode{ID: "item-b", Kind: "todo", ParentID: "agenda-2", Label: "別件", Status: "open"},
+		liveAnalysisTreeNode{ID: topic2ID, Kind: "topic", ParentID: treeRootNodeID, Label: "別議題", Origin: topicOriginAgenda},
+		liveAnalysisTreeNode{ID: "item-b", Kind: "todo", ParentID: topic2ID, Label: "別件", Status: "open"},
 	)
 	tree.Edges = append(tree.Edges,
-		liveAnalysisTreeEdge{Source: treeRootNodeID, Target: "agenda-2"},
-		liveAnalysisTreeEdge{Source: "agenda-2", Target: "item-b"},
+		liveAnalysisTreeEdge{Source: treeRootNodeID, Target: topic2ID},
+		liveAnalysisTreeEdge{Source: topic2ID, Target: "item-b"},
 	)
 	stats := &liveAnalysisTreeMergeStats{}
-	_, applied := applyTreeOperations(tree, nil, []treeOperation{{Type: "create_group", ParentTopicID: "agenda-1", Label: "混在", EvidenceItemIDs: []string{"item-a", "item-b"}}}, TreeClassificationConfig{}, stats)
+	_, applied := applyTreeOperations(tree, nil, []treeOperation{{Type: "create_group", ParentTopicID: topic1ID, Label: "混在", EvidenceItemIDs: []string{"item-a", "item-b"}}}, TreeClassificationConfig{}, stats)
 	if applied != 0 || stats.ReorganizeRejections["cross_topic_group_evidence"] != 1 {
 		t.Fatalf("applied=%d stats=%+v", applied, stats)
 	}
@@ -152,7 +158,8 @@ func TestActionSummaryAgendaReferencesCanonicalActiveItems(t *testing.T) {
 			t.Fatal("action summary must not be a canonical tree node")
 		}
 	}
-	if parents["todo-wind"] != "agenda-2" {
+	agendaTopic := agendaTopicNodeByRef(state.Tree, "agenda-2")
+	if agendaTopic == nil || parents["todo-wind"] != agendaTopic.ID {
 		t.Fatalf("canonical parent=%q, want agenda-2", parents["todo-wind"])
 	}
 	for _, edge := range state.Tree.Edges {
@@ -174,12 +181,13 @@ func TestLegacyDepthTwoPayloadRemainsReadable(t *testing.T) {
 }
 
 func TestNestedGroupsUseSoftDepthFourAndRejectWeakDepthFive(t *testing.T) {
-	tree := discussionTreeFixture("agenda-1", "risk", "fact", "question", "open_issue", "todo", "decision", "issue", "risk")
-	level2 := stableGroupID("agenda-1", "測定条件")
+	topicID := "topic-agenda-one"
+	tree := discussionTreeFixture(topicID, "risk", "fact", "question", "open_issue", "todo", "decision", "issue", "risk")
+	level2 := stableGroupID(topicID, "測定条件")
 	level3 := stableGroupID(level2, "気象条件")
 	stats := &liveAnalysisTreeMergeStats{}
 	rebuilt, applied := applyTreeOperations(tree, nil, []treeOperation{
-		{Type: "create_group", ParentID: "agenda-1", Label: "測定条件", EvidenceItemIDs: []string{"item-a", "item-b", "item-c", "item-d", "item-e", "item-f", "item-g"}},
+		{Type: "create_group", ParentID: topicID, Label: "測定条件", EvidenceItemIDs: []string{"item-a", "item-b", "item-c", "item-d", "item-e", "item-f", "item-g"}},
 		{Type: "create_group", ParentID: level2, Label: "気象条件", EvidenceItemIDs: []string{"item-a", "item-b", "item-c", "item-d", "item-e"}},
 		{Type: "create_group", ParentID: level3, Label: "強風条件", EvidenceItemIDs: []string{"item-a", "item-b"}},
 	}, TreeClassificationConfig{}, stats, 9)
@@ -197,13 +205,14 @@ func TestNestedGroupsUseSoftDepthFourAndRejectWeakDepthFive(t *testing.T) {
 }
 
 func TestStrongEvidenceAllowsDepthFiveButHardLimitRejectsDepthSix(t *testing.T) {
-	tree := discussionTreeFixture("agenda-1", "risk", "fact", "question", "open_issue", "todo", "decision", "issue", "risk", "fact", "todo")
-	level2 := stableGroupID("agenda-1", "測定条件")
+	topicID := "topic-agenda-one"
+	tree := discussionTreeFixture(topicID, "risk", "fact", "question", "open_issue", "todo", "decision", "issue", "risk", "fact", "todo")
+	level2 := stableGroupID(topicID, "測定条件")
 	level3 := stableGroupID(level2, "気象条件")
 	level4 := stableGroupID(level3, "強風条件")
 	stats := &liveAnalysisTreeMergeStats{}
 	rebuilt, applied := applyTreeOperations(tree, nil, []treeOperation{
-		{Type: "create_group", ParentID: "agenda-1", Label: "測定条件", EvidenceItemIDs: []string{"item-a", "item-b", "item-c", "item-d", "item-e", "item-f", "item-g", "item-h", "item-i"}},
+		{Type: "create_group", ParentID: topicID, Label: "測定条件", EvidenceItemIDs: []string{"item-a", "item-b", "item-c", "item-d", "item-e", "item-f", "item-g", "item-h", "item-i"}},
 		{Type: "create_group", ParentID: level2, Label: "気象条件", EvidenceItemIDs: []string{"item-a", "item-b", "item-c", "item-d", "item-e", "item-f", "item-g"}},
 		{Type: "create_group", ParentID: level3, Label: "強風条件", EvidenceItemIDs: []string{"item-a", "item-b", "item-c", "item-d"}},
 		{Type: "create_group", ParentID: level4, Label: "閾値候補", EvidenceItemIDs: []string{"item-a", "item-b"}},
@@ -371,22 +380,30 @@ func TestSession83c10700ReplayRepairsDecisionsGroupsAndActionSummary(t *testing.
 	}
 	state := previousLiveAnalysisState(raw)
 	kinds := map[string]int{}
+	subtypes := map[string]int{}
 	resolvedCount := 0
 	for _, item := range state.Items {
 		kinds[item.Kind]++
+		subtypes[item.Subtype]++
 		if item.Status == "resolved" {
 			resolvedCount++
 		}
 	}
-	if kinds["decision"] < 3 || kinds["question"] != 0 || kinds["open_issue"] != 1 || resolvedCount != 1 || len(state.Items) > 10 {
+	if kinds["decision"] < 3 || kinds["issue"] != 2 || subtypes[issueSubtypeQuestion] != 1 || subtypes[issueSubtypeDiscussion] != 1 || resolvedCount != 1 || len(state.Items) > 10 {
 		t.Fatalf("kinds=%v itemCount=%d items=%+v resolutions=%+v", kinds, len(state.Items), state.Items, mergeStats.ResolutionDecisions)
 	}
-	noiseGroupID := stableGroupID("agenda-2", "夜間測定")
+	birdTopic := agendaTopicNodeByRef(state.Tree, "agenda-1")
+	noiseTopic := agendaTopicNodeByRef(state.Tree, "agenda-2")
+	residentTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	if birdTopic == nil || noiseTopic == nil || residentTopic == nil {
+		t.Fatalf("materialized agenda topics missing: %+v", state.Tree)
+	}
+	noiseGroupID := stableGroupID(noiseTopic.ID, "夜間測定")
 	reorganized, applied := applyTreeOperations(state.Tree, mc, []treeOperation{
-		{Type: "create_group", ParentTopicID: "agenda-1", Label: "観測地点の不足", EvidenceItemIDs: []string{"risk-bird-route", "fact-bird-sites", "todo-bird-sites"}},
-		{Type: "create_group", ParentTopicID: "agenda-2", Label: "夜間測定", EvidenceItemIDs: []string{"todo-noise-count", "open-wind-speed", "todo-weather-data"}},
+		{Type: "create_group", ParentTopicID: birdTopic.ID, Label: "観測地点の不足", EvidenceItemIDs: []string{"risk-bird-route", "fact-bird-sites", "todo-bird-sites"}},
+		{Type: "create_group", ParentTopicID: noiseTopic.ID, Label: "夜間測定", EvidenceItemIDs: []string{"todo-noise-count", "open-wind-speed", "todo-weather-data"}},
 		{Type: "create_group", ParentID: noiseGroupID, Label: "強風日の条件", EvidenceItemIDs: []string{"open-wind-speed", "todo-weather-data"}},
-		{Type: "create_group", ParentTopicID: "agenda-3", Label: "公開方法と説明会", EvidenceItemIDs: []string{"todo-web-publish", "todo-meeting-date"}},
+		{Type: "create_group", ParentTopicID: residentTopic.ID, Label: "公開方法と説明会", EvidenceItemIDs: []string{"todo-web-publish", "todo-meeting-date"}},
 	}, TreeClassificationConfig{}, &liveAnalysisTreeMergeStats{})
 	if applied != 3 {
 		t.Fatalf("groups applied=%d", applied)
@@ -408,7 +425,7 @@ func TestSession83c10700ReplayRepairsDecisionsGroupsAndActionSummary(t *testing.
 			actionReferences++
 		}
 	}
-	t.Logf("replay metrics: decisions=%d resolved=%d todos=%d questions=%d openIssues=%d items=%d groups=%d maxDepth=%d maxTopicChildren=%d actionReferences=%d operationsApplied=%d", kinds["decision"], resolvedCount, kinds["todo"], kinds["question"], kinds["open_issue"], len(state.Items), health.GroupCount, treeDepthOf(reorganized), health.MaxTopicChildren, actionReferences, applied)
+	t.Logf("replay metrics: decisions=%d resolved=%d todos=%d questionIssues=%d discussionIssues=%d items=%d groups=%d maxDepth=%d maxTopicChildren=%d actionReferences=%d operationsApplied=%d", kinds["decision"], resolvedCount, kinds["todo"], subtypes[issueSubtypeQuestion], subtypes[issueSubtypeDiscussion], len(state.Items), health.GroupCount, treeDepthOf(reorganized), health.MaxTopicChildren, actionReferences, applied)
 	encoded, err := json.Marshal(state)
 	if err != nil || len(encoded) == 0 {
 		t.Fatalf("marshal replay state: %v", err)

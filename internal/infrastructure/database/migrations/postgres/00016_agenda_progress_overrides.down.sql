@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS meeting_session_agenda_progress_overrides;

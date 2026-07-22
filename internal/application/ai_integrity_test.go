@@ -55,7 +55,8 @@ func TestLiveMergeKeepsCanonicalIDAcrossDecisionPromotionAndReferences(t *testin
 	if len(state.Items) != 1 || state.Items[0].ID != canonicalID || state.Items[0].Kind != "decision" || state.Items[0].Status == "resolved" {
 		t.Fatalf("items=%+v", state.Items)
 	}
-	if parentOf(state.Tree, canonicalID) != "agenda-3" {
+	agendaTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	if agendaTopic == nil || parentOf(state.Tree, canonicalID) != agendaTopic.ID {
 		t.Fatalf("parent=%s tree=%+v", parentOf(state.Tree, canonicalID), state.Tree)
 	}
 	if secondStats.UnknownAssignmentIDs != 0 || secondStats.UnknownResolvedIDs != 0 {
@@ -185,7 +186,7 @@ func TestIssueCandidateReconciliationSeparatesKinds(t *testing.T) {
 		{name: "question", text: "強風日の基準風速は何m/sにするべきですか。", question: 1},
 		{name: "open", text: "強風日の基準風速はまだ決まっていません。", openIssue: 1},
 		{name: "todo", text: "次回までに過去5年間の気象データを確認します。", modelItem: `{"id":"todo-weather","kind":"todo","severity":"medium","title":"気象データを確認","body":"次回までに確認する","status":"open","evidenceSequenceNos":[1]}`, todo: 1},
-		{name: "mixed", text: "基準風速はまだ決まっていません。何m/sにするか判断するため、次回までに気象データを確認します。", modelItem: `{"id":"todo-weather","kind":"todo","severity":"medium","title":"気象データを確認","body":"次回までに確認する","status":"open","evidenceSequenceNos":[1]}`, question: 0, openIssue: 1, todo: 1},
+		{name: "mixed", text: "基準風速はまだ決まっていません。何m/sにするか判断するため、次回までに気象データを確認します。", modelItem: `{"id":"todo-weather","kind":"todo","severity":"medium","title":"気象データを確認","body":"次回までに確認する","status":"open","evidenceSequenceNos":[1]}`, question: 1, openIssue: 1, todo: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -203,9 +204,14 @@ func TestIssueCandidateReconciliationSeparatesKinds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			state := previousLiveAnalysisState(raw)
 			counts := livePayloadItemKindCounts(raw)
-			if counts["question"] != tt.question || counts["open_issue"] != tt.openIssue || counts["todo"] != tt.todo || counts["decision"] != 0 {
-				t.Fatalf("counts=%v", counts)
+			subtypes := map[string]int{}
+			for _, item := range state.Items {
+				subtypes[item.Subtype]++
+			}
+			if counts["issue"] != tt.question+tt.openIssue || subtypes[issueSubtypeQuestion] != tt.question || subtypes[issueSubtypeDiscussion] != tt.openIssue || counts["todo"] != tt.todo || counts["decision"] != 0 {
+				t.Fatalf("counts=%v subtypes=%v items=%+v", counts, subtypes, state.Items)
 			}
 		})
 	}
@@ -230,9 +236,9 @@ func TestDecisionResolvesExistingQuestionIssueAndTodoWithoutChangingKinds(t *tes
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	for _, expected := range []struct{ id, kind string }{{"question-wind", "question"}, {"open-wind", "open_issue"}, {"todo-weather", "todo"}} {
+	for _, expected := range []struct{ id, kind, subtype string }{{"question-wind", "issue", issueSubtypeQuestion}, {"open-wind", "issue", issueSubtypeDiscussion}, {"todo-weather", "todo", ""}} {
 		item := findItemByID(state.Items, expected.id)
-		if item == nil || item.Kind != expected.kind || item.Status != "resolved" {
+		if item == nil || item.Kind != expected.kind || item.Subtype != expected.subtype || item.Status != "resolved" {
 			t.Fatalf("item %s=%+v", expected.id, item)
 		}
 	}
@@ -257,7 +263,7 @@ func TestSemanticGroupingCreatesStableIssueGroup(t *testing.T) {
 	}
 	state := previousLiveAnalysisState(raw)
 	health := computeTreeHealth(state.Tree)
-	if len(state.Items) != 1 || state.Items[0].Kind != "open_issue" || len(state.Items[0].RelatedQuestions) != 1 || len(state.Items[0].NextActions) != 1 {
+	if len(state.Items) != 3 || findItemByID(state.Items, "question-wind").Subtype != issueSubtypeQuestion || findItemByID(state.Items, "open-wind").Subtype != issueSubtypeDiscussion || findItemByID(state.Items, "todo-weather") == nil {
 		t.Fatalf("canonical proposition=%+v health=%+v", state.Items, health)
 	}
 	next, err := parseAndMergeLiveAnalysisPayload(`{"summary":"次","currentTopic":"騒音","resolvedIds":[],"items":[],"newTopics":[],"assignments":[]}`, raw, mc, 3, nil, TreeClassificationConfig{})
@@ -291,7 +297,9 @@ func TestActionSummaryAssignmentSelectsSemanticPrimaryAgenda(t *testing.T) {
 	}
 	state := previousLiveAnalysisState(raw)
 	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
-	if itemTopicID(state.Tree, "todo-meeting-date") != "agenda-3" || itemTopicID(state.Tree, "todo-wind") != "agenda-2" || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
+	meetingTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	windTopic := agendaTopicNodeByRef(state.Tree, "agenda-2")
+	if meetingTopic == nil || windTopic == nil || itemTopicID(state.Tree, "todo-meeting-date") != meetingTopic.ID || itemTopicID(state.Tree, "todo-wind") != windTopic.ID || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
 		t.Fatalf("parents: meeting=%s wind=%s wetland=%s", parentOf(state.Tree, "todo-meeting-date"), parentOf(state.Tree, "todo-wind"), parentOf(state.Tree, "todo-wetland"))
 	}
 	for _, id := range []string{"todo-meeting-date", "todo-wind", "todo-wetland"} {
@@ -305,12 +313,12 @@ func TestActionSummaryAssignmentSelectsSemanticPrimaryAgenda(t *testing.T) {
 func TestTreeOperationResolvesLegacyItemAliases(t *testing.T) {
 	tree := &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
 		{ID: treeRootNodeID, Kind: "topic", Label: "会議"},
-		{ID: "agenda-3", Kind: "topic", ParentID: treeRootNodeID, Label: "資料"},
-		{ID: "todo- Residents-doc-publicity-01", Kind: "todo", ParentID: "agenda-3", Label: "公開"},
-		{ID: "todo-date", Kind: "todo", ParentID: "agenda-3", Label: "日程"},
+		{ID: "topic-materialized-agenda-3", Kind: "topic", ParentID: treeRootNodeID, Label: "資料"},
+		{ID: "todo- Residents-doc-publicity-01", Kind: "todo", ParentID: "topic-materialized-agenda-3", Label: "公開"},
+		{ID: "todo-date", Kind: "todo", ParentID: "topic-materialized-agenda-3", Label: "日程"},
 	}}
 	stats := &liveAnalysisTreeMergeStats{}
-	reorganized, applied := applyTreeOperations(tree, nil, []treeOperation{{Type: "create_group", ParentID: "agenda-3", Label: "住民向け対応", EvidenceItemIDs: []string{"todo-Residents-doc-publicity-01", "todo-date"}}}, TreeClassificationConfig{}, stats, 2)
+	reorganized, applied := applyTreeOperations(tree, nil, []treeOperation{{Type: "create_group", ParentID: "topic-materialized-agenda-3", Label: "住民向け対応", EvidenceItemIDs: []string{"todo-Residents-doc-publicity-01", "todo-date"}}}, TreeClassificationConfig{}, stats, 2)
 	if applied != 1 || stats.AliasResolvedTreeOperationIDs == 0 || stats.UnknownGroupEvidenceIDs != 0 || computeTreeHealth(reorganized).GroupCount != 1 {
 		t.Fatalf("applied=%d stats=%+v tree=%+v", applied, stats, reorganized)
 	}
@@ -333,7 +341,7 @@ func TestSameKindSemanticDedupMergesResidentTodoButKeepsQuestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.Items) != 1 || livePayloadItemKindCounts(raw)["todo"] != 1 || len(state.Items[0].RelatedQuestions) != 1 {
+	if len(state.Items) != 2 || livePayloadItemKindCounts(raw)["todo"] != 1 || livePayloadItemKindCounts(raw)["issue"] != 1 {
 		t.Fatalf("items=%+v", state.Items)
 	}
 	todo := findItemByID(state.Items, "todo-tbd-public")
@@ -398,13 +406,16 @@ func TestCompanionItemsBecomeCanonicalPropositionAndInheritPrimaryTopic(t *testi
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	if len(state.Items) != 1 || state.Items[0].Kind != "open_issue" || len(state.Items[0].RelatedQuestions) != 1 || len(state.Items[0].NextActions) != 1 {
+	if len(state.Items) != 3 || findItemByID(state.Items, "question-date").Subtype != issueSubtypeQuestion || findItemByID(state.Items, "open-date").Subtype != issueSubtypeDiscussion || findItemByID(state.Items, "todo-date") == nil {
 		t.Fatalf("canonical proposition=%+v", state.Items)
 	}
-	if got := itemTopicID(state.Tree, state.Items[0].ID); got != "agenda-3" {
-		t.Fatalf("canonical topic=%q tree=%+v", got, state.Tree)
+	for _, id := range []string{"question-date", "open-date", "todo-date"} {
+		agendaTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+		if got := itemTopicID(state.Tree, id); agendaTopic == nil || got != agendaTopic.ID {
+			t.Fatalf("item %s topic=%q tree=%+v", id, got, state.Tree)
+		}
 	}
-	if stats.CrossKindClustered < 2 || stats.PropositionItemsMerged < 2 {
+	if stats.PropositionItemsMerged != 0 {
 		t.Fatalf("stats=%+v", stats)
 	}
 }
@@ -443,7 +454,34 @@ func TestActionSummaryProjectionSelectsTodoOrUnmatchedOpenIssue(t *testing.T) {
 			t.Fatalf("non-representative %s=%+v", id, item)
 		}
 	}
-	if stats.ActiveTodoReferences != 1 || stats.CompletedTodoExcluded != 1 || stats.ClusteredReferences != 1 {
+	if stats.ActiveTodoReferences != 1 || stats.CompletedTodoExcluded != 1 || stats.ClusteredReferences != 2 {
+		t.Fatalf("stats=%+v", stats)
+	}
+}
+
+func TestActionSummaryProjectionFallsBackWithoutSourceAgenda(t *testing.T) {
+	mc := &meetingContext{Title: "運用見直し", Agenda: []agendaItem{{ID: "agenda-1", Title: "フォーム改善", Role: agendaRolePrimary}}}
+	tree := &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+		{ID: treeRootNodeID, Kind: "topic"},
+		{ID: "topic-form", Kind: "topic", ParentID: treeRootNodeID},
+		{ID: "todo-active", Kind: "todo", ParentID: "topic-form"},
+		{ID: "todo-complete", Kind: "todo", ParentID: "topic-form"},
+		{ID: "todo-tentative", Kind: "todo", ParentID: treeUnclassifiedTopicID},
+	}}
+	items := []liveAnalysisItem{
+		{ID: "todo-active", Kind: "todo", Title: "フォーム改善案を作成", Body: "山下さんが来週までに作成", Status: "open", ClassificationStatus: classificationAssigned},
+		{ID: "todo-complete", Kind: "todo", Title: "完了済み", Status: "resolved", ClassificationStatus: classificationAssigned},
+		{ID: "todo-tentative", Kind: "todo", Title: "対象不明", Status: "open", ClassificationStatus: classificationTentative},
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+	syncRelatedAgendaIDs(items, mc, tree, stats)
+	if got := items[0].RelatedAgendaIDs; len(got) != 1 || got[0] != virtualActionSummaryProjectionID {
+		t.Fatalf("active TODO refs=%v", got)
+	}
+	if len(items[1].RelatedAgendaIDs) != 0 || len(items[2].RelatedAgendaIDs) != 0 {
+		t.Fatalf("excluded refs completed=%v tentative=%v", items[1].RelatedAgendaIDs, items[2].RelatedAgendaIDs)
+	}
+	if stats.SourceActionSummaryAgendaCount != 0 || stats.LogicalActionSummaryCount != 1 || stats.ActiveTodoReferences != 1 || stats.RenderedActionItems != 1 {
 		t.Fatalf("stats=%+v", stats)
 	}
 }
@@ -468,10 +506,10 @@ func TestTentativeCandidatePromotesAtomicallyAfterStableVersions(t *testing.T) {
 	}
 	state := previousLiveAnalysisState(raw)
 	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
-	if len(state.EmergingTopics) != 0 || itemTopicID(state.Tree, "todo-plant") != dynamicID || findItemByID(state.Items, "question-plant") != nil {
+	if len(state.EmergingTopics) != 0 || itemTopicID(state.Tree, "todo-plant") != dynamicID || itemTopicID(state.Tree, "question-plant") != dynamicID {
 		t.Fatalf("state=%+v", state)
 	}
-	if stats.PromotedItemsReparented != 1 || state.TreeChanges == nil || len(state.TreeChanges.ReparentedNodeIDs) != 1 {
+	if stats.PromotedItemsReparented != 2 || state.TreeChanges == nil || len(state.TreeChanges.ReparentedNodeIDs) != 2 {
 		t.Fatalf("stats=%+v changes=%+v", stats, state.TreeChanges)
 	}
 }
@@ -550,7 +588,7 @@ func TestSession04e9dec1aaa164b3ReplayAcceptance(t *testing.T) {
 	}
 	state := previousLiveAnalysisState(raw)
 	counts := livePayloadItemKindCounts(raw)
-	if counts["decision"] < 3 || counts["open_issue"] < 1 || counts["todo"] < 2 {
+	if counts["decision"] < 3 || counts["issue"] < 1 || counts["todo"] < 2 {
 		t.Fatalf("kind counts=%v items=%+v", counts, state.Items)
 	}
 	for _, item := range state.Items {
@@ -561,7 +599,8 @@ func TestSession04e9dec1aaa164b3ReplayAcceptance(t *testing.T) {
 	residentID := "todo-residents-doc-publicity-01"
 	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
 	meetingDate := findItemByTitlePart(state.Items, "開催日")
-	if itemTopicID(state.Tree, residentID) != "agenda-3" || meetingDate == nil || itemTopicID(state.Tree, meetingDate.ID) != "agenda-3" || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
+	residentTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	if residentTopic == nil || itemTopicID(state.Tree, residentID) != residentTopic.ID || meetingDate == nil || itemTopicID(state.Tree, meetingDate.ID) != residentTopic.ID || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
 		t.Fatalf("parents resident=%s meeting=%+v wetland=%s", parentOf(state.Tree, residentID), meetingDate, parentOf(state.Tree, "todo-wetland"))
 	}
 	health := computeTreeHealth(state.Tree)
@@ -576,7 +615,7 @@ func TestSession04e9dec1aaa164b3ReplayAcceptance(t *testing.T) {
 		}
 	}
 	t.Logf("session_04e9 replay: items=%d decisions=%d questions=%d openIssues=%d todos=%d risks=%d groups=%d nestedGroups=%d maxDepth=%d unknownAssignments=%d unknownResolved=%d agendaCounts=%v",
-		len(state.Items), counts["decision"], counts["question"], counts["open_issue"], counts["todo"], counts["risk"], health.GroupCount, health.NestedGroupCount, treeDepthOf(state.Tree), stats.UnknownAssignmentIDs, stats.UnknownResolvedIDs, agendaCounts)
+		len(state.Items), counts["decision"], 0, counts["issue"], counts["todo"], counts["risk"], health.GroupCount, health.NestedGroupCount, treeDepthOf(state.Tree), stats.UnknownAssignmentIDs, stats.UnknownResolvedIDs, agendaCounts)
 	t.Logf("session_04e9 replay unclassified=%v", unclassified)
 }
 

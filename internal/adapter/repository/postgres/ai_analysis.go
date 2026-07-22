@@ -112,6 +112,34 @@ func (r *MeetingAIAnalysisRepository) GetMeetingAIAnalysis(ctx context.Context, 
 	return scanMeetingAIAnalysis(row)
 }
 
+func (r *MeetingAIAnalysisRepository) ListMeetingAIAnalysesForSessions(ctx context.Context, sessionIDs []string, analysisType domain.MeetingAIAnalysisType) ([]domain.MeetingAIAnalysis, error) {
+	if len(sessionIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT session_id, analysis_type, status, version, payload, COALESCE(model, ''), segment_count, input_chars, COALESCE(last_error, ''), created_at, updated_at
+		FROM meeting_session_ai_analyses
+		WHERE analysis_type = $1 AND session_id = ANY($2)
+	`, string(analysisType), sessionIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list meeting ai analyses for sessions: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]domain.MeetingAIAnalysis, 0, len(sessionIDs))
+	for rows.Next() {
+		analysis, err := scanMeetingAIAnalysis(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *analysis)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate meeting ai analyses for sessions: %w", err)
+	}
+	return items, nil
+}
+
 func nullableJSONPayload(payload json.RawMessage) (any, error) {
 	if len(payload) == 0 {
 		return nil, nil
