@@ -152,13 +152,13 @@ func session2dee3b1da5b72979AuditResponse() string {
 			{
 				OperationID: "op-1", Type: TreeAuditMoveItem,
 				TargetCanonicalItemID: "item-decision-b9335ac1c4af", FromParentCanonicalNodeID: "candidate-e781af10c938",
-				ToParentCanonicalNodeID: "agenda-3", Confidence: 0.85,
+				ToParentCanonicalNodeID: stableAgendaTopicID("agenda-3", 0), Confidence: 0.85,
 				Reason: "次回機器交換のダブルチェック決定は再発防止策そのものであるためagenda-3へ復帰", EvidenceSequenceNos: []int64{15},
 			},
 			{
 				OperationID: "op-2", Type: TreeAuditMoveItem,
 				TargetCanonicalItemID: "item-todo-605e737781ec", FromParentCanonicalNodeID: "candidate-e781af10c938",
-				ToParentCanonicalNodeID: "agenda-3", Confidence: 0.85,
+				ToParentCanonicalNodeID: stableAgendaTopicID("agenda-3", 0), Confidence: 0.85,
 				Reason: "VLANごとの疎通確認チェックリスト作成は再発防止策そのものであるためagenda-3へ復帰", EvidenceSequenceNos: []int64{13},
 			},
 			{
@@ -192,7 +192,7 @@ func session2dee3b1da5b72979AuditResponse() string {
 			{
 				OperationID: "op-9", Type: TreeAuditMoveItem,
 				TargetCanonicalItemID: "item-fact-6a4e61602240", FromParentCanonicalNodeID: treeUnclassifiedTopicID,
-				ToParentCanonicalNodeID: "agenda-2", Confidence: 0.65,
+				ToParentCanonicalNodeID: stableAgendaTopicID("agenda-2", 0), Confidence: 0.65,
 				Reason: "ルーター/FW異常なしの確認結果を原因調査agendaへ", EvidenceSequenceNos: []int64{5},
 			},
 		},
@@ -243,8 +243,8 @@ func TestSession2dee3b1da5b72979OfflineReplayAppliesSafeOperationsAndRejectsWeak
 	if run.ResultingTreeVersion != 14 {
 		t.Fatalf("run.ResultingTreeVersion = %d, want 14", run.ResultingTreeVersion)
 	}
-	if validator.OperationsProposed != 8 || validator.OperationsCanonicalized != 0 {
-		t.Fatalf("validator proposed/canonicalized = %d/%d, want 8/0", validator.OperationsProposed, validator.OperationsCanonicalized)
+	if validator.OperationsProposed != 8 || validator.OperationsCanonicalized != 8 {
+		t.Fatalf("validator proposed/canonicalized = %d/%d, want 8/8", validator.OperationsProposed, validator.OperationsCanonicalized)
 	}
 	if validator.OperationsApplied != 5 || validator.OperationsRejected != 3 {
 		t.Fatalf("validator applied/rejected = %d/%d, want 5/3: %+v", validator.OperationsApplied, validator.OperationsRejected, validator)
@@ -288,8 +288,8 @@ func TestSession2dee3b1da5b72979OfflineReplayAppliesSafeOperationsAndRejectsWeak
 	if got := byOp["op-3"].Reason; got != "parent_stickiness_margin" {
 		t.Fatalf("op-3 reason = %q, want parent_stickiness_margin (destination candidate-73edc40ca0ec is a dynamic topic, not a fixed agenda, so the fixed-agenda-return exemption does not apply, and similarity 0.085 falls just short of the halved 0.09 margin)", got)
 	}
-	if got := byOp["op-8"].Reason; got != "deactivate_grounds_not_verified" {
-		t.Fatalf("op-8 reason = %q, want deactivate_grounds_not_verified (this open_issue's text does not meet the narrow isDiscourseOnlyItem definition)", got)
+	if got := byOp["op-8"].Reason; got != "rewrite_preferred" {
+		t.Fatalf("op-8 reason = %q, want rewrite_preferred (a concrete evidence-backed rewrite must precede deactivation)", got)
 	}
 	if got := byOp["op-9"].Reason; got != "below_effective_confidence_threshold" && got != "parent_stickiness_margin" {
 		t.Fatalf("op-9 reason = %q, want below_effective_confidence_threshold or parent_stickiness_margin (must never pass at modelConfidence 0.65 with no structural corroboration)", got)
@@ -350,14 +350,15 @@ func TestSession2dee3b1da5b72979OfflineReplayAppliesSafeOperationsAndRejectsWeak
 	// recurrence-prevention items, and candidate-e781af10c938 - left with
 	// zero children - was cascade-pruned in the same pass rather than
 	// lingering as an orphaned, now-meaningless dynamic topic.
-	assertNodeParent("item-decision-b9335ac1c4af", "agenda-3")
-	assertNodeParent("item-todo-605e737781ec", "agenda-3")
+	agenda3TopicID := stableAgendaTopicID("agenda-3", 0)
+	assertNodeParent("item-decision-b9335ac1c4af", agenda3TopicID)
+	assertNodeParent("item-todo-605e737781ec", agenda3TopicID)
 	if node := treeNodeByID(state.Tree, "candidate-e781af10c938"); node != nil {
 		t.Fatalf("candidate-e781af10c938 must be cascade-pruned once both its items relocate: %+v", node)
 	}
 	agenda3Children := 0
 	for _, node := range state.Tree.Nodes {
-		if node.ParentID == "agenda-3" {
+		if node.ParentID == agenda3TopicID {
 			agenda3Children++
 		}
 	}

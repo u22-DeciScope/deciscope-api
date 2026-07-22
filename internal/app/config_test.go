@@ -43,7 +43,7 @@ func TestAIConfigTreeAuditDefaultsToEnabled(t *testing.T) {
 	}
 	if config.TreeAudit.Interval != 5*time.Minute || config.TreeAudit.MinInterval != 5*time.Minute ||
 		config.TreeAudit.MaxRunsPerHour != 12 || config.TreeAudit.HighSeverityMinInterval != time.Minute ||
-		config.TreeAudit.HighSeverityMaxRunsPerHour != 4 {
+		config.TreeAudit.HighSeverityMaxRunsPerHour != 4 || config.TreeAudit.UnappliedWarningThreshold != 3 {
 		t.Fatalf("tree audit scheduling defaults = %+v", config.TreeAudit)
 	}
 }

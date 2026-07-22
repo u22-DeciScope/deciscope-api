@@ -10,8 +10,25 @@ import (
 
 func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operations []treeAuditOperation, segments []domain.TranscriptSegment, mc *meetingContext, evidenceRoles map[int64]treeAuditEvidenceRole, cfg TreeAuditConfig, runID string, resultingVersion int64, markApplied bool) (liveAnalysisPayload, treeAuditValidatorResult) {
 	cfg = cfg.normalized()
+	legacyAgendaTopicRemap := normalizeLegacyAgendaTopicIDs(&original, mc, nil)
+	if len(legacyAgendaTopicRemap) > 0 {
+		for index := range operations {
+			if canonical := legacyAgendaTopicRemap[strings.TrimSpace(operations[index].TargetCanonicalNodeID)]; canonical != "" {
+				operations[index].TargetCanonicalNodeID = canonical
+			}
+			if canonical := legacyAgendaTopicRemap[strings.TrimSpace(operations[index].FromParentCanonicalNodeID)]; canonical != "" {
+				operations[index].FromParentCanonicalNodeID = canonical
+			}
+			if canonical := legacyAgendaTopicRemap[strings.TrimSpace(operations[index].ToParentCanonicalNodeID)]; canonical != "" {
+				operations[index].ToParentCanonicalNodeID = canonical
+			}
+		}
+	}
 	dry := cloneLiveAnalysisPayload(original)
 	result := treeAuditValidatorResult{OperationsProposed: len(operations)}
+	if original.Tree != nil {
+		result.NodeCountBefore = len(original.Tree.Nodes)
+	}
 	accepted := make(map[string]bool, len(operations))
 	segmentText := make(map[int64]string, len(segments))
 	for _, segment := range segments {
@@ -20,19 +37,29 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 	beforeFindings := deterministicTreeAuditPrecheck(original, mc, evidenceRoles, cfg)
 	beforeQuality := auditHeuristicDefectCount(beforeFindings)
 	result.HeuristicDefectCountBefore = beforeQuality
-	result.TopicOutliersBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditTopicOutlier, TreeAuditSubjectMismatch)
-	result.CandidateFragmentationBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditCandidateFragmentation)
+	result.LowInformationItemsBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditLowInformationItem, TreeAuditLowInformationTitle, TreeAuditStatusOnlyNode, TreeAuditAnaphoraWithoutReferent, TreeAuditLowInformationChild, TreeAuditGenericQuestionWithoutSubject, TreeAuditMeetingEndAsDecision, TreeAuditLeadingParticleFragment, TreeAuditAnaphoraTargetMissing, TreeAuditIncompleteSTTSegmentItem, TreeAuditDecisionMissingObject)
+	result.TopicOutliersBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditTopicOutlier, TreeAuditSubjectMismatch, TreeAuditGenericTopicLabel, TreeAuditTopicLabelNotDerivedFromChildren, TreeAuditSingleChildGenericTopic)
+	result.CandidateFragmentationBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditCandidateFragmentation, TreeAuditRiskTodoSubjectFragmentation, TreeAuditRelatedActionOutsideRiskTopic)
 	result.CrossAgendaContaminationBefore = countTreeAuditPrechecks(beforeFindings, TreeAuditCrossAgendaContamination)
 
 	for _, operation := range operations {
 		evaluation := treeAuditValidatorEvaluation{OperationID: operation.OperationID, Type: operation.Type, Result: "rejected", ModelConfidence: operation.Confidence}
 		classification := treeAuditOperationClassification(operation.Type)
+		// riskClass drives both the Category label (populated for every
+		// evaluation, not only on rejection - see
+		// treeAuditValidatorEvaluation's comment) and the confidence gate
+		// below. It is computed once against dry, the state immediately
+		// before this operation, since the destructive-escalation rules
+		// (merge_items touching a decision item, reclassify_kind moving a
+		// decision/todo/risk item) both depend on the target's current
+		// kind.
+		riskClass := treeAuditEffectiveRiskClass(operation, dry)
 		reject := func(reason string) {
 			evaluation.Reason = reason
 			if classification == treeAuditOperationUnsupported {
 				evaluation.Category = "unsupported"
 			} else {
-				evaluation.Category = "unsafe"
+				evaluation.Category = string(riskClass)
 			}
 			result.Evaluations = append(result.Evaluations, evaluation)
 		}
@@ -52,7 +79,7 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 			continue
 		}
 		isMoveType := treeAuditOperationIsMoveType(operation.Type)
-		if isMoveType && treeAuditManualEditProtectedOperation(operation, dry) {
+		if treeAuditManualEditProtectedOperation(operation, dry) {
 			reject("manual_edit_protected")
 			continue
 		}
@@ -66,7 +93,11 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 			effectiveConfidence = treeAuditEffectiveConfidence(operation, dry, beforeFindings, evidenceRoles, segmentText, mc, cfg)
 		}
 		evaluation.EffectiveConfidence = effectiveConfidence
-		if effectiveConfidence < cfg.HighConfidenceThreshold {
+		// epsilon guard: modelConfidence 0.7 + bonus 0.10 lands on
+		// 0.7999999999999999 in float64, which must still clear an 0.8
+		// threshold. The threshold and escalation design are unchanged; this
+		// only absorbs float addition error at the comparison itself.
+		if effectiveConfidence < treeAuditRiskConfidenceThreshold(riskClass, cfg)-1e-9 {
 			reject("below_effective_confidence_threshold")
 			continue
 		}
@@ -131,21 +162,36 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 		beforeQuality = afterQuality
 		accepted[operation.OperationID] = true
 		evaluation.Result = "validated"
+		evaluation.Category = string(riskClass)
 		evaluation.Valid = true
 		evaluation.Applied = markApplied
 		result.OperationsValid++
 		if markApplied {
 			result.OperationsApplied++
+			switch operation.Type {
+			case TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription:
+				result.RewritesApplied++
+			case TreeAuditMergeItems:
+				result.MergesApplied++
+			case TreeAuditReclassifyKind, TreeAuditReclassifySubtype:
+				result.ReclassificationsApplied++
+			case TreeAuditDeactivateItem:
+				result.DeactivationsApplied++
+			}
 		}
 		result.Evaluations = append(result.Evaluations, evaluation)
 	}
 	result.OperationsRejected = result.OperationsProposed - result.OperationsValid
 	result.TreeIntegrityValid = validateTreeIntegrity(dry.Tree, dry.Items, mc).Valid
 	afterFindings := deterministicTreeAuditPrecheck(dry, mc, evidenceRoles, cfg)
-	result.TopicOutliersAfter = countTreeAuditPrechecks(afterFindings, TreeAuditTopicOutlier, TreeAuditSubjectMismatch)
-	result.CandidateFragmentationAfter = countTreeAuditPrechecks(afterFindings, TreeAuditCandidateFragmentation)
+	result.TopicOutliersAfter = countTreeAuditPrechecks(afterFindings, TreeAuditTopicOutlier, TreeAuditSubjectMismatch, TreeAuditGenericTopicLabel, TreeAuditTopicLabelNotDerivedFromChildren, TreeAuditSingleChildGenericTopic)
+	result.CandidateFragmentationAfter = countTreeAuditPrechecks(afterFindings, TreeAuditCandidateFragmentation, TreeAuditRiskTodoSubjectFragmentation, TreeAuditRelatedActionOutsideRiskTopic)
 	result.CrossAgendaContaminationAfter = countTreeAuditPrechecks(afterFindings, TreeAuditCrossAgendaContamination)
 	result.HeuristicDefectCountAfter = auditHeuristicDefectCount(afterFindings)
+	result.LowInformationItemsAfter = countTreeAuditPrechecks(afterFindings, TreeAuditLowInformationItem, TreeAuditLowInformationTitle, TreeAuditStatusOnlyNode, TreeAuditAnaphoraWithoutReferent, TreeAuditLowInformationChild, TreeAuditGenericQuestionWithoutSubject, TreeAuditMeetingEndAsDecision, TreeAuditLeadingParticleFragment, TreeAuditAnaphoraTargetMissing, TreeAuditIncompleteSTTSegmentItem, TreeAuditDecisionMissingObject)
+	if dry.Tree != nil {
+		result.NodeCountAfter = len(dry.Tree.Nodes)
+	}
 	if result.OperationsValid > 0 {
 		dry.TreeVersion = resultingVersion
 		dry.ChangeSource = "tree_auditor"
@@ -158,6 +204,7 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 		dry.TreeChanges.Source = "tree_auditor"
 		dry.TreeChanges.AuditRunID = runID
 	}
+	dry.AgendaAnchors = reconcileAgendaAnchors(dry.AgendaAnchors, mc, dry.Tree, dry.Items, dry.TreeVersion, false)
 	return dry, result
 }
 
@@ -184,9 +231,10 @@ func treeAuditOperationClassification(operationType TreeAuditOperationType) tree
 	switch operationType {
 	case TreeAuditMoveItem, TreeAuditRestorePreviousParent, TreeAuditMoveNode,
 		TreeAuditMergeItems, TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
+		TreeAuditReclassifyKind, TreeAuditReclassifySubtype,
 		TreeAuditDeactivateItem, TreeAuditAssignItemToCandidate, TreeAuditChangeEvidenceRole,
 		TreeAuditCreateTopicFromCandidate, TreeAuditFoldCandidateIntoTopic,
-		TreeAuditDeactivateCandidate, TreeAuditRenameGroup, TreeAuditRemoveEmptyGroup:
+		TreeAuditDeactivateCandidate, TreeAuditRenameGroup, TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup:
 		return treeAuditOperationApplicable
 	default:
 		return treeAuditOperationUnsupported
@@ -198,6 +246,95 @@ func treeAuditOperationClassification(operationType TreeAuditOperationType) tree
 // truth for the applicable/unsupported split.
 func treeAuditOperationSupported(operationType TreeAuditOperationType) bool {
 	return treeAuditOperationClassification(operationType) == treeAuditOperationApplicable
+}
+
+// treeAuditOperationRiskClass returns operationType's baseline risk tier
+// (treeAuditRiskClass): "safe" for operations that only rewrite/reclassify/
+// relabel/assign within their existing structural position, "moderate" for
+// operations that move or fold structure, and "destructive" for the one
+// operation type (deactivate_item) that removes an item from the live tree
+// outright. This is the type-level baseline only -
+// validateAndDryRunTreeAuditOperations further escalates specific
+// operations to destructive via treeAuditEffectiveRiskClass regardless of
+// this baseline. Only classifications reachable via
+// treeAuditOperationClassification's applicable branch are meaningful here;
+// unsupported operation types are always rejected before a risk class is
+// used for gating (Category reports "unsupported" for those instead).
+func treeAuditOperationRiskClass(operationType TreeAuditOperationType) treeAuditRiskClass {
+	switch operationType {
+	case TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
+		TreeAuditReclassifySubtype, TreeAuditChangeEvidenceRole, TreeAuditRenameGroup,
+		TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup, TreeAuditAssignItemToCandidate:
+		return treeAuditRiskSafe
+	case TreeAuditMoveItem, TreeAuditRestorePreviousParent, TreeAuditMoveNode,
+		TreeAuditFoldCandidateIntoTopic, TreeAuditCreateTopicFromCandidate,
+		TreeAuditDeactivateCandidate, TreeAuditMergeItems, TreeAuditReclassifyKind:
+		return treeAuditRiskModerate
+	default:
+		// TreeAuditDeactivateItem, and defensively any other/future
+		// applicable type not yet triaged above, defaults to the strictest
+		// tier rather than silently under-gating it.
+		return treeAuditRiskDestructive
+	}
+}
+
+// treeAuditEffectiveRiskClass returns operation's risk class after the two
+// destructive-escalation rules on top of treeAuditOperationRiskClass's
+// baseline, evaluated against state (the tree/items immediately before this
+// operation applies):
+//   - merge_items is escalated to destructive when any of its target items
+//     currently has Kind "decision".
+//   - reclassify_kind is escalated to destructive when the target item's
+//     current Kind is "decision", "todo", or "risk" and the operation
+//     requests a different kind.
+//
+// Both rules tighten the confidence gate to match protections
+// applyOneTreeAuditOperation's own appliers already enforce structurally
+// (reclassify_kind's protected_semantic_kind branch already refuses to
+// move a decision/todo/risk item to a different kind outright; merge_items
+// only reaches a decision-kind item at all through the narrow
+// sameCanonicalProposition/PropositionKey paths) - this is defense in
+// depth at the confidence-gate layer, not a relaxation of those checks.
+func treeAuditEffectiveRiskClass(operation treeAuditOperation, state liveAnalysisPayload) treeAuditRiskClass {
+	risk := treeAuditOperationRiskClass(operation.Type)
+	switch operation.Type {
+	case TreeAuditMergeItems:
+		for _, id := range operation.TargetCanonicalItemIDs {
+			if item := findItemByID(state.Items, id); item != nil && item.Kind == "decision" {
+				return treeAuditRiskDestructive
+			}
+		}
+	case TreeAuditReclassifyKind:
+		if item := findItemByID(state.Items, operation.TargetCanonicalItemID); item != nil {
+			requestedKind := strings.ToLower(strings.TrimSpace(operation.Kind))
+			switch item.Kind {
+			case "decision", "todo", "risk":
+				if requestedKind != item.Kind {
+					return treeAuditRiskDestructive
+				}
+			}
+		}
+	}
+	return risk
+}
+
+// treeAuditRiskConfidenceThreshold derives risk's confidence gate from
+// cfg.HighConfidenceThreshold (HCT, default 0.90): safe = HCT-0.20,
+// moderate = HCT-0.10, destructive = HCT unchanged. The derived threshold
+// is never clamped below 0.50 regardless of how low HCT itself is
+// configured.
+func treeAuditRiskConfidenceThreshold(risk treeAuditRiskClass, cfg TreeAuditConfig) float64 {
+	threshold := cfg.HighConfidenceThreshold
+	switch risk {
+	case treeAuditRiskSafe:
+		threshold -= 0.20
+	case treeAuditRiskModerate:
+		threshold -= 0.10
+	}
+	if threshold < 0.50 {
+		threshold = 0.50
+	}
+	return threshold
 }
 
 func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditOperation, segmentText map[int64]string, evidenceRoles map[int64]treeAuditEvidenceRole, mc *meetingContext, cfg TreeAuditConfig, runID string, resultingVersion int64, beforeFindings []treeAuditPrecheckFinding) (float64, float64, string) {
@@ -245,8 +382,8 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 	case TreeAuditMoveItem, TreeAuditRestorePreviousParent:
 		nodeAt, nodeExists := nodeIndex[operation.TargetCanonicalItemID]
 		itemAt, itemExists := itemIndex[operation.TargetCanonicalItemID]
-		if nodeExists && !itemExists && (state.Tree.Nodes[nodeAt].ID == treeRootNodeID || state.Tree.Nodes[nodeAt].Origin == topicOriginAgenda) {
-			return 0, 0, "fixed_agenda_immutable"
+		if nodeExists && !itemExists && state.Tree.Nodes[nodeAt].ID == treeRootNodeID {
+			return 0, 0, "root_immutable"
 		}
 		if !nodeExists || !itemExists {
 			return 0, 0, "unknown_target_node"
@@ -349,9 +486,6 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		if newScore-currentScore < margin && !redundantGroupFlattenExempt && !fixedAgendaReturnExempt {
 			return currentScore, newScore, "parent_stickiness_margin"
 		}
-		if fromFixedAgenda != "" && toFixedAgenda != "" && fromFixedAgenda != toFixedAgenda {
-			return currentScore, newScore, "cross_fixed_agenda_boundary"
-		}
 		if treeAuditDepthFromParent(operation.ToParentCanonicalNodeID, state.Tree)+1 > treeHardMaxDepth {
 			return currentScore, newScore, "hard_depth_limit"
 		}
@@ -374,8 +508,8 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			return 0, 0, "unknown_target_node"
 		}
 		target := state.Tree.Nodes[targetAt]
-		if target.ID == treeRootNodeID || target.Origin == topicOriginAgenda {
-			return 0, 0, "fixed_agenda_immutable"
+		if target.ID == treeRootNodeID {
+			return 0, 0, "root_immutable"
 		}
 		if target.Kind != "topic" && target.Kind != "group" {
 			return 0, 0, "target_kind_not_movable_container"
@@ -420,11 +554,6 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			if !exempt {
 				return 0, 0, "recent_parent_change_sticky"
 			}
-		}
-		fromAgenda := treeAuditFixedAgendaAncestor(operation.FromParentCanonicalNodeID, state.Tree)
-		toAgenda := treeAuditFixedAgendaAncestor(toID, state.Tree)
-		if fromAgenda != "" && toAgenda != "" && fromAgenda != toAgenda {
-			return 0, 0, "cross_fixed_agenda_boundary"
 		}
 		if treeAuditDepthFromParent(toID, state.Tree)+1+treeAuditSubtreeHeight(operation.TargetCanonicalNodeID, state.Tree) > treeHardMaxDepth {
 			return 0, 0, "hard_depth_limit"
@@ -601,6 +730,7 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		for _, id := range targetIDs[1:] {
 			removeNodeIDs[id] = struct{}{}
 			if at, ok := itemIndex[id]; ok {
+				addItemTombstone(state, state.Items[at], "merged", survivor.ID, "tree_auditor", runID, resultingVersion-1, resultingVersion)
 				state.Items[at].MergedIntoID = survivor.ID
 			}
 		}
@@ -656,6 +786,69 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		state.Tree.Nodes[nodeAt].UpdatedAtVersion = resultingVersion
 		return 0, 1, ""
 
+	case TreeAuditReclassifyKind, TreeAuditReclassifySubtype:
+		nodeAt, nodeExists := nodeIndex[operation.TargetCanonicalItemID]
+		itemAt, itemExists := itemIndex[operation.TargetCanonicalItemID]
+		if !nodeExists || !itemExists {
+			return 0, 0, "unknown_target_item"
+		}
+		item := state.Items[itemAt]
+		node := state.Tree.Nodes[nodeAt]
+		if node.Kind == "topic" || node.Kind == "group" || node.ID == treeRootNodeID {
+			return 0, 0, "target_kind_not_reclassifiable"
+		}
+		if len(operation.EvidenceSequenceNos) == 0 || allTreeAuditEvidenceReference(operation.EvidenceSequenceNos, evidenceRoles) {
+			return 0, 0, "primary_evidence_required"
+		}
+		var evidenceText strings.Builder
+		for _, sequenceNo := range operation.EvidenceSequenceNos {
+			text, exists := segmentText[sequenceNo]
+			if !exists || evidenceRoles[sequenceNo] == treeAuditEvidenceReference {
+				continue
+			}
+			evidenceText.WriteString(" ")
+			evidenceText.WriteString(text)
+		}
+		if strings.TrimSpace(evidenceText.String()) == "" {
+			return 0, 0, "primary_evidence_required"
+		}
+		requestedKind := item.Kind
+		if operation.Type == TreeAuditReclassifyKind {
+			requestedKind = strings.ToLower(strings.TrimSpace(operation.Kind))
+		}
+		requestedSubtype := strings.ToLower(strings.TrimSpace(operation.Subtype))
+		requestedKind, requestedSubtype, _, _ = normalizeSemanticClassification(requestedKind, requestedSubtype, item.Status)
+		if !validLiveAnalysisItemKind(requestedKind) {
+			return 0, 0, "invalid_semantic_kind"
+		}
+		if operation.Type == TreeAuditReclassifySubtype {
+			if item.Kind != "issue" || !validIssueSubtype(requestedSubtype) {
+				return 0, 0, "invalid_issue_subtype"
+			}
+			requestedKind = "issue"
+		} else if requestedKind != item.Kind {
+			if item.Kind == "decision" || item.Kind == "todo" || item.Kind == "risk" || requestedKind == "decision" || requestedKind == "todo" || requestedKind == "risk" {
+				return 0, 0, "protected_semantic_kind"
+			}
+			text := evidenceText.String()
+			supported := requestedKind == "issue" && (openIssueMarkerPattern.MatchString(text) || lowInformationQuestionPattern.MatchString(text) || confirmationStatementPattern.MatchString(text))
+			if requestedKind == "fact" {
+				supported = lowInformationAssertionPattern.MatchString(text) && !openIssueMarkerPattern.MatchString(text) && !lowInformationQuestionPattern.MatchString(text)
+			}
+			if !supported {
+				return 0, 0, "semantic_reclassification_not_grounded"
+			}
+		}
+		state.Items[itemAt].Kind = requestedKind
+		state.Items[itemAt].Subtype = requestedSubtype
+		state.Items[itemAt].InformationStatus = informationStatusGrounded
+		repairNonResolvableStatus(&state.Items[itemAt])
+		state.Tree.Nodes[nodeAt].Kind = requestedKind
+		state.Tree.Nodes[nodeAt].Subtype = requestedSubtype
+		state.Tree.Nodes[nodeAt].Status = state.Items[itemAt].Status
+		state.Tree.Nodes[nodeAt].UpdatedAtVersion = resultingVersion
+		return 0, 1, ""
+
 	case TreeAuditDeactivateItem:
 		nodeAt, nodeExists := nodeIndex[operation.TargetCanonicalItemID]
 		itemAt, itemExists := itemIndex[operation.TargetCanonicalItemID]
@@ -667,6 +860,50 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			return 0, 0, "target_kind_not_deactivatable"
 		}
 		item := state.Items[itemAt]
+		// Low-information cleanup is deliberately narrower than duplicate
+		// merge. Decisions, TODOs and risks are never auto-hidden solely due to
+		// wording quality; they remain visible for human correction.
+		switch item.Kind {
+		case "decision", "todo", "risk":
+			return 0, 0, "protected_semantic_kind"
+		}
+		if item.InformationStatus == informationStatusTentative {
+			return 0, 0, "tentative_item_protected"
+		}
+		if node.CreatedAtVersion > 0 && resultingVersion-node.CreatedAtVersion < cfg.TentativeMaxVersions {
+			return 0, 0, "item_too_recent"
+		}
+		for _, candidateNode := range state.Tree.Nodes {
+			if candidateNode.ParentID == node.ID {
+				return 0, 0, "item_has_children"
+			}
+			if candidateNode.ID != node.ID && containsExactString(candidateNode.RelatedItemIDs, node.ID) {
+				return 0, 0, "item_is_referenced"
+			}
+		}
+		for _, relation := range state.Tree.Relations {
+			if relation.Source == node.ID || relation.Target == node.ID {
+				return 0, 0, "item_is_referenced"
+			}
+		}
+		// Repair priority is rewrite -> merge -> deactivate. A recoverable
+		// referent stays on the same canonical item even when a superficially
+		// similar sibling exists; only an unrecoverable duplicate is merged.
+		repairScope := liveEvidenceScope{TranscriptText: segmentText}
+		if item.Kind == "issue" && issueTextNeedsReferent(item.Title+" "+item.Body) && nearestConcreteIssueEvidence(item, repairScope) != "" {
+			return 0, 0, "rewrite_preferred"
+		}
+		for _, sibling := range state.Items {
+			if sibling.ID == item.ID {
+				continue
+			}
+			if _, siblingActive := nodeIndex[sibling.ID]; !siblingActive {
+				continue
+			}
+			if matched, _ := sameKindSemanticDuplicate(item, sibling); matched || sameCanonicalProposition(item, sibling) {
+				return 0, 0, "merge_preferred"
+			}
+		}
 		grounds := allTreeAuditEvidenceReference(item.EvidenceSequenceNos, evidenceRoles)
 		if !grounds {
 			grounds = isDiscourseOnlyItem(item.Title, item.Body)
@@ -675,28 +912,16 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			grounds = lowInformationDecisionItem(item)
 		}
 		if !grounds {
-			for _, sibling := range state.Items {
-				if sibling.ID == item.ID {
-					continue
-				}
-				if _, siblingActive := nodeIndex[sibling.ID]; !siblingActive {
-					continue
-				}
-				if matched, _ := sameKindSemanticDuplicate(item, sibling); matched {
-					grounds = true
-					break
-				}
-				if sameCanonicalProposition(item, sibling) {
-					grounds = true
-					break
-				}
-			}
+			grounds = treeAuditLowInformationItem(item, segmentText, evidenceRoles)
 		}
 		if !grounds {
 			return 0, 0, "deactivate_grounds_not_verified"
 		}
+		tombstoneReason := treeAuditDeactivationTombstoneReason(item, operation, segmentText, evidenceRoles)
+		addItemTombstone(state, item, tombstoneReason, "", "tree_auditor", runID, resultingVersion-1, resultingVersion, node.ParentID)
 		state.Tree.Nodes = append(state.Tree.Nodes[:nodeAt], state.Tree.Nodes[nodeAt+1:]...)
 		state.Items[itemAt].Inactive = true
+		state.Items[itemAt].SuppressionReason = tombstoneReason
 		rebuildTreeAuditEdges(state.Tree)
 		return 0, 1, ""
 
@@ -825,10 +1050,10 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		label := strings.TrimSpace(candidate.Label)
 		candidateText := label + " " + candidate.Description
 		for _, node := range state.Tree.Nodes {
-			// Fixed agenda topics are checked separately below against
-			// mc.Agenda (reason "should_fold_into_fixed_agenda"); this loop
+			// Materialized agenda topics are checked separately below against
+			// mc.Agenda (the legacy reason remains "should_fold_into_fixed_agenda"); this loop
 			// only guards against duplicating an existing dynamic topic.
-			if node.Kind != "topic" || node.ID == treeRootNodeID || node.ID == treeUnclassifiedTopicID || node.Origin == topicOriginAgenda {
+			if node.Kind != "topic" || node.ID == treeRootNodeID || node.ID == treeUnclassifiedTopicID || node.Origin == topicOriginAgenda || node.Origin == topicOriginMixed || len(node.AgendaRefs) > 0 {
 				continue
 			}
 			topicText := node.Label + " " + node.Description
@@ -901,6 +1126,53 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		}
 		state.Tree.Nodes[groupAt].Label = operation.Label
 		state.Tree.Nodes[groupAt].UpdatedAtVersion = resultingVersion
+		return currentScore, newScore, ""
+
+	case TreeAuditRenameTopic:
+		topicAt, exists := nodeIndex[operation.TargetCanonicalNodeID]
+		if !exists || operation.Label == "" || genericTopicLabel(operation.Label) {
+			return 0, 0, "invalid_topic_or_label"
+		}
+		topic := state.Tree.Nodes[topicAt]
+		if topic.Kind != "topic" || topic.ID == treeRootNodeID || topic.ID == treeUnclassifiedTopicID || topic.AgendaRole == agendaRoleActionSummary {
+			return 0, 0, "invalid_topic_or_label"
+		}
+		if topic.Origin != topicOriginAgenda && topic.Origin != topicOriginDynamic && topic.Origin != topicOriginMixed && len(topic.AgendaRefs) == 0 {
+			return 0, 0, "topic_origin_not_renamable"
+		}
+		var descendantText strings.Builder
+		for _, node := range state.Tree.Nodes {
+			if node.ID == topic.ID {
+				continue
+			}
+			currentID := node.ParentID
+			seen := map[string]struct{}{}
+			for currentID != "" {
+				if currentID == topic.ID {
+					descendantText.WriteString(node.Label + " " + node.Description + " ")
+					break
+				}
+				if _, loop := seen[currentID]; loop {
+					break
+				}
+				seen[currentID] = struct{}{}
+				parentAt, ok := nodeIndex[currentID]
+				if !ok {
+					break
+				}
+				currentID = state.Tree.Nodes[parentAt].ParentID
+			}
+		}
+		if strings.TrimSpace(descendantText.String()) == "" {
+			return 0, 0, "topic_has_no_children"
+		}
+		currentScore := semanticItemSimilarity(descendantText.String(), topic.Label+" "+topic.Description)
+		newScore := semanticItemSimilarity(descendantText.String(), operation.Label+" "+topic.Description)
+		if !genericTopicLabel(topic.Label) && newScore+0.05 < currentScore {
+			return currentScore, newScore, "topic_label_cohesion_worsened"
+		}
+		state.Tree.Nodes[topicAt].Label = operation.Label
+		state.Tree.Nodes[topicAt].UpdatedAtVersion = resultingVersion
 		return currentScore, newScore, ""
 
 	case TreeAuditRemoveEmptyGroup:
@@ -979,9 +1251,9 @@ func treeAuditIsManualChangeSource(source string) bool {
 	return normalized == "user" || strings.HasPrefix(normalized, "manual")
 }
 
-// treeAuditManualEditProtectedOperation reports whether a move-type
-// operation's target (or, for fold_candidate_into_topic, any of its target
-// items) currently carries a manual/user LastParentChangeSource. It is
+// treeAuditManualEditProtectedOperation reports whether an applicable
+// operation's target (or, for fold_candidate_into_topic, any target item)
+// currently carries a manual/user LastParentChangeSource. It is
 // checked before any confidence bonus is computed, so a manual edit cannot
 // be overridden regardless of modelConfidence.
 func treeAuditManualEditProtectedOperation(operation treeAuditOperation, state liveAnalysisPayload) bool {
@@ -993,10 +1265,19 @@ func treeAuditManualEditProtectedOperation(operation treeAuditOperation, state l
 		return node != nil && treeAuditIsManualChangeSource(node.LastParentChangeSource)
 	}
 	switch operation.Type {
-	case TreeAuditMoveItem, TreeAuditRestorePreviousParent:
+	case TreeAuditMoveItem, TreeAuditRestorePreviousParent, TreeAuditDeactivateItem,
+		TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
+		TreeAuditReclassifyKind, TreeAuditReclassifySubtype:
 		return isManual(operation.TargetCanonicalItemID)
-	case TreeAuditMoveNode:
+	case TreeAuditMoveNode, TreeAuditRenameGroup, TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup:
 		return isManual(operation.TargetCanonicalNodeID)
+	case TreeAuditMergeItems:
+		for _, id := range operation.TargetCanonicalItemIDs {
+			if isManual(id) {
+				return true
+			}
+		}
+		return false
 	case TreeAuditFoldCandidateIntoTopic:
 		targetIDs := operation.TargetCanonicalItemIDs
 		if len(targetIDs) == 0 {
@@ -1216,8 +1497,9 @@ func treeAuditPrecheckAgrees(findings []treeAuditPrecheckFinding, targetIDs []st
 	return false
 }
 
-// treeAuditFixedAgendaMatches implements fixedAgendaMatchBonus (design D4):
-// the destination has a fixed-agenda ancestor, the destination's own
+// treeAuditFixedAgendaMatches implements the compatibility-named
+// fixedAgendaMatchBonus (design D4): the destination has an agenda-linked
+// materialized topic ancestor, the destination's own
 // cohesion with subjectText already clears CohesionThreshold, and the
 // destination lineage text (which includes the fixed agenda ancestor's own
 // label, since it is literally an ancestor node) shares a subject term with
@@ -1226,13 +1508,18 @@ func treeAuditFixedAgendaMatches(destinationID, subjectText string, newScore flo
 	if destinationID == "" || mc == nil {
 		return false
 	}
-	agendaID := treeAuditFixedAgendaAncestor(destinationID, tree)
-	if agendaID == "" || newScore < cfg.CohesionThreshold {
+	agendaTopicID := treeAuditFixedAgendaAncestor(destinationID, tree)
+	if agendaTopicID == "" || newScore < cfg.CohesionThreshold {
 		return false
 	}
 	destinationText := treeAuditParentChainText(tree, destinationID)
+	agendaTopic := liveTreeNodeByID(tree, agendaTopicID)
+	if agendaTopic == nil {
+		return false
+	}
+	refs := topicAgendaRefs(*agendaTopic, agendaRecordMap(mc))
 	for _, agenda := range mc.Agenda {
-		if agenda.ID != agendaID {
+		if !containsExactString(refs, agenda.ID) {
 			continue
 		}
 		return sharedTreeAuditSubjectTerm(subjectText, agenda.Title+" "+destinationText)
@@ -1381,20 +1668,23 @@ func cloneLiveAnalysisPayload(value liveAnalysisPayload) liveAnalysisPayload {
 }
 
 // treeAuditRemovableEmptyContainerKind reports whether node is a container
-// kind that a childless state makes safely deletable: an actual "group"
-// node, or a promoted dynamic topic (kind=topic, origin=dynamic) that is not
-// root, not the system unclassified bucket, and not the action_summary
-// agenda. Fixed agenda topics (origin=agenda) are never dynamic, so they are
-// already excluded by the origin check alone; the explicit root/
-// topic-unclassified/action_summary exclusions are kept for clarity and to
-// match design brief D5/9.2 exactly. remove_empty_group's own applier and
+// kind that a childless state makes safely deletable: a non-manual group, a
+// promoted dynamic topic, or the synthetic system unclassified bucket.
+// Fixed agenda topics (origin=agenda), root, action_summary, and manually
+// changed containers are excluded. remove_empty_group's own applier and
 // treeAuditCascadePruneEmptyContainers both use this single definition.
 func treeAuditRemovableEmptyContainerKind(node liveAnalysisTreeNode) bool {
+	if treeAuditIsManualChangeSource(node.LastParentChangeSource) {
+		return false
+	}
 	if node.Kind == "group" {
 		return true
 	}
+	if node.Kind == "topic" && node.ID == treeUnclassifiedTopicID {
+		return node.Origin == topicOriginSystem
+	}
 	return node.Kind == "topic" && node.Origin == topicOriginDynamic &&
-		node.ID != treeRootNodeID && node.ID != treeUnclassifiedTopicID && node.AgendaRole != agendaRoleActionSummary
+		node.ID != treeRootNodeID && node.AgendaRole != agendaRoleActionSummary
 }
 
 // treeAuditCascadeRemoveEmptyAncestors removes nodeID from tree if it is
@@ -1546,7 +1836,7 @@ func treeAuditFixedAgendaAncestor(id string, tree *liveAnalysisTree) string {
 		if !exists {
 			return ""
 		}
-		if node.Origin == topicOriginAgenda && node.AgendaRole != agendaRoleActionSummary {
+		if node.Kind == "topic" && node.AgendaRole != agendaRoleActionSummary && (node.Origin == topicOriginAgenda || node.Origin == topicOriginMixed || len(node.AgendaRefs) > 0) {
 			return node.ID
 		}
 		id = node.ParentID
@@ -1688,6 +1978,51 @@ func treeAuditItemsMergeable(a, b liveAnalysisItem) bool {
 	return false
 }
 
+func treeAuditLowInformationItem(item liveAnalysisItem, segmentText map[int64]string, evidenceRoles map[int64]treeAuditEvidenceRole) bool {
+	if metaOnlyLiveItemText(item.Title + " " + item.Body) {
+		return true
+	}
+	scope := liveEvidenceScope{
+		Allowed: make(map[int64]struct{}), CurrentRound: make(map[int64]struct{}),
+		TranscriptText: make(map[int64]string), Segments: make(map[int64]domain.TranscriptSegment),
+	}
+	timeline := discourseTimeline{Roles: make(map[int64]liveEvidenceRole), DetectedRoles: make(map[int64]liveUtteranceRole)}
+	for sequenceNo, text := range segmentText {
+		scope.Allowed[sequenceNo] = struct{}{}
+		scope.TranscriptText[sequenceNo] = text
+		if sequenceNo > scope.CoveredThrough {
+			scope.CoveredThrough = sequenceNo
+		}
+		switch evidenceRoles[sequenceNo] {
+		case treeAuditEvidenceReference:
+			timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
+			timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
+		case treeAuditEvidencePrimary:
+			timeline.Roles[sequenceNo] = liveEvidencePrimary
+			timeline.DetectedRoles[sequenceNo] = liveUtteranceSubstantive
+		default:
+			timeline.Roles[sequenceNo] = liveEvidenceSupporting
+		}
+	}
+	reason, _ := validateLiveItemInformation(item, false, timeline, scope)
+	return reason != ""
+}
+
+func treeAuditDeactivationTombstoneReason(item liveAnalysisItem, operation treeAuditOperation, segmentText map[int64]string, evidenceRoles map[int64]treeAuditEvidenceRole) string {
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		if classifyDiscourseAct(segmentText[sequenceNo]) == discourseTopicTransition || classifyDiscourseAct(segmentText[sequenceNo]) == discourseMeetingControl || classifyDiscourseAct(segmentText[sequenceNo]) == discourseFiller {
+			return "discourse_only"
+		}
+	}
+	if metaOnlyLiveItemText(item.Title+" "+item.Body) || treeAuditLowInformationItem(item, segmentText, evidenceRoles) {
+		return "low_information"
+	}
+	if allTreeAuditEvidenceReference(item.EvidenceSequenceNos, evidenceRoles) {
+		return "recap_only"
+	}
+	return operation.Reason
+}
+
 // treeAuditMergeTargetsConnected reports whether every item in items is
 // reachable from items[0] via treeAuditItemsMergeable edges. merge_items
 // does not require every pair to match directly, only that the whole target
@@ -1734,6 +2069,9 @@ func mergeTreeAuditItemAttributes(canonical, companion liveAnalysisItem) liveAna
 	canonical.ResolutionConditions = appendUniqueText(canonical.ResolutionConditions, companion.ResolutionConditions...)
 	canonical.NextActions = appendUniqueText(canonical.NextActions, companion.NextActions...)
 	canonical.RelatedAgendaIDs = uniqueNonEmptyIDs(append(canonical.RelatedAgendaIDs, companion.RelatedAgendaIDs...))
+	if canonical.InformationStatus != informationStatusGrounded && companion.InformationStatus == informationStatusGrounded {
+		canonical.InformationStatus = informationStatusGrounded
+	}
 	if canonical.Status != "resolved" && companion.Status == "resolved" {
 		canonical.Status = companion.Status
 	}
@@ -1782,7 +2120,12 @@ func auditHeuristicDefectCount(findings []treeAuditPrecheckFinding) int {
 		switch finding.Type {
 		case TreeAuditSubjectMismatch, TreeAuditCrossAgendaContamination,
 			TreeAuditCandidateMixedSubjects, TreeAuditTopicOutlier,
-			TreeAuditGroupOutlier:
+			TreeAuditGroupOutlier, TreeAuditGenericTopicLabel,
+			TreeAuditTopicLabelNotDerivedFromChildren,
+			TreeAuditRiskTodoSubjectFragmentation, TreeAuditRelatedActionOutsideRiskTopic,
+			TreeAuditLeadingParticleFragment, TreeAuditAnaphoraTargetMissing,
+			TreeAuditIncompleteSTTSegmentItem, TreeAuditDecisionMissingObject,
+			TreeAuditNoAgendaFalsePositiveFromModifier:
 			count++
 		}
 	}

@@ -93,10 +93,26 @@ const (
 )
 
 var (
-	resolutionClosurePattern     = regexp.MustCompile(`(?:解決済み?|解消(?:した|済み)?|対応(?:できる|可能|済み|完了)|結論が出た|回答(?:した|済み|確定)|決定(?:した|事項|済み)?|確定(?:した|済み)?|採用(?:した)?|とすることに(?:する|します)|方針に(?:する|します)|完了(?:した|済み)?|実施済み|終え(?:た|ました))`)
-	resolutionOpenPattern        = regexp.MustCompile(`(?:未解決|未決定|未確定|まだ(?:決まって|決定して|確定して)い(?:ない|ません)|決まってい(?:ない|ません)|決定しない|次回(?:の会議で)?検討|再検討|持ち越し|今後も検討|判断を保留)`)
-	serverExplicitClosurePattern = regexp.MustCompile(`(?:解決済み|解決した|解消した|問題.{0,24}対応できる|対応できると判断|結論が出た|方針が確定した|この論点は閉じる)`)
+	resolutionClosurePattern     = regexp.MustCompile(`(?:解決済み?|解消(?:した|済み)?|対応(?:できる|可能|済み|完了)|結論が出た|回答(?:した|済み|確定)|決定(?:した|事項|済み)?|確定(?:した|済み)?|採用(?:した)?|とすることに(?:する|します)|方針に(?:する|します)|完了(?:した|済み)?|実施済み|終え(?:た|ました)|復旧(?:した|しました|が?完了|済み)|正常(?:になった|になりました|化した|に戻った)|接続が正常|疎通(?:を|が)?確認)`)
+	resolutionOpenPattern        = regexp.MustCompile(`(?:未解決|未決定|未確定|まだ(?:決まって|決定して|確定して)い(?:ない|ません)|決まってい(?:ない|ません)|決定しない|次回(?:の会議で)?検討|再検討|持ち越し|今後も検討|判断を保留|まだ.{0,16}(?:接続できない|できていない|できない)|一部.{0,12}(?:接続できない|つながらない|できない)|未解決事項として残|未確定事項として残)`)
+	serverExplicitClosurePattern = regexp.MustCompile(`(?:解決済み|解決した|解消した|問題.{0,24}対応できる|対応できると判断|結論が出た|方針が確定した|この論点は閉じる|復旧(?:した|しました|が?完了|済み)|正常に(?:なった|なりました|戻った)|正常になったことを確認|接続が正常|疎通(?:を|が)確認)`)
+	// recoveryClosurePattern marks a serverExplicitClosurePattern match as a
+	// "recovery" closure (a fault/connectivity restoration statement) rather
+	// than an ordinary decision/agreement closure. synthesizeExplicitClosureUpdates
+	// treats recovery closures differently: they may resolve every matching
+	// open issue/risk instead of a single best target, but never create a new
+	// issue and never target investigation-subtype issues or todos (recovering
+	// the fault is not the same as concluding the root-cause investigation).
+	recoveryClosurePattern       = regexp.MustCompile(`(?:復旧|正常(?:に|化)|疎通)`)
 	closureProblemSubjectPattern = regexp.MustCompile(`(?:問題|懸念|課題|不足|未確認|未確定|未決定)`)
+	// itemUnderContinuedInvestigationPattern marks an item's own title/body as
+	// stating that the item's subject itself is still under investigation or
+	// confirmation (e.g. "原因確定には追加調査が必要"). A recovery closure
+	// (see recoveryClosurePattern) only reports that connectivity/a fault was
+	// restored; it must never resolve an item that explicitly says its own
+	// root cause or subject is still unconfirmed, even when the recovery
+	// sentence is loosely similar in subject matter.
+	itemUnderContinuedInvestigationPattern = regexp.MustCompile(`(?:追加(?:の)?調査が必要|調査(?:を)?継続|原因確定には|確認できていない|特定できていない|究明が必要|調査中)`)
 )
 
 // synthesizeExplicitClosureUpdates is a conservative server-side fallback for
@@ -140,6 +156,32 @@ func synthesizeExplicitClosureUpdates(previous, diff []liveAnalysisItem, scope l
 		}
 		if stats != nil {
 			stats.ExplicitClosureCandidates++
+		}
+		if recoveryClosurePattern.MatchString(text) {
+			matchedAny := false
+			for _, candidate := range items {
+				if !recoveryClosureEligibleItem(candidate, text) {
+					continue
+				}
+				addUpdate(candidate.ID, sequenceNo)
+				matchedAny = true
+			}
+			if !matchedAny {
+				if stats != nil {
+					stats.ClosureTargetsNotFound++
+				}
+				recordResolution(stats, resolutionEvaluation{
+					Requested:       true,
+					RequestedStatus: "resolved",
+					Result:          resolutionRejected,
+					Reason:          "no_target",
+				})
+				continue
+			}
+			if stats != nil {
+				stats.ClosureTargetsFound++
+			}
+			continue
 		}
 		generic := strings.Contains(text, "この論点") && !closureProblemSubjectPattern.MatchString(strings.ReplaceAll(text, "この論点", ""))
 		target := ""
@@ -197,6 +239,33 @@ func synthesizeExplicitClosureUpdates(previous, diff []liveAnalysisItem, scope l
 		updates = append(updates, updatesByID[id])
 	}
 	return diff, updates
+}
+
+// recoveryClosureEligibleItem reports whether item is a valid resolved
+// target for a recovery-type closure sentence (see recoveryClosurePattern):
+// an open, non-investigation issue or risk whose subject is at least
+// loosely related to the recovery sentence. todo is excluded -- restoring
+// connectivity does not itself complete a follow-up action item --
+// investigation-subtype issues are excluded so a fault recovery never
+// silently resolves the root-cause investigation (recovery != root-cause
+// resolution), and items whose own title/body says their subject is still
+// under investigation (see itemUnderContinuedInvestigationPattern) are
+// excluded for the same reason, regardless of subtype.
+func recoveryClosureEligibleItem(item liveAnalysisItem, text string) bool {
+	if item.Kind != "issue" && item.Kind != "risk" {
+		return false
+	}
+	if item.Subtype == issueSubtypeInvestigation {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(item.Status))
+	if status == "resolved" || status == "dismissed" {
+		return false
+	}
+	if itemUnderContinuedInvestigationPattern.MatchString(item.Title + " " + item.Body) {
+		return false
+	}
+	return semanticItemSimilarity(item.Title+" "+item.Body, text) >= 0.12
 }
 
 func bestExplicitClosureTarget(items []liveAnalysisItem, text string, sequenceNo int64, allowTodo bool) string {

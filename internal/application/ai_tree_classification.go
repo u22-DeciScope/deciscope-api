@@ -34,7 +34,7 @@ const (
 	assignmentSourceNoAgendaSpan = "no_agenda_span" // 明示的なアジェンダ外区間
 
 	// topic.origin: topicノードの由来。
-	topicOriginAgenda  = "agenda"  // 会議前アジェンダ(stable ID, 削除・統合不可)
+	topicOriginAgenda  = "agenda"  // 会議前アジェンダからmaterializeされたtopic
 	topicOriginDynamic = "dynamic" // 会議中に昇格した動的topic
 	topicOriginSystem  = "system"  // root / topic-unclassified
 )
@@ -121,6 +121,7 @@ type emergingTopicCandidate struct {
 	ID                string   `json:"id"`
 	Label             string   `json:"label"`
 	Description       string   `json:"description,omitempty"`
+	SubjectKey        string   `json:"subjectKey,omitempty"`
 	OriginalSubject   string   `json:"originalSubject,omitempty"`
 	CurrentSubject    string   `json:"currentSubject,omitempty"`
 	SubjectHistory    []string `json:"subjectHistory,omitempty"`
@@ -173,6 +174,9 @@ func initializeCandidateSubject(candidate *emergingTopicCandidate) {
 		return
 	}
 	subject := strings.TrimSpace(candidate.Label + " " + candidate.Description)
+	if candidate.SubjectKey == "" {
+		_, candidate.SubjectKey = canonicalCandidateID(candidate.Label, candidate.Description)
+	}
 	if candidate.OriginalSubject == "" {
 		candidate.OriginalSubject = subject
 	}
@@ -271,20 +275,19 @@ func normalizeProposedTopicID(id, label string) string {
 		}
 		id = "topic-" + slug
 	}
-	if !strings.HasPrefix(id, "topic-") && !strings.HasPrefix(id, agendaTopicIDPrefix) {
+	if !strings.HasPrefix(id, "topic-") {
 		id = "topic-" + id
 	}
 	return id
 }
 
-// deriveTopicOrigin backfills origin for topics stored before the origin field
-// existed: agenda ids from the meeting context are agenda topics, the root and
-// the unclassified topic are system, everything else is dynamic.
-func deriveTopicOrigin(topicID string, agendaIDs map[string]struct{}) string {
-	if topicID == treeRootNodeID || topicID == treeUnclassifiedTopicID {
+// deriveTopicOrigin backfills origin without interpreting the node ID. Agenda
+// identity is carried exclusively by AgendaRefs after legacy normalization.
+func deriveTopicOrigin(topic liveAnalysisTreeNode) string {
+	if topic.ID == treeRootNodeID || topic.ID == treeUnclassifiedTopicID {
 		return topicOriginSystem
 	}
-	if _, ok := agendaIDs[topicID]; ok {
+	if len(topic.AgendaRefs) > 0 {
 		return topicOriginAgenda
 	}
 	return topicOriginDynamic
@@ -307,6 +310,8 @@ type assignmentDecision struct {
 	EvidenceSequenceNos    []int64
 	ResolvedAgendaSpanMode string
 	AssignmentReason       string
+	AgendaMaterialized     bool
+	CandidateComparison    string
 }
 
 // assignmentDecision.Decision の語彙。

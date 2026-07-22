@@ -73,11 +73,13 @@ func TestDeterministicGroupIncludesResolvedHistoryWithoutCrossingAgenda(t *testi
 		t.Fatalf("diagnostics=%+v tree=%+v", diagnostics, tree)
 	}
 	groups := treeNodesByKind(tree, "group")
-	if len(groups) != 1 || groups[0].ParentID != "agenda-1" {
+	agenda1 := agendaTopicNodeByRef(tree, "agenda-1")
+	agenda2 := agendaTopicNodeByRef(tree, "agenda-2")
+	if len(groups) != 1 || agenda1 == nil || groups[0].ParentID != agenda1.ID {
 		t.Fatalf("groups=%+v stats=%+v", groups, stats)
 	}
 	children := directTreeChildren(tree, groups[0].ID)
-	if len(children) != 3 || itemTopicID(tree, "question-noise") != "agenda-2" {
+	if len(children) != 3 || agenda2 == nil || itemTopicID(tree, "question-noise") != agenda2.ID {
 		t.Fatalf("children=%+v tree=%+v", children, tree)
 	}
 	if treeDepthOf(tree) != 3 || computeTreeHealth(tree).SingleChildGroupCount != 0 || stats.GroupCandidates < 1 || stats.GroupsCreated != 1 {
@@ -206,7 +208,8 @@ func TestSession0f9e20497397cedfDeterministicReplay(t *testing.T) {
 		}
 	}
 	birdIssue := findItemByTitlePart(state.Items, "観測地点が不足")
-	if birdIssue == nil || birdIssue.Kind != "issue" || birdIssue.Status != "resolved" || itemTopicID(state.Tree, birdIssue.ID) != "agenda-1" {
+	birdTopic := agendaTopicNodeByRef(state.Tree, "agenda-1")
+	if birdIssue == nil || birdTopic == nil || birdIssue.Kind != "issue" || birdIssue.Status != "resolved" || itemTopicID(state.Tree, birdIssue.ID) != birdTopic.ID {
 		t.Fatalf("bird issue=%+v topic=%s", birdIssue, itemTopicID(state.Tree, birdIssue.ID))
 	}
 	if !containsSequence(birdIssue.ResolutionEvidenceSequenceNos, 7) || !containsSequence(birdIssue.ResolutionEvidenceSequenceNos, 27) {

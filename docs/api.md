@@ -241,9 +241,16 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
 - live分析の内部動作: モデルは各ラウンドで差分（新規・変化したitem、親topicの提案、
   解消済みidの `resolvedIds`）のみを申告し、サーバーが前回状態へ決定論的にマージします。
   保存・配信されるpayloadは常にマージ後の完全な状態なので、クライアントは差分を意識する必要はありません
-- live payloadの `items[].kind` は `issue | open_issue | question | risk | fact | decision | todo`、
-  `severity` は `low | medium | high`、`status` は `open`（新規）| `updated`（更新）|
-  `resolved`（解決済）です。
+- live payloadの `items[].kind` は `issue | risk | fact | decision | todo` です。
+  `kind: "issue"` の場合は `subtype` が `discussion | confirmation | question | investigation`
+  のいずれかになり、論点・確認事項・質問・調査事項を表します。`severity` は
+  `low | medium | high`、`status` は `open`（新規）| `updated`（更新）|
+  `resolved`（解決済）です。未解決/解決済みはkindではなくstatusで表現します。
+  旧payloadの `open_issue` / `question` / `confirmation` / `investigation` は、DB migrationと
+  読み出し時互換処理によりcanonicalな `issue + subtype` へ変換されます。
+- `items[].informationStatus` は `grounded | tentative` です。主題を発言から復元できない
+  substantiveなissueは即時削除せず `tentative` で保持し、後続発言で主題が確定した時点で
+  同じcanonical itemを `grounded` へ更新します。
   未解決（`status` が `resolved` 以外）のitemと解決済み（`status: "resolved"`）のitemは
   それぞれ独立に最大50件までで、超過時は各区分ごとに最も古いitemから除去されます
   （解決済みitemが未解決itemの流入で追い出されること、およびその逆はありません）
@@ -258,7 +265,7 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
   3件以上の直接detailという強い根拠がある場合だけ深さ5を許可し、絶対に深さ5を超えません。
   深くできるのはgroupだけで、detail同士の親子化は禁止です。groupを作る根拠が2件未満なら
   detail itemをtopic/group直下に置きます。ノードの `kind`
-  （`topic | group | issue | open_issue | question | risk | fact | decision | todo`）は
+  （`topic | group | issue | risk | fact | decision | todo`）は
   `tree.update` イベント（[events.md](./events.md)）と同じ語彙です。topicノードと未解決
   （`status` が `resolved` 以外）の非topicノードは合わせて最大36個で、超過時はtopicノードを
   残して最も古い非topicノードから除去されます。解決済み（`status: "resolved"`）の非topicノードは
@@ -271,17 +278,25 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
   切り詰めます。`tree.nodes[].relatedItemIds` は関連する `items[].id` の配列です。存在しないitem idや
   重複idはサーバー側で除外されます。既存互換のため、ノードidがitem idと一致する場合は
   `relatedItemIds` が空でも関連カードとして扱えます。`tree.nodes[].status` は任意で、
-  `resolved` の場合もノードは削除されず、解決済みとして残ります
+  `resolved` の場合もノードは削除されず、解決済みとして残ります。issueノードの
+  `subtype` は対応itemと同じ値です
 - `items[].relatedAgendaIds` は横断agendaへの副次的な参照です。canonicalな親は
   `tree.nodes[].parentId` の1つだけで、`relatedAgendaIds` から複数親edgeは作りません。
   `agendaRole: "action_summary"` のagenda nodeは、activeなTODO・未解決itemを
-  `relatedItemIds` でも参照できるため、内容別topicの所属を失わず横断表示できます
+  `relatedItemIds` でも参照できるため、内容別topicの所属を失わず横断表示できます。
+  action-summary agendaが事前入力に無い会議では、activeで分類済みのTODO・未解決itemに
+  参照専用ID `action-summary-fallback` を付けます。これはagenda anchorやtree nodeではなく、
+  canonical itemを複製しないAction Summary projectionのview keyです。resolved・inactive・
+  tentative・unclassified itemはfallback projectionに含めません
 - `treeVersion` はtreeを生成したlive analysis versionです。`treeChanges` はそのversionで
   サーバーが算出した構造差分で、`newNodeIds` / `updatedNodeIds` / `reparentedNodeIds` /
   `resolvedNodeIds` / `promotedNodeIds` を必要なものだけ含みます。旧payloadでは省略されます
 - tree auditorが検証済みpatchを適用したversionでは、任意の
   `changeSource: "tree_auditor"`, `auditRunId`, `basedOnTreeVersion` が追加されます。
   `treeChanges.source` / `treeChanges.auditRunId`も同じ由来を示します。旧クライアントは無視できます
+- tree auditorの`rename_topic`は既存topicの`label`だけを安全に更新します。
+  node `id`、`parentId`、children、`agendaRefs`は維持され、更新したtopic IDは
+  `treeChanges.updatedNodeIds`に含まれます
 
 ## Teams Bot会議セッション
 

@@ -11,7 +11,7 @@ import (
 // 連結するだけの平文ではなく、構造化された Meeting Context として扱うための
 // 型と正規化処理を持つ。Meeting Context は全AIタスク(抽出・分類・再編成・最終
 // 整理)が共通に参照する canonical な事前情報で、アジェンダは stable ID を持つ
-// 初期topicの生成元になる。
+// 分類anchorになる。実際に議論されるまでtree topicは生成しない。
 
 const (
 	// treeRootNodeID is the stable id of the single root node of every
@@ -26,16 +26,20 @@ const (
 	// topic.
 	treeUnclassifiedTopicLabel = "追加論点"
 
-	// agendaTopicIDPrefix + 1-based order is the stable id of each agenda
-	// topic (e.g. "agenda-1"). The same agenda text always yields the same
-	// ids, so analysis rounds and model switches never regenerate them.
-	agendaTopicIDPrefix = "agenda-"
+	// agendaIDPrefix + 1-based order is the stable ID of each logical agenda
+	// record (e.g. "agenda-1"). It may be an assignment target, but it is
+	// never reused as a discussion-tree node ID.
+	agendaIDPrefix = "agenda-"
 
 	meetingContextMaxAgendaItems = 10
 	meetingContextMaxDirectives  = 10
 
 	agendaRolePrimary       = "primary"
 	agendaRoleActionSummary = "action_summary"
+	// virtualActionSummaryProjectionID is a reference-only view key used when
+	// pre-meeting context omitted an action-summary agenda. It is never a tree
+	// node or agenda anchor and therefore cannot become a second parent.
+	virtualActionSummaryProjectionID = "action-summary-fallback"
 )
 
 // meetingContext is the structured, role-separated form of the pre-meeting
@@ -147,6 +151,16 @@ func (c *meetingContext) logicalActionSummaryAgendaID() string {
 	return ""
 }
 
+func (c *meetingContext) actionSummaryProjectionID() string {
+	if c == nil {
+		return ""
+	}
+	if agendaID := c.logicalActionSummaryAgendaID(); agendaID != "" {
+		return agendaID
+	}
+	return virtualActionSummaryProjectionID
+}
+
 // reconcileMeetingContextWithFallback applies the planner as a bounded label
 // refinement. The deterministic meeting record remains authoritative for the
 // agenda count/order/IDs, preventing a hallucinated fifth agenda from becoming
@@ -251,7 +265,7 @@ func parseAgendaItems(agenda string) []agendaItem {
 		seen[key] = struct{}{}
 		order := len(items) + 1
 		items = append(items, agendaItem{
-			ID:    fmt.Sprintf("%s%d", agendaTopicIDPrefix, order),
+			ID:    fmt.Sprintf("%s%d", agendaIDPrefix, order),
 			Title: truncateRunes(title, liveAnalysisTopicLabelMaxRunes),
 			Order: order,
 			Role:  inferAgendaRole(title, ""),
@@ -300,7 +314,7 @@ func normalizeForMatch(value string) string {
 // renderMeetingContextSections renders the role-separated meeting context for
 // prompts. Each input keeps its own role: purpose is the採用判断基準, the
 // background is interpretation-only knowledge, and agenda items are the fixed
-// initial topics. The補足指示 is intentionally NOT rendered here; it is
+// classification anchors. The補足指示 is intentionally NOT rendered here; it is
 // appended separately, below the system rules, so it can never read as a
 // higher-priority instruction (see buildLiveAnalysisUserPrompt).
 func renderMeetingContextSections(c *meetingContext) string {
@@ -326,8 +340,8 @@ func renderMeetingContextSections(c *meetingContext) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// renderAgendaTopics renders the stable agenda topics (plus the unclassified
-// topic) as the fixed classification targets for prompts.
+// renderAgendaTopics renders stable agenda anchors as high-priority
+// classification targets. Their presence does not imply a tree topic exists.
 func renderAgendaTopics(c *meetingContext) string {
 	if c == nil || len(c.Agenda) == 0 {
 		return ""
@@ -382,7 +396,7 @@ func unmarshalMeetingContext(payload json.RawMessage) *meetingContext {
 	// 復元したアジェンダIDの欠損を防ぐ(古い/手書きの行への防御)。
 	for i := range c.Agenda {
 		if strings.TrimSpace(c.Agenda[i].ID) == "" {
-			c.Agenda[i].ID = fmt.Sprintf("%s%d", agendaTopicIDPrefix, i+1)
+			c.Agenda[i].ID = fmt.Sprintf("%s%d", agendaIDPrefix, i+1)
 		}
 		c.Agenda[i].Role = effectiveAgendaRole(c.Agenda[i].Role, c.Agenda[i].Title, "")
 	}

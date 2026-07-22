@@ -361,6 +361,7 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 	if schedulerRegistered {
 		service.SetMeetingTreeAuditRepository(auditRepository)
 	}
+	service.SetMeetingAgendaProgressOverridesRepository(postgresrepository.NewMeetingAgendaProgressOverridesRepository(postgresDB))
 	return service
 }
 

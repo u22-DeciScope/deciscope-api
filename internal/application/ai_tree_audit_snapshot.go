@@ -18,10 +18,11 @@ type treeAuditSnapshot struct {
 	CoverageThroughSequenceNo int64                        `json:"coverageThroughSequenceNo"`
 	Nodes                     []treeAuditSnapshotNode      `json:"nodes"`
 	Candidates                []treeAuditSnapshotCandidate `json:"candidates"`
-	// AgendaIDs lists the stable canonical node IDs of the fixed pre-meeting
-	// agenda topics (root excluded). Operations may use them anywhere a
-	// canonical node ID is expected.
-	AgendaIDs []string `json:"agendaIds"`
+	// AgendaIDs lists logical pre-meeting agenda-record IDs. They are reference
+	// values only and must never be used where an operation expects a canonical
+	// tree-node ID; concrete topic IDs are in AgendaAnchors.MaterializedTopicIDs.
+	AgendaIDs     []string                        `json:"agendaIds"`
+	AgendaAnchors []treeAuditSnapshotAgendaAnchor `json:"agendaAnchors"`
 	// ValidParentCanonicalNodeIDs lists the existing topic/group container
 	// node IDs an operation may use as a toParent (action_summary agenda
 	// excluded).
@@ -43,11 +44,24 @@ type treeAuditSnapshotNode struct {
 	Dynamic                  bool                   `json:"dynamic"`
 	Tentative                bool                   `json:"tentative"`
 	Status                   string                 `json:"status,omitempty"`
+	Subtype                  string                 `json:"subtype,omitempty"`
+	InformationStatus        string                 `json:"informationStatus,omitempty"`
+	CreatedAtVersion         int64                  `json:"createdAtVersion,omitempty"`
 	ClassificationConfidence float64                `json:"classificationConfidence,omitempty"`
 	AssignmentReason         string                 `json:"assignmentReason,omitempty"`
 	CandidateTopicID         string                 `json:"candidateTopicId,omitempty"`
 	EvidenceSequenceNos      []int64                `json:"evidenceSequenceNos,omitempty"`
 	EvidenceRoles            []treeAuditEvidenceRef `json:"evidenceRoles,omitempty"`
+	AgendaRefs               []string               `json:"agendaRefs,omitempty"`
+	MergedFromNodeIDs        []string               `json:"mergedFromNodeIds,omitempty"`
+	AgendaSplitGroupID       string                 `json:"agendaSplitGroupId,omitempty"`
+}
+
+type treeAuditSnapshotAgendaAnchor struct {
+	AgendaID             string   `json:"agendaId"`
+	OriginalTitle        string   `json:"originalTitle"`
+	Status               string   `json:"status"`
+	MaterializedTopicIDs []string `json:"materializedTopicIds"`
 }
 
 type treeAuditEvidenceRef struct {
@@ -82,6 +96,7 @@ type treeAuditSnapshotBuild struct {
 func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments []domain.TranscriptSegment, mc *meetingContext, cfg TreeAuditConfig) (treeAuditSnapshotBuild, error) {
 	cfg = cfg.normalized()
 	state := previousLiveAnalysisState(payload)
+	normalizeLegacyAgendaTopicIDs(&state, mc, nil)
 	if state.Tree == nil || len(state.Tree.Nodes) == 0 || state.TreeVersion <= 0 {
 		return treeAuditSnapshotBuild{}, fmt.Errorf("tree audit snapshot requires a non-empty versioned tree")
 	}
@@ -111,19 +126,22 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 			CanonicalNodeID: node.ID, NodeType: node.Kind, Title: node.Label,
 			Description:              firstNonEmptyTrimmed(node.Description, item.Body),
 			ParentCanonicalNodeID:    node.ParentID,
-			Fixed:                    node.ID == treeRootNodeID || node.Origin == topicOriginAgenda,
+			Fixed:                    node.ID == treeRootNodeID,
 			Dynamic:                  node.Origin == topicOriginDynamic,
 			Tentative:                item.ClassificationStatus == classificationTentative,
 			Status:                   firstNonEmptyTrimmed(node.Status, item.Status),
+			Subtype:                  firstNonEmptyTrimmed(node.Subtype, item.Subtype),
+			InformationStatus:        item.InformationStatus,
+			CreatedAtVersion:         node.CreatedAtVersion,
 			ClassificationConfidence: item.AssignmentConfidence,
 			AssignmentReason:         item.AssignmentReason,
 			CandidateTopicID:         item.CandidateTopicID,
 			EvidenceSequenceNos:      append([]int64(nil), item.EvidenceSequenceNos...),
 			EvidenceRoles:            refs,
+			AgendaRefs:               append([]string(nil), node.AgendaRefs...),
+			MergedFromNodeIDs:        append([]string(nil), node.MergedFromNodeIDs...),
+			AgendaSplitGroupID:       node.AgendaSplitGroupID,
 		})
-		if node.Origin == topicOriginAgenda {
-			agendaIDs = append(agendaIDs, node.ID)
-		}
 		if (node.Kind == "topic" || node.Kind == "group") && node.ID != treeRootNodeID && node.AgendaRole != agendaRoleActionSummary {
 			validParentIDs = append(validParentIDs, node.ID)
 		}
@@ -133,6 +151,11 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 	// so it belongs in the advisory validParentCanonicalNodeIds list even
 	// though the loop above deliberately excludes it from itself.
 	validParentIDs = append(validParentIDs, treeRootNodeID)
+	anchors := make([]treeAuditSnapshotAgendaAnchor, 0, len(state.AgendaAnchors))
+	for _, anchor := range reconcileAgendaAnchors(state.AgendaAnchors, mc, state.Tree, state.Items, state.TreeVersion, false) {
+		agendaIDs = append(agendaIDs, anchor.AgendaID)
+		anchors = append(anchors, treeAuditSnapshotAgendaAnchor{AgendaID: anchor.AgendaID, OriginalTitle: anchor.OriginalTitle, Status: anchor.Status, MaterializedTopicIDs: append([]string(nil), anchor.MaterializedTopicIDs...)})
+	}
 	candidates := make([]treeAuditSnapshotCandidate, 0, len(state.EmergingTopics))
 	for _, candidate := range state.EmergingTopics {
 		snapshotCandidate := treeAuditSnapshotCandidate{
@@ -151,7 +174,7 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 		SessionID: sessionID, TreeVersion: state.TreeVersion,
 		CoverageThroughSequenceNo: state.CoveredThroughSequenceNo,
 		Nodes:                     nodes, Candidates: candidates, RecentTreeChanges: state.TreeChanges,
-		AgendaIDs: agendaIDs, ValidParentCanonicalNodeIDs: validParentIDs,
+		AgendaIDs: agendaIDs, AgendaAnchors: anchors, ValidParentCanonicalNodeIDs: validParentIDs,
 		PrecheckFindings: precheck, EvidenceSegments: evidence,
 		RecentTranscript: recent, Compressed: compressed,
 	}
@@ -235,10 +258,10 @@ func selectTreeAuditNodes(state liveAnalysisPayload, findings []treeAuditPrechec
 	}
 	nodes := append([]liveAnalysisTreeNode(nil), state.Tree.Nodes...)
 	sort.SliceStable(nodes, func(i, j int) bool {
-		fixedI := nodes[i].ID == treeRootNodeID || nodes[i].Origin == topicOriginAgenda
-		fixedJ := nodes[j].ID == treeRootNodeID || nodes[j].Origin == topicOriginAgenda
-		if fixedI != fixedJ {
-			return fixedI
+		anchorLinkedI := nodes[i].ID == treeRootNodeID || len(nodes[i].AgendaRefs) > 0 || nodes[i].Origin == topicOriginAgenda
+		anchorLinkedJ := nodes[j].ID == treeRootNodeID || len(nodes[j].AgendaRefs) > 0 || nodes[j].Origin == topicOriginAgenda
+		if anchorLinkedI != anchorLinkedJ {
+			return anchorLinkedI
 		}
 		if priority[nodes[i].ID] != priority[nodes[j].ID] {
 			return priority[nodes[i].ID] > priority[nodes[j].ID]
@@ -249,6 +272,7 @@ func selectTreeAuditNodes(state liveAnalysisPayload, findings []treeAuditPrechec
 }
 
 func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContext, roles map[int64]treeAuditEvidenceRole, cfg TreeAuditConfig) []treeAuditPrecheckFinding {
+	normalizeLegacyAgendaTopicIDs(&state, mc, nil)
 	cfg = cfg.normalized()
 	if state.Tree == nil {
 		return nil
@@ -304,25 +328,203 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 	}
 
 	containers := make([]liveAnalysisTreeNode, 0)
+	childCounts := make(map[string]int, len(state.Tree.Nodes))
+	for _, node := range state.Tree.Nodes {
+		if node.ParentID != "" {
+			childCounts[node.ParentID]++
+		}
+	}
 	for _, node := range state.Tree.Nodes {
 		if node.Kind == "topic" && node.ID != treeRootNodeID && node.ID != treeUnclassifiedTopicID {
 			containers = append(containers, node)
 		}
+		if node.Kind == "topic" && node.ID != treeRootNodeID && childCounts[node.ID] > 0 && genericTopicLabel(node.Label) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditGenericTopicLabel, NodeIDs: []string{node.ID}, Reason: "topic label does not identify the concrete child subject", Score: 1})
+			add(treeAuditPrecheckFinding{Type: TreeAuditTopicLabelNotDerivedFromChildren, NodeIDs: []string{node.ID}, Reason: "generic topic label is not derived from its active children", Score: 1})
+			if childCounts[node.ID] == 1 {
+				add(treeAuditPrecheckFinding{Type: TreeAuditSingleChildGenericTopic, NodeIDs: []string{node.ID}, Reason: "single-child topic uses a staging label instead of the child subject", Score: 1})
+			}
+		}
+		if childCounts[node.ID] == 0 && treeAuditRemovableEmptyContainerKind(node) {
+			findingType := TreeAuditEmptyGroup
+			if node.ID == treeUnclassifiedTopicID {
+				findingType = TreeAuditEmptyUnclassifiedContainer
+			}
+			add(treeAuditPrecheckFinding{Type: findingType, NodeIDs: []string{node.ID}, Reason: "container has no active child", Score: 1})
+		}
 	}
+	// Agenda lifecycle findings are computed from canonical records/references,
+	// not from title prefixes. They are included even when the model later
+	// returns no operations, making final-review gaps observable.
+	agendaIntegrity := validateTreeIntegrity(state.Tree, state.Items, mc)
+	for _, topicID := range agendaIntegrity.EmptyAgendaTopicIDs {
+		add(treeAuditPrecheckFinding{Type: TreeAuditPlannedAgendaWithoutEvidence, NodeIDs: []string{topicID}, Reason: "agenda topic exists without grounded child evidence", Score: 1})
+		add(treeAuditPrecheckFinding{Type: TreeAuditEmptyAgendaTopic, NodeIDs: []string{topicID}, Reason: "materialized agenda topic has no active child", Score: 1})
+		add(treeAuditPrecheckFinding{Type: TreeAuditAgendaTopicShouldDematerialize, NodeIDs: []string{topicID}, Reason: "empty agenda topic should return to its logical planned record", Score: 1})
+	}
+	for _, agendaID := range agendaIntegrity.DuplicateAgendaMaterializations {
+		add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateAgendaMaterialization, RelatedNodeIDs: []string{agendaID}, Reason: "one agenda record is materialized by multiple topics", Score: 1})
+	}
+	records := agendaRecordMap(mc)
+	materializedByAgenda := make(map[string]bool, len(records))
+	for _, node := range state.Tree.Nodes {
+		if node.Kind != "topic" {
+			continue
+		}
+		refs := topicAgendaRefs(node, records)
+		for _, agendaID := range refs {
+			materializedByAgenda[agendaID] = true
+		}
+		if node.Origin == topicOriginAgenda && len(refs) == 0 {
+			add(treeAuditPrecheckFinding{Type: TreeAuditTopicWithoutActiveAgendaRef, NodeIDs: []string{node.ID}, Reason: "agenda-origin topic has no active agenda reference", Score: 1})
+		}
+	}
+	// Inspect the persisted lifecycle state before reconciliation. Reconciliation
+	// intentionally derives the current status from the tree and would otherwise
+	// turn a corrupt "discussed but missing topic" record back into planned,
+	// hiding exactly the inconsistency the audit is expected to report.
+	for _, anchor := range state.AgendaAnchors {
+		record, exists := records[anchor.AgendaID]
+		if !exists || effectiveAgendaRole(record.Role, record.Title, "") == agendaRoleActionSummary {
+			continue
+		}
+		if anchor.Status == agendaStatusDiscussed && !materializedByAgenda[anchor.AgendaID] {
+			add(treeAuditPrecheckFinding{Type: TreeAuditDiscussedAgendaMissingTopic, RelatedNodeIDs: []string{anchor.AgendaID}, Reason: "persisted discussed agenda record has no materialized topic", Score: 1})
+		}
+	}
+	anchors := reconcileAgendaAnchors(state.AgendaAnchors, mc, state.Tree, state.Items, state.TreeVersion, false)
+	for _, anchor := range anchors {
+		if anchor.Status == agendaStatusDiscussed && len(anchor.MaterializedTopicIDs) == 0 {
+			add(treeAuditPrecheckFinding{Type: TreeAuditDiscussedAgendaMissingTopic, RelatedNodeIDs: []string{anchor.AgendaID}, Reason: "discussed agenda record has no materialized topic", Score: 1})
+		}
+	}
+	for _, agendaTopic := range containers {
+		if len(topicAgendaRefs(agendaTopic, records)) == 0 {
+			continue
+		}
+		for _, dynamicTopic := range containers {
+			if dynamicTopic.ID == agendaTopic.ID || dynamicTopic.Origin != topicOriginDynamic {
+				continue
+			}
+			if semanticItemSimilarity(agendaTopic.Label+" "+agendaTopic.Description, dynamicTopic.Label+" "+dynamicTopic.Description) >= 0.72 {
+				add(treeAuditPrecheckFinding{Type: TreeAuditAgendaTopicShouldMergeDynamic, NodeIDs: []string{agendaTopic.ID, dynamicTopic.ID}, Reason: "agenda and dynamic topics represent the same concrete discussion", Score: 0.9})
+			}
+		}
+	}
+	// Action Summary is a reference-only projection. When no source agenda was
+	// planned, the virtual projection ID still has to be attached to active,
+	// canonical TODOs; no duplicate item or tree node is created.
+	if mc != nil && len(mc.actionSummaryAgendaIDs()) == 0 {
+		missing := make([]string, 0)
+		for _, item := range state.Items {
+			if item.Kind != "todo" || item.Status == "resolved" || item.Inactive || item.CandidateInactive ||
+				item.ClassificationStatus == classificationTentative || item.ClassificationStatus == classificationUnclassified {
+				continue
+			}
+			if !containsExactString(item.RelatedAgendaIDs, virtualActionSummaryProjectionID) {
+				missing = append(missing, item.ID)
+			}
+		}
+		if len(missing) > 0 {
+			add(treeAuditPrecheckFinding{Type: TreeAuditActionSummaryMissingActiveTodos, NodeIDs: missing, Reason: "active TODOs are absent from the reference-only Action Summary fallback", Score: 1})
+		}
+	}
+	forcedNoAgenda := make([]string, 0)
 	for _, node := range state.Tree.Nodes {
 		item, detail := items[node.ID]
 		if !detail {
 			continue
 		}
 		itemText := item.Title + " " + item.Body
+		parent := byID[node.ParentID]
+		// Agenda topics intentionally use the best concrete child as their
+		// materialized display label. The redundant parent/child defect applies
+		// to semantic groups, such as a generic question group containing an
+		// identically named question item, not to that agenda projection rule.
+		sameAsGroup := parent.Kind == "group" && normalizeForMatch(parent.Label) != "" && normalizeForMatch(parent.Label) == normalizeForMatch(node.Label)
+		lowInformationChild := issueTextNeedsReferent(item.Title) || metaOnlyLiveItemText(item.Title+" "+item.Body)
+		if sameAsGroup && lowInformationChild {
+			add(treeAuditPrecheckFinding{Type: TreeAuditParentChildSameTitle, NodeIDs: []string{node.ID}, RelatedNodeIDs: []string{parent.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "child repeats its parent label without an independently distinguishable title", Score: 1})
+			add(treeAuditPrecheckFinding{Type: TreeAuditLowInformationChild, NodeIDs: []string{node.ID}, RelatedNodeIDs: []string{parent.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "same-title child adds no concrete subject or proposition", Score: 1})
+		}
+		if item.Kind == "issue" && issueTextNeedsReferent(item.Title) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditGenericQuestionWithoutSubject, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "question title has no explicit target and requires evidence-grounded rewrite", Score: 1})
+		}
+		if parent.Kind == "topic" && (strings.TrimSpace(item.Body) == "" || semanticItemSimilarity(item.Title, item.Body) >= 0.88) {
+			for _, agendaID := range topicAgendaRefs(parent, records) {
+				record := records[agendaID]
+				if normalizeForMatch(record.Title) == normalizeForMatch(item.Title) {
+					add(treeAuditPrecheckFinding{Type: TreeAuditAgendaTitleCopiedAsItem, NodeIDs: []string{node.ID}, RelatedNodeIDs: []string{parent.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "agenda record title was copied into a child item without additional information", Score: 1})
+					break
+				}
+			}
+		}
+		if item.Kind == "decision" && isMeetingEndOnlyItem(item.Title, item.Body) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditMeetingEndAsDecision, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "meeting closure was persisted as a business decision", Score: 1})
+		}
+		if item.AssignmentSource == assignmentSourceNoAgendaSpan {
+			bestAgendaID, bestScore := "", 0.0
+			for _, candidate := range containers {
+				if len(topicAgendaRefs(candidate, records)) == 0 {
+					continue
+				}
+				score := semanticItemSimilarity(itemText, candidate.Label+" "+candidate.Description)
+				if score > bestScore {
+					bestAgendaID, bestScore = candidate.ID, score
+				}
+			}
+			if bestAgendaID != "" && bestScore >= 0.30 {
+				forcedNoAgenda = append(forcedNoAgenda, node.ID)
+				add(treeAuditPrecheckFinding{Type: TreeAuditAgendaItemForcedNoAgenda, NodeIDs: []string{node.ID}, RelatedNodeIDs: []string{bestAgendaID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "no-agenda assignment conflicts with a materially stronger canonical agenda subject", Score: bestScore})
+				add(treeAuditPrecheckFinding{Type: TreeAuditAgendaReentryMissed, NodeIDs: []string{node.ID}, RelatedNodeIDs: []string{bestAgendaID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "agenda-aligned evidence remained under a no-agenda assignment after reentry", Score: bestScore})
+				add(treeAuditPrecheckFinding{Type: TreeAuditNoAgendaFalsePositiveFromModifier, NodeIDs: []string{node.ID}, RelatedNodeIDs: []string{bestAgendaID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "no-agenda classification lacks an explicit topic transition and conflicts with the agenda subject; a modifier phrase must not open a new topic", Score: bestScore})
+				if item.Kind == "todo" && topContainer(node.ID) == treeUnclassifiedTopicID {
+					add(treeAuditPrecheckFinding{Type: TreeAuditUnclassifiedTodoAfterReentry, NodeIDs: []string{node.ID}, RelatedNodeIDs: []string{bestAgendaID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "active agenda TODO remained unclassified after semantic reentry", Score: bestScore})
+				}
+			}
+		}
 		if lowInformationDecisionItem(item) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditLowInformationDecision, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "decision predicate has no recoverable subject", Score: 1})
 		}
+		if item.Kind == "decision" {
+			normalizedDecision := normalizeDiscourseText(item.Title + " " + item.Body)
+			if leadingParticlePattern.MatchString(normalizedDecision) {
+				add(treeAuditPrecheckFinding{Type: TreeAuditLeadingParticleFragment, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "decision begins with a particle and depends on a missing preceding STT fragment", Score: 1})
+				add(treeAuditPrecheckFinding{Type: TreeAuditIncompleteSTTSegmentItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "an incomplete STT segment was persisted as an independent decision item", Score: 1})
+				add(treeAuditPrecheckFinding{Type: TreeAuditDecisionMissingObject, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "decision predicate has no explicit business object", Score: 1})
+			}
+			if leadingAnaphoraPattern.MatchString(normalizedDecision) {
+				add(treeAuditPrecheckFinding{Type: TreeAuditAnaphoraTargetMissing, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "decision uses an anaphoric target without an independently named referent", Score: 1})
+				add(treeAuditPrecheckFinding{Type: TreeAuditDecisionMissingObject, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "decision predicate has no explicit business object", Score: 1})
+			}
+		}
 		if isDiscourseOnlyItem(item.Title, item.Body) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditDiscourseOnlyItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "meeting-control speech was persisted as a discussion item", Score: 1})
+			add(treeAuditPrecheckFinding{Type: TreeAuditMetaUtteranceNode, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "meeting-control utterance was promoted into a semantic node", Score: 1})
+		}
+		if treeAuditLowInformationItem(item, nil, roles) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditLowInformationItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "item has no independently actionable or factual proposition", Score: 1})
+			add(treeAuditPrecheckFinding{Type: TreeAuditLowInformationTitle, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "title does not identify an independently understandable subject and proposition", Score: 1})
+		}
+		if issueTextNeedsReferent(item.Title+" "+item.Body) && issueAnaphoraPattern.MatchString(item.Title+" "+item.Body) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditAnaphoraWithoutReferent, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "anaphoric item text does not name its referent", Score: 1})
+		} else if item.Kind == "issue" && metaOnlyLiveItemText(item.Title+" "+item.Body) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditStatusOnlyNode, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "node expresses only discussion state without a concrete subject", Score: 1})
+		}
+		if item.Kind == "issue" && len(splitCollapsedOpenIssueStatement(item.Title+" "+item.Body)) > 1 {
+			add(treeAuditPrecheckFinding{Type: TreeAuditMultiplePropositionsCollapsed, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "multiple independent issue propositions were collapsed into one node", Score: 1})
+		}
+		if item.Kind == "issue" {
+			inferred := inferIssueSubtype(item.Title+" "+item.Body, item.Subtype)
+			if inferred != item.Subtype && validIssueSubtype(inferred) {
+				add(treeAuditPrecheckFinding{Type: TreeAuditSubtypeMismatch, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "issue subtype conflicts with the proposition wording", Score: 0.85})
+			}
+		} else if item.Kind == "fact" && (openIssueMarkerPattern.MatchString(itemText) || lowInformationQuestionPattern.MatchString(itemText)) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditSemanticKindMismatch, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "open issue proposition is classified as fact", Score: 0.9})
 		}
 		if allTreeAuditEvidenceReference(item.EvidenceSequenceNos, roles) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditRecapReferenceContamination, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "independent item is grounded only in recap/reference evidence", Score: 0.95})
+			add(treeAuditPrecheckFinding{Type: TreeAuditRecapOnlyItem, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "item has no primary evidence outside recap or discourse control", Score: 0.95})
 		}
 		currentScore := semanticItemSimilarity(itemText, containerText(node.ParentID))
 		bestID, bestScore := "", currentScore
@@ -360,8 +562,14 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 			add(treeAuditPrecheckFinding{Type: TreeAuditReferenceEvidenceReparent, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "the latest parent change is supported only by reference or recap evidence", Score: 1})
 		}
 	}
+	if len(forcedNoAgenda) >= 2 {
+		add(treeAuditPrecheckFinding{Type: TreeAuditStaleNoAgendaSpan, NodeIDs: forcedNoAgenda, Reason: "multiple agenda-aligned items inherited the same stale no-agenda context", Score: 1})
+	}
 
 	for _, candidate := range state.EmergingTopics {
+		if genericTopicLabel(candidate.Label) {
+			add(treeAuditPrecheckFinding{Type: TreeAuditGenericCandidateLabel, NodeIDs: append([]string(nil), candidate.EvidenceItemIDs...), RelatedNodeIDs: []string{candidate.ID}, Reason: "candidate label is a staging phrase rather than its evidence subject", Score: 1})
+		}
 		var evidenceTexts []string
 		for _, id := range candidate.EvidenceItemIDs {
 			if item, ok := items[id]; ok {
@@ -412,12 +620,22 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 			if leftTop == rightTop {
 				if matched, score := sameKindSemanticDuplicate(state.Items[i], state.Items[j]); matched {
 					add(treeAuditPrecheckFinding{Type: TreeAuditSemanticDuplicateSibling, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "same-kind sibling nodes represent the same proposition", Score: score})
+					add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateItem, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "active sibling items duplicate one proposition", Score: score})
+					add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateOrParaphrase, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "sibling nodes duplicate or paraphrase one proposition", Score: score})
 				} else if sameCanonicalProposition(state.Items[i], state.Items[j]) {
 					add(treeAuditPrecheckFinding{Type: TreeAuditDuplicateCrossKindProposition, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "cross-kind sibling nodes represent one canonical proposition", Score: 0.9})
 				}
 			}
 			if rightTop == "" || leftTop == rightTop {
 				continue
+			}
+			actionRelation := ((state.Items[i].Kind == "risk" || state.Items[i].Kind == "issue") && (state.Items[j].Kind == "todo" || state.Items[j].Kind == "decision")) ||
+				((state.Items[j].Kind == "risk" || state.Items[j].Kind == "issue") && (state.Items[i].Kind == "todo" || state.Items[i].Kind == "decision"))
+			if actionRelation && itemEvidenceWithin(state.Items[i], state.Items[j], 3) &&
+				specificSubjectOverlapLength(state.Items[i].Title+" "+state.Items[i].Body, state.Items[j].Title+" "+state.Items[j].Body) >= 4 {
+				evidence := append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...)
+				add(treeAuditPrecheckFinding{Type: TreeAuditRiskTodoSubjectFragmentation, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop, rightTop}, EvidenceSequenceNos: evidence, Reason: "nearby risk/issue and action evidence for one concrete business object is split across topics", Score: 1})
+				add(treeAuditPrecheckFinding{Type: TreeAuditRelatedActionOutsideRiskTopic, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop, rightTop}, EvidenceSequenceNos: evidence, Reason: "action for a nearby risk/issue is outside the risk subject topic", Score: 1})
 			}
 			score := semanticItemSimilarity(state.Items[i].Title+" "+state.Items[i].Body, state.Items[j].Title+" "+state.Items[j].Body)
 			if score >= 0.42 || sharedTreeAuditSubjectTerm(state.Items[i].Title+" "+state.Items[i].Body, state.Items[j].Title+" "+state.Items[j].Body) && score >= 0.12 {
@@ -438,6 +656,9 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 func inferredAgendaForTopic(topic liveAnalysisTreeNode, mc *meetingContext) string {
 	if mc == nil || topic.ID == "" {
 		return ""
+	}
+	if refs := topicAgendaRefs(topic, agendaRecordMap(mc)); len(refs) > 0 {
+		return refs[0]
 	}
 	bestID, best := "", 0.0
 	for _, agenda := range mc.Agenda {
@@ -478,18 +699,42 @@ func classifyTreeAuditEvidence(state liveAnalysisPayload, segments []domain.Tran
 			roles[sequenceNo] = treeAuditEvidencePrimary
 		}
 	}
+	// persistedPrimary holds every sequence a previous round already stamped
+	// primary/correction on some item's own EvidenceRoles (stampEvidenceRoles).
+	// H1: when the deterministic timeline above (not just this heuristic's own
+	// prior iteration) agrees a sequence is primary/correction, the
+	// looksLikeTreeAuditReference heuristic below must not downgrade it. Left
+	// unguarded, a primary utterance that also happens to resemble its own
+	// freshly-extracted item/topic (or contains a generic status-review word
+	// such as "確認") gets misjudged as a reference to *something else* and
+	// wrongly demoted, which then makes a correct audit move_item repair get
+	// rejected as reference_evidence_only (see the report).
+	persistedPrimary := make(map[int64]struct{})
+	for _, item := range state.Items {
+		for _, ref := range item.EvidenceRoles {
+			if ref.Role == liveEvidencePrimary || ref.Role == liveEvidenceCorrection {
+				persistedPrimary[ref.SequenceNo] = struct{}{}
+			}
+		}
+	}
 	for _, item := range state.Items {
 		if len(item.EvidenceSequenceNos) == 0 {
 			continue
 		}
 		primary := item.EvidenceSequenceNos[0]
-		if roles[primary] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[primary].Text, state) {
+		if _, protected := persistedPrimary[primary]; protected && roles[primary] == treeAuditEvidencePrimary {
+			// already primary by both the persisted record and the
+			// deterministic timeline; keep it.
+		} else if roles[primary] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[primary].Text, state, primary) {
 			roles[primary] = treeAuditEvidenceReference
 		} else {
 			roles[primary] = treeAuditEvidencePrimary
 		}
 		for _, sequenceNo := range item.EvidenceSequenceNos[1:] {
-			if roles[sequenceNo] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[sequenceNo].Text, state) {
+			if _, protected := persistedPrimary[sequenceNo]; protected && roles[sequenceNo] == treeAuditEvidencePrimary {
+				continue
+			}
+			if roles[sequenceNo] == treeAuditEvidenceReference || looksLikeTreeAuditReference(segmentBySequence[sequenceNo].Text, state, sequenceNo) {
 				roles[sequenceNo] = treeAuditEvidenceReference
 			}
 		}
@@ -508,13 +753,23 @@ func classifyTreeAuditEvidence(state liveAnalysisPayload, segments []domain.Tran
 	return roles
 }
 
-func looksLikeTreeAuditReference(text string, state liveAnalysisPayload) bool {
+// looksLikeTreeAuditReference judges whether text (the utterance behind one
+// evidence sequenceNo) reads like a reference back to already-recorded
+// content rather than the primary utterance that produced it. matchedItems
+// deliberately excludes any item whose own EvidenceSequenceNos already
+// include sequenceNo: an utterance always resembles the very item it was
+// just extracted from, and that self-similarity is not evidence that the
+// utterance is *referencing* some other, already-existing item (H1).
+func looksLikeTreeAuditReference(text string, state liveAnalysisPayload, sequenceNo int64) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return false
 	}
 	matchedItems := 0
 	for _, item := range state.Items {
+		if containsInt64(item.EvidenceSequenceNos, sequenceNo) {
+			continue
+		}
 		if semanticItemSimilarity(text, item.Title+" "+item.Body) >= 0.48 {
 			matchedItems++
 		}

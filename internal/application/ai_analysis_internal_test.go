@@ -799,7 +799,7 @@ func TestParseAgendaItemsHandlesBulletsAndDedup(t *testing.T) {
 	}
 }
 
-func TestMergeBuildsInitialAgendaSkeleton(t *testing.T) {
+func TestMergeMaterializesOnlyDiscussedAgenda(t *testing.T) {
 	mc := fixtureMeetingContext()
 	diff := `{"summary":"開始","currentTopic":"文字起こし精度","items":[{"id":"q-open","kind":"question","severity":"low","title":"最初の質問","body":"","status":"open"}],"assignments":[{"nodeId":"q-open","parentTopicId":"agenda-1","confidence":0.9,"reason":""}]}`
 	merged := mergeForTestWithContext(t, diff, nil, mc)
@@ -808,14 +808,20 @@ func TestMergeBuildsInitialAgendaSkeleton(t *testing.T) {
 	if root == nil || root.Label != "定例会議" || !strings.Contains(root.Description, "品質を確認") {
 		t.Fatalf("root = %+v, want label/description from meeting context", root)
 	}
-	for _, id := range []string{"agenda-1", "agenda-2", "agenda-3"} {
-		topic := treeNodeByID(merged.Tree, id)
-		if topic == nil || topic.Kind != "topic" || topic.ParentID != treeRootNodeID {
-			t.Fatalf("agenda topic %s = %+v, want present under root", id, topic)
+	topic := agendaTopicNodeByRef(merged.Tree, "agenda-1")
+	if topic == nil || topic.Kind != "topic" || topic.ParentID != treeRootNodeID || !containsExactString(topic.AgendaRefs, "agenda-1") {
+		t.Fatalf("materialized agenda topic = %+v", topic)
+	}
+	for _, id := range []string{"agenda-2", "agenda-3"} {
+		if topic := agendaTopicNodeByRef(merged.Tree, id); topic != nil {
+			t.Fatalf("undiscussed agenda topic %s must stay planned, got %+v", id, topic)
 		}
 	}
+	if len(merged.AgendaAnchors) != 3 || merged.AgendaAnchors[0].Status != agendaStatusDiscussed || merged.AgendaAnchors[1].Status != agendaStatusPlanned || merged.AgendaAnchors[2].Status != agendaStatusPlanned {
+		t.Fatalf("agenda anchors = %+v", merged.AgendaAnchors)
+	}
 	node := treeNodeByID(merged.Tree, "q-open")
-	if node == nil || node.ParentID != "agenda-1" {
+	if node == nil || node.ParentID != topic.ID {
 		t.Fatalf("node = %+v, want classified into agenda-1", node)
 	}
 	// 未分類topicは子が無い限り生成されない。
@@ -847,9 +853,9 @@ func TestMergeClassifiesFixtureUtterancesAcrossAgendaTopics(t *testing.T) {
 	merged := mergeForTestWithContext(t, diff, nil, mc)
 	assertTreeInvariants(t, merged.Tree)
 	wants := map[string]string{
-		"risk-speaker-id":     "agenda-1",
-		"risk-dup-cards":      "agenda-2",
-		"todo-model-compare":  "agenda-3",
+		"risk-speaker-id":     agendaTopicNodeByRef(merged.Tree, "agenda-1").ID,
+		"risk-dup-cards":      agendaTopicNodeByRef(merged.Tree, "agenda-2").ID,
+		"todo-model-compare":  agendaTopicNodeByRef(merged.Tree, "agenda-3").ID,
 		"issue-report-format": treeUnclassifiedTopicID,
 	}
 	parentCounts := map[string]int{}
@@ -1293,5 +1299,50 @@ func TestLiveAnalysisBackoffCapsAtMaxBackoff(t *testing.T) {
 	}
 	if got := liveAnalysisBackoff(interval, 100); got != meetingAnalysisMaxBackoff {
 		t.Fatalf("backoff(100) = %s, want capped at %s", got, meetingAnalysisMaxBackoff)
+	}
+}
+
+// TestCountLiveAnalysisPayloadStatsSplitsTreeAndAssistantTentativeVisibility
+// covers H2: TreeHiddenTentativeItems/AssistantVisibleTentativeItems must
+// reflect their distinct frontend contracts, not one shared count. Four
+// tentative items exercise every combination: a card-visible kind that is
+// still open (counted by both), a card-visible kind that is resolved
+// (excluded from the assistant count only, per that surface's own status
+// filter), a non-card kind (fact, excluded from the assistant count only),
+// and a second card-visible open kind (todo) to prove the count is not
+// hardcoded to a single kind.
+func TestCountLiveAnalysisPayloadStatsSplitsTreeAndAssistantTentativeVisibility(t *testing.T) {
+	payload, err := json.Marshal(liveAnalysisPayload{Items: []liveAnalysisItem{
+		{ID: "item-risk-open", Kind: "risk", Status: "open", ClassificationStatus: classificationTentative},
+		{ID: "item-decision-resolved", Kind: "decision", Status: "resolved", ClassificationStatus: classificationTentative},
+		{ID: "item-fact-open", Kind: "fact", Status: "open", ClassificationStatus: classificationTentative},
+		{ID: "item-todo-open", Kind: "todo", Status: "open", ClassificationStatus: classificationTentative},
+		{ID: "item-todo-assigned", Kind: "todo", Status: "open", ClassificationStatus: classificationAssigned},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := countLiveAnalysisPayloadStats(payload)
+	if stats.TentativeItems != 4 {
+		t.Fatalf("TentativeItems = %d, want 4 (tree projection hides every tentative item regardless of kind/status)", stats.TentativeItems)
+	}
+	if stats.AssistantVisibleTentativeItems != 2 {
+		t.Fatalf("AssistantVisibleTentativeItems = %d, want 2 (item-risk-open + item-todo-open only: card-visible kind and status!=resolved)", stats.AssistantVisibleTentativeItems)
+	}
+}
+
+// TestTreeHealthStringUsesUnclassifiedStagingChildrenLabel covers H3: the
+// old "unclassified=" label read as if it were the item-level
+// trueUnclassifiedItems count logged elsewhere, when it is actually
+// treeHealth.UnclassifiedChildren (a tree node count: children directly
+// under the topic-unclassified staging topic).
+func TestTreeHealthStringUsesUnclassifiedStagingChildrenLabel(t *testing.T) {
+	health := treeHealth{UnclassifiedChildren: 3}
+	rendered := health.String()
+	if !strings.Contains(rendered, "unclassifiedStagingChildren=3") {
+		t.Fatalf("health.String() = %q, want it to contain unclassifiedStagingChildren=3", rendered)
+	}
+	if strings.Contains(rendered, "unclassified=") {
+		t.Fatalf("health.String() = %q, must not still contain the old unclassified= label", rendered)
 	}
 }

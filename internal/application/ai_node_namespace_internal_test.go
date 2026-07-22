@@ -8,7 +8,7 @@ import (
 	"deciscope-core-api/internal/domain"
 )
 
-func TestReservedAgendaItemIDIsRemappedWithoutChangingFixedTopic(t *testing.T) {
+func TestReservedAgendaItemIDIsRemappedAndMaterializesConcreteTopic(t *testing.T) {
 	mc := &meetingContext{Agenda: []agendaItem{{ID: "agenda-1", Title: "渡り鳥の調査計画", Role: agendaRolePrimary}}}
 	content := `{"summary":"","currentTopic":"渡り鳥","resolvedIds":[],"items":[{"id":"agenda-1","kind":"decision","severity":"high","title":"三地点で調査する","body":"海岸側、北側、南側で実施する","status":"open","evidenceSequenceNos":[9]}],"newTopics":[],"assignments":[{"nodeId":"agenda-1","parentTopicId":"agenda-1","confidence":0.9,"reason":""}]}`
 	stats := &liveAnalysisTreeMergeStats{}
@@ -20,12 +20,15 @@ func TestReservedAgendaItemIDIsRemappedWithoutChangingFixedTopic(t *testing.T) {
 	if len(state.Items) != 1 || !strings.HasPrefix(state.Items[0].ID, "item-decision-") || reservedItemID(state.Items[0].ID) {
 		t.Fatalf("items=%+v", state.Items)
 	}
-	if parentOf(state.Tree, state.Items[0].ID) != "agenda-1" {
+	agenda := agendaTopicNodeByRef(state.Tree, "agenda-1")
+	if agenda == nil || parentOf(state.Tree, state.Items[0].ID) != agenda.ID {
 		t.Fatalf("remapped assignment parent=%q tree=%+v", parentOf(state.Tree, state.Items[0].ID), state.Tree)
 	}
-	agenda := treeNodeByID(state.Tree, "agenda-1")
-	if agenda == nil || agenda.Kind != "topic" || agenda.ParentID != treeRootNodeID || agenda.Label != "渡り鳥の調査計画" {
-		t.Fatalf("fixed agenda=%+v", agenda)
+	if agenda == nil || agenda.Kind != "topic" || agenda.ParentID != treeRootNodeID || agenda.Label != "三地点で調査する" || !containsExactString(agenda.AgendaRefs, "agenda-1") {
+		t.Fatalf("materialized agenda=%+v", agenda)
+	}
+	if len(state.AgendaAnchors) != 1 || state.AgendaAnchors[0].OriginalTitle != "渡り鳥の調査計画" || state.AgendaAnchors[0].Status != agendaStatusDiscussed {
+		t.Fatalf("agenda anchor=%+v", state.AgendaAnchors)
 	}
 	diagnostics := validateTreeIntegrity(state.Tree, state.Items, mc)
 	if !diagnostics.Valid || stats.ReservedItemIDsRemapped != 1 {
@@ -74,37 +77,39 @@ func TestCrossKindTopicCollisionRemapsItemAndRejectsSelfParent(t *testing.T) {
 	}
 }
 
-func TestFixedAgendaOperationsAndDisplayIDsAreRejected(t *testing.T) {
+func TestMaterializedAgendaOperationsAreAllowedAndDisplayIDsAreRejected(t *testing.T) {
 	mc := &meetingContext{Agenda: []agendaItem{
 		{ID: "agenda-1", Title: "渡り鳥", Role: agendaRolePrimary},
 		{ID: "agenda-2", Title: "騒音", Role: agendaRolePrimary},
 		{ID: "agenda-3", Title: "住民資料", Role: agendaRolePrimary},
 	}}
-	tree := fixedAgendaSkeleton(mc)
+	tree := &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+		{ID: treeRootNodeID, Kind: "topic", Label: "会議", Origin: topicOriginSystem},
+		{ID: "agenda-1", Kind: "topic", ParentID: treeRootNodeID, Label: "渡り鳥", Origin: topicOriginAgenda, AgendaRefs: []string{"agenda-1"}, Materialized: true},
+		{ID: "agenda-2", Kind: "topic", ParentID: treeRootNodeID, Label: "騒音", Origin: topicOriginAgenda, AgendaRefs: []string{"agenda-2"}, Materialized: true},
+		{ID: "agenda-3", Kind: "topic", ParentID: treeRootNodeID, Label: "住民資料", Origin: topicOriginAgenda, AgendaRefs: []string{"agenda-3"}, Materialized: true},
+	}, Edges: []liveAnalysisTreeEdge{{Source: treeRootNodeID, Target: "agenda-1"}, {Source: treeRootNodeID, Target: "agenda-2"}, {Source: treeRootNodeID, Target: "agenda-3"}}}
 	tree.Nodes = append(tree.Nodes, liveAnalysisTreeNode{ID: "item-1", Kind: "todo", ParentID: "agenda-3", Label: "資料を公開"})
 	tree.Edges = append(tree.Edges, liveAnalysisTreeEdge{Source: "agenda-3", Target: "item-1"})
 	operations := []treeOperation{
-		{Type: "move_node", NodeID: "agenda-3", ToParentID: "agenda-2"},
 		{Type: "rename_topic", TopicID: "agenda-1", Label: "変更"},
 		{Type: "merge_topic", FromTopicID: "agenda-1", IntoTopicID: "agenda-2"},
-		{Type: "delete_empty_group", GroupID: "agenda-2"},
 		{Type: "move_node", NodeID: "item-1", ToParentID: "agenda-3 [topic] 住民資料"},
 	}
 	stats := &liveAnalysisTreeMergeStats{}
 	result, applied := applyTreeOperations(tree, mc, operations, TreeClassificationConfig{}, stats, 4)
-	if applied != 0 || result != tree {
+	if applied != 2 {
 		t.Fatalf("applied=%d result=%+v", applied, result)
 	}
-	if stats.FixedAgendaOperationsRejected != 4 || stats.NonCanonicalNodeIDs != 1 {
+	if stats.FixedAgendaOperationsRejected != 0 || stats.NonCanonicalNodeIDs != 1 {
 		t.Fatalf("stats=%+v", stats)
 	}
-	for index := 0; index < 4; index++ {
-		if stats.ReorganizeOperations[index].Reason != "fixed_agenda_immutable" {
-			t.Fatalf("operation[%d]=%+v", index, stats.ReorganizeOperations[index])
-		}
+	mergedTopic := agendaTopicNodeByRef(result, "agenda-1")
+	if mergedTopic == nil || mergedTopic != agendaTopicNodeByRef(result, "agenda-2") || mergedTopic.Label != "騒音" {
+		t.Fatalf("result=%+v", result)
 	}
-	if stats.ReorganizeOperations[4].Reason != "non_canonical_node_id" {
-		t.Fatalf("display operation=%+v", stats.ReorganizeOperations[4])
+	if stats.ReorganizeOperations[2].Reason != "non_canonical_node_id" {
+		t.Fatalf("display operation=%+v", stats.ReorganizeOperations[2])
 	}
 }
 
@@ -158,7 +163,7 @@ func TestLegacyCorruptPayloadIsRepairedForDeliveryWithoutDatabaseWrite(t *testin
 	}
 }
 
-func TestResolvedDetailsAndEmptyFixedAgendaRemainInCanonicalTree(t *testing.T) {
+func TestResolvedDetailsRemainAndUndiscussedAgendaStaysPlanned(t *testing.T) {
 	mc := &meetingContext{Agenda: []agendaItem{
 		{ID: "agenda-1", Title: "渡り鳥", Role: agendaRolePrimary},
 		{ID: "agenda-2", Title: "騒音", Role: agendaRolePrimary},
@@ -166,11 +171,12 @@ func TestResolvedDetailsAndEmptyFixedAgendaRemainInCanonicalTree(t *testing.T) {
 	items := []liveAnalysisItem{{ID: "item-open-bird", Kind: "open_issue", Severity: "high", Title: "観測地点不足", Status: "resolved"}}
 	tree, _, _ := rebuildDiscussionTree(nil, mc, items, nil, []treeAssignment{{NodeID: "item-open-bird", ParentTopicID: "agenda-1", Confidence: 0.9}}, nil, nil, 2, TreeClassificationConfig{}, nil)
 	resolved := treeNodeByID(tree, "item-open-bird")
-	if resolved == nil || resolved.Status != "resolved" || resolved.ParentID != "agenda-1" {
+	discussedTopic := agendaTopicNodeByRef(tree, "agenda-1")
+	if resolved == nil || discussedTopic == nil || resolved.Status != "resolved" || resolved.ParentID != discussedTopic.ID {
 		t.Fatalf("resolved=%+v", resolved)
 	}
-	if empty := treeNodeByID(tree, "agenda-2"); empty == nil || empty.ParentID != treeRootNodeID {
-		t.Fatalf("empty fixed agenda=%+v", empty)
+	if empty := agendaTopicNodeByRef(tree, "agenda-2"); empty != nil {
+		t.Fatalf("undiscussed agenda must not create a topic: %+v", empty)
 	}
 	if diagnostics := validateTreeIntegrity(tree, items, mc); !diagnostics.Valid {
 		t.Fatalf("diagnostics=%+v", diagnostics)
@@ -232,13 +238,13 @@ func TestSession91f9cfe6aad64b7bDeterministicReplay(t *testing.T) {
 		t.Fatalf("diagnostics=%+v tree=%+v", diagnostics, state.Tree)
 	}
 	for _, agendaID := range []string{"agenda-1", "agenda-2", "agenda-3"} {
-		node := treeNodeByID(state.Tree, agendaID)
+		node := agendaTopicNodeByRef(state.Tree, agendaID)
 		if node == nil || node.Kind != "topic" || node.ParentID != treeRootNodeID {
 			t.Fatalf("fixed agenda %s=%+v", agendaID, node)
 		}
 	}
 	for _, actionID := range []string{"agenda-4", "agenda-5"} {
-		if node := treeNodeByID(state.Tree, actionID); node != nil {
+		if node := agendaTopicNodeByRef(state.Tree, actionID); node != nil {
 			t.Fatalf("action summary leaked into tree: %+v", node)
 		}
 	}
@@ -252,7 +258,9 @@ func TestSession91f9cfe6aad64b7bDeterministicReplay(t *testing.T) {
 	}
 	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "アジェンダ外の調査課題")
 	wind, web, wetland := findItemByTitlePart(state.Items, "強風日"), findItemByTitlePart(state.Items, "Web公開"), findItemByTitlePart(state.Items, "湿地")
-	if wind == nil || web == nil || wetland == nil || itemTopicID(state.Tree, wind.ID) != "agenda-2" || itemTopicID(state.Tree, web.ID) != "agenda-3" || itemTopicID(state.Tree, wetland.ID) != dynamicID {
+	windsTopic := agendaTopicNodeByRef(state.Tree, "agenda-2")
+	webTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
+	if wind == nil || web == nil || wetland == nil || windsTopic == nil || webTopic == nil || itemTopicID(state.Tree, wind.ID) != windsTopic.ID || itemTopicID(state.Tree, web.ID) != webTopic.ID || itemTopicID(state.Tree, wetland.ID) != dynamicID {
 		t.Fatalf("parents wind=%+v web=%+v wetland=%+v assignments=%+v transitions=%+v", wind, web, wetland, stats.AssignmentDecisions, stats.AgendaTransitions)
 	}
 	resolved := findItemByID(state.Items, "risk-bird-sites")

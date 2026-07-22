@@ -18,6 +18,25 @@ type discourseAct string
 
 type liveEvidenceRole string
 
+// liveUtteranceRole is the model-facing utterance classification. The
+// deterministic classifier below remains authoritative for obvious control
+// speech; model roles add coverage for paraphrases that cannot be captured by
+// a finite phrase list.
+type liveUtteranceRole string
+
+const (
+	liveUtteranceSubstantive         liveUtteranceRole = "substantive"
+	liveUtteranceCorrection          liveUtteranceRole = "correction"
+	liveUtteranceRecap               liveUtteranceRole = "recap"
+	liveUtteranceDiscourseTransition liveUtteranceRole = "discourse_transition"
+	liveUtteranceFiller              liveUtteranceRole = "filler"
+)
+
+type liveUtteranceRoleRef struct {
+	SequenceNo int64             `json:"sequenceNo"`
+	Role       liveUtteranceRole `json:"role"`
+}
+
 const (
 	liveEvidencePrimary        liveEvidenceRole = "primary"
 	liveEvidenceSupporting     liveEvidenceRole = "supporting"
@@ -32,8 +51,9 @@ type liveEvidenceRoleRef struct {
 }
 
 type discourseTimeline struct {
-	Roles       map[int64]liveEvidenceRole
-	Transitions []discourseTimelineTransition
+	Roles         map[int64]liveEvidenceRole
+	DetectedRoles map[int64]liveUtteranceRole
+	Transitions   []discourseTimelineTransition
 }
 
 type discourseTimelineTransition struct {
@@ -52,6 +72,8 @@ const (
 	discourseTopicTransition discourseAct = "topic_transition"
 	// discourseMeetingControl: 開始・終了・挨拶などの会議運営発話。
 	discourseMeetingControl discourseAct = "meeting_control"
+	// discourseFiller: 命題を持たない短いフィラー。
+	discourseFiller discourseAct = "filler"
 )
 
 // discourseFillerPattern は判定前に取り除く前置き・フィラー。制御表現の
@@ -69,11 +91,29 @@ var (
 	topicTransitionPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`^次の(話題|議題|テーマ|アジェンダ|項目)(へ|に)?(移り|移し|進み|入り)(ます|ましょう|たいと思います)?$`),
 		regexp.MustCompile(`^(以上で)?(この|本)(議題|話題|テーマ|項目)(は|を)?(終わり|終了|以上)(ます|です|とします|にします)?$`),
+		regexp.MustCompile(`^(?:次に)?(?:進み|移り)(?:ます|ましょう)$`),
 	}
 	meetingControlPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`^(会議|ミーティング|定例)(を|は)?(開始|終了|再開|中断)(します|しましょう|とします)?$`),
 		regexp.MustCompile(`^(よろしくお願いします|お疲れ様でした|ありがとうございました|聞こえますか|始めましょう|終わりましょう)$`),
 	}
+	meetingEndControlPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^(?:今日|本日)(?:の(?:会議|ミーティング|議事))?(?:は)?(?:これで|ここまで|以上)(?:に|で|と)?(?:します|しましょう|です|終了します|終わります|とします)?(?:ありがとうございました)?$`),
+		regexp.MustCompile(`^(?:今日|本日)?(?:は)?(?:これで|ここまで|以上で)(?:会議|ミーティング|議事)?(?:を|は)?(?:終了|終わり|終わります|終了します|終えます|お開き)(?:に|と)?(?:します|しましょう|です)?(?:ありがとうございました)?$`),
+		regexp.MustCompile(`^(?:今日|本日)(?:の)?(?:会議|ミーティング|議事)(?:を)?(?:ここで)?(?:打ち切る|終了する|終える)(?:決定)?$`),
+	}
+)
+
+// Structural transition detection intentionally combines three independent
+// features instead of matching complete phrases: a discourse-relative
+// selector, a meta discussion object, and a control/existence predicate. A
+// concrete domain signal (number, identifier, assignee/deadline, impact, or
+// explicit decision/action) keeps the utterance substantive.
+var (
+	discourseTransitionSelectorPattern  = regexp.MustCompile(`(?i)(?:次|別|追加|新(?:しい|たな)|少し|本題外|アジェンダ外|議題外|another|next|additional|different|separate)`)
+	discourseTransitionObjectPattern    = regexp.MustCompile(`(?i)(?:話(?:題)?|議題|論点|問題|テーマ|項目|件|本題|アジェンダ|topic|issue|subject|agenda|matter)`)
+	discourseTransitionPredicatePattern = regexp.MustCompile(`(?i)(?:あり|存在|移り|移し|進み|変え|切り替|入り|始め|取り上げ|話し|です|ですが|move|switch|change|proceed|have|thereis|introduce)`)
+	discourseConcretePattern            = regexp.MustCompile(`(?i)(?:[0-9Ａ-Ｚａ-ｚA-Za-z]|まで|期限|担当|さん|氏|影響|不能|停止|遅延|漏れ|期限切れ|承認|決定|実施|作成|更新|修正|調査|確認して|依頼|対応する|リスク|可能性)`)
 )
 
 var discourseCorrectionPattern = regexp.MustCompile(`(?:訂正|修正|変更|撤回|取り消|追加事項|新たな(?:決定|論点|課題)|まとめに追加|先ほどの.+(?:ではなく|を改め))`)
@@ -93,6 +133,9 @@ func classifyDiscourseAct(text string) discourseAct {
 	}
 	stripped := discourseFillerPattern.ReplaceAllString(normalized, "")
 	if stripped == "" {
+		return discourseFiller
+	}
+	if isMeetingEndControlNormalized(stripped) {
 		return discourseMeetingControl
 	}
 	for _, pattern := range recapIntroPatterns {
@@ -105,12 +148,77 @@ func classifyDiscourseAct(text string) discourseAct {
 			return discourseTopicTransition
 		}
 	}
+	if structurallyDiscourseTransition(stripped) {
+		return discourseTopicTransition
+	}
 	for _, pattern := range meetingControlPatterns {
 		if pattern.MatchString(stripped) {
 			return discourseMeetingControl
 		}
 	}
 	return discourseContent
+}
+
+func isMeetingEndControl(text string) bool {
+	normalized := discourseFillerPattern.ReplaceAllString(normalizeDiscourseText(text), "")
+	return isMeetingEndControlNormalized(normalized)
+}
+
+func isMeetingEndControlNormalized(normalized string) bool {
+	for _, pattern := range meetingEndControlPatterns {
+		if pattern.MatchString(normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+func isMeetingEndOnlyItem(title, body string) bool {
+	title = strings.TrimSpace(title)
+	body = strings.TrimSpace(body)
+	if title == "" && body == "" {
+		return false
+	}
+	return (title == "" || isMeetingEndControl(title)) && (body == "" || isMeetingEndControl(body))
+}
+
+func structurallyDiscourseTransition(normalized string) bool {
+	normalized = strings.ToLower(strings.TrimSpace(normalized))
+	if normalized == "" || discourseConcretePattern.MatchString(normalized) {
+		return false
+	}
+	return discourseTransitionSelectorPattern.MatchString(normalized) &&
+		discourseTransitionObjectPattern.MatchString(normalized) &&
+		discourseTransitionPredicatePattern.MatchString(normalized)
+}
+
+// hasLeadingRecapIntroClause reports whether text's first non-empty clause
+// (split the same way detectDecisionCandidates splits sentences) is itself a
+// recap-introduction declaration, even when the utterance as a whole is too
+// long for classifyDiscourseAct's 30-rune control-speech budget (e.g. 「最後に
+// ここまでをまとめます。今回の障害は…」のように、recap宣言が長い発話の先頭節に
+// 埋め込まれているケース)。単独のrecap宣言発話(discourse_only)の既存判定は
+// classifyDiscourseAct のまま変更しない -- これはあくまで最初の節だけを見る
+// 追加の判定である。
+func hasLeadingRecapIntroClause(text string) bool {
+	for _, rawClause := range decisionClauseSplitPattern.Split(text, -1) {
+		clause := strings.TrimSpace(rawClause)
+		if clause == "" {
+			continue
+		}
+		normalized := normalizeDiscourseText(clause)
+		stripped := discourseFillerPattern.ReplaceAllString(normalized, "")
+		if stripped == "" || len([]rune(stripped)) > 30 {
+			return false
+		}
+		for _, pattern := range recapIntroPatterns {
+			if pattern.MatchString(stripped) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // isDiscourseOnlyText は発話・ラベルが制御発話のみかどうかを返す。
@@ -154,7 +262,23 @@ func normalizeDiscourseText(text string) string {
 // from creating a second decision, issue, or topic while preserving it as
 // supporting evidence for an existing canonical proposition.
 func classifyDiscourseTimeline(scope liveEvidenceScope) discourseTimeline {
-	timeline := discourseTimeline{Roles: make(map[int64]liveEvidenceRole)}
+	return classifyDiscourseTimelineWithModel(scope, nil)
+}
+
+func classifyDiscourseTimelineWithModel(scope liveEvidenceScope, modelRoles []liveUtteranceRoleRef) discourseTimeline {
+	timeline := discourseTimeline{Roles: make(map[int64]liveEvidenceRole), DetectedRoles: make(map[int64]liveUtteranceRole)}
+	modelBySequence := make(map[int64]liveUtteranceRole, len(modelRoles))
+	for _, ref := range modelRoles {
+		if ref.SequenceNo <= 0 || !validLiveUtteranceRole(ref.Role) {
+			continue
+		}
+		if _, allowed := scope.Allowed[ref.SequenceNo]; !allowed {
+			if _, current := scope.CurrentRound[ref.SequenceNo]; !current {
+				continue
+			}
+		}
+		modelBySequence[ref.SequenceNo] = ref.Role
+	}
 	sequenceNos := make([]int64, 0, len(scope.Allowed)+len(scope.CurrentRound))
 	seen := make(map[int64]struct{})
 	for sequenceNo := range scope.Allowed {
@@ -177,27 +301,70 @@ func classifyDiscourseTimeline(scope liveEvidenceScope) discourseTimeline {
 		switch act {
 		case discourseRecapIntro:
 			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
+			timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
 			timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "recap", Act: act})
 			mode = "recap"
 		case discourseTopicTransition:
 			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
+			timeline.DetectedRoles[sequenceNo] = liveUtteranceDiscourseTransition
 			timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "content", Act: act})
 			mode = "content"
 		case discourseMeetingControl:
 			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
+			timeline.DetectedRoles[sequenceNo] = liveUtteranceFiller
+		case discourseFiller:
+			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
+			timeline.DetectedRoles[sequenceNo] = liveUtteranceFiller
 		case discourseContent:
-			if mode == "recap" {
-				if discourseCorrectionPattern.MatchString(text) {
-					timeline.Roles[sequenceNo] = liveEvidenceCorrection
-				} else {
-					timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
+			if mode != "recap" && hasLeadingRecapIntroClause(text) {
+				timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "recap", Act: discourseRecapIntro})
+				mode = "recap"
+				timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
+				timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
+				continue
+			}
+			modelRole := modelBySequence[sequenceNo]
+			switch modelRole {
+			case liveUtteranceDiscourseTransition, liveUtteranceFiller:
+				timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
+				timeline.DetectedRoles[sequenceNo] = modelRole
+				if modelRole == liveUtteranceDiscourseTransition {
+					timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "content", Act: discourseTopicTransition})
+					mode = "content"
 				}
-			} else {
-				timeline.Roles[sequenceNo] = liveEvidencePrimary
+			case liveUtteranceCorrection:
+				timeline.Roles[sequenceNo] = liveEvidenceCorrection
+				timeline.DetectedRoles[sequenceNo] = liveUtteranceCorrection
+			case liveUtteranceRecap:
+				timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
+				timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
+			default:
+				if mode == "recap" {
+					if discourseCorrectionPattern.MatchString(text) {
+						timeline.Roles[sequenceNo] = liveEvidenceCorrection
+						timeline.DetectedRoles[sequenceNo] = liveUtteranceCorrection
+					} else {
+						timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
+						timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
+					}
+				} else {
+					timeline.Roles[sequenceNo] = liveEvidencePrimary
+					timeline.DetectedRoles[sequenceNo] = liveUtteranceSubstantive
+				}
 			}
 		}
 	}
 	return timeline
+}
+
+func validLiveUtteranceRole(role liveUtteranceRole) bool {
+	switch role {
+	case liveUtteranceSubstantive, liveUtteranceCorrection, liveUtteranceRecap,
+		liveUtteranceDiscourseTransition, liveUtteranceFiller:
+		return true
+	default:
+		return false
+	}
 }
 
 func evidenceRolesForItem(sequenceNos []int64, timeline discourseTimeline) []liveEvidenceRoleRef {

@@ -3,6 +3,8 @@ package application
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -11,12 +13,18 @@ import (
 // versions. A recap-only item can update an existing primary proposition, but
 // cannot remain as an independent node. Predicate-only decisions are removed
 // because their subject was lost before the decision marker was recognized.
-func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats) map[string]string {
+func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats, scopes ...liveEvidenceScope) map[string]string {
 	if state == nil || len(state.Items) == 0 {
 		return nil
 	}
+	if len(scopes) > 0 {
+		repairHistoricalDecisionFragments(state, scopes[0], stats)
+	}
 	primary := make([]liveAnalysisItem, 0, len(state.Items))
 	for _, item := range state.Items {
+		if item.Inactive || item.MergedIntoID != "" {
+			continue
+		}
 		if !evidenceIsReferenceOnly(item.EvidenceSequenceNos, timeline) && !lowInformationDecisionItem(item) {
 			primary = append(primary, item)
 		}
@@ -25,8 +33,17 @@ func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discour
 	remap := make(map[string]string)
 	removed := make(map[string]struct{})
 	for _, item := range state.Items {
+		// Auditor-deactivated/merged records are deliberately retained outside
+		// the active tree for history and tombstone semantic matching. Historical
+		// discourse repair may remove their tree nodes, but must not erase the
+		// durable inactive item on a later live round.
+		if item.Inactive || item.MergedIntoID != "" {
+			kept = append(kept, item)
+			continue
+		}
 		if lowInformationDecisionItem(item) {
 			removed[item.ID] = struct{}{}
+			addItemTombstone(state, item, "low_information", "", "live_repair", "", state.TreeVersion, state.TreeVersion)
 			if stats != nil {
 				stats.LowInformationDecisionsRejected++
 			}
@@ -35,12 +52,18 @@ func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discour
 		if evidenceIsReferenceOnly(item.EvidenceSequenceNos, timeline) {
 			if at, score := bestPropositionMatch(primary, item); at >= 0 && score >= 0.12 && primary[at].ID != item.ID {
 				remap[item.ID] = primary[at].ID
+				addItemTombstone(state, item, "merged", primary[at].ID, "live_repair", "", state.TreeVersion, state.TreeVersion)
 				if stats != nil {
 					stats.ReferenceRecapItemsMerged++
 				}
 				continue
 			}
 			removed[item.ID] = struct{}{}
+			reason := "recap_only"
+			if evidenceOnlyHasRoles(item.EvidenceSequenceNos, timeline, liveEvidenceDiscourseOnly) {
+				reason = "discourse_only"
+			}
+			addItemTombstone(state, item, reason, "", "live_repair", "", state.TreeVersion, state.TreeVersion)
 			if stats != nil {
 				stats.ReferenceRecapItemsRejected++
 			}
@@ -70,10 +93,48 @@ func repairHistoricalDiscourseItems(state *liveAnalysisPayload, timeline discour
 	return remap
 }
 
-// repairMixedEmergingCandidates folds evidence that clearly belongs to a
-// fixed agenda and splits the remaining unrelated subject clusters. It runs
-// before normal candidate promotion, so a coherent multi-round cluster can be
-// promoted without weakening the configured promotion thresholds.
+func repairHistoricalDecisionFragments(state *liveAnalysisPayload, scope liveEvidenceScope, stats *liveAnalysisTreeMergeStats) {
+	if state == nil {
+		return
+	}
+	for i := range state.Items {
+		item := &state.Items[i]
+		if item.Kind != "decision" || (!decisionStatementNeedsReferent(item.Title) && !decisionStatementNeedsReferent(item.Body)) || len(item.EvidenceSequenceNos) == 0 {
+			continue
+		}
+		sequenceNo := item.EvidenceSequenceNos[len(item.EvidenceSequenceNos)-1]
+		current := segmentFromEvidenceScope(scope, sequenceNo)
+		previous := segmentFromEvidenceScope(scope, sequenceNo-1)
+		if current.SequenceNo <= 0 || previous.SequenceNo <= 0 {
+			continue
+		}
+		repaired, ok := repairDecisionFragment(previous, current, current.Text)
+		if !ok {
+			continue
+		}
+		item.Title = truncateRunes(decisionCandidateTitle(repaired), 40)
+		item.Body = truncateRunes(strings.TrimSpace(repaired), liveAnalysisTreeDescriptionMaxRunes)
+		item.EvidenceSequenceNos = appendUniqueSequences([]int64{previous.SequenceNo}, item.EvidenceSequenceNos)
+		item.InformationStatus = informationStatusGrounded
+		if state.Tree != nil {
+			for nodeAt := range state.Tree.Nodes {
+				if state.Tree.Nodes[nodeAt].ID == item.ID {
+					state.Tree.Nodes[nodeAt].Label = item.Title
+					state.Tree.Nodes[nodeAt].Description = item.Body
+				}
+			}
+		}
+		if stats != nil {
+			stats.LowInformationItemsRewritten++
+		}
+	}
+}
+
+// repairMixedEmergingCandidates folds evidence that clearly belongs to an
+// agenda anchor and splits the remaining unrelated subject clusters. An
+// anchor topic is materialized here only for grounded, non-no-agenda evidence.
+// It runs before normal candidate promotion, so a coherent multi-round cluster
+// can be promoted without weakening the configured promotion thresholds.
 func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContext, round int64, stats *liveAnalysisTreeMergeStats) {
 	if state == nil || len(state.EmergingTopics) == 0 {
 		return
@@ -82,6 +143,7 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 	for i := range state.Items {
 		itemByID[state.Items[i].ID] = &state.Items[i]
 	}
+	records := agendaRecordMap(mc)
 	setParent := func(itemID, parentID string) {
 		if state.Tree == nil {
 			return
@@ -95,7 +157,7 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 		}
 	}
 	bestAgenda := func(item liveAnalysisItem) string {
-		if mc == nil {
+		if mc == nil || item.AssignmentSource == assignmentSourceNoAgendaSpan {
 			return ""
 		}
 		itemText := item.Title + " " + item.Body
@@ -129,8 +191,16 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 				if companionNode == nil {
 					continue
 				}
-				agendaID := treeAuditFixedAgendaAncestor(companionNode.ParentID, state.Tree)
-				if agendaID == "" {
+				agendaTopicID := treeAuditFixedAgendaAncestor(companionNode.ParentID, state.Tree)
+				if agendaTopicID == "" {
+					continue
+				}
+				agendaTopic := liveTreeNodeByID(state.Tree, agendaTopicID)
+				if agendaTopic == nil {
+					continue
+				}
+				refs := topicAgendaRefs(*agendaTopic, records)
+				if len(refs) == 0 {
 					continue
 				}
 				companionText := companion.Title + " " + companion.Body
@@ -140,7 +210,7 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 					continue
 				}
 				if score > bestScore {
-					bestID, bestScore = agendaID, score
+					bestID, bestScore = refs[0], score
 				}
 			}
 			if bestScore < 0.12 {
@@ -148,6 +218,55 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 			}
 		}
 		return bestID
+	}
+	materializedTopicForAgenda := func(agendaID string) string {
+		if state.Tree == nil {
+			return ""
+		}
+		for _, node := range state.Tree.Nodes {
+			if node.Kind == "topic" && containsExactString(topicAgendaRefs(node, records), agendaID) {
+				return node.ID
+			}
+		}
+		return ""
+	}
+	ensureAgendaTopic := func(agendaID string, item *liveAnalysisItem) string {
+		if topicID := materializedTopicForAgenda(agendaID); topicID != "" {
+			return topicID
+		}
+		agenda, exists := records[agendaID]
+		if !exists || item == nil || state.Tree == nil || liveTreeNodeByID(state.Tree, treeRootNodeID) == nil {
+			return ""
+		}
+		topics := make(map[string]liveAnalysisTreeNode)
+		for _, node := range state.Tree.Nodes {
+			if node.Kind == "topic" {
+				topics[node.ID] = node
+			}
+		}
+		topicID, reused := availableAgendaTopicID(agendaID, topics, records)
+		label := truncateRunes(strings.TrimSpace(item.Title), liveAnalysisTopicLabelMaxRunes)
+		if label == "" {
+			label = agenda.Title
+		}
+		state.Tree.Nodes = append(state.Tree.Nodes, liveAnalysisTreeNode{
+			ID: topicID, Kind: "topic", ParentID: treeRootNodeID,
+			Label: label, Description: truncateRunes(strings.TrimSpace(item.Body), liveAnalysisTreeDescriptionMaxRunes),
+			Origin: topicOriginAgenda, AgendaRole: agendaRolePrimary,
+			AgendaRefs: []string{agendaID}, Materialized: true,
+			CreatedAtVersion: round, UpdatedAtVersion: round,
+		})
+		log.Printf("Agenda topic materialized by candidate repair. agendaId=%s materializedTopicId=%s agendaTopicIdReused=%t agendaTopicIdCollision=%t", agendaID, topicID, reused, agendaID == topicID)
+		if stats != nil {
+			stats.AgendaTopicsMaterialized++
+			if reused {
+				stats.AgendaTopicIDsReused++
+			}
+			if agendaID == topicID {
+				stats.AgendaTopicIDCollisions++
+			}
+		}
+		return topicID
 	}
 	var repaired []emergingTopicCandidate
 	for _, candidate := range state.EmergingTopics {
@@ -163,11 +282,16 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 				continue
 			}
 			if agendaID := bestAgenda(*item); agendaID != "" {
+				topicID := ensureAgendaTopic(agendaID, item)
+				if topicID == "" {
+					remaining = append(remaining, itemID)
+					continue
+				}
 				item.ClassificationStatus = classificationAssigned
 				item.CandidateTopicID = ""
 				item.AssignmentSource = "candidate_subject_repair"
-				item.AssignmentReason = "candidate evidence matches fixed agenda subject"
-				setParent(item.ID, agendaID)
+				item.AssignmentReason = "candidate evidence matches agenda anchor subject"
+				setParent(item.ID, topicID)
 				if stats != nil {
 					stats.CandidateFoldedIntoAgenda++
 				}
@@ -181,12 +305,13 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 				continue
 			}
 			label := candidateClusterLabel(cluster, itemByID)
-			candidateID, _ := canonicalCandidateID(label, "agenda-external subject recovered from canonical evidence")
+			candidateID, subjectKey := canonicalCandidateID(label, "agenda-external subject recovered from canonical evidence")
 			if candidateID == "" {
 				continue
 			}
 			split := emergingTopicCandidate{
 				ID: candidateID, Label: label, Description: "agenda-external subject recovered from canonical evidence",
+				SubjectKey:      subjectKey,
 				OriginalSubject: label, CurrentSubject: label, SubjectHistory: []string{label},
 				EvidenceItemIDs: append([]string(nil), cluster...), OriginItemIDs: append([]string(nil), cluster...),
 				FirstRound: candidate.FirstRound, LastRound: candidate.LastRound, RoundCount: candidate.RoundCount,
@@ -295,6 +420,59 @@ func candidateClusterLabel(ids []string, itemByID map[string]*liveAnalysisItem) 
 	return truncateRunes(strings.TrimSpace(best), liveAnalysisTopicLabelMaxRunes)
 }
 
+// recapNovelActorPattern / recapNovelDeadlinePattern detect concrete
+// information (an assignee, or a due-date expression) that a recap sentence
+// can add on top of what its canonical target already says.
+var (
+	recapNovelActorPattern    = regexp.MustCompile(`(?:[\p{Han}]{1,6}|[ァ-ヶー]{2,8})さん`)
+	recapNovelDeadlinePattern = regexp.MustCompile(`今週|来週|今月|来月|本日|明日|月末|年内|[月火水木金土日]曜|期限|までに?`)
+)
+
+// recapBodyHasNovelInfo reports whether recapBody names an actor or due-date
+// expression that canonicalBody does not already contain, so a recap that
+// merely restates the canonical item's own actor/deadline does not trigger a
+// body rewrite.
+func recapBodyHasNovelInfo(recapBody, canonicalBody string) bool {
+	for _, match := range recapNovelActorPattern.FindAllString(recapBody, -1) {
+		if !strings.Contains(canonicalBody, match) {
+			return true
+		}
+	}
+	for _, match := range recapNovelDeadlinePattern.FindAllString(recapBody, -1) {
+		if !strings.Contains(canonicalBody, match) {
+			return true
+		}
+	}
+	return false
+}
+
+// recapItemHasConcreteInfo reports whether item names an actor, a due-date
+// expression, or a number -- the kind of specific content that can justify
+// treating an unmatched recap sentence as a genuinely new proposition instead
+// of dropping it as pure restatement.
+func recapItemHasConcreteInfo(item liveAnalysisItem) bool {
+	text := item.Title + " " + item.Body
+	if recapNovelActorPattern.MatchString(text) || recapNovelDeadlinePattern.MatchString(text) {
+		return true
+	}
+	return numericSignature(text) != ""
+}
+
+// recapItemHasNovelSubject reports whether item's subject does not overlap
+// any previous item's subject at all. Combined with recapItemHasConcreteInfo,
+// this is the narrow exception that lets a truly new proposition surface
+// during a recap round instead of being rejected outright like every other
+// unmatched recap sentence.
+func recapItemHasNovelSubject(item liveAnalysisItem, previous []liveAnalysisItem) bool {
+	itemText := item.Title + " " + item.Body
+	for _, existing := range previous {
+		if sharedTreeAuditSubjectTerm(existing.Title+" "+existing.Body, itemText) {
+			return false
+		}
+	}
+	return true
+}
+
 func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisItem, roundSeqNos []int64, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats) []liveAnalysisItem {
 	filtered := make([]liveAnalysisItem, 0, len(diff))
 	for _, item := range diff {
@@ -308,6 +486,13 @@ func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisIt
 		}
 		at, score := bestPropositionMatch(previous, item)
 		if at < 0 || score < 0.12 {
+			// recap中の新規item作成は原則禁止だが、どのprevious itemとも主題が
+			// 重ならず、かつ担当者/期限/数値のような具体情報を伴う場合に限り、
+			// 真に新しい命題として救済する(recapの言い換えを新規item化はしない)。
+			if recapItemHasNovelSubject(item, previous) && recapItemHasConcreteInfo(item) {
+				filtered = append(filtered, item)
+				continue
+			}
 			if stats != nil {
 				stats.ReferenceRecapItemsRejected++
 			}
@@ -319,6 +504,14 @@ func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisIt
 		canonical.evidenceSpecified = item.evidenceSpecified
 		canonical.evidenceRejectedCount = item.evidenceRejectedCount
 		canonical.evidenceNormalizedCount = item.evidenceNormalizedCount
+		// recapが本編に無い担当者/期限を追加している場合のみ、canonicalの本文へ
+		// 反映する(単なる言い換えでは本文を書き換えない)。evidenceは本編+recap
+		// 両方が最終itemに残る(下流のappendItemEvidenceSequenceNosがcanonical
+		// のEvidenceSequenceNos=evidenceと元のEvidenceSequenceNosを和集合にする)。
+		if recapBodyHasNovelInfo(item.Body, canonical.Body) {
+			canonical.Body = truncateRunes(strings.TrimSpace(canonical.Body+" "+item.Body), liveAnalysisTreeDescriptionMaxRunes)
+			canonical.Status = "updated"
+		}
 		filtered = append(filtered, canonical)
 		if stats != nil {
 			stats.ReferenceRecapItemsMerged++
@@ -365,7 +558,7 @@ func contentEvidenceItems(items []liveAnalysisItem, timeline discourseTimeline) 
 // canonicalizePropositionItems folds cross-kind surface forms into one
 // proposition. The retained kind represents the proposition state; question,
 // resolution-condition and next-action wording is preserved as attributes.
-func canonicalizePropositionItems(state *liveAnalysisPayload, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats) map[string]string {
+func canonicalizePropositionItems(state *liveAnalysisPayload, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats, treeVersion int64) map[string]string {
 	if state == nil || len(state.Items) < 2 {
 		if state != nil {
 			stampPropositionMetadata(state.Items)
@@ -389,6 +582,7 @@ func canonicalizePropositionItems(state *liveAnalysisPayload, timeline discourse
 		canonical, companion := chooseCanonicalPropositionItem(kept[matchedAt], item)
 		canonical = mergePropositionAttributes(canonical, companion)
 		remap[companion.ID] = canonical.ID
+		addItemTombstone(state, companion, "merged", canonical.ID, "semantic_merge", "", treeVersion-1, treeVersion)
 		kept[matchedAt] = canonical
 		if stats != nil {
 			if canonical.Kind != companion.Kind {
@@ -483,15 +677,14 @@ func evidenceRoleIsReference(sequenceNo int64, timeline discourseTimeline) bool 
 }
 
 func crossKindPropositionCompatible(a, b string) bool {
-	if a == b {
-		return false
-	}
-	allowed := map[string]bool{"question": true, "open_issue": true, "issue": true, "todo": true}
-	return allowed[a] && allowed[b]
+	// Confirmation/question/investigation issues and their execution TODOs
+	// remain independently actionable and independently resolvable. Their
+	// relation is represented by the shared group, not by destructive merge.
+	return false
 }
 
 func sameKindSequentialProposition(a, b liveAnalysisItem) (bool, float64) {
-	if a.Kind != b.Kind || (a.Kind != "question" && a.Kind != "open_issue" && a.Kind != "issue" && a.Kind != "todo") {
+	if !sameSemanticClassification(a, b) || (a.Kind != "issue" && a.Kind != "todo") {
 		return false, 0
 	}
 	leftNumbers, rightNumbers := numericSignature(a.Title+" "+a.Body), numericSignature(b.Title+" "+b.Body)
@@ -506,12 +699,10 @@ func sameKindSequentialProposition(a, b liveAnalysisItem) (bool, float64) {
 func chooseCanonicalPropositionItem(a, b liveAnalysisItem) (liveAnalysisItem, liveAnalysisItem) {
 	priority := func(item liveAnalysisItem) int {
 		switch item.Kind {
-		case "open_issue", "issue":
+		case "issue":
 			return 5
 		case "todo":
 			return 4
-		case "question":
-			return 3
 		case "risk":
 			return 2
 		default:
@@ -530,10 +721,10 @@ func mergePropositionAttributes(canonical, companion liveAnalysisItem) liveAnaly
 	canonical.RelatedQuestions = appendUniqueText(canonical.RelatedQuestions, companion.RelatedQuestions...)
 	canonical.ResolutionConditions = appendUniqueText(canonical.ResolutionConditions, companion.ResolutionConditions...)
 	canonical.NextActions = appendUniqueText(canonical.NextActions, companion.NextActions...)
-	switch companion.Kind {
-	case "question":
+	switch {
+	case companion.Kind == "issue" && companion.Subtype == issueSubtypeQuestion:
 		canonical.RelatedQuestions = appendUniqueText(canonical.RelatedQuestions, companion.Title)
-	case "todo":
+	case companion.Kind == "todo":
 		canonical.NextActions = appendUniqueText(canonical.NextActions, firstNonEmptyTrimmed(companion.Title, companion.Body))
 	}
 	if strings.Contains(companion.Body, "してから") || strings.Contains(companion.Body, "確認後") || strings.Contains(companion.Body, "条件") {

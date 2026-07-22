@@ -36,12 +36,34 @@ type decisionExtractionAudit struct {
 }
 
 var (
-	decisionClauseSplitPattern = regexp.MustCompile(`[。！？!?\n]+`)
-	decisionPositivePattern    = regexp.MustCompile(`(?:決定(?:事項)?(?:と)?します|決定事項とします|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします)`)
-	decisionRecapPattern       = regexp.MustCompile(`決定事項(?:は|として)`)
-	decisionNegativePattern    = regexp.MustCompile(`(?:未決定|決まってい(?:ない|ません)|決定してい(?:ない|ません)|決定せず|まだ決定|次回.{0,12}決定|決定.{0,12}(?:検討|候補)|採用.{0,12}(?:検討|候補)|候補にすぎ|したい|予定です)`)
-	decisionSuffixPattern      = regexp.MustCompile(`(?:する)?ことを決定(?:事項)?と?します|決定(?:事項)?と?します|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします`)
+	decisionClauseSplitPattern  = regexp.MustCompile(`[。！？!?\n]+`)
+	decisionPositivePattern     = regexp.MustCompile(`(?:決定(?:事項)?(?:と)?します|決定事項とします|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします|を必須にします|を必須とします|必須化します|を導入します|を義務付けます|を義務化します|(?:から|を)適用します$)`)
+	decisionRecapPattern        = regexp.MustCompile(`決定事項(?:は|として)`)
+	decisionNegativePattern     = regexp.MustCompile(`(?:未決定|決まってい(?:ない|ません)|決定してい(?:ない|ません)|決定せず|まだ決定|次回.{0,12}決定|決定.{0,12}(?:検討|候補)|採用.{0,12}(?:検討|候補)|候補にすぎ|したい|予定です)`)
+	decisionSuffixPattern       = regexp.MustCompile(`(?:する)?ことを決定(?:事項)?と?します|決定(?:事項)?と?します|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします`)
+	leadingParticlePattern      = regexp.MustCompile(`^(?:の|を|が|は|に|で|と)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
+	leadingAnaphoraPattern      = regexp.MustCompile(`^(?:この|その)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
+	decisionReferentPattern     = regexp.MustCompile(`(?:^|[、,。！？!?])([^、,。！？!?]{2,80}?)を(?:作成|策定|準備|定義|設定|整備|手順化)(?:します|する|しました|した)?$`)
+	checklistReferentPattern    = regexp.MustCompile(`^(.{2,24})で(.{2,32})を実施するチェックリスト$`)
+	todoCreationVerbPattern     = regexp.MustCompile(`作成|策定|準備|起票|ドラフト`)
+	decisionAdoptionVerbPattern = regexp.MustCompile(`適用|運用|導入|施行`)
+	// deliberativeTodoPattern matches a TODO whose own subject is still an
+	// open deliberation ("何をするか決める" 系: 検討/選定/判断/決める/どうするか)
+	// as opposed to an execution task (作成/実施/確認 等)。 Only a deliberative
+	// TODO can be considered "resolved" by an explicit decision statement; see
+	// reconcileDecisionCandidates.
+	deliberativeTodoPattern = regexp.MustCompile(`検討|選定|判断|決める|どうするか`)
 )
+
+// decisionAdoptionConsumesCreationTodo reports whether promoting the matched
+// todo into this decision would erase a distinct proposition: the todo is
+// about creating/preparing a deliverable while the decision statement is
+// about adopting/applying it (e.g. 「チェックリストを作成します」というTODOと
+// 「この運用を次回から適用することにします」というdecisionは別命題)。この
+// 場合はkindを書き換えず、decisionを別itemとして作成しTODOを残す。
+func decisionAdoptionConsumesCreationTodo(statement string, todo liveAnalysisItem) bool {
+	return todoCreationVerbPattern.MatchString(todo.Title+todo.Body) && decisionAdoptionVerbPattern.MatchString(statement)
+}
 
 func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCandidate {
 	var candidates []decisionCandidate
@@ -50,8 +72,12 @@ func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCan
 		if !segment.IsFinal || segment.SequenceNo <= 0 {
 			continue
 		}
-		for _, rawClause := range decisionClauseSplitPattern.Split(segment.Text, -1) {
-			clause := strings.TrimSpace(rawClause)
+		rawClauses := decisionClauseSplitPattern.Split(segment.Text, -1)
+		clauses := make([]string, len(rawClauses))
+		for i, rawClause := range rawClauses {
+			clauses[i] = strings.TrimSpace(rawClause)
+		}
+		for clauseIndex, clause := range clauses {
 			if clause == "" || decisionNegativePattern.MatchString(clause) {
 				continue
 			}
@@ -61,11 +87,33 @@ func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCan
 			}
 			sourceSequenceNos := []int64{segment.SequenceNo}
 			statement := clause
-			if !recap && !completeDecisionStatement(statement) && index > 0 {
-				previous := segments[index-1]
-				if logicalUtteranceContinuation(previous, segment) {
-					statement = joinDecisionFragments(previous.Text, clause)
-					sourceSequenceNos = []int64{previous.SequenceNo, segment.SequenceNo}
+			if !recap && (!completeDecisionStatement(statement) || decisionStatementNeedsReferent(statement)) {
+				repaired := false
+				normalized := normalizeDiscourseText(clause)
+				if leadingParticlePattern.MatchString(normalized) || leadingAnaphoraPattern.MatchString(normalized) {
+					// 同一segment内の直前の非空節をreferent元として優先する
+					// (例: 「…チェックリストを作成します。この運用を…」の
+					// ように、節をまたいだ参照先が同じ発話内にある場合)。
+					for back := clauseIndex - 1; back >= 0; back-- {
+						previousClause := clauses[back]
+						if previousClause == "" {
+							continue
+						}
+						if referent := decisionReferentFromPrevious(previousClause); referent != "" {
+							if combined, ok := combineReferentWithClause(referent, clause); ok {
+								statement = combined
+								repaired = true
+							}
+						}
+						break
+					}
+				}
+				if !repaired && index > 0 {
+					previous := segments[index-1]
+					if repairedText, ok := repairDecisionFragment(previous, segment, clause); ok {
+						statement = repairedText
+						sourceSequenceNos = []int64{previous.SequenceNo, segment.SequenceNo}
+					}
 				}
 			}
 			if !recap && !completeDecisionStatement(statement) {
@@ -119,7 +167,17 @@ func extendDecisionSegmentsWithPriorFragment(round []domain.TranscriptSegment, s
 }
 
 func logicalUtteranceContinuation(previous, current domain.TranscriptSegment) bool {
-	if !previous.IsFinal || previous.SequenceNo <= 0 || current.SequenceNo != previous.SequenceNo+1 {
+	if !adjacentSameSpeakerSegments(previous, current) {
+		return false
+	}
+	if classifyDiscourseAct(previous.Text) != discourseContent || classifyDiscourseAct(current.Text) != discourseContent {
+		return false
+	}
+	return sttSegmentLikelyIncomplete(previous.Text)
+}
+
+func adjacentSameSpeakerSegments(previous, current domain.TranscriptSegment) bool {
+	if !previous.IsFinal || !current.IsFinal || previous.SequenceNo <= 0 || current.SequenceNo != previous.SequenceNo+1 {
 		return false
 	}
 	if previous.SpeakerID != "" && current.SpeakerID != "" && previous.SpeakerID != current.SpeakerID {
@@ -134,13 +192,20 @@ func logicalUtteranceContinuation(previous, current domain.TranscriptSegment) bo
 			return false
 		}
 	}
-	if classifyDiscourseAct(previous.Text) != discourseContent || classifyDiscourseAct(current.Text) != discourseContent {
+	return true
+}
+
+func sttSegmentLikelyIncomplete(text string) bool {
+	trimmed := strings.TrimSpace(strings.TrimRight(text, "。！？!? "))
+	if trimmed == "" {
 		return false
 	}
-	trimmed := strings.TrimSpace(strings.TrimRight(previous.Text, "。！？!? "))
-	return strings.HasSuffix(trimmed, "で") || strings.HasSuffix(trimmed, "を") || strings.HasSuffix(trimmed, "は") ||
-		strings.HasSuffix(trimmed, "に") || strings.HasSuffix(trimmed, "として") || strings.HasSuffix(trimmed, "について") ||
-		strings.HasSuffix(trimmed, "については")
+	for _, suffix := range []string{"が", "で", "を", "は", "に", "と", "へ", "も", "として", "について", "については", "よう", "ため", "ので"} {
+		if strings.HasSuffix(trimmed, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func joinDecisionFragments(previous, current string) string {
@@ -150,7 +215,80 @@ func joinDecisionFragments(previous, current string) string {
 	return strings.TrimSpace(left + right)
 }
 
+func decisionStatementNeedsReferent(statement string) bool {
+	normalized := normalizeDiscourseText(statement)
+	return leadingParticlePattern.MatchString(normalized) || leadingAnaphoraPattern.MatchString(normalized)
+}
+
+// repairDecisionFragment reconstructs only an immediately adjacent,
+// same-speaker STT continuation. A leading 「の運用」 may refer back to the
+// object just created in the previous segment; when that object cannot be
+// recovered verbatim, the fragment remains rejected rather than being filled
+// with model-invented content.
+func repairDecisionFragment(previous, current domain.TranscriptSegment, clause string) (string, bool) {
+	if !adjacentSameSpeakerSegments(previous, current) {
+		return "", false
+	}
+	if logicalUtteranceContinuation(previous, current) {
+		joined := joinDecisionFragments(previous.Text, clause)
+		return joined, completeDecisionStatement(joined)
+	}
+	normalized := normalizeDiscourseText(clause)
+	if !leadingParticlePattern.MatchString(normalized) && !leadingAnaphoraPattern.MatchString(normalized) {
+		return "", false
+	}
+	return combineReferentWithClause(decisionReferentFromPrevious(previous.Text), clause)
+}
+
+// combineReferentWithClause repairs a clause whose leading 「の◯◯」 or
+// 「この/その◯◯」 refers back to an object named by referent (already
+// extracted via decisionReferentFromPrevious from an adjacent clause or
+// segment). It is shared by detectDecisionCandidates' same-segment lookback
+// and by repairDecisionFragment's cross-segment fallback so both repair the
+// same way once a referent has been found.
+func combineReferentWithClause(referent, clause string) (string, bool) {
+	if referent == "" {
+		return "", false
+	}
+	right := strings.TrimSpace(strings.TrimLeft(clause, "、。 "))
+	switch {
+	case strings.HasPrefix(right, "の"):
+		right = referent + right
+	case strings.HasPrefix(right, "この"), strings.HasPrefix(right, "その"):
+		runes := []rune(right)
+		if len(runes) < 2 {
+			return "", false
+		}
+		right = referent + "の" + string(runes[2:])
+	default:
+		// Other leading particles are repaired only when the previous segment
+		// itself was syntactically incomplete (handled above).
+		return "", false
+	}
+	return right, completeDecisionStatement(right)
+}
+
+func decisionReferentFromPrevious(text string) string {
+	trimmed := strings.TrimSpace(strings.TrimRight(text, "。！？!? "))
+	matches := decisionReferentPattern.FindAllStringSubmatch(trimmed, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	referent := strings.TrimSpace(matches[len(matches)-1][1])
+	referent = regexp.MustCompile(`^(?:また|さらに|加えて|そして|まず)[、,]*`).ReplaceAllString(referent, "")
+	if match := checklistReferentPattern.FindStringSubmatch(referent); len(match) == 3 {
+		referent = strings.TrimSpace(match[1]) + "の" + strings.TrimSpace(match[2]) + "チェックリスト"
+	}
+	if len([]rune(semanticItemKey(referent))) < 4 || isDiscourseOnlyText(referent) {
+		return ""
+	}
+	return referent
+}
+
 func completeDecisionStatement(statement string) bool {
+	if decisionStatementNeedsReferent(statement) {
+		return false
+	}
 	title := normalizeForMatch(decisionCandidateTitle(statement))
 	for _, filler := range []string{"はい", "ええ", "えー", "ええと", "えっと", "あの"} {
 		title = strings.TrimPrefix(title, filler)
@@ -197,7 +335,11 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 
 	previous := previousLiveAnalysisState(previousPayload)
 	for _, candidate := range candidates {
-		if candidate.Recap && reconcileDecisionRecap(&diff, previous.Items, candidate, &audit) {
+		if candidate.Recap {
+			// Recap候補は既存decisionの更新のみを試みる。マッチしなくても
+			// 新規作成やtodo昇格へは絶対に落とさず、そのままスキップする
+			// (recapの言い換えから重複decisionが生まれるのを防ぐ)。
+			reconcileDecisionRecap(&diff, previous.Items, candidate, &audit)
 			continue
 		}
 
@@ -208,19 +350,28 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 		// A decision may promote a proposed todo, but must never consume a
 		// semantically nearby question/open issue. Those remain independently
 		// resolvable items in the same discussion group.
+		// A todo whose own wording is about creating/preparing a deliverable
+		// (作成/策定/準備/起票/ドラフト) is a distinct proposition from a decision
+		// about adopting/applying it (適用/運用/導入/施行); consuming it here
+		// would erase the creation todo, so the kind rewrite is skipped and the
+		// decision is created as a separate item instead (decisionAdoptionConsumesCreationTodo).
 		if at, score := bestDecisionMatch(diff.Items, candidate.Statement, false); at >= 0 && score >= 0.18 {
 			item := &diff.Items[at]
-			if item.Kind != "decision" {
+			if item.Kind == "decision" {
+				audit.MergedDecisions++
+				item.EvidenceSequenceNos = appendUniqueSequences(item.EvidenceSequenceNos, candidate.SourceSequenceNos)
+				continue
+			}
+			if !decisionAdoptionConsumesCreationTodo(candidate.Statement, *item) {
 				item.Kind = "decision"
 				audit.AcceptedDecisions++
-			} else {
-				audit.MergedDecisions++
+				item.EvidenceSequenceNos = appendUniqueSequences(item.EvidenceSequenceNos, candidate.SourceSequenceNos)
+				continue
 			}
-			item.EvidenceSequenceNos = appendUniqueSequences(item.EvidenceSequenceNos, candidate.SourceSequenceNos)
-			continue
 		}
 
-		if at, score := bestDecisionMatch(previous.Items, candidate.Statement, false); at >= 0 && score >= 0.28 {
+		if at, score := bestDecisionMatch(previous.Items, candidate.Statement, false); at >= 0 && score >= 0.28 &&
+			(previous.Items[at].Kind == "decision" || !decisionAdoptionConsumesCreationTodo(candidate.Statement, previous.Items[at])) {
 			previousItem := previous.Items[at]
 			if previousItem.Kind == "decision" || previousItem.Kind == "todo" {
 				updated := previousItem
@@ -298,6 +449,19 @@ func reconcileDecisionCandidates(content string, previousPayload json.RawMessage
 		}
 		for _, candidate := range candidates {
 			if semanticItemSimilarity(item.Title+" "+item.Body, candidate.Statement) < 0.16 {
+				continue
+			}
+			// A decision resolves a deliberation ("何をするか決めた"), never an
+			// execution TODO merely because a related decision was reached in
+			// the same discussion: making a decision does not itself complete a
+			// create/implement/confirm task (同じ原則を既存promptの「decisionが
+			// 出たという理由だけでは解決にしない」からサーバー側でも適用する)。
+			// A TODO may be resolved here only when its own subject is still an
+			// open deliberation (検討/選定/判断/決める/どうするか) AND the
+			// matched decision is not merely adopting/applying what the TODO
+			// itself is about creating (decisionAdoptionConsumesCreationTodo).
+			// issue/question/risk resolution is unchanged.
+			if item.Kind == "todo" && (!deliberativeTodoPattern.MatchString(item.Title+item.Body) || decisionAdoptionConsumesCreationTodo(candidate.Statement, item)) {
 				continue
 			}
 			key := canonicalReferenceKey(itemReference)
