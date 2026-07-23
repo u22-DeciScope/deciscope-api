@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS meeting_session_ai_analysis_live_history;

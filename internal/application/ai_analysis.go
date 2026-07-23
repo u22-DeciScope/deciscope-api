@@ -1239,11 +1239,23 @@ func (s *MeetingAnalysisService) seedLiveAnalysisState(ctx context.Context, sess
 }
 
 func (s *MeetingAnalysisService) persistLiveAnalysis(ctx context.Context, expectedVersion int64, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, bool, error) {
+	var (
+		saved     *domain.MeetingAIAnalysis
+		persisted bool
+		err       error
+	)
 	if repository, ok := s.analysisRepo.(MeetingAIAnalysisCompareAndSwapRepository); ok {
-		return repository.CompareAndSwapMeetingAIAnalysis(ctx, expectedVersion, analysis)
+		saved, persisted, err = repository.CompareAndSwapMeetingAIAnalysis(ctx, expectedVersion, analysis)
+	} else {
+		saved, err = s.analysisRepo.UpsertMeetingAIAnalysis(ctx, analysis)
+		persisted = err == nil
 	}
-	saved, err := s.analysisRepo.UpsertMeetingAIAnalysis(ctx, analysis)
-	return saved, err == nil, err
+	if err == nil && persisted && saved != nil && analysis.Status == domain.MeetingAIAnalysisCompleted {
+		if historyErr := s.analysisRepo.AppendLiveAnalysisHistory(ctx, *saved); historyErr != nil {
+			log.Printf("Live AI analysis history append failed. sessionId=%s version=%d error=%v", saved.SessionID, saved.Version, historyErr)
+		}
+	}
+	return saved, persisted, err
 }
 
 func (s *MeetingAnalysisService) handleStaleLiveAnalysisResult(ctx context.Context, sessionID string, segments []domain.TranscriptSegment, expectedVersion int64) {
@@ -2490,13 +2502,22 @@ func (s *MeetingAnalysisService) LiveAnalysisIntervalSeconds() int {
 // and/or Tree are nil when no analysis exists yet. LiveIntervalSeconds is
 // the live analysis check interval (0 when AI or live analysis is disabled).
 type MeetingAIAnalysesSnapshot struct {
-	SessionID           string
-	Live                *domain.MeetingAIAnalysis
-	Final               *domain.MeetingAIAnalysis
-	Tree                *domain.MeetingAIAnalysis
-	Finalization        *domain.MeetingAIAnalysis
+	SessionID    string
+	Live         *domain.MeetingAIAnalysis
+	Final        *domain.MeetingAIAnalysis
+	Tree         *domain.MeetingAIAnalysis
+	Finalization *domain.MeetingAIAnalysis
+	// LiveHistory is the durable history of completed live analysis versions
+	// (oldest to newest), independent of the single current-state Live row.
+	// It is best-effort: a lookup failure leaves it empty rather than failing
+	// the whole snapshot.
+	LiveHistory         []domain.MeetingAIAnalysis
 	LiveIntervalSeconds int
 }
+
+// meetingAIAnalysisLiveHistoryLimit bounds how many past live analysis
+// versions GetMeetingAIAnalyses returns alongside the current live snapshot.
+const meetingAIAnalysisLiveHistoryLimit = 50
 
 func (s *MeetingAnalysisService) GetMeetingAIAnalyses(ctx context.Context, sessionID string) (*MeetingAIAnalysesSnapshot, error) {
 	sessionID = strings.TrimSpace(sessionID)
@@ -2538,12 +2559,18 @@ func (s *MeetingAnalysisService) GetMeetingAIAnalyses(ctx context.Context, sessi
 		}
 	}
 	tree = sanitizeTreeSnapshotForDelivery(tree, live, mc)
+	liveHistory, historyErr := s.analysisRepo.ListLiveAnalysisHistory(ctx, sessionID, meetingAIAnalysisLiveHistoryLimit)
+	if historyErr != nil {
+		log.Printf("Live AI analysis history fetch failed. sessionId=%s error=%v", sessionID, historyErr)
+		liveHistory = nil
+	}
 	return &MeetingAIAnalysesSnapshot{
 		SessionID:           sessionID,
 		Live:                live,
 		Final:               final,
 		Tree:                tree,
 		Finalization:        finalization,
+		LiveHistory:         liveHistory,
 		LiveIntervalSeconds: s.LiveAnalysisIntervalSeconds(),
 	}, nil
 }

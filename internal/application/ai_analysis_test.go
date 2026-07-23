@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -477,6 +478,39 @@ func TestMeetingAnalysisServiceGetMeetingAIAnalysesReturnsStoredValues(t *testin
 	}
 }
 
+func TestMeetingAnalysisServiceGetMeetingAIAnalysesReturnsLiveHistory(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	ctx := context.Background()
+	// Append out of order to verify the snapshot returns them version-ascending.
+	if err := repository.AppendLiveAnalysisHistory(ctx, domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive, Status: domain.MeetingAIAnalysisCompleted,
+		Version: 2, Payload: json.RawMessage(`{"summary":"v2"}`),
+	}); err != nil {
+		t.Fatalf("AppendLiveAnalysisHistory(v2) error = %v", err)
+	}
+	if err := repository.AppendLiveAnalysisHistory(ctx, domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive, Status: domain.MeetingAIAnalysisCompleted,
+		Version: 1, Payload: json.RawMessage(`{"summary":"v1"}`),
+	}); err != nil {
+		t.Fatalf("AppendLiveAnalysisHistory(v1) error = %v", err)
+	}
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, &fakeAIChatCompleter{},
+		testLiveOnlyConfig(time.Second, 1),
+	)
+
+	snapshot, err := service.GetMeetingAIAnalyses(ctx, "session_1")
+	if err != nil {
+		t.Fatalf("GetMeetingAIAnalyses() error = %v", err)
+	}
+	if len(snapshot.LiveHistory) != 2 {
+		t.Fatalf("LiveHistory = %+v, want 2 entries", snapshot.LiveHistory)
+	}
+	if snapshot.LiveHistory[0].Version != 1 || snapshot.LiveHistory[1].Version != 2 {
+		t.Fatalf("LiveHistory versions not ascending: %+v", snapshot.LiveHistory)
+	}
+}
+
 func TestMeetingAnalysisServiceListFinalSummaryPreviews(t *testing.T) {
 	repository := newFakeAIAnalysisRepository()
 	repository.seed(domain.MeetingAIAnalysis{
@@ -560,9 +594,10 @@ func waitUntil(t *testing.T, timeout time.Duration, condition func() bool) {
 }
 
 type fakeAIAnalysisRepository struct {
-	mu      sync.Mutex
-	store   map[string]domain.MeetingAIAnalysis
-	upserts []domain.MeetingAIAnalysis
+	mu          sync.Mutex
+	store       map[string]domain.MeetingAIAnalysis
+	upserts     []domain.MeetingAIAnalysis
+	liveHistory map[string]map[int64]domain.MeetingAIAnalysis
 }
 
 func newFakeAIAnalysisRepository() *fakeAIAnalysisRepository {
@@ -607,6 +642,38 @@ func (f *fakeAIAnalysisRepository) ListMeetingAIAnalysesForSessions(_ context.Co
 		if analysis, ok := f.store[aiAnalysisKey(sessionID, analysisType)]; ok {
 			items = append(items, analysis)
 		}
+	}
+	return items, nil
+}
+
+func (f *fakeAIAnalysisRepository) AppendLiveAnalysisHistory(_ context.Context, analysis domain.MeetingAIAnalysis) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.liveHistory == nil {
+		f.liveHistory = make(map[string]map[int64]domain.MeetingAIAnalysis)
+	}
+	versions := f.liveHistory[analysis.SessionID]
+	if versions == nil {
+		versions = make(map[int64]domain.MeetingAIAnalysis)
+		f.liveHistory[analysis.SessionID] = versions
+	}
+	if _, exists := versions[analysis.Version]; !exists {
+		versions[analysis.Version] = analysis
+	}
+	return nil
+}
+
+func (f *fakeAIAnalysisRepository) ListLiveAnalysisHistory(_ context.Context, sessionID string, limit int) ([]domain.MeetingAIAnalysis, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	versions := f.liveHistory[sessionID]
+	items := make([]domain.MeetingAIAnalysis, 0, len(versions))
+	for _, analysis := range versions {
+		items = append(items, analysis)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Version < items[j].Version })
+	if limit > 0 && len(items) > limit {
+		items = items[len(items)-limit:]
 	}
 	return items, nil
 }

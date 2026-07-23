@@ -1085,9 +1085,12 @@ type meetingAIAnalysesResponse struct {
 	Final     *meetingAIAnalysisResponse `json:"final"`
 	// Tree is the durable discussion tree snapshot persisted at meeting end.
 	// It is null while the meeting is still running.
-	Tree                *meetingAIAnalysisResponse `json:"tree"`
-	Finalization        *meetingAIAnalysisResponse `json:"finalization"`
-	LiveIntervalSeconds int                        `json:"liveIntervalSeconds"`
+	Tree         *meetingAIAnalysisResponse `json:"tree"`
+	Finalization *meetingAIAnalysisResponse `json:"finalization"`
+	// LiveHistory is the durable history of completed live analysis versions
+	// (oldest to newest). Always an array, empty when no history exists yet.
+	LiveHistory         []meetingAIAnalysisResponse `json:"liveHistory"`
+	LiveIntervalSeconds int                         `json:"liveIntervalSeconds"`
 }
 
 type meetingAIAnalysisResponse struct {
@@ -1101,13 +1104,21 @@ type meetingAIAnalysisResponse struct {
 }
 
 func meetingAIAnalysesResponseFromSnapshot(sessionID string, snapshot *application.MeetingAIAnalysesSnapshot) meetingAIAnalysesResponse {
-	response := meetingAIAnalysesResponse{SessionID: sessionID}
+	response := meetingAIAnalysesResponse{SessionID: sessionID, LiveHistory: []meetingAIAnalysisResponse{}}
 	if snapshot != nil {
 		response.Live = meetingAIAnalysisResponseFromDomain(snapshot.Live)
 		response.Final = meetingAIAnalysisResponseFromDomain(snapshot.Final)
 		response.Tree = meetingAIAnalysisResponseFromDomain(snapshot.Tree)
 		response.Finalization = meetingAIAnalysisResponseFromDomain(snapshot.Finalization)
 		response.LiveIntervalSeconds = snapshot.LiveIntervalSeconds
+		if len(snapshot.LiveHistory) > 0 {
+			response.LiveHistory = make([]meetingAIAnalysisResponse, 0, len(snapshot.LiveHistory))
+			for i := range snapshot.LiveHistory {
+				if converted := meetingAIAnalysisResponseFromDomain(&snapshot.LiveHistory[i]); converted != nil {
+					response.LiveHistory = append(response.LiveHistory, *converted)
+				}
+			}
+		}
 	}
 	return response
 }

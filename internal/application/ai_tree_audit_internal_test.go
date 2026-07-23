@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -2774,8 +2775,9 @@ func assertAuditFindingForNode(t *testing.T, findings []treeAuditPrecheckFinding
 }
 
 type internalAuditAnalysisRepository struct {
-	mu    sync.Mutex
-	store map[string]domain.MeetingAIAnalysis
+	mu          sync.Mutex
+	store       map[string]domain.MeetingAIAnalysis
+	liveHistory map[string]map[int64]domain.MeetingAIAnalysis
 }
 
 func (r *internalAuditAnalysisRepository) UpsertMeetingAIAnalysis(_ context.Context, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, error) {
@@ -2817,6 +2819,38 @@ func (r *internalAuditAnalysisRepository) ListMeetingAIAnalysesForSessions(_ con
 		if analysis, ok := r.store[sessionID]; ok && analysis.Type == analysisType {
 			items = append(items, analysis)
 		}
+	}
+	return items, nil
+}
+
+func (r *internalAuditAnalysisRepository) AppendLiveAnalysisHistory(_ context.Context, analysis domain.MeetingAIAnalysis) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.liveHistory == nil {
+		r.liveHistory = make(map[string]map[int64]domain.MeetingAIAnalysis)
+	}
+	versions := r.liveHistory[analysis.SessionID]
+	if versions == nil {
+		versions = make(map[int64]domain.MeetingAIAnalysis)
+		r.liveHistory[analysis.SessionID] = versions
+	}
+	if _, exists := versions[analysis.Version]; !exists {
+		versions[analysis.Version] = analysis
+	}
+	return nil
+}
+
+func (r *internalAuditAnalysisRepository) ListLiveAnalysisHistory(_ context.Context, sessionID string, limit int) ([]domain.MeetingAIAnalysis, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	versions := r.liveHistory[sessionID]
+	items := make([]domain.MeetingAIAnalysis, 0, len(versions))
+	for _, analysis := range versions {
+		items = append(items, analysis)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Version < items[j].Version })
+	if limit > 0 && len(items) > limit {
+		items = items[len(items)-limit:]
 	}
 	return items, nil
 }
