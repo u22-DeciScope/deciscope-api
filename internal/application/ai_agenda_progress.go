@@ -1,6 +1,7 @@
 package application
 
 import (
+	"log"
 	"regexp"
 	"sort"
 	"strconv"
@@ -24,6 +25,10 @@ const (
 
 	agendaProgressSourceFixed   = "fixed_agenda"
 	agendaProgressSourceDynamic = "dynamic_topic"
+
+	agendaProgressLinkMaterializedTopic = "materialized-topic"
+	agendaProgressLinkVisibleItems      = "visible-items"
+	agendaProgressLinkNotLinkable       = "not-linkable"
 
 	outcomeExpectationDecision   = "decision"
 	outcomeExpectationOwnerTodo  = "owner_todo"
@@ -69,6 +74,10 @@ type agendaProgressEntry struct {
 	RelatedItemCounts     map[string]int `json:"relatedItemCounts,omitempty"`
 	MaterializedTopicIDs  []string       `json:"materializedTopicIds,omitempty"`
 	PrimaryNodeID         string         `json:"primaryNodeId,omitempty"`
+	CandidateID           string         `json:"candidateId,omitempty"`
+	MaterializedTopicID   string         `json:"materializedTopicId,omitempty"`
+	FocusNodeIDs          []string       `json:"focusNodeIds,omitempty"`
+	LinkState             string         `json:"linkState,omitempty"`
 	LastProgressAtVersion int64          `json:"lastProgressAtVersion,omitempty"`
 	// 以下はサーバー内部tracking。フロントは正規化時に無視する。
 	ActiveRounds        int     `json:"activeRounds,omitempty"`
@@ -233,20 +242,41 @@ func evaluateAgendaProgress(in agendaProgressInputs) *agendaProgressState {
 		entry.MaterializedTopicIDs = append([]string(nil), anchor.MaterializedTopicIDs...)
 		if len(anchor.MaterializedTopicIDs) > 0 {
 			entry.PrimaryNodeID = anchor.MaterializedTopicIDs[0]
+			entry.MaterializedTopicID = anchor.MaterializedTopicIDs[0]
+			entry.FocusNodeIDs = []string{anchor.MaterializedTopicIDs[0]}
+			entry.LinkState = agendaProgressLinkMaterializedTopic
+		} else {
+			entry.PrimaryNodeID = ""
+			entry.MaterializedTopicID = ""
+			entry.FocusNodeIDs = nil
+			entry.LinkState = agendaProgressLinkNotLinkable
 		}
 	}
 
 	nodesByID := make(map[string]liveAnalysisTreeNode)
 	parents := make(map[string]string)
-	dynamicNodeIDs := make(map[string]struct{})
+	dynamicNodeIDs := make(map[string]string)
+	dynamicEntryIDByNodeID := make(map[string]string)
 	if in.Tree != nil {
 		for _, node := range in.Tree.Nodes {
 			nodesByID[node.ID] = node
 			parents[node.ID] = node.ParentID
 			if node.Kind == "topic" && node.Origin == topicOriginDynamic {
-				dynamicNodeIDs[node.ID] = struct{}{}
+				entryID := strings.TrimSpace(node.SourceCandidateID)
+				if entryID == "" {
+					// Compatibility for payloads written before candidate/topic
+					// namespaces were separated.
+					entryID = node.ID
+				}
+				dynamicNodeIDs[entryID] = node.ID
+				dynamicEntryIDByNodeID[node.ID] = entryID
 			}
 		}
+	}
+
+	itemsByID := make(map[string]liveAnalysisItem, len(in.Items))
+	for _, item := range in.Items {
+		itemsByID[item.ID] = item
 	}
 
 	candidateByID := make(map[string]emergingTopicCandidate, len(in.Emerging))
@@ -290,20 +320,44 @@ func evaluateAgendaProgress(in agendaProgressInputs) *agendaProgressState {
 	}
 	for id := range dynamicWanted {
 		entry := entriesByID[id]
-		if node, ok := nodesByID[id]; ok && node.Kind == "topic" && node.Origin == topicOriginDynamic {
+		if nodeID, materialized := dynamicNodeIDs[id]; materialized {
+			node := nodesByID[nodeID]
 			entry.Title = node.Label
-			entry.PrimaryNodeID = id
-			entry.MaterializedTopicIDs = []string{id}
-		} else if candidate, ok := candidateByID[id]; ok && entry.PrimaryNodeID == "" {
+			entry.CandidateID = strings.TrimSpace(node.SourceCandidateID)
+			if entry.CandidateID == "" && strings.HasPrefix(id, "candidate-") {
+				entry.CandidateID = id
+			}
+			entry.PrimaryNodeID = nodeID
+			entry.MaterializedTopicID = nodeID
+			entry.MaterializedTopicIDs = []string{nodeID}
+			entry.FocusNodeIDs = []string{nodeID}
+			entry.LinkState = agendaProgressLinkMaterializedTopic
+		} else if candidate, ok := candidateByID[id]; ok {
 			entry.Title = candidate.Label
+			entry.CandidateID = candidate.ID
+			entry.PrimaryNodeID = ""
+			entry.MaterializedTopicID = ""
 			entry.MaterializedTopicIDs = nil
+			entry.FocusNodeIDs = nil
+			for _, itemID := range candidate.EvidenceItemIDs {
+				item, itemExists := itemsByID[itemID]
+				node, nodeExists := nodesByID[itemID]
+				if !itemExists || !nodeExists || node.Kind == "topic" || node.Kind == "group" ||
+					item.Inactive || item.MergedIntoID != "" || item.Status == "dismissed" ||
+					item.ClassificationStatus == classificationTentative {
+					continue
+				}
+				entry.FocusNodeIDs = append(entry.FocusNodeIDs, itemID)
+			}
+			if len(entry.FocusNodeIDs) > 0 {
+				entry.PrimaryNodeID = entry.FocusNodeIDs[0]
+				entry.LinkState = agendaProgressLinkVisibleItems
+			} else {
+				entry.LinkState = agendaProgressLinkNotLinkable
+			}
 		}
 	}
 
-	itemsByID := make(map[string]liveAnalysisItem, len(in.Items))
-	for _, item := range in.Items {
-		itemsByID[item.ID] = item
-	}
 	resolveTarget := func(itemID string) string {
 		topicID := treeItemTopic(in.Tree, itemID)
 		if topicID != "" {
@@ -312,6 +366,9 @@ func evaluateAgendaProgress(in agendaProgressInputs) *agendaProgressState {
 					return refs[0]
 				}
 				if node.Origin == topicOriginDynamic {
+					if entryID := dynamicEntryIDByNodeID[topicID]; entryID != "" {
+						return entryID
+					}
 					return topicID
 				}
 			}
@@ -642,7 +699,7 @@ func computeAgendaProgressRelatedItems(entriesByID map[string]*agendaProgressEnt
 		if isFixed {
 			nodeIDs = entry.MaterializedTopicIDs
 		} else {
-			nodeIDs = []string{id}
+			nodeIDs = entry.MaterializedTopicIDs
 		}
 		counts := make(map[string]int)
 		related := make([]liveAnalysisItem, 0, 4)
@@ -651,6 +708,9 @@ func computeAgendaProgressRelatedItems(entriesByID map[string]*agendaProgressEnt
 				continue
 			}
 			matched := containsExactString(item.RelatedAgendaIDs, id)
+			if !matched && !isFixed && entry.CandidateID != "" {
+				matched = item.CandidateTopicID == entry.CandidateID
+			}
 			if !matched {
 				topicID := treeItemTopic(tree, item.ID)
 				if topicID != "" {
@@ -788,6 +848,10 @@ func finalizeAgendaProgress(state *liveAnalysisPayload, mc *meetingContext, tree
 	progress.CandidateTopicID = ""
 	progress.CandidateRounds = 0
 	progress.CurrentInactiveRounds = 0
+	// Final tree review may materialize or remove a dynamic topic after the
+	// last live-analysis round. Reconcile candidate→topic links before the
+	// final projection is persisted and broadcast.
+	refreshAgendaProgressNodeRefs(progress, state.Tree)
 
 	fixedIDs := make(map[string]struct{})
 	if mc != nil {
@@ -868,6 +932,11 @@ func synthesizeAgendaProgressFromAnchors(mc *meetingContext, anchors []agendaAnc
 		}
 		if len(anchor.MaterializedTopicIDs) > 0 {
 			entry.PrimaryNodeID = anchor.MaterializedTopicIDs[0]
+			entry.MaterializedTopicID = anchor.MaterializedTopicIDs[0]
+			entry.FocusNodeIDs = []string{anchor.MaterializedTopicIDs[0]}
+			entry.LinkState = agendaProgressLinkMaterializedTopic
+		} else {
+			entry.LinkState = agendaProgressLinkNotLinkable
 		}
 		entries = append(entries, entry)
 	}
@@ -883,13 +952,27 @@ func refreshAgendaProgressNodeRefs(state *agendaProgressState, tree *liveAnalysi
 		return
 	}
 	existing := make(map[string]struct{})
+	materializedTopicByCandidate := make(map[string]string)
 	if tree != nil {
 		for _, node := range tree.Nodes {
 			existing[node.ID] = struct{}{}
+			if node.Kind == "topic" && node.Origin == topicOriginDynamic &&
+				strings.TrimSpace(node.SourceCandidateID) != "" {
+				materializedTopicByCandidate[node.SourceCandidateID] = node.ID
+			}
 		}
 	}
 	for i := range state.Entries {
 		entry := &state.Entries[i]
+		candidateID := strings.TrimSpace(entry.CandidateID)
+		if candidateID == "" && entry.SourceType == agendaProgressSourceDynamic &&
+			strings.HasPrefix(entry.ID, "candidate-") {
+			candidateID = entry.ID
+			entry.CandidateID = candidateID
+		}
+		if topicID := materializedTopicByCandidate[candidateID]; topicID != "" {
+			entry.MaterializedTopicIDs = []string{topicID}
+		}
 		kept := make([]string, 0, len(entry.MaterializedTopicIDs))
 		for _, id := range entry.MaterializedTopicIDs {
 			if _, ok := existing[id]; ok {
@@ -910,6 +993,47 @@ func refreshAgendaProgressNodeRefs(state *agendaProgressState, tree *liveAnalysi
 				}
 			}
 		}
+		entry.MaterializedTopicID = ""
+		if len(entry.MaterializedTopicIDs) > 0 {
+			entry.MaterializedTopicID = entry.MaterializedTopicIDs[0]
+		}
+		keptFocusNodeIDs := make([]string, 0, len(entry.FocusNodeIDs))
+		for _, id := range entry.FocusNodeIDs {
+			if _, ok := existing[id]; ok {
+				keptFocusNodeIDs = append(keptFocusNodeIDs, id)
+			}
+		}
+		entry.FocusNodeIDs = keptFocusNodeIDs
+		switch {
+		case entry.MaterializedTopicID != "":
+			entry.PrimaryNodeID = entry.MaterializedTopicID
+			entry.FocusNodeIDs = []string{entry.MaterializedTopicID}
+			entry.LinkState = agendaProgressLinkMaterializedTopic
+		case len(entry.FocusNodeIDs) > 0:
+			entry.PrimaryNodeID = entry.FocusNodeIDs[0]
+			entry.LinkState = agendaProgressLinkVisibleItems
+		default:
+			entry.PrimaryNodeID = ""
+			entry.FocusNodeIDs = nil
+			entry.LinkState = agendaProgressLinkNotLinkable
+		}
+	}
+}
+
+// logAgendaProgressLinks emits one bounded row per displayed additional topic
+// and tree version. It intentionally logs IDs/states only, never titles or
+// transcript text, so a production incident can distinguish missing mapping,
+// hidden tentative evidence, and a successful focus contract.
+func logAgendaProgressLinks(sessionID string, treeVersion int64, state *agendaProgressState) {
+	if state == nil {
+		return
+	}
+	for _, entry := range state.Entries {
+		if entry.SourceType != agendaProgressSourceDynamic {
+			continue
+		}
+		log.Printf("Agenda progress link evaluated. sessionId=%s treeVersion=%d candidateId=%s materializedTopicId=%s focusNodeIds=%v linkState=%s",
+			sessionID, treeVersion, entry.CandidateID, entry.MaterializedTopicID, entry.FocusNodeIDs, entry.LinkState)
 	}
 }
 

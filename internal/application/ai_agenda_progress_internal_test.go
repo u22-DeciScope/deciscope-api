@@ -415,10 +415,9 @@ func TestAgendaProgressAdditionalTopicTwoRoundsDisplayedAndPromotionCarriesTrack
 		t.Fatalf("round-2 candidate weightRaw = %v, want > 0", weightAfterRound2)
 	}
 
-	// Round 3: the candidate promotes to a real dynamic topic node reusing
-	// the same id (matches promoteEmergingCandidates' own id reuse), with
-	// more activity. Tracking (WeightRaw/ActiveRounds) must carry over from
-	// the still-emerging entry rather than restarting at zero.
+	// Round 3 uses a legacy persisted dynamic node whose ID equals the
+	// candidate entry ID. New payloads use SourceCandidateID + a distinct
+	// topic-dynamic-* ID, while this compatibility path must keep tracking.
 	addAgendaProgressDynamicTopicNode(tree, "topic-side", "サイドトピック(昇格後)")
 	itemSide3 := liveAnalysisItem{ID: "item-side-3", Kind: "issue", EvidenceSequenceNos: []int64{3, 4}}
 	tree.Nodes = append(tree.Nodes, liveAnalysisTreeNode{ID: "item-side-3", Kind: "issue", ParentID: "topic-side"})

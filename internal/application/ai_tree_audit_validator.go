@@ -349,6 +349,18 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 	for index, item := range state.Items {
 		itemIndex[item.ID] = index
 	}
+	materializedTopicForCandidate := func(candidateID string) string {
+		for _, node := range state.Tree.Nodes {
+			if node.Kind != "topic" || node.Origin != topicOriginDynamic {
+				continue
+			}
+			if node.SourceCandidateID == candidateID ||
+				(node.SourceCandidateID == "" && node.ID == candidateID) {
+				return node.ID
+			}
+		}
+		return ""
+	}
 	parentText := func(parentID string) string {
 		var parts []string
 		seen := map[string]struct{}{}
@@ -946,7 +958,7 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		if state.EmergingTopics[candidateAt].Inactive {
 			return 0, 0, "candidate_inactive"
 		}
-		if _, promoted := nodeIndex[operation.TargetCandidateID]; promoted {
+		if materializedTopicForCandidate(operation.TargetCandidateID) != "" {
 			return 0, 0, "candidate_already_promoted"
 		}
 		state.Items[itemAt].CandidateTopicID = operation.TargetCandidateID
@@ -1025,7 +1037,7 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 		if candidate.Inactive {
 			return 0, 0, "candidate_inactive"
 		}
-		if _, promoted := nodeIndex[candidate.ID]; promoted {
+		if materializedTopicForCandidate(candidate.ID) != "" {
 			return 0, 0, "candidate_already_promoted"
 		}
 		evidenceItemIDs := make([]string, 0, len(candidate.EvidenceItemIDs))
@@ -1082,9 +1094,13 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 				return 0, 0, "unbound_operation_evidence"
 			}
 		}
+		topicID := stableDynamicTopicID(candidate.ID)
+		if _, collision := nodeIndex[topicID]; collision {
+			return 0, 0, "topic_id_collision"
+		}
 		state.Tree.Nodes = append(state.Tree.Nodes, liveAnalysisTreeNode{
-			ID: candidate.ID, Kind: "topic", ParentID: treeRootNodeID, Label: label,
-			Description: candidate.Description, Origin: topicOriginDynamic,
+			ID: topicID, Kind: "topic", ParentID: treeRootNodeID, Label: label,
+			Description: candidate.Description, Origin: topicOriginDynamic, SourceCandidateID: candidate.ID,
 			CreatedAtVersion: resultingVersion, UpdatedAtVersion: resultingVersion,
 		})
 		for _, id := range evidenceItemIDs {
@@ -1092,7 +1108,7 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			if !exists {
 				continue
 			}
-			state.Tree.Nodes[childAt].ParentID = candidate.ID
+			state.Tree.Nodes[childAt].ParentID = topicID
 			state.Tree.Nodes[childAt].LastParentChangeSource = "tree_auditor"
 			state.Tree.Nodes[childAt].LastParentChangeVersion = resultingVersion
 			state.Tree.Nodes[childAt].ParentConfidence = operation.Confidence

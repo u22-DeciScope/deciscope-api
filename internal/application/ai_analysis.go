@@ -1006,6 +1006,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	log.Printf("Live group diagnostics. sessionId=%s version=%d groupCandidates=%d groupsCreated=%d groupsSkipped=%d groupSkipReasons=%v groupsFlattened=%d nestedGroupCount=%d",
 		sessionID, newVersion, treeStats.GroupCandidates, treeStats.GroupsCreated, treeStats.GroupsSkipped, treeStats.GroupSkipReasons, treeStats.GroupsFlattened, treeHealth.NestedGroupCount)
 	logClassificationDecisions(sessionID, treeStats)
+	logAgendaProgressLinks(sessionID, newVersion, payloadState.AgendaProgress)
 	logLiveSnapshotBroadcast(sessionID, payloadState, previousLiveAnalysisState(previousPayload))
 	s.publishAnalysis(*saved)
 
@@ -3835,6 +3836,11 @@ type liveAnalysisTreeNode struct {
 	// ModelTopicIDs are compatibility aliases for a server-canonical dynamic
 	// topic ID. They are never used as node IDs.
 	ModelTopicIDs []string `json:"modelTopicIds,omitempty"`
+	// SourceCandidateID explicitly links a materialized dynamic topic back to
+	// the server-owned emerging candidate that produced it. Candidate IDs and
+	// tree node IDs use different namespaces; legacy payloads may omit this
+	// field and are handled by compatibility fallbacks.
+	SourceCandidateID string `json:"sourceCandidateId,omitempty"`
 	// Origin はtopicノードの由来(agenda | dynamic | system)。詳細ノードでは
 	// 空。旧payloadでは空のままでもサーバーが再構築時にバックフィルする。
 	Origin string `json:"origin,omitempty"`

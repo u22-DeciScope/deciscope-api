@@ -1318,9 +1318,17 @@ func applyAssignments(ac assignmentContext) {
 				continue
 			}
 			if topic, exists := ac.topics[requested]; exists && requested != treeUnclassifiedTopicID && (topic.Origin == topicOriginAgenda || topic.Origin == topicOriginMixed || len(topic.AgendaRefs) > 0) && topic.AgendaRole != agendaRoleActionSummary {
-				ac.parents[nodeID] = requested
+				// active_span は「この議題に属する」という topic レベルの補助割当。
+				// 既に同じ topic 配下の group に整理済みなら、group を剥がして
+				// topic 直下へ戻してはいけない。通常の model assignment と同じく、
+				// topic 祖先が一致する場合は現在の具体的な container を維持する。
+				selected := requested
+				if current != "" && climbToTopic(current) == requested {
+					selected = current
+				}
+				ac.parents[nodeID] = selected
 				setMeta(item, classificationAssigned, assignmentSourceActiveSpan, "", confidence, reason)
-				record(assignmentDecision{ModelItemID: modelNodeID, ItemID: nodeID, RequestedParentID: originalRequested, SelectedParentID: requested, Confidence: confidence, Source: assignmentSourceActiveSpan, Decision: assignmentAcceptedActiveSpan, Status: classificationAssigned})
+				record(assignmentDecision{ModelItemID: modelNodeID, ItemID: nodeID, RequestedParentID: originalRequested, SelectedParentID: selected, Confidence: confidence, Source: assignmentSourceActiveSpan, Decision: assignmentAcceptedActiveSpan, Status: classificationAssigned})
 				continue
 			}
 		}
@@ -1853,7 +1861,26 @@ func createSemanticDiscussionGroups(items []liveAnalysisItem, topics map[string]
 			}
 			groupID := stableGroupID(topicID, label)
 			if _, exists := groups[groupID]; exists {
-				decision.Result, decision.Reason = "skipped", "equivalent_group_exists"
+				// A prior synthetic active-span assignment used to move every
+				// child back to the topic before this branch. Merely observing
+				// that the equivalent group existed then left it empty, so
+				// assembleTree removed it in the same version. Restore only
+				// cluster members that are currently direct children of this
+				// topic (or already in the group); never steal from another
+				// explicit group.
+				restored := 0
+				for _, id := range targetIDs {
+					if parents[id] == topicID {
+						parents[id] = groupID
+						restored++
+					}
+				}
+				decision.Result = "preserved"
+				if restored > 0 {
+					decision.Reason = "equivalent_group_children_restored"
+				} else {
+					decision.Reason = "equivalent_group_preserved"
+				}
 				record(decision)
 				created = true
 				continue
@@ -2259,16 +2286,21 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingDeferredPromoteCap})
 			continue
 		}
+		topicID := stableDynamicTopicID(candidate.ID)
 		pc.addTopic(liveAnalysisTreeNode{
-			ID:            candidate.ID,
-			Kind:          "topic",
-			Label:         candidate.Label,
-			Description:   candidate.Description,
-			ModelTopicIDs: append([]string(nil), candidate.ModelTopicIDs...),
-			Origin:        topicOriginDynamic,
+			ID:                topicID,
+			Kind:              "topic",
+			Label:             candidate.Label,
+			Description:       candidate.Description,
+			ModelTopicIDs:     append([]string(nil), candidate.ModelTopicIDs...),
+			SourceCandidateID: candidate.ID,
+			Origin:            topicOriginDynamic,
+			CreatedAtVersion:  pc.round,
+			UpdatedAtVersion:  pc.round,
 		})
-		pc.labelIndex[normalizeForMatch(candidate.Label)] = candidate.ID
-		reparentEvidence(*candidate, candidate.ID)
+		pc.parents[topicID] = treeRootNodeID
+		pc.labelIndex[normalizeForMatch(candidate.Label)] = topicID
+		reparentEvidence(*candidate, topicID)
 		*pc.dynamicTopicCount++
 		promotions++
 		removed[candidate.ID] = struct{}{}
@@ -2278,7 +2310,7 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			stats.DynamicTopicsPromoted++
 			stats.CandidatePromoted++
 		}
-		record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingPromoted, TopicID: candidate.ID})
+		record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingPromoted, TopicID: topicID})
 	}
 	if len(removed) == 0 {
 		return pc.candidates
@@ -3785,6 +3817,19 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 func stableGroupID(parentID, label string) string {
 	sum := sha256.Sum256([]byte(parentID + "\x00" + normalizeForMatch(label)))
 	return "group-" + hex.EncodeToString(sum[:6])
+}
+
+// stableDynamicTopicID keeps the candidate tracking namespace separate from
+// React/tree node IDs while preserving a deterministic one-to-one mapping.
+// The candidate suffix is already a stable server hash in normal payloads;
+// hashing the full ID also gives legacy/custom candidate IDs a safe shape.
+func stableDynamicTopicID(candidateID string) string {
+	candidateID = strings.TrimSpace(candidateID)
+	if suffix := strings.TrimPrefix(candidateID, "candidate-"); suffix != candidateID && suffix != "" {
+		return "topic-dynamic-" + suffix
+	}
+	sum := sha256.Sum256([]byte(candidateID))
+	return "topic-dynamic-" + hex.EncodeToString(sum[:6])
 }
 
 func genericGroupLabel(label string) bool {

@@ -755,17 +755,18 @@ func TestTreeAuditPrecheckDetectsNoAgendaFalsePositiveFromModifier(t *testing.T)
 // design brief 14.2(a): the v3 snapshot renames node/candidate ID fields and
 // adds agendaIds/validParentCanonicalNodeIds plus a promotedNodeId marker so
 // the model can tell a live candidate apart from one that already has a
-// tree node under the same ID.
+// distinct materialized tree node.
 func TestTreeAuditSnapshotUsesV3FieldNamesAndMarksPromotedCandidates(t *testing.T) {
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
-	// A candidate that has already been promoted to a dynamic topic node
-	// keeps its own ID as the node ID. Promotion normally removes the
-	// candidate from EmergingTopics tracking; this fixture keeps it listed
-	// defensively to exercise the promotedNodeId marker.
+	// Promotion normally removes the candidate from EmergingTopics tracking;
+	// this fixture keeps it listed defensively to exercise the explicit
+	// candidate→materialized-topic marker.
+	promotedTopicID := stableDynamicTopicID("candidate-promoted-marker")
 	state.Tree.Nodes = append(state.Tree.Nodes, liveAnalysisTreeNode{
-		ID: "candidate-promoted-marker", Kind: "topic", ParentID: treeRootNodeID,
+		ID: promotedTopicID, Kind: "topic", ParentID: treeRootNodeID,
 		Label: "昇格済み動的topic", Origin: topicOriginDynamic,
+		SourceCandidateID: "candidate-promoted-marker",
 	})
 	state.EmergingTopics = append(state.EmergingTopics, emergingTopicCandidate{
 		ID: "candidate-promoted-marker", Label: "昇格済み動的topic",
@@ -798,7 +799,7 @@ func TestTreeAuditSnapshotUsesV3FieldNamesAndMarksPromotedCandidates(t *testing.
 			unpromoted = &snapshot.Candidates[index]
 		}
 	}
-	if promoted == nil || promoted.PromotedNodeID != "candidate-promoted-marker" {
+	if promoted == nil || promoted.PromotedNodeID != promotedTopicID {
 		t.Fatalf("promoted candidate = %+v", promoted)
 	}
 	if unpromoted == nil || unpromoted.PromotedNodeID != "" {
@@ -810,7 +811,7 @@ func TestTreeAuditSnapshotUsesV3FieldNamesAndMarksPromotedCandidates(t *testing.
 	if containsExactString(snapshot.AgendaIDs, treeRootNodeID) {
 		t.Fatalf("agendaIds unexpectedly include root: %v", snapshot.AgendaIDs)
 	}
-	if !containsExactString(snapshot.ValidParentCanonicalNodeIDs, "candidate-plant-study") || !containsExactString(snapshot.ValidParentCanonicalNodeIDs, "candidate-promoted-marker") {
+	if !containsExactString(snapshot.ValidParentCanonicalNodeIDs, "candidate-plant-study") || !containsExactString(snapshot.ValidParentCanonicalNodeIDs, promotedTopicID) {
 		t.Fatalf("validParentCanonicalNodeIds = %v", snapshot.ValidParentCanonicalNodeIDs)
 	}
 	// root is a valid move_node destination (Phase C), so it belongs in this
@@ -1907,12 +1908,14 @@ func TestTreeAuditCreateTopicFromCandidateAppliesAndPromotes(t *testing.T) {
 	if result.OperationsValid != 1 || result.OperationsApplied != 1 || !result.TreeIntegrityValid {
 		t.Fatalf("validator result = %+v", result)
 	}
-	topicNode := treeNodeByID(dry.Tree, "candidate-parking-plan")
-	if topicNode == nil || topicNode.Kind != "topic" || topicNode.ParentID != treeRootNodeID || topicNode.Origin != topicOriginDynamic {
+	topicID := stableDynamicTopicID("candidate-parking-plan")
+	topicNode := treeNodeByID(dry.Tree, topicID)
+	if topicNode == nil || topicNode.Kind != "topic" || topicNode.ParentID != treeRootNodeID ||
+		topicNode.Origin != topicOriginDynamic || topicNode.SourceCandidateID != "candidate-parking-plan" {
 		t.Fatalf("promoted topic node = %+v", topicNode)
 	}
 	childNode := treeNodeByID(dry.Tree, "item-todo-parking")
-	if childNode == nil || childNode.ParentID != "candidate-parking-plan" {
+	if childNode == nil || childNode.ParentID != topicID {
 		t.Fatalf("evidence item not reparented under new topic: %+v", childNode)
 	}
 	item := findItemByID(dry.Items, "item-todo-parking")

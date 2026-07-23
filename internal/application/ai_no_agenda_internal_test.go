@@ -82,7 +82,7 @@ func TestSession3b279189c5094e88NoAgendaCandidateReplay(t *testing.T) {
 			dynamicTopicID = node.ID
 		}
 	}
-	if dynamicTopicID == "" || dynamicTopicID != serverCandidateID {
+	if dynamicTopicID == "" || dynamicTopicID != stableDynamicTopicID(serverCandidateID) {
 		t.Fatalf("dynamicTopicID=%s candidateID=%s nodes=%+v", dynamicTopicID, serverCandidateID, state2.Tree.Nodes)
 	}
 	for _, titlePart := range []string{"希少植物が生育", "植物の種類が未確認", "専門家による予備調査"} {
