@@ -413,12 +413,6 @@ func discussionTreeSkeleton(mc *meetingContext) *liveAnalysisTree {
 	return &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{root}, Edges: []liveAnalysisTreeEdge{}}
 }
 
-// fixedAgendaSkeleton is retained only as a source-compatible test/helper
-// alias for older call sites. It no longer creates agenda topics.
-func fixedAgendaSkeleton(mc *meetingContext) *liveAnalysisTree {
-	return discussionTreeSkeleton(mc)
-}
-
 func applyTreeIntegrityStats(stats *liveAnalysisTreeMergeStats, diagnostics treeIntegrityDiagnostics) {
 	if stats == nil {
 		return

@@ -3924,15 +3924,6 @@ func validLiveAnalysisItemStatus(status string) bool {
 	}
 }
 
-func validLiveAnalysisTreeNodeStatus(status string) bool {
-	switch status {
-	case "open", "updated", "resolved":
-		return true
-	default:
-		return false
-	}
-}
-
 const liveAnalysisTopicLabelMaxRunes = 20
 
 // normalizeLiveAnalysisItems lowercases kind/severity/status and drops items
@@ -5107,14 +5098,6 @@ func appendItemEvidenceSequenceNos(items, diffItems []liveAnalysisItem, roundSeq
 			items[i].EvidenceSequenceNos = items[i].EvidenceSequenceNos[len(items[i].EvidenceSequenceNos)-itemEvidenceMaxSequenceNos:]
 		}
 	}
-}
-
-// normalizeItemEvidenceSequenceNos accepts model evidence only when it points
-// at a final segment from the current round. This makes evidence useful for
-// dedup/replay without allowing the model to forge references to old or
-// nonexistent transcript rows.
-func normalizeItemEvidenceSequenceNos(items []liveAnalysisItem, roundSeqNos []int64, stats *liveAnalysisTreeMergeStats) {
-	normalizeItemEvidenceSequenceNosWithScope(items, evidenceScopeForRound(roundSeqNos), stats)
 }
 
 // normalizeItemEvidenceSequenceNosWithScope accepts both current and

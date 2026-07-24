@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"log"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -627,10 +626,6 @@ func sameCanonicalPropositionWithTimeline(a, b liveAnalysisItem, timeline discou
 	return (sharedSubject && score >= 0.72) || (sharedSubject && nearEvidence && score >= 0.18)
 }
 
-func itemEvidenceOverlaps(a, b liveAnalysisItem) bool {
-	return itemPrimaryEvidenceOverlaps(a, b, discourseTimeline{})
-}
-
 func itemPrimaryEvidenceOverlaps(a, b liveAnalysisItem, timeline discourseTimeline) bool {
 	seen := make(map[int64]struct{}, len(a.EvidenceSequenceNos))
 	for _, sequenceNo := range a.EvidenceSequenceNos {
@@ -828,19 +823,4 @@ func resolveRemappedID(id string, remap map[string]string) string {
 		id = remap[id]
 	}
 	return id
-}
-
-func sortedEvidenceSequenceNos(items []liveAnalysisItem) []int64 {
-	seen := make(map[int64]struct{})
-	for _, item := range items {
-		for _, sequenceNo := range item.EvidenceSequenceNos {
-			seen[sequenceNo] = struct{}{}
-		}
-	}
-	values := make([]int64, 0, len(seen))
-	for sequenceNo := range seen {
-		values = append(values, sequenceNo)
-	}
-	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
-	return values
 }

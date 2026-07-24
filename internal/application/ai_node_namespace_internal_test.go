@@ -115,7 +115,7 @@ func TestMaterializedAgendaOperationsAreAllowedAndDisplayIDsAreRejected(t *testi
 
 func TestTreeIntegrityFailurePreservesPreviousCanonicalTree(t *testing.T) {
 	mc := &meetingContext{Agenda: []agendaItem{{ID: "agenda-1", Title: "渡り鳥", Role: agendaRolePrimary}}}
-	previous := fixedAgendaSkeleton(mc)
+	previous := discussionTreeSkeleton(mc)
 	broken := &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
 		{ID: treeRootNodeID, Kind: "topic", Label: "会議"},
 		{ID: "agenda-1", Kind: "topic", ParentID: treeRootNodeID, Label: "渡り鳥", Origin: topicOriginAgenda, AgendaRole: agendaRolePrimary},

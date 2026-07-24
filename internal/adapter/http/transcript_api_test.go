@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"deciscope-core-api/internal/domain"
-
-	"github.com/go-chi/chi/v5"
 )
 
 const testTranscriptAPIKey = "0123456789abcdef0123456789abcdef"
@@ -251,110 +249,8 @@ func TestTranscriptAPIRequiresAPIKey(t *testing.T) {
 	}
 }
 
-func TestTranscriptAPIListsSegmentsWithOptionalClientToken(t *testing.T) {
-	service := &fakeTranscriptIngestUseCases{
-		segments: []domain.TranscriptSegment{{
-			EventID:         "call-1:1",
-			SessionID:       "session_1",
-			CallID:          "call-1",
-			SequenceNo:      1,
-			SpeakerID:       "speaker-1",
-			SpeakerName:     "佐藤さん",
-			RecognizedAtUTC: mustTime(t, "2026-06-27T00:00:00Z"),
-			OffsetTicks:     10,
-			DurationTicks:   20,
-			Text:            "履歴です。",
-			ReceivedAtUTC:   mustTime(t, "2026-06-27T00:00:01Z"),
-		}},
-	}
-	api := NewTranscriptAPI(service, testTranscriptAPIKey, "client-token")
-
-	unauthorized := httptest.NewRecorder()
-	api.List(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments?callId=call-1", nil))
-	if unauthorized.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthorized response = %d %s", unauthorized.Code, unauthorized.Body.String())
-	}
-
-	resp := httptest.NewRecorder()
-	api.List(resp, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments?callId=call-1&sessionId=session_1&limit=5&token=client-token", nil))
-	if resp.Code != http.StatusOK {
-		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
-	}
-	if service.listCallID != "call-1" || service.listSessionID != "session_1" || service.listLimit != 5 {
-		t.Fatalf("list args = callID:%q sessionID:%q limit:%d", service.listCallID, service.listSessionID, service.listLimit)
-	}
-	var body transcriptSegmentListResponse
-	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode list response: %v", err)
-	}
-	if len(body.Items) != 1 || body.Items[0].SessionID != "session_1" || body.Items[0].EventID != "call-1:1" ||
-		body.Items[0].SpeakerID != "speaker-1" || body.Items[0].SpeakerName != "佐藤さん" || body.Items[0].Text != "履歴です。" {
-		t.Fatalf("body = %+v", body)
-	}
-}
-
-func TestTranscriptAPIListsSegmentsByMeetingSessionPath(t *testing.T) {
-	service := &fakeTranscriptIngestUseCases{
-		segments: []domain.TranscriptSegment{{
-			EventID:         "call-1:1",
-			SessionID:       "session_1",
-			CallID:          "call-1",
-			SequenceNo:      1,
-			RecognizedAtUTC: mustTime(t, "2026-06-27T00:00:00Z"),
-			Text:            "会議セッション単位の履歴です。",
-			ReceivedAtUTC:   mustTime(t, "2026-06-27T00:00:01Z"),
-		}},
-	}
-	api := NewTranscriptAPI(service, testTranscriptAPIKey, "client-token")
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/meeting-sessions/session_1/transcript-segments?limit=5&token=client-token", nil)
-	routeContext := chi.NewRouteContext()
-	routeContext.URLParams.Add("session_id", "session_1")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
-	resp := httptest.NewRecorder()
-
-	api.ListByMeetingSession(resp, req)
-
-	if resp.Code != http.StatusOK {
-		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
-	}
-	if service.listCallID != "" || service.listSessionID != "session_1" || service.listLimit != 5 {
-		t.Fatalf("list args = callID:%q sessionID:%q limit:%d", service.listCallID, service.listSessionID, service.listLimit)
-	}
-	var body transcriptSegmentListResponse
-	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(body.Items) != 1 || body.Items[0].SessionID != "session_1" || body.Items[0].Text != "会議セッション単位の履歴です。" {
-		t.Fatalf("body = %+v", body)
-	}
-}
-
-func TestTranscriptAPIListAllowsDevelopmentModeWithoutClientToken(t *testing.T) {
-	service := &fakeTranscriptIngestUseCases{}
-	api := NewTranscriptAPI(service, testTranscriptAPIKey)
-
-	resp := httptest.NewRecorder()
-	api.List(resp, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments", nil))
-	if resp.Code != http.StatusOK {
-		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
-	}
-	if service.listLimit != 100 {
-		t.Fatalf("default limit = %d, want 100", service.listLimit)
-	}
-}
-
-func TestTranscriptAPIListRejectsInvalidLimit(t *testing.T) {
-	api := NewTranscriptAPI(&fakeTranscriptIngestUseCases{}, testTranscriptAPIKey)
-
-	resp := httptest.NewRecorder()
-	api.List(resp, httptest.NewRequest(http.MethodGet, "/api/v1/transcript-segments?limit=0", nil))
-	if resp.Code != http.StatusBadRequest {
-		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
-	}
-}
-
 func TestRouterDoesNotExposeLegacyTranscriptReadRoutes(t *testing.T) {
-	api := NewTranscriptAPI(&fakeTranscriptIngestUseCases{}, testTranscriptAPIKey, "client-token")
+	api := NewTranscriptAPI(&fakeTranscriptIngestUseCases{}, testTranscriptAPIKey)
 	router := NewRouter(RouterDependencies{TranscriptAPI: api})
 
 	for _, path := range []string{
@@ -445,10 +341,6 @@ type fakeTranscriptIngestUseCases struct {
 	partialCalled  bool
 	segment        domain.TranscriptSegment
 	partialSegment domain.TranscriptSegment
-	segments       []domain.TranscriptSegment
-	listCallID     string
-	listSessionID  string
-	listLimit      int
 }
 
 func (f *fakeTranscriptIngestUseCases) StoreTranscriptSegment(_ context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
@@ -467,13 +359,6 @@ func (f *fakeTranscriptIngestUseCases) PublishTranscriptPartial(_ context.Contex
 		return domain.TranscriptSegmentStoreResult{}, f.err
 	}
 	return domain.TranscriptSegmentStoreResult{Status: domain.TranscriptSegmentPartialSent, EventID: segment.EventID}, nil
-}
-
-func (f *fakeTranscriptIngestUseCases) ListTranscriptSegments(_ context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error) {
-	f.listCallID = callID
-	f.listSessionID = sessionID
-	f.listLimit = limit
-	return f.segments, f.err
 }
 
 func serveTranscriptSegment(api *TranscriptAPI, apiKey, contentType, body string) *httptest.ResponseRecorder {

@@ -228,14 +228,6 @@ func pruneCandidateEvidence(candidate *emergingTopicCandidate, itemIDs map[strin
 	candidate.EvidenceItemIDs = kept
 }
 
-func candidatePromotionEvidenceCount(candidate emergingTopicCandidate) int {
-	count := len(candidate.EvidenceItemIDs)
-	if originCount := len(uniqueNonEmptyIDs(candidate.OriginItemIDs)); originCount > count {
-		count = originCount
-	}
-	return count
-}
-
 // capEmergingCandidates keeps at most max candidates, evicting the ones with
 // the oldest LastRound first (least recently supported).
 func capEmergingCandidates(candidates []emergingTopicCandidate, max int) []emergingTopicCandidate {

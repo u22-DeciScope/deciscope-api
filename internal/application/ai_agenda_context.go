@@ -373,11 +373,6 @@ func agendaContextSpanForEvidence(sequenceNos []int64, spans []agendaContextSpan
 	return selected, found
 }
 
-func agendaForEvidence(sequenceNos []int64, spans []agendaContextSpan) (string, float64) {
-	_, agendaID, confidence := agendaContextForEvidence(sequenceNos, spans)
-	return agendaID, confidence
-}
-
 func earliestAgendaContextForEvidence(sequenceNos []int64, spans []agendaContextSpan) (string, string) {
 	selectedMode, selectedAgenda := "", ""
 	selectedSequence := int64(0)

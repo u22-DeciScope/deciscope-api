@@ -617,9 +617,6 @@ func TestTreeAuditOperationSupportedMatchesApplicableSet(t *testing.T) {
 		TreeAuditDeactivateCandidate, TreeAuditRenameGroup, TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup,
 	}
 	for _, operationType := range supported {
-		if !treeAuditOperationSupported(operationType) {
-			t.Fatalf("%s must be supported", operationType)
-		}
 		if treeAuditOperationClassification(operationType) != treeAuditOperationApplicable {
 			t.Fatalf("%s classification = %q, want applicable", operationType, treeAuditOperationClassification(operationType))
 		}
@@ -630,9 +627,6 @@ func TestTreeAuditOperationSupportedMatchesApplicableSet(t *testing.T) {
 		TreeAuditSplitCandidate, TreeAuditMergeFragmentedUtterances,
 	}
 	for _, operationType := range unsupported {
-		if treeAuditOperationSupported(operationType) {
-			t.Fatalf("%s must remain unsupported", operationType)
-		}
 		if treeAuditOperationClassification(operationType) != treeAuditOperationUnsupported {
 			t.Fatalf("%s classification = %q, want unsupported", operationType, treeAuditOperationClassification(operationType))
 		}

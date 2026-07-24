@@ -241,13 +241,6 @@ func treeAuditOperationClassification(operationType TreeAuditOperationType) tree
 	}
 }
 
-// treeAuditOperationSupported is a boolean convenience wrapper kept for
-// existing call sites; treeAuditOperationClassification is the source of
-// truth for the applicable/unsupported split.
-func treeAuditOperationSupported(operationType TreeAuditOperationType) bool {
-	return treeAuditOperationClassification(operationType) == treeAuditOperationApplicable
-}
-
 // treeAuditOperationRiskClass returns operationType's baseline risk tier
 // (treeAuditRiskClass): "safe" for operations that only rewrite/reclassify/
 // relabel/assign within their existing structural position, "moderate" for
