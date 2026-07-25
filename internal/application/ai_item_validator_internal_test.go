@@ -30,7 +30,11 @@ func TestLowInformationValidatorRejectsMetaItemsAndAcceptsConcreteShortItems(t *
 		wantRejected bool
 	}{
 		{"discourse evidence", liveAnalysisItem{ID: "item-meta", Kind: "todo", Title: "別の問題の存在を確認", Body: "追加論点", EvidenceSequenceNos: []int64{1}, evidenceSpecified: true}, true},
-		{"recap-only new item", liveAnalysisItem{ID: "item-recap", Kind: "fact", Title: "VPN証明書の期限", Body: "既出内容のまとめ", EvidenceSequenceNos: []int64{2}, evidenceSpecified: true}, true},
+		// recap evidence だけを理由にした破棄は情報量ゲートの責務から外した。
+		// 具体的な対象を持つitemはここを通過し、既存itemとの重複判定は
+		// filterReferenceRecapDiff が行う(下の専用テストで検証)。
+		{"recap-only new item with concrete subject", liveAnalysisItem{ID: "item-recap", Kind: "fact", Title: "VPN証明書の期限", Body: "既出内容のまとめ", EvidenceSequenceNos: []int64{2}, evidenceSpecified: true}, false},
+		{"recap artifact only item", liveAnalysisItem{ID: "item-recap-meta", Kind: "fact", Title: "ここまでのまとめ", Body: "ここまでのまとめ", EvidenceSequenceNos: []int64{2}, evidenceSpecified: true}, true},
 		{"empty todo", liveAnalysisItem{ID: "item-empty-todo", Kind: "todo", Title: "対応事項", EvidenceSequenceNos: nil, evidenceSpecified: true}, true},
 		{"empty decision", liveAnalysisItem{ID: "item-empty-decision", Kind: "decision", Title: "決定事項", EvidenceSequenceNos: nil, evidenceSpecified: true}, true},
 		{"contextual short decision", liveAnalysisItem{ID: "item-approval", Kind: "decision", Title: "承認します", EvidenceSequenceNos: []int64{3}, evidenceSpecified: true}, false},
@@ -45,6 +49,19 @@ func TestLowInformationValidatorRejectsMetaItemsAndAcceptsConcreteShortItems(t *
 				t.Fatalf("reason=%q item=%+v", reason, tc.item)
 			}
 		})
+	}
+
+	// 情報量ゲートを通過した recap item の重複判定は filterReferenceRecapDiff
+	// が唯一の判断点として行う。既存itemがあれば新規ノードを増やさずマージする。
+	recapItem := liveAnalysisItem{ID: "item-recap", Kind: "fact", Title: "VPN証明書の期限", Body: "既出内容のまとめ", EvidenceSequenceNos: []int64{2}, evidenceSpecified: true}
+	existing := []liveAnalysisItem{{ID: "fact-vpn", Kind: "fact", Title: "VPN証明書の期限", Body: "VPN証明書の期限が近い", Status: "open", EvidenceSequenceNos: []int64{2}}}
+	stats := &liveAnalysisTreeMergeStats{}
+	merged := filterReferenceRecapDiff(existing, []liveAnalysisItem{recapItem}, []int64{2}, timeline, scope, stats)
+	if len(merged) != 1 || merged[0].ID != "fact-vpn" {
+		t.Fatalf("merged = %+v, want the existing fact-vpn item", merged)
+	}
+	if stats.ReferenceRecapItemsMerged != 1 {
+		t.Fatalf("ReferenceRecapItemsMerged = %d, want 1", stats.ReferenceRecapItemsMerged)
 	}
 }
 

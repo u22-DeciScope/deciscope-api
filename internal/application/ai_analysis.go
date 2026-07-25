@@ -951,8 +951,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.NoAgendaSpansClosed, treeStats.ExplicitAgendaReentries, treeStats.ImplicitAgendaReentries, treeStats.LowConfidenceNoAgendaOverridesRejected, treeStats.StaleAgendaFallbackRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, uniqueNonEmptyIDs(treeStats.CandidateSubjectKeys), treeStats.CandidateIDsMerged, treeStats.CompanionCandidateInherited, treeStats.CrossKindCandidateInherited, treeStats.DynamicTopicsPromoted, uniqueNonEmptyIDs(treeStats.PromotedItemIDs), treeStats.PromotedItemsRemainingOutsideTopic)
 	log.Printf("Live subject repair. sessionId=%s version=%d genericCandidateLabelsRewritten=%d genericTopicLabelsRewritten=%d subjectFragmentationRepairs=%d",
 		sessionID, newVersion, treeStats.GenericCandidateLabelsRewritten, treeStats.GenericTopicLabelsRewritten, treeStats.SubjectFragmentationRepairs)
-	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d propositionItemsMerged=%d recapMerged=%d referenceRecapItemsMerged=%d referenceRecapItemsRejected=%d referenceRecapTopicProposalsRejected=%d lowInformationDecisionsRejected=%d lowInformationItemsRejected=%d lowInformationItemsRewritten=%d lowInformationItemsSplit=%d lowInformationTentativeRetained=%d semanticKindMigrations=%d semanticSubtypeMigrations=%d itemResurrectionPrevented=%d",
-		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.PropositionItemsMerged, treeStats.RecapMerged, treeStats.ReferenceRecapItemsMerged, treeStats.ReferenceRecapItemsRejected, treeStats.ReferenceRecapTopicProposalsRejected, treeStats.LowInformationDecisionsRejected, treeStats.LowInformationItemsRejected, treeStats.LowInformationItemsRewritten, treeStats.LowInformationItemsSplit, treeStats.LowInformationTentativeRetained, treeStats.SemanticKindMigrations, treeStats.SemanticSubtypeMigrations, treeStats.ItemResurrectionPrevented)
+	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d propositionItemsMerged=%d recapMerged=%d referenceRecapItemsMerged=%d referenceRecapItemsRetained=%d referenceRecapItemsRejected=%d referenceRecapTopicProposalsRejected=%d lowInformationDecisionsRejected=%d lowInformationItemsRejected=%d lowInformationItemsRewritten=%d lowInformationItemsSplit=%d lowInformationTentativeRetained=%d semanticKindMigrations=%d semanticSubtypeMigrations=%d itemResurrectionPrevented=%d",
+		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.PropositionItemsMerged, treeStats.RecapMerged, treeStats.ReferenceRecapItemsMerged, treeStats.ReferenceRecapItemsRetained, treeStats.ReferenceRecapItemsRejected, treeStats.ReferenceRecapTopicProposalsRejected, treeStats.LowInformationDecisionsRejected, treeStats.LowInformationItemsRejected, treeStats.LowInformationItemsRewritten, treeStats.LowInformationItemsSplit, treeStats.LowInformationTentativeRetained, treeStats.SemanticKindMigrations, treeStats.SemanticSubtypeMigrations, treeStats.ItemResurrectionPrevented)
 	noAgendaStarts := make(map[int64]struct{}, len(treeStats.NoAgendaSpanStartSequences))
 	for _, sequenceNo := range treeStats.NoAgendaSpanStartSequences {
 		noAgendaStarts[sequenceNo] = struct{}{}
@@ -966,6 +966,10 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	}
 	for _, rejection := range treeStats.LowInformationRejections {
 		log.Printf("Live low information item rejected. sessionId=%s version=%d modelItemId=%s canonicalItemId=%s kind=%s evidenceSequenceNos=%v rejectionReason=%s detectedRole=%s", sessionID, newVersion, rejection.ModelItemID, rejection.CanonicalItemID, rejection.Kind, rejection.EvidenceSequenceNos, rejection.Reason, rejection.DetectedRole)
+	}
+	for _, decision := range treeStats.RecapDecisions {
+		log.Printf("Recap item decision. sessionId=%s analysisVersion=%d itemId=%s itemKind=%s detectedRole=%s existingMatchId=%s existingMatchScore=%.2f matchReason=%s novelSubject=%t concreteInfo=%t decision=%s rejectionReason=%s",
+			sessionID, newVersion, decision.ItemID, decision.Kind, decision.DetectedRole, decision.ExistingMatchID, decision.MatchScore, decision.MatchReason, decision.NovelSubject, decision.ConcreteInfo, decision.Decision, decision.RejectionReason)
 	}
 	for _, prevention := range treeStats.ResurrectionPreventions {
 		log.Printf("Live item resurrection prevented. sessionId=%s version=%d canonicalItemId=%s propositionKeyHash=%s tombstoneReason=%s evidenceSequenceNos=%v itemResurrectionPrevented=1", sessionID, newVersion, prevention.CanonicalItemID, prevention.PropositionKeyHash, prevention.TombstoneReason, prevention.EvidenceSequenceNos)
@@ -4266,6 +4270,8 @@ type liveAnalysisTreeMergeStats struct {
 	RecapMerged                          int
 	ReferenceRecapItemsMerged            int
 	ReferenceRecapItemsRejected          int
+	ReferenceRecapItemsRetained          int
+	RecapDecisions                       []recapItemDecision
 	ReferenceRecapTopicProposalsRejected int
 	LowInformationDecisionsRejected      int
 	LowInformationItemsRejected          int
@@ -4679,7 +4685,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	requestedResolutionUpdates = append(requestedResolutionUpdates, legacyResolutionUpdates(requestedResolvedIDs, diffItems)...)
 	diffItems, assignments = filterTombstoneResurrections(&previous, diffItems, assignments, requestedResolutionUpdates, evidenceScope, treeVersion, treeStats)
 	diffItems = filterLowInformationLiveItems(previous.Items, diffItems, timeline, evidenceScope, treeStats)
-	diffItems = filterReferenceRecapDiff(previous.Items, diffItems, roundSeqNos, timeline, treeStats)
+	diffItems = filterReferenceRecapDiff(previous.Items, diffItems, roundSeqNos, timeline, evidenceScope, treeStats)
 	if roundIsReferenceOnly(roundSeqNos, timeline) {
 		newTopics = nil
 		assignments = nil

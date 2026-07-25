@@ -50,6 +50,7 @@ func filterLowInformationLiveItems(previous, diff []liveAnalysisItem, timeline d
 			kept = append(kept, item)
 			if stats != nil {
 				stats.LowInformationTentativeRetained++
+				recordRecapDecision(stats, item, timeline, recapDecisionRetainedTentative, "", 0, "tentative_issue", false, false, "")
 			}
 			continue
 		}
@@ -59,6 +60,7 @@ func filterLowInformationLiveItems(previous, diff []liveAnalysisItem, timeline d
 			continue
 		}
 		if stats != nil {
+			recordRecapDecision(stats, item, timeline, recapDecisionRejectedLowInformation, "", 0, "information_gate", false, false, reason)
 			stats.LowInformationItemsRejected++
 			if item.Kind == "decision" {
 				stats.LowInformationDecisionsRejected++
@@ -87,15 +89,24 @@ func validateLiveItemInformation(item liveAnalysisItem, updatesExisting bool, ti
 	if evidenceOnlyHasRoles(item.EvidenceSequenceNos, timeline, liveEvidenceDiscourseOnly) {
 		return "low_information", firstNonEmptyUtteranceRole(role, liveUtteranceDiscourseTransition)
 	}
-	if !updatesExisting && evidenceOnlyHasRoles(item.EvidenceSequenceNos, timeline, liveEvidenceReferenceRecap) {
-		return "low_information", firstNonEmptyUtteranceRole(role, liveUtteranceRecap)
-	}
+	// reference_recap evidenceだけを理由にした破棄はここでは行わない。recapは
+	// 「発話が振り返りの文脈にある」ことしか意味せず、「既存ツリーに同じ情報が
+	// ある」「新しい命題が無い」「情報量が不足している」を含意しない。既存item
+	// との意味的照合と新規性・具体性の評価は filterReferenceRecapDiff が唯一の
+	// 判断点として行う(ai_proposition.go)。ここでの二重判定を残すと、その救済
+	// 経路へ到達する前に候補が消える。
 	// Historical payload fixtures and pre-evidence bootstrap rounds may not have
 	// transcript text available. Only enforce an explicitly empty evidence list
 	// when there is an actual transcript scope against which the model could have
 	// grounded a newly-created item.
 	if len(item.EvidenceSequenceNos) == 0 && item.evidenceSpecified && !updatesExisting && len(scope.TranscriptText) > 0 {
 		return "low_information", role
+	}
+	// 「ここまでのまとめ」のように会議の成果物名しか持たないitemは、recapか
+	// どうかに関係なく情報量が不足している。recapを理由にするのではなく、
+	// item本文を見た結果として low_information を返す。
+	if recapArtifactOnlyItem(item.Title, item.Body) {
+		return "low_information", firstNonEmptyUtteranceRole(role, liveUtteranceRecap)
 	}
 	text := strings.TrimSpace(item.Title + " " + item.Body)
 	if isDiscourseOnlyItem(item.Title, item.Body) || structurallyDiscourseTransition(normalizeDiscourseText(text)) {
