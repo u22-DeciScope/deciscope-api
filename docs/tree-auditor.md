@@ -496,9 +496,33 @@ final reviewだけは保存済みtranscriptを広く読み、同じ上限付きs
 tree snapshotとsummaryを保存します。reviewのtimeout・schema failure・
 provider failure時も最後の正常live treeで継続し、
 finalization/tree snapshotの`finalTreeReviewFailed`と`degraded`で観測できます。
+final transcript repositoryの読取自体が失敗した場合も、最後の正常live projectionを
+入力としてtree snapshotとsummary生成を継続します。この場合はfinalization payloadの
+`transcriptFallbackUsed=true`と`finalizationIncomplete=true`、および
+`Final transcript fetch failed`ログで、transcript coverageが完全でないことを明示します。
 
-順序は常に`final flush → final_tree_review → deterministic agenda lifecycle
+順序は常に`final flush → final_tree_review → deterministic tree repair →
+deterministic agenda reconciliation → agenda lifecycle
 (空topic整理・not_discussed確定) → final tree snapshot → final summary`です。
+agenda reconciliationは追加のAI呼び出しを行わず、未着手anchorと全final transcript、
+canonical item、dynamic candidate / unclassified topicを再照合します。強く一意な一致だけを
+採用し、itemのparent、topicの`agendaRefs`、anchorの`materializedTopicIds`、
+`agendaProgress`を同じpassで修復します。失敗時またはintegrity違反時は修復前payloadへ
+戻してfinalizationを継続します。
+
+agenda progressの`discussing`（UI上のin_progress相当）は、会議終了だけでは
+`discussed`へ昇格しません。固定agendaに関連itemがあり、かつ2 active rounds、
+4 substantive segments、またはdiscussed/merged anchorのいずれかで十分な活動根拠が
+ある場合だけ昇格します。根拠が不足する場合は`discussing`のままです。
+`outcomeStatus`はこの進捗statusとは別軸で、十分に議論されても結論や必要な担当・期限が
+なければ`unresolved`になり得ます。終了時にはcurrent topic参照だけを解除し、
+manual statusは変更しません。
+
+materialized topicのmodel parent aliasはlive payload内だけで管理します。topic mergeでは
+統合先へ移し、splitでは曖昧なaliasを新branchへ複製せず、dematerialize/candidate削除では
+消滅または有効な統合先へ移します。同一aliasの複数agenda topic所有は許可せず、現在の
+topic/item evidenceとagenda scoreに一意な優位がある場合だけ所有者を選びます。以前の
+server補正は証拠の一つであり、後続の明確な訂正を妨げません。
 
 agenda lifecycleのintegrityは、tree node数ではなく`agendaRecordCount` /
 `agendaRecordsPreserved`、agenda/node ID名前空間、`agendaRefs`と
@@ -508,8 +532,9 @@ merge / rename / reparent / dematerialize、assignment結果、空topicとdynami
 before/after、`agendaTopicIdCollisions`、`agendaNodeIdNamespaceValid`、
 `orphanMaterializedTopicIds`、`agendaReferenceIntegrityValid`、`treeIntegrityValid`を記録します。
 
-agenda anchor(`agendaAnchor`)の`Status`は`planned` / `discussed` / `merged` /
-`not_discussed`のいずれか1つだけを持つ排他的な値です。`MaterializedTopicIDs`の
+agenda anchor(`agendaAnchor`)の`Status`は`planned` / `materialized` /
+`discussed` / `merged` / `not_discussed`のいずれか1つだけを持つ排他的な値です。
+`MaterializedTopicIDs`の
 有無はこれとは直交する別属性で、たとえば`action_summary`アジェンダのanchorは
 materializeされないまま`discussed`になり得ます。ログは2系統あり、意味が異なる
 点に注意してください。「Live agenda anchor lifecycle」のplanned/discussed/

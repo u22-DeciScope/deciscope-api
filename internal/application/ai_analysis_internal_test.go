@@ -1238,13 +1238,21 @@ func TestMeetingContextRoundTripsThroughJSON(t *testing.T) {
 
 func TestParseContextPlannerResultReassignsStableIDs(t *testing.T) {
 	fallback := fixtureMeetingContext()
-	content := `{"title":"定例会議","purpose":"品質確認","background":"","agendaItems":[{"title":"文字起こし精度","order":1},{"title":"AI分析の制御","order":2}],"aiDirectives":["リスク優先"]}`
+	content := `{"title":"定例会議","purpose":"品質確認","background":"","agendaItems":[{"title":"文字起こし精度","description":"認識誤りの傾向を確認する","goal":"改善対象を特定する","semanticHints":["固有名詞","誤認識"],"order":1},{"title":"AI分析の制御","order":2}],"aiDirectives":["リスク優先"]}`
 	mc, err := parseContextPlannerResult(content, fallback)
 	if err != nil {
 		t.Fatalf("parseContextPlannerResult() error = %v", err)
 	}
-	if len(mc.Agenda) != 2 || mc.Agenda[0].ID != "agenda-1" || mc.Agenda[1].ID != "agenda-2" {
-		t.Fatalf("agenda = %+v, want server-assigned stable ids", mc.Agenda)
+	if len(mc.Agenda) != 3 ||
+		mc.Agenda[0].ID != "agenda-1" ||
+		mc.Agenda[1].ID != "agenda-2" ||
+		mc.Agenda[2].ID != "agenda-3" {
+		t.Fatalf("agenda = %+v, want fallback cardinality and server-assigned stable ids", mc.Agenda)
+	}
+	if mc.Agenda[0].Description != "認識誤りの傾向を確認する" ||
+		mc.Agenda[0].Goal != "改善対象を特定する" ||
+		len(mc.Agenda[0].SemanticHints) != 2 {
+		t.Fatalf("agenda metadata = %+v", mc.Agenda[0])
 	}
 	if mc.Background != fallback.Background {
 		t.Fatalf("background = %q, want fallback fill for empty planner field", mc.Background)

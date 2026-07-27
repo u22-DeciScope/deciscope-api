@@ -31,6 +31,7 @@ type treeAssignment struct {
 	Confidence             float64 `json:"confidence"`
 	Reason                 string  `json:"reason"`
 	ModelNodeID            string  `json:"-"`
+	ModelParentTopicID     string  `json:"-"`
 	ServerSource           string  `json:"-"`
 	EvidenceSequenceNos    []int64 `json:"-"`
 	ResolvedAgendaSpanMode string  `json:"-"`
@@ -1265,7 +1266,9 @@ func applyAssignments(ac assignmentContext) {
 		reason := truncateRunes(strings.TrimSpace(assignment.Reason), assignmentReasonMaxRunes)
 		item := ac.itemAt(nodeID)
 		current := ac.parents[nodeID]
-		if candidateAt(requested) == nil && item != nil && item.CandidateTopicID != "" && candidateAt(item.CandidateTopicID) != nil {
+		_, requestedIsPlannedAgenda := ac.plannedAgendaIDs[originalRequested]
+		if assignment.ServerSource != assignmentSourceRule && !requestedIsPlannedAgenda &&
+			candidateAt(requested) == nil && item != nil && item.CandidateTopicID != "" && candidateAt(item.CandidateTopicID) != nil {
 			// Candidate IDs are server-owned. A later model round can still refer
 			// to its original proposal ID; the item's persisted candidate binding
 			// is the authoritative alias across rounds.
@@ -2151,6 +2154,9 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 		// topic is a classification proposal, not a new topic. Fold it as soon
 		// as it is recognized so its tentative items do not accumulate.
 		if existingID := semanticExistingTopic(*candidate); existingID != "" {
+			existingTopic := pc.topics[existingID]
+			existingTopic.ModelTopicIDs = appendUniqueStrings(existingTopic.ModelTopicIDs, candidate.ModelTopicIDs...)
+			pc.topics[existingID] = existingTopic
 			reparentEvidence(*candidate, existingID)
 			removed[candidate.ID] = struct{}{}
 			if pc.stats != nil {
@@ -2188,6 +2194,8 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			}
 			placedTopic := pc.topics[placedTopicID]
 			if sharedTreeAuditSubjectTerm(candidate.Label+" "+candidate.Description, placedTopic.Label+" "+placedTopic.Description) {
+				placedTopic.ModelTopicIDs = appendUniqueStrings(placedTopic.ModelTopicIDs, candidate.ModelTopicIDs...)
+				pc.topics[placedTopicID] = placedTopic
 				reparentEvidence(*candidate, placedTopicID)
 				removed[candidate.ID] = struct{}{}
 				if pc.stats != nil {
@@ -2232,6 +2240,9 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			continue
 		}
 		if existingID, dup := pc.labelIndex[normalizeForMatch(candidate.Label)]; dup {
+			existingTopic := pc.topics[existingID]
+			existingTopic.ModelTopicIDs = appendUniqueStrings(existingTopic.ModelTopicIDs, candidate.ModelTopicIDs...)
+			pc.topics[existingID] = existingTopic
 			reparentEvidence(*candidate, existingID)
 			removed[candidate.ID] = struct{}{}
 			if pc.stats != nil {
@@ -3683,6 +3694,7 @@ func applyTreeOperations(tree *liveAnalysisTree, mc *meetingContext, operations 
 				}
 			}
 			intoTopic.AgendaRefs = appendUniqueStrings(intoTopic.AgendaRefs, fromTopic.AgendaRefs...)
+			intoTopic.ModelTopicIDs = appendUniqueStrings(intoTopic.ModelTopicIDs, fromTopic.ModelTopicIDs...)
 			intoTopic.MergedFromNodeIDs = appendUniqueStrings(intoTopic.MergedFromNodeIDs, fromID)
 			intoTopic.MergedFromNodeIDs = appendUniqueStrings(intoTopic.MergedFromNodeIDs, fromTopic.MergedFromNodeIDs...)
 			if intoTopic.AgendaSplitGroupID == "" {

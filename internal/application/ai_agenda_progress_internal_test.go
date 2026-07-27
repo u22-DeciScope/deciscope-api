@@ -463,6 +463,89 @@ func TestAgendaProgressDynamicEntryDroppedWhenBackingDisappears(t *testing.T) {
 	}
 }
 
+func TestFinalizeAgendaProgressPromotesDiscussingOnlyWithDiscussionEvidence(t *testing.T) {
+	mc := agendaProgressTestMC(agendaItem{
+		ID: "agenda-1", Title: "対応方針の決定", Order: 1, Role: agendaRolePrimary,
+	})
+	tree := agendaProgressTestTree("agenda-1")
+	addAgendaProgressItemNode(tree, "item-issue", "agenda-1", "issue")
+	state := &liveAnalysisPayload{
+		Tree: tree,
+		Items: []liveAnalysisItem{{
+			ID: "item-issue", Kind: "issue", Title: "未解決の選択肢",
+		}},
+		AgendaAnchors: []agendaAnchor{{
+			AgendaID: "agenda-1", OriginalTitle: "対応方針の決定", Order: 1,
+			Status: agendaStatusMaterialized, MaterializedTopicIDs: []string{"agenda-1"},
+		}},
+		AgendaProgress: &agendaProgressState{
+			ComputedCurrentTopicID: "agenda-1",
+			Entries: []agendaProgressEntry{{
+				ID: "agenda-1", SourceType: agendaProgressSourceFixed,
+				Title: "対応方針の決定", Order: 1,
+				ComputedStatus:     agendaProgressDiscussing,
+				ManualStatus:       agendaProgressDiscussing,
+				ActiveRounds:       2,
+				OutcomeExpectation: outcomeExpectationDecision,
+			}},
+		},
+	}
+
+	finalizeAgendaProgress(state, mc, 18)
+
+	entry := agendaProgressEntryByID(state.AgendaProgress, "agenda-1")
+	if entry == nil || entry.ComputedStatus != agendaProgressDiscussed {
+		t.Fatalf("finalized entry=%+v, want evidence-backed discussed", entry)
+	}
+	if entry.OutcomeStatus != agendaOutcomeUnresolved {
+		t.Fatalf("outcomeStatus=%q, want unresolved independently of discussed status", entry.OutcomeStatus)
+	}
+	if entry.ManualStatus != agendaProgressDiscussing {
+		t.Fatalf("manualStatus=%q, want untouched", entry.ManualStatus)
+	}
+	if state.AgendaProgress.ComputedCurrentTopicID != "" {
+		t.Fatalf("computedCurrentTopicId=%q, want cleared at meeting end", state.AgendaProgress.ComputedCurrentTopicID)
+	}
+}
+
+func TestFinalizeAgendaProgressDoesNotPromoteDiscussingFromMeetingEndAlone(t *testing.T) {
+	mc := agendaProgressTestMC(agendaItem{
+		ID: "agenda-1", Title: "対応方針の決定", Order: 1, Role: agendaRolePrimary,
+	})
+	tree := agendaProgressTestTree("agenda-1")
+	addAgendaProgressItemNode(tree, "item-issue", "agenda-1", "issue")
+	state := &liveAnalysisPayload{
+		Tree: tree,
+		Items: []liveAnalysisItem{{
+			ID: "item-issue", Kind: "issue", Title: "単発の言及",
+		}},
+		AgendaAnchors: []agendaAnchor{{
+			AgendaID: "agenda-1", OriginalTitle: "対応方針の決定", Order: 1,
+			Status: agendaStatusMaterialized, MaterializedTopicIDs: []string{"agenda-1"},
+		}},
+		AgendaProgress: &agendaProgressState{
+			ComputedCurrentTopicID: "agenda-1",
+			Entries: []agendaProgressEntry{{
+				ID: "agenda-1", SourceType: agendaProgressSourceFixed,
+				Title: "対応方針の決定", Order: 1,
+				ComputedStatus:     agendaProgressDiscussing,
+				ActiveRounds:       1,
+				OutcomeExpectation: outcomeExpectationDecision,
+			}},
+		},
+	}
+
+	finalizeAgendaProgress(state, mc, 19)
+
+	entry := agendaProgressEntryByID(state.AgendaProgress, "agenda-1")
+	if entry == nil || entry.ComputedStatus != agendaProgressDiscussing {
+		t.Fatalf("finalized entry=%+v, want discussing without sufficient activity evidence", entry)
+	}
+	if entry.OutcomeStatus != "" {
+		t.Fatalf("outcomeStatus=%q, want empty until the agenda is discussed", entry.OutcomeStatus)
+	}
+}
+
 // --- stamp (§2.10) --------------------------------------------------------------
 
 func TestApplyAgendaProgressOverridesManualTakesPriority(t *testing.T) {

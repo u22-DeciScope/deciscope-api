@@ -1009,7 +1009,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		stats.AssignedItems, stats.TentativeItems, stats.UnclassifiedItems, stats.EmergingCandidates, treeStats.DynamicTopicsPromoted)
 	log.Printf("Live group diagnostics. sessionId=%s version=%d groupCandidates=%d groupsCreated=%d groupsSkipped=%d groupSkipReasons=%v groupsFlattened=%d nestedGroupCount=%d",
 		sessionID, newVersion, treeStats.GroupCandidates, treeStats.GroupsCreated, treeStats.GroupsSkipped, treeStats.GroupSkipReasons, treeStats.GroupsFlattened, treeHealth.NestedGroupCount)
-	logClassificationDecisions(sessionID, treeStats)
+	logClassificationDecisions(sessionID, newVersion, treeStats)
 	logAgendaProgressLinks(sessionID, newVersion, payloadState.AgendaProgress)
 	logLiveSnapshotBroadcast(sessionID, payloadState, previousLiveAnalysisState(previousPayload))
 	s.publishAnalysis(*saved)
@@ -1080,7 +1080,7 @@ func (s *MeetingAnalysisService) liveEvidenceScope(ctx context.Context, sessionI
 // logClassificationDecisions writes one log line per item-level assignment
 // decision and per emerging-topic decision. IDと数値のみで、発言本文・理由文は
 // 出力しない(本文はpayloadに保持され人手確認できる)。
-func logClassificationDecisions(sessionID string, stats *liveAnalysisTreeMergeStats) {
+func logClassificationDecisions(sessionID string, treeVersion int64, stats *liveAnalysisTreeMergeStats) {
 	if stats == nil {
 		return
 	}
@@ -1108,6 +1108,7 @@ func logClassificationDecisions(sessionID string, stats *liveAnalysisTreeMergeSt
 		log.Printf("Emerging topic evaluated. sessionId=%s candidateId=%s candidateSubjectKey=%s candidateIdsMerged=%v evidenceItemCount=%d evidenceRoundCount=%d decision=%s newTopicId=%s reason=%s",
 			sessionID, d.CandidateID, d.SubjectKey, d.MergedCandidateIDs, d.EvidenceItemCount, d.RoundCount, d.Decision, d.TopicID, d.Reason)
 	}
+	logAgendaReconciliations(sessionID, treeVersion, stats.AgendaReconciliations)
 	for _, d := range stats.GroupDecisions {
 		log.Printf("Group candidate evaluated. sessionId=%s parentId=%s totalDetailItems=%d eligibleDetailItems=%d excludedDetailItems=%d excludedByKind=%d excludedByClassification=%d excludedByEvidence=%d excludedByParent=%d excludedByResolution=%d semanticClusterCount=%d groupCandidates=%d groupsCreated=%d candidateLabelHash=%s candidateItemCount=%d validEvidenceItemCount=%d result=%s reason=%s",
 			sessionID, d.ParentID, d.TotalDetailItems, d.EligibleDetailItems, d.ExcludedDetailItems, d.ExcludedByKind, d.ExcludedByClassification, d.ExcludedByEvidence, d.ExcludedByParent, d.ExcludedByResolution, d.SemanticClusterCount, d.GroupCandidates, d.GroupsCreated, d.CandidateLabelHash, d.CandidateItemCount, d.ValidEvidenceItemCount, d.Result, d.Reason)
@@ -1261,6 +1262,63 @@ func (s *MeetingAnalysisService) persistLiveAnalysis(ctx context.Context, expect
 		}
 	}
 	return saved, persisted, err
+}
+
+// persistFinalizedLiveProjection refreshes the current live row at the same
+// tree version after meeting-end reconciliation. This is a projection update,
+// not another analysis round: it does not append history or increment the tree
+// version, and therefore cannot be mistaken for an extra model invocation.
+// Finalization holds the per-session finalizing barrier, so no live writer or
+// scheduled audit can race this bounded overwrite.
+func (s *MeetingAnalysisService) persistFinalizedLiveProjection(ctx context.Context, sessionID string, payload json.RawMessage, version int64) error {
+	if s == nil || s.analysisRepo == nil || strings.TrimSpace(sessionID) == "" || len(payload) == 0 {
+		return nil
+	}
+	current, err := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	analysis := domain.MeetingAIAnalysis{
+		SessionID: sessionID, Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: version,
+		Payload: payload, UpdatedAt: finalizedProjectionUpdatedAt(s.now(), current),
+	}
+	if current != nil {
+		analysis.Model = current.Model
+		analysis.SegmentCount = current.SegmentCount
+		analysis.InputChars = current.InputChars
+	}
+	saved, err := s.analysisRepo.UpsertMeetingAIAnalysis(ctx, analysis)
+	if err != nil {
+		return err
+	}
+	if saved == nil {
+		return nil
+	}
+	s.mu.Lock()
+	state := s.sessionStateLocked(sessionID)
+	state.lastPayload = append(json.RawMessage(nil), saved.Payload...)
+	state.lastVersion = saved.Version
+	s.mu.Unlock()
+	s.publishAnalysis(*saved)
+	return nil
+}
+
+// finalizedProjectionUpdatedAt makes the same-version projection contract
+// explicit for REST/WebSocket consumers. Although PostgreSQL timestamps retain
+// microseconds, browser Date parsing compares at millisecond precision. Advancing
+// by less than one millisecond would make a corrected payload indistinguishable
+// from a stale snapshot in the frontend.
+func finalizedProjectionUpdatedAt(now time.Time, current *domain.MeetingAIAnalysis) time.Time {
+	updatedAt := now.UTC()
+	if current == nil || current.UpdatedAt.IsZero() {
+		return updatedAt
+	}
+	minimum := current.UpdatedAt.UTC().Add(time.Millisecond)
+	if updatedAt.Before(minimum) {
+		return minimum
+	}
+	return updatedAt
 }
 
 func (s *MeetingAnalysisService) handleStaleLiveAnalysisResult(ctx context.Context, sessionID string, segments []domain.TranscriptSegment, expectedVersion int64) {
@@ -1424,6 +1482,7 @@ type finalizationPreparation struct {
 	LivePayload                  json.RawMessage
 	LiveVersion                  int64
 	WaitTimedOut                 bool
+	TranscriptFallbackUsed       bool
 }
 
 type finalizationProgressPayload struct {
@@ -1439,6 +1498,7 @@ type finalizationProgressPayload struct {
 	WaitTimedOut                    bool   `json:"waitTimedOut"`
 	FinalizationIncomplete          bool   `json:"finalizationIncomplete"`
 	RetryCount                      int    `json:"retryCount"`
+	TranscriptFallbackUsed          bool   `json:"transcriptFallbackUsed,omitempty"`
 	FinalTreeReviewFailed           bool   `json:"finalTreeReviewFailed,omitempty"`
 	FinalTreeReviewResult           string `json:"finalTreeReviewResult,omitempty"`
 	FinalTreeAuditRunID             string `json:"finalTreeAuditRunId,omitempty"`
@@ -1487,9 +1547,14 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 		}
 	}
 
-	segments, target, timedOut, err := s.waitForStableFinalSegments(ctx, sessionID, request)
-	if err != nil {
-		return finalizationPreparation{}, err
+	segments, target, timedOut, transcriptErr := s.waitForStableFinalSegments(ctx, sessionID, request)
+	transcriptFallbackUsed := transcriptErr != nil
+	if transcriptFallbackUsed {
+		segments = nil
+		target = request.BotLastForwardedFinalSequence
+		timedOut = false
+		log.Printf("Final transcript fetch failed; continuing with last-known-good live projection. sessionId=%s targetSequence=%d error=%v",
+			sessionID, target, transcriptErr)
 	}
 
 	s.mu.Lock()
@@ -1510,6 +1575,9 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 		}
 	}
 	coverage := previousLiveAnalysisState(livePayload)
+	if transcriptFallbackUsed && target == 0 {
+		target = coverage.CoveredThroughSequenceNo
+	}
 	analyzed := make(map[string]struct{}, len(coverage.AnalyzedFinalSegments))
 	for _, ref := range coverage.AnalyzedFinalSegments {
 		analyzed[finalSegmentKey(ref.CallID, ref.SequenceNo)] = struct{}{}
@@ -1574,6 +1642,7 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 		Segments: segments, TargetSequence: target, LatestPersistedFinalSequence: latest,
 		LastSuccessfullyAnalyzed: updatedCoverage.CoveredThroughSequenceNo,
 		PendingSegmentCount:      len(pending), LivePayload: livePayload, LiveVersion: liveVersion, WaitTimedOut: timedOut,
+		TranscriptFallbackUsed: transcriptFallbackUsed,
 	}, nil
 }
 
@@ -1717,11 +1786,14 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	progress.FinalizationTargetSequence = prepared.TargetSequence
 	progress.PendingSegmentCount = prepared.PendingSegmentCount
 	progress.WaitTimedOut = prepared.WaitTimedOut
-	progress.FinalizationIncomplete = prepared.WaitTimedOut || prepared.LastSuccessfullyAnalyzed < prepared.TargetSequence
+	progress.TranscriptFallbackUsed = prepared.TranscriptFallbackUsed
+	progress.FinalizationIncomplete = prepared.TranscriptFallbackUsed ||
+		prepared.WaitTimedOut ||
+		prepared.LastSuccessfullyAnalyzed < prepared.TargetSequence
 	s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisRunning, progressVersion, progress, nil)
 
 	finalSegments := prepared.Segments
-	if len(finalSegments) == 0 {
+	if len(finalSegments) == 0 && !prepared.TranscriptFallbackUsed {
 		progress.Stage = "completed"
 		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisCompleted, progressVersion, progress, nil)
 		log.Printf("Meeting finalization completed with empty transcript. sessionId=%s finalizationId=%s", sessionID, finalizationID)
@@ -1790,14 +1862,6 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 		livePayload = review.Payload
 		liveVersion = review.Version
 	}
-	// The final lifecycle pass is deterministic and does not depend on the
-	// reviewer model: empty materializations are removed and remaining planned
-	// agenda records become not_discussed before snapshot/summary generation.
-	if finalizedPayload, finalizeErr := finalizeAgendaLifecyclePayload(livePayload, meetingCtx, liveVersion); finalizeErr != nil {
-		log.Printf("Final agenda lifecycle normalization failed; continuing with reviewed payload. sessionId=%s treeVersion=%d error=%v", sessionID, liveVersion, finalizeErr)
-	} else {
-		livePayload = finalizedPayload
-	}
 	// Deterministic repairs the model-facing auditor cannot apply itself
 	// (merge_dynamic_topics has no server applier, and a leftover
 	// same-evidence risk/issue duplicate needs a sweep rather than a fresh
@@ -1809,6 +1873,25 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 		livePayload = repaired
 		if repairStats.PromotedTopicDuplicatesFolded > 0 || repairStats.PromotedTopicFoldsAborted > 0 || repairStats.CrossKindDuplicatesMerged > 0 {
 			log.Printf("Deterministic final tree repair applied. sessionId=%s treeVersion=%d promotedTopicDuplicatesFolded=%d promotedTopicFoldsAborted=%d crossKindDuplicatesMerged=%d", sessionID, liveVersion, repairStats.PromotedTopicDuplicatesFolded, repairStats.PromotedTopicFoldsAborted, repairStats.CrossKindDuplicatesMerged)
+		}
+	}
+	// Agenda reconciliation is deliberately the last structural pass after the
+	// final reviewer and deterministic duplicate repairs. It reuses the full
+	// final transcript and canonical items, then recomputes anchors/progress so
+	// a reviewer move cannot silently discard the recovered AgendaRefs.
+	if finalizedPayload, agendaDecisions, finalizeErr := finalizeAgendaLifecyclePayloadWithEvidence(livePayload, meetingCtx, liveVersion, finalSegments); finalizeErr != nil {
+		log.Printf("Final agenda lifecycle normalization failed; continuing with reviewed payload. sessionId=%s treeVersion=%d error=%v", sessionID, liveVersion, finalizeErr)
+	} else {
+		livePayload = finalizedPayload
+		agendaDecisions = annotateAgendaReconciliationManualOverrides(
+			agendaDecisions, s.sessionAgendaProgressOverrides(ctx, sessionID),
+		)
+		logAgendaReconciliations(sessionID, liveVersion, agendaDecisions)
+		if persistErr := s.persistFinalizedLiveProjection(ctx, sessionID, livePayload, liveVersion); persistErr != nil {
+			// Final tree snapshot and summary continue from the in-memory,
+			// validated result even when the optional current-live projection
+			// cannot be refreshed.
+			log.Printf("Final agenda projection persist failed; continuing finalization. sessionId=%s treeVersion=%d error=%v", sessionID, liveVersion, persistErr)
 		}
 	}
 	progress.Stage = "final_tree_review_completed"
@@ -1938,23 +2021,107 @@ type treeSnapshotPayload struct {
 	BasedOnTreeVersion       int64                     `json:"basedOnTreeVersion,omitempty"`
 	FinalTreeReviewFailed    bool                      `json:"finalTreeReviewFailed,omitempty"`
 	AgendaAnchors            []agendaAnchor            `json:"agendaAnchors,omitempty"`
+	AgendaProgress           *agendaProgressState      `json:"agendaProgress,omitempty"`
 }
 
+type agendaFinalizationStage string
+
+const (
+	agendaFinalizationStageMeetingContext agendaFinalizationStage = "meeting_context"
+	agendaFinalizationStageTranscript     agendaFinalizationStage = "transcript"
+	agendaFinalizationStageTopicRepair    agendaFinalizationStage = "topic_repair"
+	agendaFinalizationStageAgendaRefs     agendaFinalizationStage = "agenda_refs"
+	agendaFinalizationStageProgress       agendaFinalizationStage = "progress"
+	agendaFinalizationStageIntegrity      agendaFinalizationStage = "integrity"
+)
+
+type agendaFinalizationStageHook func(agendaFinalizationStage) error
+
 func finalizeAgendaLifecyclePayload(payload json.RawMessage, mc *meetingContext, treeVersion int64) (json.RawMessage, error) {
+	finalized, _, err := finalizeAgendaLifecyclePayloadWithEvidence(payload, mc, treeVersion, nil)
+	return finalized, err
+}
+
+func finalizeAgendaLifecyclePayloadWithEvidence(payload json.RawMessage, mc *meetingContext, treeVersion int64, segments []domain.TranscriptSegment) (json.RawMessage, []agendaReconciliationDecision, error) {
+	return finalizeAgendaLifecyclePayloadWithEvidenceAndHook(payload, mc, treeVersion, segments, nil)
+}
+
+func finalizeAgendaLifecyclePayloadWithEvidenceAndHook(
+	payload json.RawMessage,
+	mc *meetingContext,
+	treeVersion int64,
+	segments []domain.TranscriptSegment,
+	hook agendaFinalizationStageHook,
+) (json.RawMessage, []agendaReconciliationDecision, error) {
 	state := previousLiveAnalysisState(payload)
+	original := cloneLiveAnalysisPayload(state)
+	fail := func(stage agendaFinalizationStage) (json.RawMessage, []agendaReconciliationDecision, error) {
+		if hook == nil {
+			return nil, nil, nil
+		}
+		if err := hook(stage); err != nil {
+			rollback, marshalErr := json.Marshal(original)
+			if marshalErr != nil {
+				return nil, nil, fmt.Errorf("agenda reconciliation %s failed: %w (rollback marshal: %v)", stage, err, marshalErr)
+			}
+			return rollback, []agendaReconciliationDecision{{
+				Trigger: agendaReconciliationFinalization, RejectedReason: "reconciliation_error_" + string(stage),
+			}}, fmt.Errorf("agenda reconciliation %s failed: %w", stage, err)
+		}
+		return nil, nil, nil
+	}
+	if rollback, decisions, err := fail(agendaFinalizationStageMeetingContext); err != nil {
+		return rollback, decisions, err
+	}
+	if mc == nil {
+		unchanged, err := json.Marshal(original)
+		return unchanged, []agendaReconciliationDecision{{
+			Trigger: agendaReconciliationFinalization, RejectedReason: "no_meeting_context",
+		}}, err
+	}
 	normalizeLegacyAgendaTopicIDs(&state, mc, nil)
 	state.Tree = mergeEquivalentAgendaDynamicTopicsInTree(state.Tree, mc, treeVersion, nil)
+	if rollback, decisions, err := fail(agendaFinalizationStageTranscript); err != nil {
+		return rollback, decisions, err
+	}
+	decisions := safelyReconcileFinalAgendaEvidence(&state, mc, segments, treeVersion)
+	if rollback, failureDecisions, err := fail(agendaFinalizationStageTopicRepair); err != nil {
+		return rollback, append(decisions, failureDecisions...), err
+	}
 	pruneEmptyAgendaTopics(state.Tree, mc, treeVersion, true, nil)
 	state.AgendaAnchors = reconcileAgendaAnchors(state.AgendaAnchors, mc, state.Tree, state.Items, treeVersion, true)
+	if rollback, failureDecisions, err := fail(agendaFinalizationStageAgendaRefs); err != nil {
+		return rollback, append(decisions, failureDecisions...), err
+	}
 	finalizeAgendaProgress(&state, mc, treeVersion)
+	if rollback, failureDecisions, err := fail(agendaFinalizationStageProgress); err != nil {
+		return rollback, append(decisions, failureDecisions...), err
+	}
+	reconcileAgendaModelTopicAliasConflicts(state.Tree, mc, state.Items)
 	state.TreeIntegrity = nil
+	if rollback, failureDecisions, err := fail(agendaFinalizationStageIntegrity); err != nil {
+		return rollback, append(decisions, failureDecisions...), err
+	}
 	integrity := validateTreeIntegrity(state.Tree, state.Items, mc, state.AgendaAnchors)
 	if !integrity.Valid {
-		state.Degraded = true
-		state.DegradedReason = "final_agenda_integrity_rejected"
-		state.TreeIntegrity = &integrity
+		// A reconciliation-specific integrity regression is fail-closed: retain
+		// the exact pre-pass payload. Running normalization or lifecycle changes
+		// after a rejected repair would create a partially repaired snapshot.
+		if len(decisions) > 0 {
+			state = original
+			decisions = append(decisions, agendaReconciliationDecision{
+				Trigger: agendaReconciliationFinalization, RejectedReason: "tree_integrity_rejected",
+			})
+			integrity = validateTreeIntegrity(state.Tree, state.Items, mc, state.AgendaAnchors)
+		}
+		if !integrity.Valid {
+			state.Degraded = true
+			state.DegradedReason = "final_agenda_integrity_rejected"
+			state.TreeIntegrity = &integrity
+		}
 	}
-	return json.Marshal(state)
+	encoded, err := json.Marshal(state)
+	return encoded, decisions, err
 }
 
 // finalRepairStats summarizes what applyDeterministicFinalTreeRepairs changed
@@ -2237,6 +2404,7 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 	tree = mergeEquivalentAgendaDynamicTopicsInTree(tree, mc, liveVersion, nil)
 	pruneEmptyAgendaTopics(tree, mc, liveVersion, true, nil)
 	previous.AgendaAnchors = reconcileAgendaAnchors(previous.AgendaAnchors, mc, tree, previous.Items, liveVersion, true)
+	reconcileAgendaModelTopicAliasConflicts(tree, mc, previous.Items)
 	integrity := validateTreeIntegrity(tree, previous.Items, mc, previous.AgendaAnchors)
 	if !integrity.Valid {
 		tree = discussionTreeSkeleton(mc)
@@ -2259,6 +2427,7 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 		BasedOnTreeVersion:       previous.BasedOnTreeVersion,
 		FinalTreeReviewFailed:    previous.FinalTreeReviewFailed,
 		AgendaAnchors:            previous.AgendaAnchors,
+		AgendaProgress:           previous.AgendaProgress,
 	}
 	if !integrity.Valid {
 		snapshot.Degraded = true
@@ -2735,7 +2904,15 @@ func (s *MeetingAnalysisService) UpdateAgendaProgressOverride(ctx context.Contex
 		// legacy payloadをそのまま流すと、クライアントが旧形式ツリーを同一
 		// versionで受け取って表示が劣化しうる(agendaProgress未保有の旧payload
 		// もsanitizeが§2.11の合成projectionを与える)。
-		s.publishAnalysis(*sanitizeLiveAnalysisForDelivery(live, mc, s.config.TreeClassification))
+		if sanitized := sanitizeLiveAnalysisForDelivery(live, mc, s.config.TreeClassification); sanitized != nil {
+			// Manual progress is a same-version projection update, just like
+			// meeting-end agenda reconciliation. Give it a fresh timestamp so
+			// clients can reject duplicate delivery while still adopting the
+			// corrected projection and refusing an older REST response.
+			published := *sanitized
+			published.UpdatedAt = finalizedProjectionUpdatedAt(s.now(), live)
+			s.publishAnalysis(published)
+		}
 	}
 
 	return stampedRaw, nil
@@ -2853,11 +3030,14 @@ func sanitizeTreeSnapshotForDelivery(analysis, live *domain.MeetingAIAnalysis, m
 		return analysis
 	}
 	migrated := 0
-	compatibilityState := liveAnalysisPayload{Tree: snapshot.Tree, AgendaAnchors: append([]agendaAnchor(nil), snapshot.AgendaAnchors...), TreeVersion: snapshot.TreeVersion}
+	compatibilityState := liveAnalysisPayload{
+		Tree: snapshot.Tree, AgendaAnchors: append([]agendaAnchor(nil), snapshot.AgendaAnchors...),
+		AgendaProgress: snapshot.AgendaProgress, TreeVersion: snapshot.TreeVersion,
+	}
 	if remap := normalizeLegacyAgendaTopicIDs(&compatibilityState, mc, nil); len(remap) > 0 {
 		migrated += len(remap)
 	}
-	snapshot.Tree, snapshot.AgendaAnchors = compatibilityState.Tree, compatibilityState.AgendaAnchors
+	snapshot.Tree, snapshot.AgendaAnchors, snapshot.AgendaProgress = compatibilityState.Tree, compatibilityState.AgendaAnchors, compatibilityState.AgendaProgress
 	if snapshot.Tree != nil {
 		for index := range snapshot.Tree.Nodes {
 			node := &snapshot.Tree.Nodes[index]
@@ -2872,9 +3052,15 @@ func sanitizeTreeSnapshotForDelivery(analysis, live *domain.MeetingAIAnalysis, m
 		}
 	}
 	anchorsMissing := mc != nil && len(mc.Agenda) > 0 && len(snapshot.AgendaAnchors) == 0
+	progressMissing := mc != nil && len(mc.Agenda) > 0 && snapshot.AgendaProgress == nil
 	integrity := validateTreeIntegrity(snapshot.Tree, nil, mc)
 	snapshot.AgendaAnchors = reconcileAgendaAnchors(snapshot.AgendaAnchors, mc, snapshot.Tree, nil, snapshot.TreeVersion, snapshot.Final)
-	if integrity.Valid && migrated == 0 && !anchorsMissing {
+	if snapshot.AgendaProgress == nil && mc != nil && len(mc.Agenda) > 0 {
+		snapshot.AgendaProgress = synthesizeAgendaProgressFromAnchors(mc, snapshot.AgendaAnchors, snapshot.TreeVersion)
+	} else {
+		refreshAgendaProgressNodeRefs(snapshot.AgendaProgress, snapshot.Tree)
+	}
+	if integrity.Valid && migrated == 0 && !anchorsMissing && !progressMissing {
 		return analysis
 	}
 	if !integrity.Valid {
@@ -3160,9 +3346,15 @@ func (s *MeetingAnalysisService) completeMeetingContextPlanning(sessionID string
 	if resolved != nil {
 		agendaCount = len(resolved.Agenda)
 		for _, item := range resolved.Agenda {
-			if effectiveAgendaRole(item.Role, item.Title, "") == agendaRoleActionSummary {
+			actionSummary := effectiveAgendaRole(item.Role, item.Title, item.Description) == agendaRoleActionSummary
+			if actionSummary {
 				actionSummaryCount++
 			}
+			log.Printf("Agenda record generated. sessionId=%s agendaId=%s order=%d role=%s actionSummary=%t initialStatus=%s titleHash=%s metadataHash=%s semanticHintCount=%d source=%s",
+				sessionID, item.ID, item.Order, effectiveAgendaRole(item.Role, item.Title, item.Description),
+				actionSummary, agendaProgressNotStarted, shortAuditHash(item.Title),
+				shortAuditHash(item.Description+" "+item.Goal+" "+strings.Join(item.SemanticHints, " ")),
+				len(item.SemanticHints), source)
 		}
 	}
 	log.Printf("Meeting context planning completed. sessionId=%s result=%s status=%s contextVersion=%d agendaCount=%d actionSummaryAgendaCount=%d elapsed=%s error=%v", sessionID, source, status, version, agendaCount, actionSummaryCount, completed.Sub(started), cause)
@@ -3173,7 +3365,12 @@ func (s *MeetingAnalysisService) fetchSessionPreContext(ctx context.Context, ses
 		return nil
 	}
 	session, err := s.sessionRepo.GetMeetingSession(ctx, sessionID)
-	if err != nil || session == nil {
+	if err != nil {
+		log.Printf("Meeting context source fetch failed; continuing without pre-context. sessionId=%s error=%v", sessionID, err)
+		return nil
+	}
+	if session == nil {
+		log.Printf("Meeting context source fetch returned no session; continuing without pre-context. sessionId=%s", sessionID)
 		return nil
 	}
 	return preContextFromSession(session)
@@ -4378,6 +4575,9 @@ type liveAnalysisTreeMergeStats struct {
 	AgendaProgressAdditionalTopicsDisplayed int
 	AgendaProgressMultiAgendaEvidenceCount  int
 	AgendaProgressWeights                   []string
+	// AgendaReconciliations records candidate reconsideration and ordered-skip
+	// backfill decisions. It is log-only and never enters the live payload.
+	AgendaReconciliations []agendaReconciliationDecision
 }
 
 type itemLifecycleEvaluation struct {
@@ -4759,11 +4959,16 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	agendaEvidenceItems := contentEvidenceItems(diffItems, timeline)
 	agendaEvidenceItems = agendaSpanRepairItems(merged.Items, agendaEvidenceItems, agendaSpans)
 	assignments, newTopics = applyAgendaContextAssignments(assignments, newTopics, previous.Tree, merged.Items, agendaEvidenceItems, previous.EmergingTopics, agendaSpans, mc, treeStats)
+	assignments = safelyReconcileLiveAgendaAssignments(
+		assignments, newTopics, previous, merged.Items, agendaEvidenceItems, mc,
+		agendaSpans, roundSeqNos, timeline, evidenceScope, treeStats,
+	)
 	merged.Tree, merged.Items, merged.EmergingTopics = rebuildDiscussionTree(
 		previous.Tree, mc, merged.Items, newTopics, assignments, resolvedIDs,
 		previous.EmergingTopics, treeVersion, cfg, treeStats)
 	canonicalizePropositionItems(&merged, timeline, treeStats, treeVersion)
 	pruneEmptyDynamicTopics(merged.Tree)
+	reconcileAgendaModelTopicAliasConflicts(merged.Tree, mc, merged.Items)
 	stampEvidenceRoles(merged.Items, timeline)
 	if treeStats != nil && len(treeStats.PromotedItemIDs) > 0 {
 		topicOrigins := make(map[string]string)
@@ -4781,20 +4986,25 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	selectedTree, integrity, degraded := preserveTreeOnIntegrityFailure(merged.Tree, previous.Tree, merged.Items, previous.Items, mc, treeStats)
 	merged.Tree = selectedTree
 	merged.AgendaAnchors = reconcileAgendaAnchors(previous.AgendaAnchors, mc, merged.Tree, merged.Items, treeVersion, false)
+	var agendaReconciliations []agendaReconciliationDecision
+	if treeStats != nil {
+		agendaReconciliations = treeStats.AgendaReconciliations
+	}
 	merged.AgendaProgress = evaluateAgendaProgress(agendaProgressInputs{
-		Previous:    previous.AgendaProgress,
-		MC:          mc,
-		Tree:        merged.Tree,
-		Items:       merged.Items,
-		Anchors:     merged.AgendaAnchors,
-		Emerging:    merged.EmergingTopics,
-		Spans:       agendaSpans,
-		Timeline:    timeline,
-		Scope:       evidenceScope,
-		RoundSeqNos: roundSeqNos,
-		DiffItems:   diffItems,
-		TreeVersion: treeVersion,
-		Stats:       treeStats,
+		Previous:        previous.AgendaProgress,
+		MC:              mc,
+		Tree:            merged.Tree,
+		Items:           merged.Items,
+		Anchors:         merged.AgendaAnchors,
+		Emerging:        merged.EmergingTopics,
+		Spans:           agendaSpans,
+		Timeline:        timeline,
+		Scope:           evidenceScope,
+		RoundSeqNos:     roundSeqNos,
+		DiffItems:       diffItems,
+		TreeVersion:     treeVersion,
+		Reconciliations: agendaReconciliations,
+		Stats:           treeStats,
 	})
 	if treeStats != nil {
 		currentAgendaMetrics := observeAgendaTree(merged.Tree, mc)

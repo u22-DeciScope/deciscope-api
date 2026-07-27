@@ -163,18 +163,19 @@ func classifyAgendaOutcomeExpectation(title string) string {
 // already available at the reconcileAgendaAnchors call site; the model's own
 // (ignored) agendaProgress diff is never part of this.
 type agendaProgressInputs struct {
-	Previous    *agendaProgressState
-	MC          *meetingContext
-	Tree        *liveAnalysisTree
-	Items       []liveAnalysisItem
-	Anchors     []agendaAnchor
-	Emerging    []emergingTopicCandidate
-	Spans       []agendaContextSpan
-	Timeline    discourseTimeline
-	Scope       liveEvidenceScope
-	RoundSeqNos []int64
-	DiffItems   []liveAnalysisItem
-	TreeVersion int64
+	Previous        *agendaProgressState
+	MC              *meetingContext
+	Tree            *liveAnalysisTree
+	Items           []liveAnalysisItem
+	Anchors         []agendaAnchor
+	Emerging        []emergingTopicCandidate
+	Spans           []agendaContextSpan
+	Timeline        discourseTimeline
+	Scope           liveEvidenceScope
+	RoundSeqNos     []int64
+	DiffItems       []liveAnalysisItem
+	TreeVersion     int64
+	Reconciliations []agendaReconciliationDecision
 	// Stats is optional observability. When non-nil, evaluateAgendaProgress
 	// populates its AgendaProgress* fields for the caller (which owns
 	// sessionId) to log in the same "Agenda progress evaluated." line style
@@ -458,12 +459,14 @@ func evaluateAgendaProgress(in agendaProgressInputs) *agendaProgressState {
 		roundSeqSet[seq] = struct{}{}
 	}
 	explicitLeaderID := ""
+	explicitLeaderSequence := int64(0)
 	for _, span := range in.Spans {
 		if span.Mode != agendaContextModeFixed || !span.Explicit || span.AgendaID == "" {
 			continue
 		}
 		if _, startedThisRound := roundSeqSet[span.StartSequenceNo]; startedThisRound {
 			explicitLeaderID = span.AgendaID
+			explicitLeaderSequence = span.StartSequenceNo
 		}
 	}
 	type scoredEntry struct {
@@ -546,6 +549,32 @@ func evaluateAgendaProgress(in agendaProgressInputs) *agendaProgressState {
 
 	// --- per-entry status machine (§2.5) -------------------------------------
 	statusTransitions := make([]string, 0)
+	skipBackfilled := make(map[string]struct{})
+	for _, decision := range in.Reconciliations {
+		if decision.Trigger == agendaReconciliationSkipBackfill && decision.SelectedAgendaID != "" &&
+			decision.ItemMoved && decision.RejectedReason == "" {
+			skipBackfilled[decision.SelectedAgendaID] = struct{}{}
+		}
+	}
+	reconciledBeforeExplicitTransition := func(agendaID string) bool {
+		if explicitLeaderID == "" || explicitLeaderSequence <= 0 || agendaID == explicitLeaderID {
+			return false
+		}
+		for _, item := range in.Items {
+			if item.AssignmentReason != agendaReconciliationDynamicCandidate &&
+				item.AssignmentReason != agendaReconciliationSkipBackfill {
+				continue
+			}
+			sequenceNo := maxEvidenceSequence(item)
+			if sequenceNo <= 0 || sequenceNo >= explicitLeaderSequence || explicitLeaderSequence-sequenceNo > 4 {
+				continue
+			}
+			if resolveTarget(item.ID) == agendaID {
+				return true
+			}
+		}
+		return false
+	}
 	for _, id := range order {
 		entry, ok := entriesByID[id]
 		if !ok {
@@ -559,25 +588,30 @@ func evaluateAgendaProgress(in agendaProgressInputs) *agendaProgressState {
 		switch entry.ComputedStatus {
 		case agendaProgressNotStarted, "":
 			becomeCurrent := id == newCurrent && newCurrent != ""
-			if roundSegments[id] >= 2 || (entry.SubstantiveSegments >= 2 && entry.ActiveRounds >= 2) || (isFixed && materialized) || becomeCurrent {
+			_, backfilledPast := skipBackfilled[id]
+			if backfilledPast && isFixed && grounded && id != newCurrent {
+				entry.ComputedStatus = agendaProgressDiscussed
+			} else if roundSegments[id] >= 2 || (entry.SubstantiveSegments >= 2 && entry.ActiveRounds >= 2) || (isFixed && materialized) || becomeCurrent {
 				entry.ComputedStatus = agendaProgressDiscussing
 			}
 		case agendaProgressDiscussing:
-			if id != newCurrent && entry.InactiveRounds >= agendaProgressDiscussedInactiveRounds {
+			if id != newCurrent {
 				relatedTotal := 0
 				for _, count := range entry.RelatedItemCounts {
 					relatedTotal += count
 				}
+				explicitlyCompleted := isFixed && grounded && relatedTotal >= 1 &&
+					reconciledBeforeExplicitTransition(id)
 				activeEnough := entry.ActiveRounds >= 2 || entry.SubstantiveSegments >= 4 || (isFixed && grounded)
 				outcomeEnough := relatedTotal >= 1 || (isFixed && grounded)
-				if activeEnough && outcomeEnough {
+				if explicitlyCompleted || (entry.InactiveRounds >= agendaProgressDiscussedInactiveRounds && activeEnough && outcomeEnough) {
 					entry.ComputedStatus = agendaProgressDiscussed
 				}
 			}
 		case agendaProgressDiscussed:
-			if id == newCurrent && newCurrent != "" {
-				entry.ComputedStatus = agendaProgressDiscussing
-			}
+			// Computed progress is monotonic. Re-entry changes the current topic
+			// but does not erase that substantive discussion already occurred.
+			// Owner/admin corrections remain the explicit override path.
 		}
 		if entry.ComputedStatus != before {
 			statusTransitions = append(statusTransitions, id+":"+before+">"+entry.ComputedStatus)
@@ -873,25 +907,49 @@ func finalizeAgendaProgress(state *liveAnalysisPayload, mc *meetingContext, tree
 		entriesByID[progress.Entries[i].ID] = &progress.Entries[i]
 		order = append(order, progress.Entries[i].ID)
 	}
+	for id := range fixedIDs {
+		entry, ok := entriesByID[id]
+		if !ok {
+			continue
+		}
+		anchor := anchorByID[id]
+		entry.MaterializedTopicIDs = append([]string(nil), anchor.MaterializedTopicIDs...)
+		if len(anchor.MaterializedTopicIDs) > 0 {
+			entry.PrimaryNodeID = anchor.MaterializedTopicIDs[0]
+			entry.MaterializedTopicID = anchor.MaterializedTopicIDs[0]
+			entry.FocusNodeIDs = []string{anchor.MaterializedTopicIDs[0]}
+			entry.LinkState = agendaProgressLinkMaterializedTopic
+		} else {
+			entry.PrimaryNodeID = ""
+			entry.MaterializedTopicID = ""
+			entry.FocusNodeIDs = nil
+			entry.LinkState = agendaProgressLinkNotLinkable
+		}
+	}
 	// RelatedItemCounts must be current before the discussing->discussed
 	// promotion check below reads it (same ordering requirement as §2.5 in
 	// evaluateAgendaProgress).
 	relatedByID := computeAgendaProgressRelatedItems(entriesByID, order, state.Tree, state.Items, fixedIDs)
 	for id := range fixedIDs {
 		entry, ok := entriesByID[id]
-		if !ok || entry.ComputedStatus != agendaProgressDiscussing {
+		if !ok {
 			continue
 		}
 		anchor := anchorByID[id]
 		grounded := anchor.Status == agendaStatusDiscussed || anchor.Status == agendaStatusMerged
+		materialized := grounded || anchor.Status == agendaStatusMaterialized
 		relatedTotal := 0
 		for _, count := range entry.RelatedItemCounts {
 			relatedTotal += count
 		}
 		activeEnough := entry.ActiveRounds >= 2 || entry.SubstantiveSegments >= 4 || grounded
 		outcomeEnough := relatedTotal >= 1 || grounded
-		if activeEnough && outcomeEnough {
+		if grounded && relatedTotal >= 1 {
 			entry.ComputedStatus = agendaProgressDiscussed
+		} else if entry.ComputedStatus == agendaProgressDiscussing && activeEnough && outcomeEnough {
+			entry.ComputedStatus = agendaProgressDiscussed
+		} else if entry.ComputedStatus == agendaProgressNotStarted && materialized {
+			entry.ComputedStatus = agendaProgressDiscussing
 		}
 	}
 	// Dynamic entries have no anchor lifecycle to finalize against; only
