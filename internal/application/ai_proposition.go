@@ -542,11 +542,58 @@ func recapItemIsSubstantive(item liveAnalysisItem, scope liveEvidenceScope) bool
 		recapArtifactOnlyItem(item.Title, item.Body) {
 		return false
 	}
+	if liveItemTextNeedsReferent(item) {
+		return false
+	}
 	text := strings.TrimSpace(item.Title + " " + item.Body)
 	if metaOnlyLiveItemText(text) || !liveItemHasSpecificSubject(text) {
 		return false
 	}
 	return recapItemHasConcreteInfo(item) || liveItemHasConcreteContext(item, scope)
+}
+
+// recapNovelItemStronglyGrounded is intentionally stricter than the ordinary
+// live-item gate. Once a tree already has canonical propositions, an unmatched
+// recap paraphrase may create a new node only when it has a genuinely new
+// subject, explicit concrete detail and direct evidence grounding. This keeps
+// STT-corrupted recap subjects from becoming durable topics while preserving
+// concrete first-seen assignee/deadline/number facts.
+func recapNovelItemStronglyGrounded(item liveAnalysisItem, previous []liveAnalysisItem, scope liveEvidenceScope) bool {
+	if len(previous) == 0 {
+		return recapItemIsSubstantive(item, scope)
+	}
+	if !recapItemHasStrongNovelSubject(item, previous) || !recapItemHasConcreteInfo(item) ||
+		!recapItemIsSubstantive(item, scope) {
+		return false
+	}
+	itemText := strings.TrimSpace(item.Title + " " + item.Body)
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		evidence := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+		if evidence == "" {
+			continue
+		}
+		if sharedTreeAuditSubjectTerm(itemText, evidence) ||
+			semanticItemSimilarity(itemText, evidence) >= 0.18 {
+			return true
+		}
+	}
+	return false
+}
+
+func recapItemHasStrongNovelSubject(item liveAnalysisItem, previous []liveAnalysisItem) bool {
+	if recapItemHasNovelSubject(item, previous) {
+		return true
+	}
+	signature := numericSignature(item.Title + " " + item.Body)
+	if signature == "" {
+		return false
+	}
+	for _, existing := range previous {
+		if numericSignature(existing.Title+" "+existing.Body) == signature {
+			return false
+		}
+	}
+	return true
 }
 
 // recapArtifactOnlyPattern matches text that names only the meeting artifact
@@ -613,8 +660,8 @@ func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisIt
 			// 同じ障害を扱う会議では初出の事実がすべて既出扱いで落ちるため、
 			// 採否は item 自体の情報量(recapItemIsSubstantive)で決める。
 			// 主題の新規性は診断ログ用の補助情報として残す。
-			novel := recapItemHasNovelSubject(item, previous)
-			concrete := recapItemIsSubstantive(item, scope)
+			novel := recapItemHasStrongNovelSubject(item, previous)
+			concrete := recapNovelItemStronglyGrounded(item, previous, scope)
 			if concrete {
 				filtered = append(filtered, item)
 				recordRecapDecision(stats, item, timeline, recapDecisionRetainedNovel, "", 0, recapMatchReason(len(previous) == 0), novel, concrete, "")
@@ -663,7 +710,9 @@ func lowInformationDecisionItem(item liveAnalysisItem) bool {
 func bestPropositionMatch(items []liveAnalysisItem, target liveAnalysisItem) (int, float64) {
 	bestAt, bestScore := -1, 0.0
 	for i := range items {
-		if items[i].ID == target.ID {
+		if items[i].ID == target.ID || items[i].Inactive || items[i].MergedIntoID != "" ||
+			finalItemIsLowInformation(items[i]) ||
+			!recapPropositionKindsCompatible(items[i], target) {
 			continue
 		}
 		score := semanticItemSimilarity(items[i].Title+" "+items[i].Body, target.Title+" "+target.Body)
@@ -675,6 +724,26 @@ func bestPropositionMatch(items []liveAnalysisItem, target liveAnalysisItem) (in
 		}
 	}
 	return bestAt, bestScore
+}
+
+func recapPropositionKindsCompatible(existing, recap liveAnalysisItem) bool {
+	if existing.Kind == recap.Kind {
+		return true
+	}
+	if recap.Kind != "issue" {
+		return false
+	}
+	// An unresolved proposition is sometimes represented by the model as the
+	// concrete follow-up TODO or risk. Permit that explicit state-bearing
+	// representation, but never fold an issue recap into a merely related fact
+	// just because both mention the same incident or location.
+	text := existing.Title + " " + existing.Body
+	switch existing.Kind {
+	case "todo", "risk":
+		return openIssueMarkerPattern.MatchString(text)
+	default:
+		return false
+	}
 }
 
 func roundIsReferenceOnly(roundSeqNos []int64, timeline discourseTimeline) bool {

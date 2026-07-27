@@ -54,6 +54,9 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 		// decision/todo/risk item) both depend on the target's current
 		// kind.
 		riskClass := treeAuditEffectiveRiskClass(operation, dry)
+		if classification != treeAuditOperationUnsupported {
+			evaluation.EffectiveThreshold = treeAuditRiskConfidenceThreshold(riskClass, cfg)
+		}
 		reject := func(reason string) {
 			evaluation.Reason = reason
 			if classification == treeAuditOperationUnsupported {
@@ -97,7 +100,7 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 		// 0.7999999999999999 in float64, which must still clear an 0.8
 		// threshold. The threshold and escalation design are unchanged; this
 		// only absorbs float addition error at the comparison itself.
-		if effectiveConfidence < treeAuditRiskConfidenceThreshold(riskClass, cfg)-1e-9 {
+		if effectiveConfidence < evaluation.EffectiveThreshold-1e-9 {
 			reject("below_effective_confidence_threshold")
 			continue
 		}

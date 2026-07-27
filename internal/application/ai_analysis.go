@@ -21,6 +21,9 @@ import (
 
 const (
 	defaultLiveAnalysisInterval   = 10 * time.Second
+	defaultLiveAnalysisDebounce   = 2 * time.Second
+	defaultLiveAnalysisCooldown   = 8 * time.Second
+	defaultLiveAnalysisMaxWait    = 18 * time.Second
 	meetingAnalysisMaxBackoff     = 5 * time.Minute
 	meetingAnalysisSessionGCAfter = 3 * time.Hour
 	// Finalization must compare against the complete persisted final set. The
@@ -319,8 +322,14 @@ func (m AITaskModels) deploymentFor(task aiTask) string {
 type MeetingAnalysisConfig struct {
 	Enabled bool
 
-	LiveEnabled        bool
-	LiveInterval       time.Duration
+	LiveEnabled  bool
+	LiveInterval time.Duration
+	// LiveDebounce coalesces adjacent final transcript events. LiveCooldown
+	// bounds provider call frequency, while LiveMaxWait is the bounded-debounce
+	// deadline for substantive input below LiveMinChars.
+	LiveDebounce       time.Duration
+	LiveCooldown       time.Duration
+	LiveMaxWait        time.Duration
 	LiveMinChars       int
 	LiveMaxInputChars  int
 	LiveRequestTimeout time.Duration
@@ -462,9 +471,18 @@ type MeetingAnalysisService struct {
 	// removed when generation finishes.
 	finalSummaryInFlight map[string]struct{}
 
-	startOnce sync.Once
-	closeOnce sync.Once
-	stopCh    chan struct{}
+	startOnce            sync.Once
+	closeOnce            sync.Once
+	schedulerStopLogOnce sync.Once
+	stopCh               chan struct{}
+	runCtx               context.Context
+	// schedulerInstanceID identifies this service object; registrationID
+	// identifies its single successful Start registration. Together with the
+	// monotonic tick counter they make duplicate service construction distinct
+	// from duplicate execution of one ticker.
+	schedulerInstanceID     string
+	schedulerRegistrationID string
+	schedulerTickCount      uint64
 }
 
 // SetMeetingTreeAuditRepository injects the persistence/CAS adapter without
@@ -486,13 +504,36 @@ func (s *MeetingAnalysisService) SetMeetingAgendaProgressOverridesRepository(rep
 }
 
 type liveAnalysisSessionState struct {
-	pending      []domain.TranscriptSegment
-	pendingChars int
-	running      bool
-	runningDone  chan struct{}
-	finalizing   bool
-	lastPayload  json.RawMessage
-	lastVersion  int64
+	pending                         []domain.TranscriptSegment
+	pendingChars                    int
+	oldestPendingFinalAt            time.Time
+	latestPendingFinalAt            time.Time
+	highestAvailableFinalSequenceNo int64
+	lastCoveredSequenceNo           int64
+	running                         bool
+	runningDone                     chan struct{}
+	finalizing                      bool
+	stopped                         bool
+	analysisScheduled               bool
+	analysisTimer                   *time.Timer
+	scheduleGeneration              uint64
+	scheduledAt                     time.Time
+	scheduledTrigger                string
+	rerunRequested                  bool
+	coalescedTriggerCount           int
+	lastAnalysisStartedAt           time.Time
+	lastAnalysisCompletedAt         time.Time
+	lastTrigger                     string
+	lastDeferredReason              string
+	runningOldestPendingAt          time.Time
+	runningLatestFinalAt            time.Time
+	runningTargetFromSequenceNo     int64
+	runningTargetThroughSequenceNo  int64
+	runningTrigger                  string
+	runningCoalescedTriggerCount    int
+	recoveryInFlight                bool
+	lastPayload                     json.RawMessage
+	lastVersion                     int64
 	// versionSeeded guards the one-time DB lookup that restores lastPayload
 	// and lastVersion after a backend restart, so versions keep increasing
 	// across restarts and clients never discard newer updates as stale.
@@ -565,6 +606,15 @@ func NewMeetingAnalysisService(
 	if config.LiveInterval <= 0 {
 		config.LiveInterval = defaultLiveAnalysisInterval
 	}
+	if config.LiveDebounce <= 0 {
+		config.LiveDebounce = defaultLiveAnalysisDebounce
+	}
+	if config.LiveCooldown <= 0 {
+		config.LiveCooldown = defaultLiveAnalysisCooldown
+	}
+	if config.LiveMaxWait <= 0 {
+		config.LiveMaxWait = defaultLiveAnalysisMaxWait
+	}
 	config.TreeAudit = config.TreeAudit.normalized()
 	return &MeetingAnalysisService{
 		analysisRepo:         analysisRepo,
@@ -577,6 +627,7 @@ func NewMeetingAnalysisService(
 		sessions:             make(map[string]*liveAnalysisSessionState),
 		finalSummaryInFlight: make(map[string]struct{}),
 		stopCh:               make(chan struct{}),
+		schedulerInstanceID:  domain.NewID("live-analysis-scheduler"),
 	}
 }
 
@@ -594,17 +645,23 @@ func (s *MeetingAnalysisService) PublishTranscriptSegment(segment domain.Transcr
 		return
 	}
 	if strings.TrimSpace(segment.Text) == "" {
+		s.logIgnoredLiveTranscriptTrigger(sessionID, liveAnalysisDeferredEmptyFinal)
 		return
 	}
 
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
-	state.pending = append(state.pending, segment)
+	now := s.now()
+	appendPendingLiveSegmentLocked(state, segment, now)
 	state.pendingChars = sumSegmentChars(state.pending)
 	state.retryBlocked = false
-	state.lastActivityAt = s.now()
+	state.lastActivityAt = now
+	if state.running {
+		state.rerunRequested = true
+	}
 	s.mu.Unlock()
 	s.ensureMeetingContextPlanning(sessionID, nil)
+	s.evaluateLiveAnalysisTrigger(sessionID, liveAnalysisTriggerFinalTranscript)
 }
 
 // PrepareMeetingSession implements MeetingSessionPreparingObserver. The
@@ -616,6 +673,7 @@ func (s *MeetingAnalysisService) PrepareMeetingSession(session domain.MeetingSes
 		return
 	}
 	s.ensureMeetingContextPlanning(session.ID, preContextFromSession(&session))
+	go s.recoverDurablePendingFinals(session.ID)
 }
 
 // Start launches the periodic live-analysis scheduler. It is a no-op when
@@ -625,7 +683,17 @@ func (s *MeetingAnalysisService) Start(ctx context.Context) {
 		return
 	}
 	s.startOnce.Do(func() {
+		s.mu.Lock()
+		s.runCtx = ctx
+		s.schedulerRegistrationID = domain.NewID("live-analysis-registration")
+		instanceID := s.schedulerInstanceID
+		registrationID := s.schedulerRegistrationID
+		s.mu.Unlock()
+		log.Printf("Live AI analysis scheduler started. schedulerInstanceId=%s schedulerRegistrationId=%s intervalMs=%d debounceMs=%d cooldownMs=%d maxWaitMs=%d",
+			instanceID, registrationID, s.config.LiveInterval.Milliseconds(), s.config.LiveDebounce.Milliseconds(),
+			s.config.LiveCooldown.Milliseconds(), s.config.LiveMaxWait.Milliseconds())
 		go s.run(ctx)
+		go s.recoverActiveLiveAnalysisSessions(ctx)
 	})
 }
 
@@ -639,7 +707,13 @@ func (s *MeetingAnalysisService) Close() error {
 		close(s.stopCh)
 		s.mu.Lock()
 		cancels := make([]context.CancelFunc, 0, len(s.sessions))
-		for _, state := range s.sessions {
+		for sessionID, state := range s.sessions {
+			state.stopped = true
+			scheduledFor := state.scheduledAt
+			if cancelLiveAnalysisTimerLocked(state) {
+				log.Printf("Live AI analysis timer cancelled. sessionId=%s cancelReason=service_closed scheduledFor=%s analysisRunning=%t analysisScheduled=false finalizing=%t stopped=true replacementTimer=false",
+					sessionID, scheduledFor.UTC().Format(time.RFC3339Nano), state.running, state.finalizing)
+			}
 			if state.auditCancel != nil {
 				cancels = append(cancels, state.auditCancel)
 			}
@@ -648,6 +722,7 @@ func (s *MeetingAnalysisService) Close() error {
 		for _, cancel := range cancels {
 			cancel()
 		}
+		s.logLiveAnalysisSchedulerStopped("service_closed")
 	})
 	return nil
 }
@@ -658,6 +733,7 @@ func (s *MeetingAnalysisService) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			s.logLiveAnalysisSchedulerStopped("context_done")
 			return
 		case <-s.stopCh:
 			return
@@ -665,11 +741,6 @@ func (s *MeetingAnalysisService) run(ctx context.Context) {
 			s.tick(ctx)
 		}
 	}
-}
-
-type liveAnalysisJob struct {
-	sessionID string
-	segments  []domain.TranscriptSegment
 }
 
 type treeAuditJob struct {
@@ -681,12 +752,18 @@ type treeAuditJob struct {
 
 func (s *MeetingAnalysisService) tick(ctx context.Context) {
 	now := s.now()
-	var jobs []liveAnalysisJob
 	var auditJobs []treeAuditJob
+	var liveSessionIDs []string
 
 	s.mu.Lock()
+	if s.runCtx == nil {
+		s.runCtx = ctx
+	}
+	s.schedulerTickCount++
+	tickID := s.schedulerTickCount
 	for sessionID, state := range s.sessions {
 		if now.Sub(state.lastActivityAt) > meetingAnalysisSessionGCAfter {
+			cancelLiveAnalysisTimerLocked(state)
 			delete(s.sessions, sessionID)
 			continue
 		}
@@ -712,29 +789,18 @@ func (s *MeetingAnalysisService) tick(ctx context.Context) {
 				auditJobs = append(auditJobs, treeAuditJob{sessionID: sessionID, triggerReason: reason, payload: append(json.RawMessage(nil), state.lastPayload...), version: state.lastVersion})
 			}
 		}
-		if state.running || state.finalizing || !s.config.liveActive() {
-			continue
+		if s.config.liveActive() && !state.finalizing && !state.stopped {
+			liveSessionIDs = append(liveSessionIDs, sessionID)
 		}
-		if state.pendingChars < s.config.LiveMinChars {
-			continue
-		}
-		if state.retryBlocked {
-			continue
-		}
-		if !state.nextAttemptAt.IsZero() && now.Before(state.nextAttemptAt) {
-			continue
-		}
-		segments := state.pending
-		state.pending = nil
-		state.pendingChars = 0
-		state.running = true
-		state.runningDone = make(chan struct{})
-		jobs = append(jobs, liveAnalysisJob{sessionID: sessionID, segments: segments})
 	}
+	instanceID := s.schedulerInstanceID
+	registrationID := s.schedulerRegistrationID
 	s.mu.Unlock()
 
-	for _, job := range jobs {
-		go s.runLiveAnalysis(ctx, job.sessionID, job.segments)
+	log.Printf("Live AI analysis periodic tick. schedulerInstanceId=%s schedulerRegistrationId=%s tickId=%d liveSessionCount=%d auditJobCount=%d",
+		instanceID, registrationID, tickID, len(liveSessionIDs), len(auditJobs))
+	for _, sessionID := range liveSessionIDs {
+		go s.recoverDurablePendingFinals(sessionID)
 	}
 	for _, job := range auditJobs {
 		s.scheduleTreeAudit(ctx, job.sessionID, job.triggerReason, job.payload, job.version)
@@ -754,12 +820,17 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Live AI analysis panic recovered. sessionId=%s panic=%v", sessionID, r)
+			now := s.now()
 			s.mu.Lock()
 			state := s.sessionStateLocked(sessionID)
+			oldestPendingAt := state.runningOldestPendingAt
 			finishLiveRunLocked(state)
-			state.pending = append(append([]domain.TranscriptSegment{}, segments...), state.pending...)
-			state.pendingChars = sumSegmentChars(state.pending)
+			restorePendingLiveSegmentsLocked(state, segments, oldestPendingAt, now)
+			state.lastAnalysisCompletedAt = now
+			state.failureCount++
+			state.nextAttemptAt = now.Add(liveAnalysisBackoff(s.config.LiveInterval, state.failureCount))
 			s.mu.Unlock()
+			s.evaluateLiveAnalysisTrigger(sessionID, liveAnalysisTriggerCompletedRerun)
 			success = false
 			retryable = true
 		}
@@ -898,11 +969,22 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	})
 
 	if upsertErr != nil {
+		failedAt := s.now()
 		s.mu.Lock()
 		state = s.sessionStateLocked(sessionID)
+		oldestPendingAt := state.runningOldestPendingAt
+		targetThrough := state.runningTargetThroughSequenceNo
 		finishLiveRunLocked(state)
+		restorePendingLiveSegmentsLocked(state, segments, oldestPendingAt, failedAt)
+		state.lastAnalysisCompletedAt = failedAt
+		state.failureCount++
+		state.nextAttemptAt = failedAt.Add(liveAnalysisBackoff(s.config.LiveInterval, state.failureCount))
+		remainingPending := len(state.pending)
 		s.mu.Unlock()
 		log.Printf("Live AI analysis persist failed. sessionId=%s version=%d error=%v", sessionID, newVersion, upsertErr)
+		log.Printf("Live AI analysis completion evaluated. sessionId=%s targetThroughSequenceNo=%d elapsedMs=%d result=persist_failed treeChanged=false progressChanged=false evidenceChanged=false previousTreeVersion=%d newTreeVersion=%d remainingPendingSegmentCount=%d rerunRequested=true nextAction=retry_after_backoff",
+			sessionID, targetThrough, elapsed.Milliseconds(), previousVersion, previousVersion, remainingPending)
+		s.evaluateLiveAnalysisTrigger(sessionID, liveAnalysisTriggerCompletedRerun)
 		return false, true
 	}
 	if !persisted {
@@ -939,8 +1021,15 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, formatKindCounts(modelKinds), formatKindCounts(normalizedKinds), formatKindCounts(acceptedKinds), modelRejected, formatKindCounts(modelRejectionReasons), len(decisionCandidates), decisionAudit.AcceptedDecisions, decisionAudit.MergedDecisions)
 	log.Printf("Decision extraction audit. sessionId=%s version=%d decisionMarkerSegments=%d modelDecisionItems=%d normalizedDecisionItems=%d decisionAcceptedCount=%d decisionMergedCount=%d result=%s candidateRefs=%s",
 		sessionID, newVersion, decisionAudit.MarkerSegments, decisionAudit.ModelDecisionItems, normalizedKinds["decision"], decisionAudit.AcceptedDecisions, decisionAudit.MergedDecisions, decisionResult, formatDecisionCandidateRefs(decisionAudit.CandidateRefs))
-	log.Printf("Question/open issue extraction audit. sessionId=%s version=%d questionCandidates=%d openIssueCandidates=%d questionsAccepted=%d openIssuesAccepted=%d existingMerged=%d",
-		sessionID, newVersion, issueAudit.QuestionCandidates, issueAudit.OpenIssueCandidates, issueAudit.QuestionsAccepted, issueAudit.OpenIssuesAccepted, issueAudit.ExistingMerged)
+	log.Printf("Question/open issue extraction audit. sessionId=%s version=%d questionCandidates=%d openIssueCandidates=%d questionsAccepted=%d openIssuesAccepted=%d existingMerged=%d sameEvidenceSynthesisSuppressed=%d",
+		sessionID, newVersion, issueAudit.QuestionCandidates, issueAudit.OpenIssueCandidates, issueAudit.QuestionsAccepted, issueAudit.OpenIssuesAccepted, issueAudit.ExistingMerged, issueAudit.SameEvidenceSynthesisSuppressed)
+	for _, decision := range issueAudit.Decisions {
+		log.Printf("Issue synthesis evaluated. sessionId=%s version=%d sequenceNo=%d subtype=%s modelItemId=%s canonicalItemId=%s generatedBy=%s evidenceFingerprint=%s parentId=%s agendaRefs=%v classificationStatus=%s decision=%s reason=%s matchScore=%.2f sameEvidence=%t mergedInto=%s",
+			sessionID, newVersion, decision.SequenceNo, decision.Subtype, decision.MatchedItem,
+			decision.MatchedItem, decision.GeneratedBy, decision.EvidenceHash, decision.ParentID,
+			decision.AgendaRefs, decision.Status, decision.Decision, decision.Reason,
+			decision.MatchScore, decision.SameEvidence, decision.MergedInto)
+	}
 	log.Printf("Live action summary projection. sessionId=%s version=%d sourceActionSummaryAgendaCount=%d actionSummaryAgendaIds=%v logicalActionSummaryCount=%d actionSummaryCandidates=%d deduplicatedActionItems=%d renderedActionItems=%d renderedActionTabs=1 renderedReferenceNodes=0 activeTodoReferences=%d activeOpenIssueFallbacks=%d completedItemsExcluded=%d resolvedItemsExcluded=%d clusteredReferences=%d",
 		sessionID, newVersion, treeStats.SourceActionSummaryAgendaCount, actionSummaryAgendaIDs, treeStats.LogicalActionSummaryCount, treeStats.ActionSummaryCandidates, treeStats.DeduplicatedActionItems, treeStats.RenderedActionItems, treeStats.ActiveTodoReferences, treeStats.ActiveOpenIssueFallbacks, treeStats.CompletedTodoExcluded, treeStats.ResolvedItemsExcluded, treeStats.ClusteredReferences)
 	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d treeHiddenTentativeItems=%d assistantVisibleTentativeItems=%d companionParentInherited=%d companionCandidateInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d tentativeMetadataLost=%d",
@@ -951,8 +1040,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.NoAgendaSpansClosed, treeStats.ExplicitAgendaReentries, treeStats.ImplicitAgendaReentries, treeStats.LowConfidenceNoAgendaOverridesRejected, treeStats.StaleAgendaFallbackRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, uniqueNonEmptyIDs(treeStats.CandidateSubjectKeys), treeStats.CandidateIDsMerged, treeStats.CompanionCandidateInherited, treeStats.CrossKindCandidateInherited, treeStats.DynamicTopicsPromoted, uniqueNonEmptyIDs(treeStats.PromotedItemIDs), treeStats.PromotedItemsRemainingOutsideTopic)
 	log.Printf("Live subject repair. sessionId=%s version=%d genericCandidateLabelsRewritten=%d genericTopicLabelsRewritten=%d subjectFragmentationRepairs=%d",
 		sessionID, newVersion, treeStats.GenericCandidateLabelsRewritten, treeStats.GenericTopicLabelsRewritten, treeStats.SubjectFragmentationRepairs)
-	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d propositionItemsMerged=%d recapMerged=%d referenceRecapItemsMerged=%d referenceRecapItemsRetained=%d referenceRecapItemsRejected=%d referenceRecapTopicProposalsRejected=%d lowInformationDecisionsRejected=%d lowInformationItemsRejected=%d lowInformationItemsRewritten=%d lowInformationItemsSplit=%d lowInformationTentativeRetained=%d semanticKindMigrations=%d semanticSubtypeMigrations=%d itemResurrectionPrevented=%d",
-		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.PropositionItemsMerged, treeStats.RecapMerged, treeStats.ReferenceRecapItemsMerged, treeStats.ReferenceRecapItemsRetained, treeStats.ReferenceRecapItemsRejected, treeStats.ReferenceRecapTopicProposalsRejected, treeStats.LowInformationDecisionsRejected, treeStats.LowInformationItemsRejected, treeStats.LowInformationItemsRewritten, treeStats.LowInformationItemsSplit, treeStats.LowInformationTentativeRetained, treeStats.SemanticKindMigrations, treeStats.SemanticSubtypeMigrations, treeStats.ItemResurrectionPrevented)
+	log.Printf("Live semantic dedup. sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d propositionItemsMerged=%d recapMerged=%d referenceRecapItemsMerged=%d referenceRecapItemsRetained=%d referenceRecapItemsRejected=%d referenceRecapTopicProposalsRejected=%d lowInformationDecisionsRejected=%d lowInformationItemsRejected=%d lowInformationItemsRewritten=%d lowInformationItemsSplit=%d lowInformationSplitFragmentsRejected=%d lowInformationTentativeRetained=%d semanticKindMigrations=%d semanticSubtypeMigrations=%d itemResurrectionPrevented=%d",
+		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.PropositionItemsMerged, treeStats.RecapMerged, treeStats.ReferenceRecapItemsMerged, treeStats.ReferenceRecapItemsRetained, treeStats.ReferenceRecapItemsRejected, treeStats.ReferenceRecapTopicProposalsRejected, treeStats.LowInformationDecisionsRejected, treeStats.LowInformationItemsRejected, treeStats.LowInformationItemsRewritten, treeStats.LowInformationItemsSplit, treeStats.LowInformationSplitFragmentsRejected, treeStats.LowInformationTentativeRetained, treeStats.SemanticKindMigrations, treeStats.SemanticSubtypeMigrations, treeStats.ItemResurrectionPrevented)
 	noAgendaStarts := make(map[int64]struct{}, len(treeStats.NoAgendaSpanStartSequences))
 	for _, sequenceNo := range treeStats.NoAgendaSpanStartSequences {
 		noAgendaStarts[sequenceNo] = struct{}{}
@@ -965,7 +1054,13 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		}
 	}
 	for _, rejection := range treeStats.LowInformationRejections {
-		log.Printf("Live low information item rejected. sessionId=%s version=%d modelItemId=%s canonicalItemId=%s kind=%s evidenceSequenceNos=%v rejectionReason=%s detectedRole=%s", sessionID, newVersion, rejection.ModelItemID, rejection.CanonicalItemID, rejection.Kind, rejection.EvidenceSequenceNos, rejection.Reason, rejection.DetectedRole)
+		log.Printf("Live low information item evaluated. sessionId=%s version=%d modelItemId=%s canonicalItemId=%s generatedBy=%s sourceItemId=%s fragmentIndex=%d kind=%s evidenceFingerprint=%s subjectComplete=%t anaphoraDetected=%t semanticCoherent=%t rewriteCandidate=%t existingItemMatchId=%s finalDecision=%s reason=%s detectedRole=%s",
+			sessionID, newVersion, rejection.ModelItemID, rejection.CanonicalItemID,
+			rejection.GeneratedBy, rejection.SourceItemID, rejection.FragmentIndex, rejection.Kind,
+			itemEvidenceFingerprint(liveAnalysisItem{EvidenceSequenceNos: rejection.EvidenceSequenceNos}),
+			rejection.SubjectComplete, rejection.AnaphoraDetected, rejection.SemanticCoherent,
+			rejection.RewriteCandidate, rejection.ExistingItemMatchID, rejection.FinalDecision,
+			rejection.Reason, rejection.DetectedRole)
 	}
 	for _, decision := range treeStats.RecapDecisions {
 		log.Printf("Recap item decision. sessionId=%s analysisVersion=%d itemId=%s itemKind=%s detectedRole=%s existingMatchId=%s existingMatchScore=%.2f matchReason=%s novelSubject=%t concreteInfo=%t decision=%s rejectionReason=%s",
@@ -1024,13 +1119,36 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	finishLiveRunLocked(state)
 	state.lastPayload = payload
 	state.lastVersion = newVersion
+	state.lastCoveredSequenceNo = payloadState.CoveredThroughSequenceNo
 	state.pending = removeCoveredSegments(state.pending, segments)
 	state.pendingChars = sumSegmentChars(state.pending)
+	if len(state.pending) == 0 {
+		state.oldestPendingFinalAt = time.Time{}
+		state.latestPendingFinalAt = time.Time{}
+	}
 	state.failureCount = 0
 	state.nextAttemptAt = time.Time{}
 	state.retryBlocked = false
+	state.lastAnalysisCompletedAt = s.now()
+	rerunRequested := state.rerunRequested || len(state.pending) > 0
+	state.rerunRequested = false
+	remainingPending := len(state.pending)
 	s.mu.Unlock()
+	nextAction := "idle"
+	if rerunRequested {
+		nextAction = "re_evaluate"
+	}
+	previousState := previousLiveAnalysisState(previousPayload)
+	log.Printf("Live AI analysis completion evaluated. sessionId=%s targetThroughSequenceNo=%d elapsedMs=%d result=completed treeChanged=%t progressChanged=%t evidenceChanged=%t previousTreeVersion=%d newTreeVersion=%d remainingPendingSegmentCount=%d rerunRequested=%t nextAction=%s",
+		sessionID, payloadState.CoveredThroughSequenceNo, elapsed.Milliseconds(),
+		!liveAnalysisTreesEqual(previousState.Tree, payloadState.Tree),
+		!liveAgendaProgressEqual(previousState.AgendaProgress, payloadState.AgendaProgress),
+		!liveEvidenceEqual(previousState.Items, payloadState.Items),
+		previousVersion, newVersion, remainingPending, rerunRequested, nextAction)
 	s.considerTreeAudit(ctx, sessionID, previousPayload, payload, newVersion)
+	if rerunRequested {
+		s.evaluateLiveAnalysisTrigger(sessionID, liveAnalysisTriggerCompletedRerun)
+	}
 	return true, false
 }
 
@@ -1237,9 +1355,14 @@ func (s *MeetingAnalysisService) seedLiveAnalysisState(ctx context.Context, sess
 	}
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
+	if state.lastVersion > version {
+		payload = append(json.RawMessage(nil), state.lastPayload...)
+		version = state.lastVersion
+	}
 	state.versionSeeded = true
 	state.lastPayload = payload
 	state.lastVersion = version
+	state.lastCoveredSequenceNo = previousLiveAnalysisState(payload).CoveredThroughSequenceNo
 	s.mu.Unlock()
 	return payload, version
 }
@@ -1329,13 +1452,15 @@ func (s *MeetingAnalysisService) handleStaleLiveAnalysisResult(ctx context.Conte
 	}
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
+	oldestPendingAt := state.runningOldestPendingAt
 	finishLiveRunLocked(state)
-	state.pending = append(append([]domain.TranscriptSegment{}, remaining...), state.pending...)
-	state.pendingChars = sumSegmentChars(state.pending)
+	restorePendingLiveSegmentsLocked(state, remaining, oldestPendingAt, s.now())
 	state.nextAttemptAt = time.Time{}
+	state.lastAnalysisCompletedAt = s.now()
 	if err == nil && current != nil && current.Version > state.lastVersion {
 		state.lastPayload = append(json.RawMessage(nil), current.Payload...)
 		state.lastVersion = current.Version
+		state.lastCoveredSequenceNo = previousLiveAnalysisState(current.Payload).CoveredThroughSequenceNo
 		state.versionSeeded = true
 	}
 	s.mu.Unlock()
@@ -1348,6 +1473,7 @@ func (s *MeetingAnalysisService) handleStaleLiveAnalysisResult(ctx context.Conte
 		}
 		return current.Version
 	}(), len(remaining), err)
+	s.evaluateLiveAnalysisTrigger(sessionID, liveAnalysisTriggerCompletedRerun)
 }
 
 func filterAlreadyAnalyzedSegments(segments []domain.TranscriptSegment, payload json.RawMessage) []domain.TranscriptSegment {
@@ -1371,18 +1497,29 @@ func (s *MeetingAnalysisService) handleLiveAnalysisFailure(ctx context.Context, 
 
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
+	failedAt := s.now()
+	oldestPendingAt := state.runningOldestPendingAt
+	targetThrough := state.runningTargetThroughSequenceNo
 	finishLiveRunLocked(state)
-	state.pending = append(append([]domain.TranscriptSegment{}, segments...), state.pending...)
-	state.pendingChars = sumSegmentChars(state.pending)
+	restorePendingLiveSegmentsLocked(state, segments, oldestPendingAt, failedAt)
+	state.lastAnalysisCompletedAt = failedAt
 	if retryable {
 		state.failureCount++
-		state.nextAttemptAt = s.now().Add(liveAnalysisBackoff(s.config.LiveInterval, state.failureCount))
+		state.nextAttemptAt = failedAt.Add(liveAnalysisBackoff(s.config.LiveInterval, state.failureCount))
 		state.retryBlocked = false
 	} else {
 		state.nextAttemptAt = time.Time{}
 		state.retryBlocked = true
 	}
+	remainingPending := len(state.pending)
 	s.mu.Unlock()
+	nextAction := "retry_after_backoff"
+	if !retryable {
+		nextAction = "wait_for_new_final"
+	}
+	log.Printf("Live AI analysis completion evaluated. sessionId=%s targetThroughSequenceNo=%d elapsedMs=%d result=failed treeChanged=false progressChanged=false evidenceChanged=false previousTreeVersion=%d newTreeVersion=%d remainingPendingSegmentCount=%d rerunRequested=%t nextAction=%s",
+		sessionID, targetThrough, elapsed.Milliseconds(), previousVersion, previousVersion, remainingPending, retryable, nextAction)
+	defer s.evaluateLiveAnalysisTrigger(sessionID, liveAnalysisTriggerCompletedRerun)
 
 	saved, persisted, err := s.persistLiveAnalysis(ctx, previousVersion, domain.MeetingAIAnalysis{
 		SessionID:    sessionID,
@@ -1525,13 +1662,20 @@ func (s *MeetingAnalysisService) persistFinalizationProgress(ctx context.Context
 func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessionID string, request MeetingSessionFinalizationRequest) (finalizationPreparation, error) {
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
+	cancelledScheduledFor := state.scheduledAt
+	timerCancelled := cancelLiveAnalysisTimerLocked(state)
 	state.finalizing = true
 	state.auditClosed = true
 	state.auditPending = false
 	state.auditPendingReason = ""
 	auditCancel := state.auditCancel
 	done := state.runningDone
+	wasStopped := state.stopped
 	s.mu.Unlock()
+	if timerCancelled {
+		log.Printf("Live AI analysis timer cancelled. sessionId=%s cancelReason=meeting_finalizing scheduledFor=%s analysisRunning=%t analysisScheduled=false finalizing=true stopped=%t replacementTimer=false",
+			sessionID, cancelledScheduledFor.UTC().Format(time.RFC3339Nano), done != nil, wasStopped)
+	}
 	if auditCancel != nil {
 		auditCancel()
 	}
@@ -1601,8 +1745,19 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 			attempts = attempt
 			s.mu.Lock()
 			state = s.sessionStateLocked(sessionID)
+			startedAt := s.now()
+			fromSequence, throughSequence := liveAnalysisSequenceRange(pending)
 			state.running = true
 			state.runningDone = make(chan struct{})
+			state.lastAnalysisStartedAt = startedAt
+			state.runningOldestPendingAt = state.oldestPendingFinalAt
+			if state.runningOldestPendingAt.IsZero() {
+				state.runningOldestPendingAt = startedAt
+			}
+			state.runningLatestFinalAt = state.latestPendingFinalAt
+			state.runningTargetFromSequenceNo = fromSequence
+			state.runningTargetThroughSequenceNo = throughSequence
+			state.runningTrigger = liveAnalysisTriggerFinalizationFlush
 			s.mu.Unlock()
 			success, retryable := s.runLiveAnalysis(ctx, sessionID, pending)
 			if success {
@@ -1651,6 +1806,8 @@ func (s *MeetingAnalysisService) finishFinalizing(sessionID string) {
 	defer s.mu.Unlock()
 	state := s.sessionStateLocked(sessionID)
 	state.finalizing = false
+	state.stopped = true
+	cancelLiveAnalysisTimerLocked(state)
 }
 
 func (s *MeetingAnalysisService) waitForStableFinalSegments(ctx context.Context, sessionID string, request MeetingSessionFinalizationRequest) ([]domain.TranscriptSegment, int64, bool, error) {
@@ -1867,13 +2024,21 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	// same-evidence risk/issue duplicate needs a sweep rather than a fresh
 	// finding). Fail-safe: on error or integrity rejection, continue with the
 	// payload from just above unmodified.
-	if repaired, repairStats := applyDeterministicFinalTreeRepairs(livePayload, meetingCtx, liveVersion); repairStats.Error != "" || repairStats.IntegrityRejected {
+	if repaired, repairStats := applyDeterministicFinalTreeRepairs(livePayload, meetingCtx, liveVersion, finalRepairInput{
+		Segments: finalSegments,
+		Audit:    s.config.TreeAudit,
+	}); repairStats.Error != "" || repairStats.IntegrityRejected {
 		log.Printf("Deterministic final tree repair skipped. sessionId=%s treeVersion=%d integrityRejected=%t error=%s", sessionID, liveVersion, repairStats.IntegrityRejected, repairStats.Error)
 	} else {
 		livePayload = repaired
-		if repairStats.PromotedTopicDuplicatesFolded > 0 || repairStats.PromotedTopicFoldsAborted > 0 || repairStats.CrossKindDuplicatesMerged > 0 {
-			log.Printf("Deterministic final tree repair applied. sessionId=%s treeVersion=%d promotedTopicDuplicatesFolded=%d promotedTopicFoldsAborted=%d crossKindDuplicatesMerged=%d", sessionID, liveVersion, repairStats.PromotedTopicDuplicatesFolded, repairStats.PromotedTopicFoldsAborted, repairStats.CrossKindDuplicatesMerged)
-		}
+		log.Printf("Deterministic final tree repair evaluated. sessionId=%s treeVersion=%d promotedTopicDuplicatesFolded=%d promotedTopicFoldsAborted=%d crossKindDuplicatesMerged=%d sameKindDuplicatesMerged=%d sameEvidenceSynthesisMerged=%d recapDuplicatesMerged=%d lowInformationItemsRewritten=%d lowInformationItemsMerged=%d lowInformationItemsRejected=%d danglingCandidatesPruned=%d validatorsRerun=%t remainingLowInformation=%d remainingSemanticDuplicates=%d",
+			sessionID, liveVersion, repairStats.PromotedTopicDuplicatesFolded, repairStats.PromotedTopicFoldsAborted,
+			repairStats.CrossKindDuplicatesMerged, repairStats.SameKindDuplicatesMerged,
+			repairStats.SameEvidenceSynthesisMerged, repairStats.RecapDuplicatesMerged,
+			repairStats.LowInformationItemsRewritten, repairStats.LowInformationItemsMerged,
+			repairStats.LowInformationItemsRejected, repairStats.DanglingCandidatesPruned,
+			repairStats.ValidatorsRerun, repairStats.RemainingLowInformation,
+			repairStats.RemainingSemanticDuplicates)
 	}
 	// Agenda reconciliation is deliberately the last structural pass after the
 	// final reviewer and deterministic duplicate repairs. It reuses the full
@@ -2130,8 +2295,24 @@ type finalRepairStats struct {
 	PromotedTopicDuplicatesFolded int
 	PromotedTopicFoldsAborted     int
 	CrossKindDuplicatesMerged     int
+	SameKindDuplicatesMerged      int
+	SameEvidenceSynthesisMerged   int
+	RecapDuplicatesMerged         int
+	LowInformationItemsRewritten  int
+	LowInformationItemsMerged     int
+	LowInformationItemsRejected   int
+	DanglingCandidatesPruned      int
+	ValidatorsRerun               bool
+	RemainingLowInformation       int
+	RemainingSemanticDuplicates   int
 	IntegrityRejected             bool
+	IntegrityDiagnostics          *treeIntegrityDiagnostics
 	Error                         string
+}
+
+type finalRepairInput struct {
+	Segments []domain.TranscriptSegment
+	Audit    TreeAuditConfig
 }
 
 // applyDeterministicFinalTreeRepairs runs two decision-driven repairs the
@@ -2147,21 +2328,69 @@ type finalRepairStats struct {
 // model finding. It is fail-safe: any marshal error or post-repair integrity
 // failure discards every change from this pass and returns payload
 // unmodified; the caller only needs to log the outcome.
-func applyDeterministicFinalTreeRepairs(payload json.RawMessage, mc *meetingContext, version int64) (json.RawMessage, finalRepairStats) {
+func applyDeterministicFinalTreeRepairs(payload json.RawMessage, mc *meetingContext, version int64, inputs ...finalRepairInput) (json.RawMessage, finalRepairStats) {
 	var stats finalRepairStats
 	state := previousLiveAnalysisState(payload)
 	if state.Tree == nil || len(state.Tree.Nodes) == 0 {
 		return payload, stats
 	}
 
+	var input finalRepairInput
+	if len(inputs) > 0 {
+		input = inputs[0]
+	}
+	// Historical snapshots may still use logical agenda IDs as tree node IDs
+	// and may predate persisted agenda anchors. Canonicalize this in-memory
+	// before attempting a repair so a safe item merge is not discarded for
+	// unrelated legacy-shape diagnostics.
+	normalizeLegacyAgendaTopicIDs(&state, mc, nil)
+	repairFinalReferenceAndLowInformationItems(&state, input.Segments, version, &stats)
+	dedupStats := &liveAnalysisTreeMergeStats{}
+	if remap := deduplicateExistingLiveState(&state, dedupStats); len(remap) > 0 {
+		stats.SameKindDuplicatesMerged += len(remap)
+	}
+	mergeSameEvidenceSynthesisDuplicates(&state, version, &stats)
 	foldDuplicatePromotedDynamicTopics(&state, version, &stats)
 	mergeSameEvidenceCrossKindDuplicates(&state, version, &stats)
+	stats.DanglingCandidatesPruned += pruneDanglingFinalCandidates(&state)
 	rebuildTreeAuditEdges(state.Tree)
+	state.AgendaAnchors = reconcileAgendaAnchors(
+		state.AgendaAnchors, mc, state.Tree, state.Items, version, false,
+	)
 
 	integrity := validateTreeIntegrity(state.Tree, state.Items, mc, state.AgendaAnchors)
 	if !integrity.Valid {
 		stats.IntegrityRejected = true
+		stats.IntegrityDiagnostics = &integrity
 		return payload, stats
+	}
+	stats.ValidatorsRerun = true
+	if len(input.Segments) > 0 {
+		roles := classifyTreeAuditEvidence(state, input.Segments)
+		findings := deterministicTreeAuditPrecheck(state, mc, roles, input.Audit.normalized())
+		stats.RemainingLowInformation = countTreeAuditPrechecks(
+			findings,
+			TreeAuditLowInformationItem,
+			TreeAuditLowInformationTitle,
+			TreeAuditStatusOnlyNode,
+			TreeAuditAnaphoraWithoutReferent,
+			TreeAuditLowInformationChild,
+			TreeAuditGenericQuestionWithoutSubject,
+			TreeAuditRecapOnlyItem,
+			TreeAuditLeadingParticleFragment,
+			TreeAuditAnaphoraTargetMissing,
+			TreeAuditIncompleteSTTSegmentItem,
+			TreeAuditDecisionMissingObject,
+		)
+		stats.RemainingSemanticDuplicates = countTreeAuditPrechecks(
+			findings,
+			TreeAuditSemanticDuplicateSibling,
+			TreeAuditSemanticDuplicateSiblings,
+			TreeAuditDuplicateCrossKindProposition,
+			TreeAuditCrossKindDuplicateProposition,
+			TreeAuditDuplicateItem,
+			TreeAuditDuplicateOrParaphrase,
+		)
 	}
 	state.ReorganizationReasons = computeTreeHealth(state.Tree).reorganizationReasons()
 
@@ -2413,13 +2642,43 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 		log.Printf("Final tree snapshot integrity rejected. sessionId=%s treeVersion=%d duplicateNodeIds=%v selfParentNodeIds=%v missingAgendaRecordIds=%v agendaTopicIdCollisions=%v unknownAgendaRefs=%v orphanAgendaRefs=%v orphanMaterializedTopicIds=%v", sessionID, liveVersion, integrity.DuplicateNodeIDs, integrity.SelfParentNodeIDs, integrity.MissingAgendaRecordIDs, integrity.AgendaTopicIDCollisions, integrity.UnknownAgendaRefs, integrity.OrphanAgendaRefs, integrity.OrphanMaterializedTopicIDs)
 	}
 
+	// The durable final tree and the current live projection are one logical
+	// snapshot. Persist the exact post-reorganization tree back into live first,
+	// then stamp the tree row with that saved live timestamp. If live cannot be
+	// synchronized, do not publish a divergent final tree at the same version.
+	previous.Tree = tree
+	previous.TreeVersion = liveVersion
+	previous.PayloadKind = "full_snapshot"
+	previous.NodeCount = len(tree.Nodes)
+	previous.EdgeCount = len(tree.Edges)
+	previous.TreeHash = liveTreeHash(tree)
+	synchronizedLivePayload, err := json.Marshal(previous)
+	if err != nil {
+		log.Printf("Final projection synchronization marshal failed. sessionId=%s treeVersion=%d error=%v", sessionID, liveVersion, err)
+		return false
+	}
+	if err := s.persistFinalizedLiveProjection(ctx, sessionID, synchronizedLivePayload, liveVersion); err != nil {
+		log.Printf("Final projection synchronization failed. sessionId=%s treeVersion=%d error=%v", sessionID, liveVersion, err)
+		return false
+	}
+	synchronizedLive, err := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive)
+	if err != nil || synchronizedLive == nil {
+		log.Printf("Final projection synchronization verification failed. sessionId=%s treeVersion=%d error=%v", sessionID, liveVersion, err)
+		return false
+	}
+	projectionUpdatedAt := synchronizedLive.UpdatedAt.UTC()
+	log.Printf("Final projection synchronized. sessionId=%s projectionKind=live_and_final sourceRepository=meeting_ai_analyses analysisVersion=%d treeVersion=%d updatedAt=%s liveNodeCount=%d finalNodeCount=%d liveTreeHash=%s finalTreeHash=%s projectionIdentical=%t",
+		sessionID, liveVersion, liveVersion, projectionUpdatedAt.Format(time.RFC3339Nano),
+		previous.NodeCount, len(tree.Nodes), previous.TreeHash, liveTreeHash(tree),
+		previous.NodeCount == len(tree.Nodes) && previous.TreeHash == liveTreeHash(tree))
+
 	snapshot := treeSnapshotPayload{
 		TreeVersion:              liveVersion,
 		Reason:                   "meeting_ended",
 		Final:                    true,
 		CoveredThroughSequenceNo: coveredThrough,
 		SegmentCount:             segmentCount,
-		GeneratedAtUTC:           s.now().UTC().Format(time.RFC3339Nano),
+		GeneratedAtUTC:           projectionUpdatedAt.Format(time.RFC3339Nano),
 		ReorganizationStatus:     reorganizationStatus,
 		Tree:                     tree,
 		ChangeSource:             previous.ChangeSource,
@@ -2449,7 +2708,7 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 		Version:   liveVersion,
 		Payload:   payload,
 		Model:     model,
-		UpdatedAt: s.now().UTC(),
+		UpdatedAt: projectionUpdatedAt,
 	}); err != nil {
 		log.Printf("Final tree snapshot persist failed. sessionId=%s error=%v", sessionID, err)
 		return false
@@ -2989,10 +3248,17 @@ func sanitizeLiveAnalysisForDelivery(analysis *domain.MeetingAIAnalysis, mc *mee
 	legacyAgendaRemap := normalizeLegacyAgendaTopicIDs(&state, mc, stats)
 	reservedRemap := repairReservedPersistedItemIDs(&state, stats)
 	dedupRemap := deduplicateExistingLiveState(&state, stats)
-	rebuilt, items, candidates := rebuildDiscussionTree(state.Tree, mc, state.Items, nil, nil, nil, state.EmergingTopics, state.TreeVersion, cfg, stats)
-	state.Tree, state.Items, state.EmergingTopics = rebuilt, items, candidates
-	selected, repairedIntegrity, rejected := preserveTreeOnIntegrityFailure(state.Tree, nil, state.Items, nil, mc, stats)
-	state.Tree = selected
+	repairNeeded := !originalIntegrity.Valid || len(legacyAgendaRemap) > 0 || len(reservedRemap) > 0 || len(dedupRemap) > 0
+	repairedIntegrity := originalIntegrity
+	rejected := false
+	if repairNeeded {
+		rebuilt, items, candidates := rebuildDiscussionTree(state.Tree, mc, state.Items, nil, nil, nil, state.EmergingTopics, state.TreeVersion, cfg, stats)
+		state.Tree, state.Items, state.EmergingTopics = rebuilt, items, candidates
+		selected, selectedIntegrity, wasRejected := preserveTreeOnIntegrityFailure(state.Tree, nil, state.Items, nil, mc, stats)
+		state.Tree = selected
+		repairedIntegrity = selectedIntegrity
+		rejected = wasRejected
+	}
 	state.AgendaAnchors = reconcileAgendaAnchors(state.AgendaAnchors, mc, state.Tree, state.Items, state.TreeVersion, false)
 	if state.AgendaProgress == nil {
 		if mc != nil && len(mc.Agenda) > 0 {
@@ -3001,7 +3267,7 @@ func sanitizeLiveAnalysisForDelivery(analysis *domain.MeetingAIAnalysis, mc *mee
 	} else {
 		refreshAgendaProgressNodeRefs(state.AgendaProgress, state.Tree)
 	}
-	degraded := !originalIntegrity.Valid || len(legacyAgendaRemap) > 0 || len(reservedRemap) > 0 || len(dedupRemap) > 0 || rejected
+	degraded := repairNeeded || rejected
 	if degraded {
 		state.Degraded = true
 		state.DegradedReason = "legacy_tree_repaired_for_delivery"
@@ -3358,6 +3624,7 @@ func (s *MeetingAnalysisService) completeMeetingContextPlanning(sessionID string
 		}
 	}
 	log.Printf("Meeting context planning completed. sessionId=%s result=%s status=%s contextVersion=%d agendaCount=%d actionSummaryAgendaCount=%d elapsed=%s error=%v", sessionID, source, status, version, agendaCount, actionSummaryCount, completed.Sub(started), cause)
+	s.evaluateLiveAnalysisTrigger(sessionID, liveAnalysisTriggerContextReady)
 }
 
 func (s *MeetingAnalysisService) fetchSessionPreContext(ctx context.Context, sessionID string) *meetingSessionPreContext {
@@ -4474,6 +4741,7 @@ type liveAnalysisTreeMergeStats struct {
 	LowInformationItemsRejected          int
 	LowInformationItemsRewritten         int
 	LowInformationItemsSplit             int
+	LowInformationSplitFragmentsRejected int
 	LowInformationTentativeRetained      int
 	SemanticKindMigrations               int
 	SemanticSubtypeMigrations            int

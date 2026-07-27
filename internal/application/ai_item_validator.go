@@ -10,10 +10,19 @@ import (
 type liveItemRejection struct {
 	ModelItemID         string
 	CanonicalItemID     string
+	GeneratedBy         string
+	SourceItemID        string
+	FragmentIndex       int
 	Kind                string
 	EvidenceSequenceNos []int64
 	Reason              string
 	DetectedRole        liveUtteranceRole
+	SubjectComplete     bool
+	AnaphoraDetected    bool
+	SemanticCoherent    bool
+	RewriteCandidate    bool
+	ExistingItemMatchID string
+	FinalDecision       string
 }
 
 var (
@@ -45,6 +54,7 @@ func filterLowInformationLiveItems(previous, diff []liveAnalysisItem, timeline d
 	for _, item := range diff {
 		_, updatesExisting := previousIDs[item.ID]
 		if item.Kind == "issue" && item.InformationStatus == informationStatusTentative &&
+			!liveItemTextNeedsReferent(item) &&
 			!isDiscourseOnlyItem(item.Title, item.Body) &&
 			!evidenceOnlyHasRoles(item.EvidenceSequenceNos, timeline, liveEvidenceDiscourseOnly) {
 			kept = append(kept, item)
@@ -60,6 +70,7 @@ func filterLowInformationLiveItems(previous, diff []liveAnalysisItem, timeline d
 			continue
 		}
 		if stats != nil {
+			existingMatchID := lowInformationExistingItemMatch(previous, item)
 			recordRecapDecision(stats, item, timeline, recapDecisionRejectedLowInformation, "", 0, "information_gate", false, false, reason)
 			stats.LowInformationItemsRejected++
 			if item.Kind == "decision" {
@@ -72,10 +83,35 @@ func filterLowInformationLiveItems(previous, diff []liveAnalysisItem, timeline d
 				ModelItemID: firstNonEmptyTrimmed(item.modelReference, item.ID), CanonicalItemID: item.ID,
 				Kind: item.Kind, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...),
 				Reason: reason, DetectedRole: role,
+				SubjectComplete:     !liveItemTextNeedsReferent(item),
+				AnaphoraDetected:    issueAnaphoraPattern.MatchString(item.Title + " " + item.Body),
+				SemanticCoherent:    splitIssueFragmentSemanticallyCoherent(item),
+				RewriteCandidate:    item.Kind == "issue" && concreteIssueRepairText(item, scope, timeline) != "",
+				ExistingItemMatchID: existingMatchID,
+				FinalDecision:       "rejected",
 			})
 		}
 	}
 	return kept
+}
+
+func lowInformationExistingItemMatch(previous []liveAnalysisItem, item liveAnalysisItem) string {
+	if at, score := bestPropositionMatch(previous, item); at >= 0 && score >= 0.12 {
+		return previous[at].ID
+	}
+	matches := make([]string, 0, 2)
+	for _, candidate := range previous {
+		if candidate.Inactive || candidate.MergedIntoID != "" ||
+			!itemEvidenceOverlaps(item, candidate) || finalItemIsLowInformation(candidate) {
+			continue
+		}
+		matches = append(matches, candidate.ID)
+	}
+	matches = uniqueNonEmptyIDs(matches)
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	return ""
 }
 
 func validateLiveItemInformation(item liveAnalysisItem, updatesExisting bool, timeline discourseTimeline, scope liveEvidenceScope) (string, liveUtteranceRole) {
@@ -111,6 +147,9 @@ func validateLiveItemInformation(item liveAnalysisItem, updatesExisting bool, ti
 	text := strings.TrimSpace(item.Title + " " + item.Body)
 	if isDiscourseOnlyItem(item.Title, item.Body) || structurallyDiscourseTransition(normalizeDiscourseText(text)) {
 		return "low_information", firstNonEmptyUtteranceRole(role, liveUtteranceDiscourseTransition)
+	}
+	if liveItemTextNeedsReferent(item) {
+		return "subject_or_referent_missing", role
 	}
 	if metaOnlyLiveItemText(text) && !liveItemHasConcreteContext(item, scope) {
 		return "low_information", role
@@ -198,7 +237,27 @@ func liveItemHasSpecificSubject(text string) bool {
 	if key == "" || lowInformationGenericOnlyPattern.MatchString(strings.ToLower(key)) {
 		return false
 	}
+	if issueTextNeedsReferent(text) {
+		return false
+	}
 	return len([]rune(key)) >= 2
+}
+
+// liveItemTextNeedsReferent is the shared subject-completeness gate for every
+// item origin (model, deterministic synthesis, split fragment and legacy
+// repair). A concrete body may safely supply a generic title's referent, but a
+// title/body pair that are both anaphoric or predicate-only cannot form an
+// independent node.
+func liveItemTextNeedsReferent(item liveAnalysisItem) bool {
+	title := strings.TrimSpace(item.Title)
+	body := strings.TrimSpace(item.Body)
+	titleNeeds := title == "" || issueTextNeedsReferent(title)
+	bodyNeeds := body == "" || issueTextNeedsReferent(body)
+	if item.Kind == "decision" {
+		titleNeeds = title == "" || decisionStatementNeedsReferent(title)
+		bodyNeeds = body == "" || decisionStatementNeedsReferent(body)
+	}
+	return titleNeeds && bodyNeeds
 }
 
 func liveItemHasConcreteContext(item liveAnalysisItem, scope liveEvidenceScope) bool {

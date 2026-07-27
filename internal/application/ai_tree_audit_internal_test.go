@@ -3039,7 +3039,8 @@ func newTreeAuditRunnerFixture(t *testing.T, staleCAS bool) (*MeetingAnalysisSer
 	publisher := &internalAuditPublisher{}
 	completer := &internalAuditCompleter{content: validAuditMoveResponse()}
 	service := NewMeetingAnalysisService(analysisRepo, internalAuditTranscriptRepository{segments: segments}, nil, completer, MeetingAnalysisConfig{
-		Enabled: true, LiveEnabled: true, Model: "shared", TaskModels: AITaskModels{TreeAudit: "tree-audit-mini", FinalTreeReview: "tree-audit-mini"},
+		Enabled: true, LiveEnabled: true, LiveDebounce: time.Millisecond, LiveCooldown: time.Millisecond, LiveMaxWait: 50 * time.Millisecond,
+		Model: "shared", TaskModels: AITaskModels{TreeAudit: "tree-audit-mini", FinalTreeReview: "tree-audit-mini"},
 		TreeAudit: TreeAuditConfig{Enabled: true, MinInterval: time.Millisecond, Timeout: time.Second},
 	}, publisher)
 	service.SetMeetingTreeAuditRepository(auditRepo)

@@ -25,6 +25,10 @@ const (
 	defaultAIFinalSummaryTimeoutSeconds  = 60
 	defaultAILiveAnalysisIntervalSeconds = 10
 	minAILiveAnalysisIntervalSeconds     = 5
+	defaultAILiveAnalysisDebounceMillis  = 2000
+	minAILiveAnalysisDebounceMillis      = 100
+	defaultAILiveAnalysisCooldownSeconds = 8
+	defaultAILiveAnalysisMaxWaitSeconds  = 18
 	defaultAILiveAnalysisMinChars        = 80
 	defaultAILiveAnalysisMaxInputChars   = 4000
 	defaultAIFinalSummaryMaxInputChars   = 12000
@@ -112,6 +116,9 @@ type AIConfig struct {
 	AzureOpenAI               azureopenai.Config
 	LiveAnalysisEnabled       bool
 	LiveAnalysisInterval      time.Duration
+	LiveAnalysisDebounce      time.Duration
+	LiveAnalysisCooldown      time.Duration
+	LiveAnalysisMaxWait       time.Duration
 	LiveAnalysisMinChars      int
 	LiveAnalysisMaxInputChars int
 	FinalSummaryEnabled       bool
@@ -275,6 +282,9 @@ func aiConfigFromEnv() AIConfig {
 		},
 		LiveAnalysisEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_LIVE_ANALYSIS_ENABLED")),
 		LiveAnalysisInterval:      secondsDurationFromEnv(os.Getenv("AI_LIVE_ANALYSIS_INTERVAL_SECONDS"), defaultAILiveAnalysisIntervalSeconds, minAILiveAnalysisIntervalSeconds),
+		LiveAnalysisDebounce:      millisecondsDurationFromEnv(os.Getenv("AI_LIVE_ANALYSIS_DEBOUNCE_MILLISECONDS"), defaultAILiveAnalysisDebounceMillis, minAILiveAnalysisDebounceMillis),
+		LiveAnalysisCooldown:      secondsDurationFromEnv(os.Getenv("AI_LIVE_ANALYSIS_COOLDOWN_SECONDS"), defaultAILiveAnalysisCooldownSeconds, 1),
+		LiveAnalysisMaxWait:       secondsDurationFromEnv(os.Getenv("AI_LIVE_ANALYSIS_MAX_WAIT_SECONDS"), defaultAILiveAnalysisMaxWaitSeconds, 1),
 		LiveAnalysisMinChars:      positiveIntFromEnv(os.Getenv("AI_LIVE_ANALYSIS_MIN_CHARS"), defaultAILiveAnalysisMinChars),
 		LiveAnalysisMaxInputChars: positiveIntFromEnv(os.Getenv("AI_LIVE_ANALYSIS_MAX_INPUT_CHARS"), defaultAILiveAnalysisMaxInputChars),
 		FinalSummaryEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_FINAL_SUMMARY_ENABLED")),

@@ -221,6 +221,342 @@ func TestMeetingAnalysisServiceSkipsSchedulingWhileRunning(t *testing.T) {
 	waitUntil(t, 2*time.Second, func() bool { return completer.callCount() >= 2 })
 }
 
+func TestMeetingAnalysisServiceFinalEventRunsBeforeFallbackTick(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{{Content: liveAnalysisResultJSON}}}
+	config := testLiveOnlyConfig(500*time.Millisecond, 1)
+	config.LiveDebounce = 20 * time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	started := time.Now()
+	service.PublishTranscriptSegment(domain.TranscriptSegment{
+		SessionID: "session_early_final", CallID: "call-1", SequenceNo: 1,
+		Text: "長い発話がfinalとして確定しました。", IsFinal: true,
+	})
+	waitUntil(t, 300*time.Millisecond, func() bool { return completer.callCount() == 1 })
+	if elapsed := time.Since(started); elapsed >= config.LiveInterval {
+		t.Fatalf("event-driven analysis elapsed = %s, fallback interval = %s", elapsed, config.LiveInterval)
+	}
+}
+
+func TestMeetingAnalysisServiceContinuousFinalsAreDebouncedOnce(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{{Content: liveAnalysisResultJSON}}}
+	config := testLiveOnlyConfig(time.Second, 1)
+	config.LiveDebounce = 80 * time.Millisecond
+	config.LiveCooldown = 100 * time.Millisecond
+	config.LiveMaxWait = 250 * time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	for sequence := int64(1); sequence <= 5; sequence++ {
+		service.PublishTranscriptSegment(domain.TranscriptSegment{
+			SessionID: "session_debounce", CallID: "call-1", SequenceNo: sequence,
+			Text: fmt.Sprintf("連続する短いfinal-%d", sequence), IsFinal: true,
+		})
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitUntil(t, 500*time.Millisecond, func() bool { return completer.callCount() == 1 })
+	time.Sleep(150 * time.Millisecond)
+	if got := completer.callCount(); got != 1 {
+		t.Fatalf("debounced AI calls = %d, want 1", got)
+	}
+	requests := completer.requestSnapshot()
+	if len(requests) != 1 || !strings.Contains(requests[0].User, "sequenceNo=1") || !strings.Contains(requests[0].User, "sequenceNo=5") {
+		t.Fatalf("debounced request did not freeze all five sequences: %+v", requests)
+	}
+}
+
+func TestMeetingAnalysisServiceSubstantiveBelowMinimumRunsAtMaxWait(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{{Content: liveAnalysisResultJSON}}}
+	config := testLiveOnlyConfig(time.Second, 100)
+	config.LiveDebounce = 10 * time.Millisecond
+	config.LiveMaxWait = 90 * time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	service.PublishTranscriptSegment(domain.TranscriptSegment{
+		SessionID: "session_max_wait", CallID: "call-1", SequenceNo: 1,
+		Text: "短いが具体的な提案です", IsFinal: true,
+	})
+	time.Sleep(50 * time.Millisecond)
+	if got := completer.callCount(); got != 0 {
+		t.Fatalf("AI calls before max wait = %d, want 0", got)
+	}
+	waitUntil(t, 300*time.Millisecond, func() bool { return completer.callCount() == 1 })
+}
+
+func TestMeetingAnalysisServiceFillerOnlyDoesNotRunButIsCoalescedWithSubstantiveFinal(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{{Content: liveAnalysisResultJSON}}}
+	config := testLiveOnlyConfig(30*time.Millisecond, 1)
+	config.LiveDebounce = 15 * time.Millisecond
+	config.LiveMaxWait = 60 * time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	for sequence, text := range []string{"はい", "ええ。", "   "} {
+		service.PublishTranscriptSegment(domain.TranscriptSegment{
+			SessionID: "session_filler", CallID: "call-1", SequenceNo: int64(sequence + 1), Text: text, IsFinal: true,
+		})
+	}
+	time.Sleep(120 * time.Millisecond)
+	if got := completer.callCount(); got != 0 {
+		t.Fatalf("filler-only AI calls = %d, want 0", got)
+	}
+
+	service.PublishTranscriptSegment(domain.TranscriptSegment{
+		SessionID: "session_filler", CallID: "call-1", SequenceNo: 4,
+		Text: "公開日は来週の火曜日に決めます", IsFinal: true,
+	})
+	waitUntil(t, 300*time.Millisecond, func() bool { return completer.callCount() == 1 })
+	request := completer.requestSnapshot()[0]
+	if !strings.Contains(request.User, "sequenceNo=1") || !strings.Contains(request.User, "sequenceNo=4") {
+		t.Fatalf("coalesced request = %s", request.User)
+	}
+}
+
+func TestMeetingAnalysisServiceMultipleSessionsHaveIndependentSingleFlights(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	completer := &fakeAIChatCompleter{
+		block:   make(chan struct{}),
+		results: []application.AIChatResult{{Content: liveAnalysisResultJSON}, {Content: liveAnalysisResultJSON}},
+	}
+	config := testLiveOnlyConfig(time.Second, 1)
+	config.LiveDebounce = 10 * time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	service.PublishTranscriptSegment(domain.TranscriptSegment{SessionID: "session_a", CallID: "a", SequenceNo: 1, Text: "Aの具体的な議論", IsFinal: true})
+	waitUntil(t, 300*time.Millisecond, func() bool { return completer.callCount() == 1 })
+	service.PublishTranscriptSegment(domain.TranscriptSegment{SessionID: "session_b", CallID: "b", SequenceNo: 1, Text: "Bの具体的な議論", IsFinal: true})
+	waitUntil(t, 300*time.Millisecond, func() bool { return completer.callCount() == 2 })
+	close(completer.block)
+}
+
+func TestMeetingAnalysisServicePersistFailureRestoresPendingForRetry(t *testing.T) {
+	baseRepository := newFakeAIAnalysisRepository()
+	repository := &failOnceAIAnalysisRepository{fakeAIAnalysisRepository: baseRepository}
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{
+		{Content: liveAnalysisResultJSON}, {Content: liveAnalysisResultJSON},
+	}}
+	config := testLiveOnlyConfig(20*time.Millisecond, 1)
+	config.LiveDebounce = 5 * time.Millisecond
+	config.LiveCooldown = 5 * time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	service.PublishTranscriptSegment(domain.TranscriptSegment{
+		SessionID: "session_persist_retry", CallID: "call-1", SequenceNo: 7,
+		Text: "保存失敗後にも失われてはいけない発言", IsFinal: true,
+	})
+	waitUntil(t, 500*time.Millisecond, func() bool { return completer.callCount() >= 2 })
+	waitUntil(t, 500*time.Millisecond, func() bool {
+		saved, err := baseRepository.GetMeetingAIAnalysis(context.Background(), "session_persist_retry", domain.MeetingAIAnalysisLive)
+		if err != nil {
+			return false
+		}
+		var coverage struct {
+			CoveredThroughSequenceNo int64 `json:"coveredThroughSequenceNo"`
+		}
+		return json.Unmarshal(saved.Payload, &coverage) == nil && coverage.CoveredThroughSequenceNo == 7
+	})
+}
+
+func TestMeetingAnalysisServiceContextReadyReschedulesDeferredFinal(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	completer := newContextGateCompleter()
+	config := testLiveOnlyConfig(time.Second, 1)
+	config.LiveDebounce = 10 * time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{}, &fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	service.PrepareMeetingSession(domain.MeetingSession{ID: "session_context_gate", Purpose: "遅延contextの確認"})
+	waitUntil(t, 300*time.Millisecond, func() bool { return completer.callCount() == 1 })
+	service.PublishTranscriptSegment(domain.TranscriptSegment{
+		SessionID: "session_context_gate", CallID: "call-1", SequenceNo: 1,
+		Text: "context準備後に分析する具体的な発言", IsFinal: true,
+	})
+	time.Sleep(60 * time.Millisecond)
+	if got := completer.callCount(); got != 1 {
+		t.Fatalf("calls while context planner pending = %d, want planner only", got)
+	}
+	completer.releaseContext()
+	waitUntil(t, 500*time.Millisecond, func() bool { return completer.callCount() == 2 })
+}
+
+func TestMeetingAnalysisServiceStartRecoversDurableUnanalyzedFinal(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	transcript := domain.TranscriptSegment{
+		SessionID: "session_restart_recovery", CallID: "call-1", SequenceNo: 9,
+		Text: "再起動前に保存済みだが未分析のfinal発言", IsFinal: true,
+		ReceivedAtUTC: time.Now().Add(-time.Minute),
+	}
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{{Content: liveAnalysisResultJSON}}}
+	config := testLiveOnlyConfig(time.Second, 1)
+	config.LiveDebounce = 10 * time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{segments: []domain.TranscriptSegment{transcript}},
+		&fakeAnalysisSessionRepository{watchdogSessions: []domain.MeetingSession{{
+			ID: transcript.SessionID, Status: domain.MeetingSessionRecording,
+		}}},
+		completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	waitUntil(t, 500*time.Millisecond, func() bool { return completer.callCount() == 1 })
+	request := completer.requestSnapshot()[0]
+	if !strings.Contains(request.User, "sequenceNo=9") {
+		t.Fatalf("recovered request = %s", request.User)
+	}
+}
+
+func TestMeetingAnalysisServiceDelayedRecoveryCannotRequeueCompletedRange(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	segment := domain.TranscriptSegment{
+		SessionID: "session_recovery_race", CallID: "call-1", SequenceNo: 3,
+		Text: "回復処理とlive完了が競合する発言", IsFinal: true, ReceivedAtUTC: time.Now(),
+	}
+	transcripts := newGatedRecoveryTranscriptRepository(segment)
+	completer := &fakeAIChatCompleter{
+		block:   make(chan struct{}),
+		results: []application.AIChatResult{{Content: liveAnalysisResultJSON}},
+	}
+	config := testLiveOnlyConfig(20*time.Millisecond, 1)
+	config.LiveDebounce = 5 * time.Millisecond
+	config.LiveCooldown = 5 * time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, transcripts, &fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	service.PublishTranscriptSegment(segment)
+	waitUntil(t, 300*time.Millisecond, func() bool { return completer.callCount() == 1 })
+	select {
+	case <-transcripts.firstListStarted:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("periodic durable recovery did not start")
+	}
+
+	close(completer.block)
+	waitUntil(t, 500*time.Millisecond, func() bool {
+		saved, err := repository.GetMeetingAIAnalysis(context.Background(), segment.SessionID, domain.MeetingAIAnalysisLive)
+		return err == nil && saved.Status == domain.MeetingAIAnalysisCompleted
+	})
+	close(transcripts.releaseFirstList)
+	time.Sleep(120 * time.Millisecond)
+	if got := completer.callCount(); got != 1 {
+		t.Fatalf("provider calls after stale recovery completed = %d, want 1", got)
+	}
+}
+
+func TestMeetingAnalysisServiceDoesNotRunForFailedSession(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{{Content: liveAnalysisResultJSON}}}
+	config := testLiveOnlyConfig(30*time.Millisecond, 1)
+	config.LiveDebounce = 10 * time.Millisecond
+	sessionID := "session_failed"
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{},
+		&fakeAnalysisSessionRepository{session: &domain.MeetingSession{ID: sessionID, Status: domain.MeetingSessionFailed}},
+		completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	service.PublishTranscriptSegment(domain.TranscriptSegment{
+		SessionID: sessionID, CallID: "call-1", SequenceNo: 1,
+		Text: "terminal sessionでは分析しない", IsFinal: true,
+	})
+	time.Sleep(120 * time.Millisecond)
+	if got := completer.callCount(); got != 0 {
+		t.Fatalf("failed-session AI calls = %d, want 0", got)
+	}
+}
+
+func TestMeetingFinalizationCancelsDebounceTimerWithoutDuplicateLiveRun(t *testing.T) {
+	repository := newFakeAIAnalysisRepository()
+	segment := domain.TranscriptSegment{
+		SessionID: "session_ending_timer", CallID: "call-1", SequenceNo: 1,
+		SpeakerName: "話者", Text: "終了直前の具体的なfinal発言です", IsFinal: true,
+	}
+	completer := &fakeAIChatCompleter{results: []application.AIChatResult{
+		{Content: liveAnalysisResultJSON},
+		{Content: `{"basedOnTreeVersion":1,"operations":[]}`},
+		{Content: finalAnalysisResultJSON},
+	}}
+	config := testLiveOnlyConfig(time.Second, 1)
+	config.LiveDebounce = 250 * time.Millisecond
+	config.FinalEnabled = true
+	config.FinalMaxInputChars = 12000
+	config.FinalizationQuietPeriod = time.Millisecond
+	service := application.NewMeetingAnalysisService(
+		repository, &fakeAnalysisTranscriptRepository{segments: []domain.TranscriptSegment{segment}},
+		&fakeAnalysisSessionRepository{}, completer, config,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.Start(ctx)
+	defer service.Close()
+
+	service.PublishTranscriptSegment(segment)
+	if err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: segment.SessionID}, application.MeetingSessionFinalizationRequest{
+		BotLastForwardedFinalSequence: 1, TranscriptQueueDrained: true,
+	}); err != nil {
+		t.Fatalf("FinalizeMeetingSession() error = %v", err)
+	}
+	callsAfterFinalization := completer.callCount()
+	time.Sleep(350 * time.Millisecond)
+	if got := completer.callCount(); got != callsAfterFinalization {
+		t.Fatalf("calls after cancelled debounce timer = %d, want %d", got, callsAfterFinalization)
+	}
+}
+
 func TestMeetingAnalysisServiceBackoffAndPendingRestoreOnFailure(t *testing.T) {
 	repository := newFakeAIAnalysisRepository()
 	completer := &fakeAIChatCompleter{
@@ -563,6 +899,9 @@ func testLiveOnlyConfig(interval time.Duration, minChars int) application.Meetin
 		Enabled:           true,
 		LiveEnabled:       true,
 		LiveInterval:      interval,
+		LiveDebounce:      interval,
+		LiveCooldown:      interval,
+		LiveMaxWait:       250 * time.Millisecond,
 		LiveMinChars:      minChars,
 		LiveMaxInputChars: 4000,
 		Model:             "test-deployment",
@@ -598,6 +937,28 @@ type fakeAIAnalysisRepository struct {
 	store       map[string]domain.MeetingAIAnalysis
 	upserts     []domain.MeetingAIAnalysis
 	liveHistory map[string]map[int64]domain.MeetingAIAnalysis
+}
+
+type failOnceAIAnalysisRepository struct {
+	*fakeAIAnalysisRepository
+	mu       sync.Mutex
+	failed   bool
+	failWith error
+}
+
+func (f *failOnceAIAnalysisRepository) UpsertMeetingAIAnalysis(ctx context.Context, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, error) {
+	f.mu.Lock()
+	if !f.failed {
+		f.failed = true
+		cause := f.failWith
+		if cause == nil {
+			cause = errors.New("temporary live analysis persist failure")
+		}
+		f.mu.Unlock()
+		return nil, cause
+	}
+	f.mu.Unlock()
+	return f.fakeAIAnalysisRepository.UpsertMeetingAIAnalysis(ctx, analysis)
 }
 
 func newFakeAIAnalysisRepository() *fakeAIAnalysisRepository {
@@ -768,6 +1129,43 @@ type fakeAIChatCompleter struct {
 	calls    int
 }
 
+type contextGateCompleter struct {
+	mu          sync.Mutex
+	calls       int
+	releaseOnce sync.Once
+	releaseCh   chan struct{}
+}
+
+func newContextGateCompleter() *contextGateCompleter {
+	return &contextGateCompleter{releaseCh: make(chan struct{})}
+}
+
+func (c *contextGateCompleter) Complete(ctx context.Context, _ application.AIChatRequest) (application.AIChatResult, error) {
+	c.mu.Lock()
+	call := c.calls
+	c.calls++
+	c.mu.Unlock()
+	if call == 0 {
+		select {
+		case <-c.releaseCh:
+		case <-ctx.Done():
+			return application.AIChatResult{}, ctx.Err()
+		}
+		return application.AIChatResult{Content: contextPlannerResultJSON}, nil
+	}
+	return application.AIChatResult{Content: liveAnalysisResultJSON}, nil
+}
+
+func (c *contextGateCompleter) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func (c *contextGateCompleter) releaseContext() {
+	c.releaseOnce.Do(func() { close(c.releaseCh) })
+}
+
 func (f *fakeAIChatCompleter) Complete(ctx context.Context, request application.AIChatRequest) (application.AIChatResult, error) {
 	f.mu.Lock()
 	index := f.calls
@@ -885,7 +1283,8 @@ func (f *fakeAIAnalysisPublisher) snapshot() []domain.MeetingAIAnalysis {
 }
 
 type fakeAnalysisSessionRepository struct {
-	session *domain.MeetingSession
+	session          *domain.MeetingSession
+	watchdogSessions []domain.MeetingSession
 }
 
 func (f *fakeAnalysisSessionRepository) CreateMeetingSession(context.Context, domain.MeetingSession) (*domain.MeetingSession, error) {
@@ -928,7 +1327,7 @@ func (f *fakeAnalysisSessionRepository) TouchMeetingSessionBotSeen(context.Conte
 }
 
 func (f *fakeAnalysisSessionRepository) ListMeetingSessionsForBotWatchdog(context.Context) ([]domain.MeetingSession, error) {
-	return nil, nil
+	return append([]domain.MeetingSession(nil), f.watchdogSessions...), nil
 }
 
 func (f *fakeAnalysisSessionRepository) DeleteMeetingSession(context.Context, string) error {
@@ -937,6 +1336,42 @@ func (f *fakeAnalysisSessionRepository) DeleteMeetingSession(context.Context, st
 
 type fakeAnalysisTranscriptRepository struct {
 	segments []domain.TranscriptSegment
+}
+
+type gatedRecoveryTranscriptRepository struct {
+	mu               sync.Mutex
+	segments         []domain.TranscriptSegment
+	listCalls        int
+	firstListStarted chan struct{}
+	releaseFirstList chan struct{}
+	startOnce        sync.Once
+}
+
+func newGatedRecoveryTranscriptRepository(segments ...domain.TranscriptSegment) *gatedRecoveryTranscriptRepository {
+	return &gatedRecoveryTranscriptRepository{
+		segments: segments, firstListStarted: make(chan struct{}), releaseFirstList: make(chan struct{}),
+	}
+}
+
+func (r *gatedRecoveryTranscriptRepository) SaveTranscriptSegment(context.Context, domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {
+	return domain.TranscriptSegmentStoreResult{}, errors.New("not implemented")
+}
+
+func (r *gatedRecoveryTranscriptRepository) ListTranscriptSegments(ctx context.Context, _ string, _ string, _ int) ([]domain.TranscriptSegment, error) {
+	r.mu.Lock()
+	r.listCalls++
+	call := r.listCalls
+	segments := append([]domain.TranscriptSegment(nil), r.segments...)
+	r.mu.Unlock()
+	if call == 1 {
+		r.startOnce.Do(func() { close(r.firstListStarted) })
+		select {
+		case <-r.releaseFirstList:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return segments, nil
 }
 
 func (f *fakeAnalysisTranscriptRepository) SaveTranscriptSegment(context.Context, domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error) {

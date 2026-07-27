@@ -88,7 +88,10 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
 - ライブ抽出は対応deploymentでAzure Structured Outputs（`json_schema`, `strict: true`）を使います。
   deploymentがこの形式を明示的に拒否した場合は、同一プロセス中は従来の`json_object`へフォールバックします
 - `AI_LIVE_ANALYSIS_ENABLED`: 会議中ライブAI分析を行うか。既定値は `true`
-- `AI_LIVE_ANALYSIS_INTERVAL_SECONDS`: ライブ分析の実行間隔。既定値は `10`、最小値は `5`
+- `AI_LIVE_ANALYSIS_INTERVAL_SECONDS`: 未分析finalを救済するfallback tick。既定値は `10`、最小値は `5`
+- `AI_LIVE_ANALYSIS_DEBOUNCE_MILLISECONDS`: final確定イベントをまとめるdebounce。既定値は `2000`
+- `AI_LIVE_ANALYSIS_COOLDOWN_SECONDS`: 同一sessionのライブAI呼び出し間隔。既定値は `8`
+- `AI_LIVE_ANALYSIS_MAX_WAIT_SECONDS`: substantiveな未分析finalの最大待機時間。既定値は `18`
 - `AI_LIVE_ANALYSIS_MIN_CHARS`: ライブ分析を実行する最小の新規文字数。既定値は `80`
 - `AI_LIVE_ANALYSIS_MAX_INPUT_CHARS`: ライブ分析1回あたりに送る差分transcriptの最大文字数。既定値は `4000`
 - `AI_FINAL_SUMMARY_ENABLED`: 会議終了時のAI最終要約生成を行うか。既定値は `true`

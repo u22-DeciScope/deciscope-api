@@ -344,8 +344,9 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 	if !enabled {
 		log.Printf("AI meeting analysis disabled; missing environment variables: %s", strings.Join(config.MissingAzureOpenAIVars(), ", "))
 	} else {
-		log.Printf("AI meeting analysis enabled. deployment=%s liveAnalysisEnabled=%t finalSummaryEnabled=%t liveIntervalSeconds=%.0f",
-			config.AzureOpenAI.Deployment, config.LiveAnalysisEnabled, config.FinalSummaryEnabled, config.LiveAnalysisInterval.Seconds())
+		log.Printf("AI meeting analysis enabled. deployment=%s liveAnalysisEnabled=%t finalSummaryEnabled=%t liveIntervalSeconds=%.0f liveDebounceMs=%d liveCooldownSeconds=%.0f liveMaxWaitSeconds=%.0f",
+			config.AzureOpenAI.Deployment, config.LiveAnalysisEnabled, config.FinalSummaryEnabled, config.LiveAnalysisInterval.Seconds(),
+			config.LiveAnalysisDebounce.Milliseconds(), config.LiveAnalysisCooldown.Seconds(), config.LiveAnalysisMaxWait.Seconds())
 	}
 
 	analysisRepository := postgresrepository.NewMeetingAIAnalysisRepository(postgresDB)
@@ -379,6 +380,9 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 			Enabled:                 enabled,
 			LiveEnabled:             config.LiveAnalysisEnabled,
 			LiveInterval:            config.LiveAnalysisInterval,
+			LiveDebounce:            config.LiveAnalysisDebounce,
+			LiveCooldown:            config.LiveAnalysisCooldown,
+			LiveMaxWait:             config.LiveAnalysisMaxWait,
 			LiveMinChars:            config.LiveAnalysisMinChars,
 			LiveMaxInputChars:       config.LiveAnalysisMaxInputChars,
 			LiveRequestTimeout:      config.AzureOpenAI.Timeout,

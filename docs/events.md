@@ -18,6 +18,13 @@ agenda reconciliationや手動progress overrideによりpayloadだけを補正�
 契約です）。同一version・同一時刻の再送は
 同一snapshotとして扱い、クライアントは採用しません。
 
+会議終了時も同じ契約を使います。finalizationで生成したcanonical treeはlive
+rowへ同期した後、その再取得結果と同じ`treeVersion`、`analysisVersion`、
+`updatedAtUtc`、tree payload、`treeHash`、`nodeCount`でfinal snapshotへ保存
+されます。live同期に失敗した場合、内容だけが異なるfinal snapshotを同じ
+version/timeでは公開しません。したがってcompleted WebSocket、RESTのlive、
+RESTのfinalが同一version/timeを示すときは、同一tree projectionです。
+
 したがって、WebSocketで補正済みsnapshotを採用した後に古いREST応答が到着しても
 巻き戻りません。補正保存はanalysis historyを追加せず、保存・配信は各補正passで
 1回だけです。クライアントはversion判定を弱めず、payload欠損やstatus-only更新では

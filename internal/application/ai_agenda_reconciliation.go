@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	agendaReconciliationDynamicCandidate = "dynamic_candidate_reconciliation"
-	agendaReconciliationSkipBackfill     = "agenda_skip_backfill"
-	agendaReconciliationFinalization     = "finalization_reconciliation"
+	agendaReconciliationDynamicCandidate  = "dynamic_candidate_reconciliation"
+	agendaReconciliationSkipBackfill      = "agenda_skip_backfill"
+	agendaReconciliationFinalization      = "finalization_reconciliation"
+	agendaReconciliationAmbiguousFallback = "ambiguous_agenda_fallback"
 
 	agendaReconciliationMinScore  = 0.62
 	agendaReconciliationMinMargin = 0.10
@@ -324,6 +325,23 @@ func currentAgendaForEvidence(item liveAnalysisItem, spans []agendaContextSpan) 
 	return agendaID
 }
 
+func activeAgendaFallbackForEvidence(item liveAnalysisItem, spans []agendaContextSpan, previous *agendaProgressState, mc *meetingContext) string {
+	candidate := currentAgendaForEvidence(item, spans)
+	if candidate == "" && previous != nil {
+		candidate = strings.TrimSpace(previous.ComputedCurrentTopicID)
+	}
+	if candidate == "" || mc == nil {
+		return ""
+	}
+	for _, agenda := range mc.Agenda {
+		if agenda.ID == candidate &&
+			effectiveAgendaRole(agenda.Role, agenda.Title, agenda.Description) == agendaRolePrimary {
+			return candidate
+		}
+	}
+	return ""
+}
+
 // reconcileDynamicCandidateAssignments runs after active-span correction but
 // before rebuildDiscussionTree creates candidates. Strong, unique matches are
 // rewritten to the logical agenda anchor, allowing the ordinary materializer
@@ -490,6 +508,31 @@ func reconcileDynamicCandidateAssignments(
 			DynamicCandidateChecked: true,
 		}
 		if selected.ID == "" {
+			if rejected == "ambiguous_agenda_match" {
+				fallbackAgendaID := activeAgendaFallbackForEvidence(item, spans, previous.AgendaProgress, mc)
+				fallbackParentID := fallbackAgendaID
+				fallbackReason := "ambiguous_agenda_match_active_fallback"
+				fallbackConfidence := 0.55
+				if fallbackParentID == "" {
+					fallbackParentID = treeUnclassifiedTopicID
+					fallbackReason = "ambiguous_agenda_match_unclassified_fallback"
+					fallbackConfidence = 0
+				}
+				assignments = replaceItemAssignments(assignments, item.ID, treeAssignment{
+					NodeID: item.ID, ParentTopicID: fallbackParentID, Confidence: fallbackConfidence,
+					Reason: agendaReconciliationAmbiguousFallback, ServerSource: assignmentSourceRule,
+					ModelParentTopicID:  candidateParentID,
+					EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...),
+				})
+				decision.SelectedAgendaID = fallbackAgendaID
+				decision.Score = fallbackConfidence
+				decision.RejectedReason = fallbackReason
+				decision.AgendaRefsRepaired = fallbackAgendaID != ""
+				decision.ItemMoved = true
+				if fallbackAgendaID != "" {
+					decision.NewStatus = agendaProgressDiscussing
+				}
+			}
 			if stats != nil {
 				stats.AgendaReconciliations = append(stats.AgendaReconciliations, decision)
 			}

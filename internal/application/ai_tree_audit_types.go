@@ -218,6 +218,7 @@ type treeAuditValidatorEvaluation struct {
 	// every other operation type it equals ModelConfidence unchanged.
 	ModelConfidence     float64 `json:"modelConfidence"`
 	EffectiveConfidence float64 `json:"effectiveConfidence"`
+	EffectiveThreshold  float64 `json:"effectiveThreshold,omitempty"`
 }
 
 type treeAuditValidatorResult struct {
@@ -246,6 +247,10 @@ type treeAuditValidatorResult struct {
 	DeactivationsApplied           int                            `json:"deactivationsApplied"`
 	ParserElementsRejected         int                            `json:"parserElementsRejected"`
 	OperationsCanonicalized        int                            `json:"operationsCanonicalized"`
+	DeterministicFallbackEvaluated bool                           `json:"deterministicFallbackEvaluated,omitempty"`
+	DeterministicFallbackApplied   bool                           `json:"deterministicFallbackApplied,omitempty"`
+	DeterministicFallbackAction    string                         `json:"deterministicFallbackAction,omitempty"`
+	DeterministicFallbackReason    string                         `json:"deterministicFallbackReason,omitempty"`
 }
 
 type treeAuditPrecheckFinding struct {

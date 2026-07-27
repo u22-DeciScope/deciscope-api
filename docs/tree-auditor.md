@@ -424,6 +424,18 @@ evidence role、担当・期限、decision/correction marker、前後発言を�
 独立した命題を持たない新規itemを拒否します。transcript文脈を持たない
 historical replayでは推測で削除せず、audit-time validatorへ委ねます。
 
+open issue補完はmodel itemの後に実行しますが、生成前にevidenceの重なり、
+未解決状態、kind/subtype、具体的subject、semantic similarityを比較します。
+同じ発話内の具体的model itemが同じ未解決命題を既に表す場合は補完itemを
+生成せず、独立したsubjectを持つ複数論点は維持します。指示対象を単体で
+特定できないitemはtentative例外を含めて共通validatorへ通します。
+
+low-information rewriteが複合issueを分割した場合、各fragmentに対して
+subject/referent、evidence grounding、通常item validatorを再実行し、
+成立したfragmentだけを採用します。recap-only evidenceから既存itemに
+対応しない新規itemを確定するには、通常roundより厳しい新規subjectと、
+担当・期限・数値等の具体性および直接evidence groundingが必要です。
+
 監査の`deactivate_item`、`merge_items`、およびlive semantic mergeで除外した
 itemは、live payloadの`itemTombstones`へsession scopeで保存します。各entryは
 canonical item ID、proposition key、semantic key hash、evidence fingerprint、
@@ -448,6 +460,14 @@ tombstoneへ記録します。
 `Tree audit findings remain unapplied.`を出し、同じstreakの4回目以降では
 繰り返しません。runには分類、連続数、proposed/canonicalized/valid/applied/
 rejected件数、rejection reason集計、resulting versionを永続化します。
+
+閾値到達時にoperationが1件も安全適用できなかった場合は、追加のAI呼び出しを
+せず、同じ決定的final repairを最新treeへ試行します。low-information itemの
+一意な既存itemへの統合、同一evidence補完重複、recap重複、dangling candidate
+など、安全に検証できる変更だけをversion CASで適用します。修復不能、
+manual保護、integrity違反の場合はlast-known-good treeを保持します。
+validator resultとログには、finding分類、reject理由の集計、
+`deterministicFallbackEvaluated`、action、reason、適用versionを記録します。
 
 ## Scheduling
 
@@ -504,11 +524,21 @@ final transcript repositoryの読取自体が失敗した場合も、最後の�
 順序は常に`final flush → final_tree_review → deterministic tree repair →
 deterministic agenda reconciliation → agenda lifecycle
 (空topic整理・not_discussed確定) → final tree snapshot → final summary`です。
+deterministic tree repairは、review後にlow-information、recap/same-evidence
+duplicate、candidate参照、tree integrityを再検証します。旧agenda node IDを
+使うsnapshotは既存の互換正規化をin-memoryで適用してから検証します。
 agenda reconciliationは追加のAI呼び出しを行わず、未着手anchorと全final transcript、
 canonical item、dynamic candidate / unclassified topicを再照合します。強く一意な一致だけを
 採用し、itemのparent、topicの`agendaRefs`、anchorの`materializedTopicIds`、
 `agendaProgress`を同じpassで修復します。失敗時またはintegrity違反時は修復前payloadへ
 戻してfinalizationを継続します。
+
+final snapshotを保存するときは、最終整理済みの同一treeを先にlive projectionへ
+同期し、再取得したlive rowの`updatedAt`をfinal rowにも使います。同じ
+treeVersion/analysisVersion/updatedAtを持つliveとfinalはnode countだけでなく
+tree hashとtree payloadが一致します。live同期に失敗した場合は内容の異なる
+final rowを同じversion/timeで保存しません。REST sanitizationはintegrity修復が
+必要な場合に限ってtreeを再構築し、正常なcanonical treeを別形状へ投影し直しません。
 
 agenda progressの`discussing`（UI上のin_progress相当）は、会議終了だけでは
 `discussed`へ昇格しません。固定agendaに関連itemがあり、かつ2 active rounds、
