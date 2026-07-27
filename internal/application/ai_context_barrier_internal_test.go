@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -11,8 +12,9 @@ import (
 )
 
 type contextBarrierRepository struct {
-	mu    sync.Mutex
-	store map[string]domain.MeetingAIAnalysis
+	mu          sync.Mutex
+	store       map[string]domain.MeetingAIAnalysis
+	liveHistory map[string]map[int64]domain.MeetingAIAnalysis
 }
 
 func newContextBarrierRepository() *contextBarrierRepository {
@@ -46,6 +48,38 @@ func (r *contextBarrierRepository) ListMeetingAIAnalysesForSessions(_ context.Co
 		if analysis, ok := r.store[sessionID+"|"+string(analysisType)]; ok {
 			items = append(items, analysis)
 		}
+	}
+	return items, nil
+}
+
+func (r *contextBarrierRepository) AppendLiveAnalysisHistory(_ context.Context, analysis domain.MeetingAIAnalysis) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.liveHistory == nil {
+		r.liveHistory = make(map[string]map[int64]domain.MeetingAIAnalysis)
+	}
+	versions := r.liveHistory[analysis.SessionID]
+	if versions == nil {
+		versions = make(map[int64]domain.MeetingAIAnalysis)
+		r.liveHistory[analysis.SessionID] = versions
+	}
+	if _, exists := versions[analysis.Version]; !exists {
+		versions[analysis.Version] = analysis
+	}
+	return nil
+}
+
+func (r *contextBarrierRepository) ListLiveAnalysisHistory(_ context.Context, sessionID string, limit int) ([]domain.MeetingAIAnalysis, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	versions := r.liveHistory[sessionID]
+	items := make([]domain.MeetingAIAnalysis, 0, len(versions))
+	for _, analysis := range versions {
+		items = append(items, analysis)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Version < items[j].Version })
+	if limit > 0 && len(items) > limit {
+		items = items[len(items)-limit:]
 	}
 	return items, nil
 }

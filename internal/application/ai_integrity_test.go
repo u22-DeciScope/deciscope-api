@@ -168,7 +168,8 @@ func TestHistoricalEvidenceSupportsEmergingTopicPromotionAcrossRounds(t *testing
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(secondRaw)
-	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
+	candidateID, _ := canonicalCandidateID("湿地・希少植物", "")
+	dynamicID := stableDynamicTopicID(candidateID)
 	if len(state.EmergingTopics) != 0 || itemTopicID(state.Tree, "todo-wetland-1") != dynamicID || itemTopicID(state.Tree, "todo-wetland-2") != dynamicID || stats.HistoricalEvidenceAccepted != 1 {
 		t.Fatalf("state=%+v stats=%+v", state, stats)
 	}
@@ -296,7 +297,8 @@ func TestActionSummaryAssignmentSelectsSemanticPrimaryAgenda(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
+	candidateID, _ := canonicalCandidateID("湿地・希少植物", "")
+	dynamicID := stableDynamicTopicID(candidateID)
 	meetingTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
 	windTopic := agendaTopicNodeByRef(state.Tree, "agenda-2")
 	if meetingTopic == nil || windTopic == nil || itemTopicID(state.Tree, "todo-meeting-date") != meetingTopic.ID || itemTopicID(state.Tree, "todo-wind") != windTopic.ID || itemTopicID(state.Tree, "todo-wetland") != dynamicID {
@@ -505,7 +507,8 @@ func TestTentativeCandidatePromotesAtomicallyAfterStableVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := previousLiveAnalysisState(raw)
-	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
+	candidateID, _ := canonicalCandidateID("湿地・希少植物", "")
+	dynamicID := stableDynamicTopicID(candidateID)
 	if len(state.EmergingTopics) != 0 || itemTopicID(state.Tree, "todo-plant") != dynamicID || itemTopicID(state.Tree, "question-plant") != dynamicID {
 		t.Fatalf("state=%+v", state)
 	}
@@ -597,7 +600,8 @@ func TestSession04e9dec1aaa164b3ReplayAcceptance(t *testing.T) {
 		}
 	}
 	residentID := "todo-residents-doc-publicity-01"
-	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "")
+	candidateID, _ := canonicalCandidateID("湿地・希少植物", "")
+	dynamicID := stableDynamicTopicID(candidateID)
 	meetingDate := findItemByTitlePart(state.Items, "開催日")
 	residentTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")
 	if residentTopic == nil || itemTopicID(state.Tree, residentID) != residentTopic.ID || meetingDate == nil || itemTopicID(state.Tree, meetingDate.ID) != residentTopic.ID || itemTopicID(state.Tree, "todo-wetland") != dynamicID {

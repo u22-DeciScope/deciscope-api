@@ -140,6 +140,81 @@ func (r *MeetingAIAnalysisRepository) ListMeetingAIAnalysesForSessions(ctx conte
 	return items, nil
 }
 
+// AppendLiveAnalysisHistory records a completed live analysis version in the
+// durable history table. It is idempotent: re-appending the same
+// (session_id, version) is a no-op, since a stale retry or duplicate publish
+// must not fail the live analysis flow.
+func (r *MeetingAIAnalysisRepository) AppendLiveAnalysisHistory(ctx context.Context, analysis domain.MeetingAIAnalysis) error {
+	payload, err := nullableJSONPayload(analysis.Payload)
+	if err != nil {
+		return fmt.Errorf("encode meeting ai analysis live history payload: %w", err)
+	}
+	updatedAt := analysis.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO meeting_session_ai_analysis_live_history (session_id, version, payload, model, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (session_id, version) DO NOTHING
+	`, analysis.SessionID, analysis.Version, payload, nullable(analysis.Model), updatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("append meeting ai analysis live history: %w", err)
+	}
+	return nil
+}
+
+// ListLiveAnalysisHistory returns up to limit of the most recent completed
+// live analysis versions for sessionID, ordered oldest to newest (version
+// ascending) so callers can replay the progression in order.
+func (r *MeetingAIAnalysisRepository) ListLiveAnalysisHistory(ctx context.Context, sessionID string, limit int) ([]domain.MeetingAIAnalysis, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT session_id, version, payload, COALESCE(model, ''), updated_at
+		FROM (
+			SELECT session_id, version, payload, model, updated_at
+			FROM meeting_session_ai_analysis_live_history
+			WHERE session_id = $1
+			ORDER BY version DESC
+			LIMIT $2
+		) sub
+		ORDER BY version ASC
+	`, sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list meeting ai analysis live history: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]domain.MeetingAIAnalysis, 0, limit)
+	for rows.Next() {
+		var (
+			rowSessionID, model string
+			version             int64
+			payload             []byte
+			updatedAt           time.Time
+		)
+		if err := rows.Scan(&rowSessionID, &version, &payload, &model, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan meeting ai analysis live history: %w", err)
+		}
+		var rawPayload json.RawMessage
+		if len(payload) > 0 {
+			rawPayload = append(json.RawMessage(nil), payload...)
+		}
+		items = append(items, domain.MeetingAIAnalysis{
+			SessionID: rowSessionID,
+			Type:      domain.MeetingAIAnalysisLive,
+			Status:    domain.MeetingAIAnalysisCompleted,
+			Version:   version,
+			Payload:   rawPayload,
+			Model:     model,
+			UpdatedAt: updatedAt.UTC(),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate meeting ai analysis live history: %w", err)
+	}
+	return items, nil
+}
+
 func nullableJSONPayload(payload json.RawMessage) (any, error) {
 	if len(payload) == 0 {
 		return nil, nil

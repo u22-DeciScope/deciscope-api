@@ -17,7 +17,6 @@ import (
 type Repositories struct {
 	Meetings application.MeetingRepository
 	Events   application.EventRepository
-	Reports  application.ReportRepository
 	Jobs     application.JobRepository
 	Auth     AuthWorkspaceRepository
 }
@@ -33,13 +32,12 @@ type AuthWorkspaceRepository interface {
 type Store interface {
 	application.MeetingRepository
 	application.EventRepository
-	application.ReportRepository
 	application.JobRepository
 }
 
 func FromStore(store Store) Repositories {
 	return Repositories{
-		Meetings: store, Events: store, Reports: store, Jobs: store,
+		Meetings: store, Events: store, Jobs: store,
 	}
 }
 
@@ -151,31 +149,6 @@ func Run(t *testing.T, factory Factory) {
 		events, err = repos.Events.ListEvents(ctx, meeting.ID, 0)
 		if err != nil || len(events) != 0 {
 			t.Fatalf("events after reset = %+v, error = %v", events, err)
-		}
-	})
-
-	t.Run("reports", func(t *testing.T) {
-		repos := factory(t)
-		ctx := context.Background()
-		meeting := createMeeting(t, ctx, repos)
-
-		if _, err := repos.Reports.LatestReport(ctx, meeting.ID); !errors.Is(err, domain.ErrNotFound) {
-			t.Fatalf("LatestReport(empty) error = %v, want ErrNotFound", err)
-		}
-		first, err := repos.Reports.SaveReport(ctx, meeting.ID, "first")
-		if err != nil {
-			t.Fatalf("SaveReport(first) error = %v", err)
-		}
-		second, err := repos.Reports.SaveReport(ctx, meeting.ID, "second")
-		if err != nil {
-			t.Fatalf("SaveReport(second) error = %v", err)
-		}
-		latest, err := repos.Reports.LatestReport(ctx, meeting.ID)
-		if err != nil {
-			t.Fatalf("LatestReport() error = %v", err)
-		}
-		if latest.ArtifactID != second.ArtifactID || latest.ArtifactID == first.ArtifactID || latest.Content != "second" {
-			t.Fatalf("LatestReport() = %+v", latest)
 		}
 	})
 

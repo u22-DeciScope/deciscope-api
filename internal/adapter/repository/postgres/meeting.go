@@ -72,7 +72,6 @@ func (s *Store) ResetMeeting(ctx context.Context, meetingID string) error {
 	}
 	defer tx.Rollback()
 	for _, query := range []string{
-		`DELETE FROM meeting_reports WHERE meeting_id = $1`,
 		`DELETE FROM meeting_segments WHERE meeting_id = $1`,
 		`DELETE FROM meeting_events WHERE meeting_id = $1`,
 	} {

@@ -7,17 +7,22 @@ import (
 )
 
 var (
-	issueAnaphoraPattern              = regexp.MustCompile(`(?:この点|本件|それ|上記|前述|当該事項|引き続き)`)
-	issueReferentFreePredicatePattern = regexp.MustCompile(`^(?:[[:space:]、。,.!！?？]|は|が|を|の|に|へ|と|も|では|について|として|引き続き|継続|確認|検討|対応|調査|事項|必要|未確認|未確定|未解決|不明|できていない|です|ます|する|します|したい|行う|行います|残す|残し|残して|残しています|残る|残ります)+$`)
+	issueAnaphoraPattern              = regexp.MustCompile(`(?:(?:この|その)(?:点|問題|件|条件|事項)|本件|それ|上記|前述|当該(?:事項|条件|問題|件)|引き続き)`)
+	issueReferentFreePredicatePattern = regexp.MustCompile(`^(?:[[:space:]、。,.!！?？]|は|が|を|の|に|へ|と|も|では|について|として|引き続き|継続|確認|検討|対応|調査|点|問題|件|条件|事項|必要|未確認|未確定|未解決|不明|できていない|です|ます|する|します|したい|行う|行います|残す|残し|残して|残しています|残る|残ります)+$`)
 	// Capture the grammatical subject immediately before an unresolved-state
 	// predicate. Starting at the nearest clause boundary avoids treating a
 	// sentence such as "この点は…ため、現時点では未確定です" as a list of
 	// independent subjects merely because an earlier verb contains 「と」.
-	collapsedOpenIssuePattern            = regexp.MustCompile(`(?:^|[、,])([^、,。]{2,80}?)(?:が|は|では)(?:未解決|未確定)(?:の)?(?:事項|課題|調査事項)?(?:として)?(?:残し|残す|残ります|です)`)
+	collapsedOpenIssuePattern            = regexp.MustCompile(`(?:^|[、,])([^、,。]{2,80}?)(?:が|は|では)[、,]?(?:未解決|未確定)(?:の)?(?:事項|課題|調査事項)?(?:として)?(?:残し|残す|残ります|です)`)
 	issueSubjectSeparatorPattern         = regexp.MustCompile(`(?:と|および|及び|ならびに|並びに|、)`)
 	confirmationStatementPattern         = regexp.MustCompile(`(?:確認(?:します|する|が必要|が必要です|したい)|問い合わせ(?:ます|る)|不明)`)
 	contextQuestionPattern               = regexp.MustCompile(`^(.+?)(?:は|を)?(?:何[^。]*か|どの[^。]*か)$`)
 	genericQuestionWithoutSubjectPattern = regexp.MustCompile(`^(?:(?:何|なに)(?:が|は)?(?:原因|理由|問題|課題|対象|方法|条件|結果)|(?:どう|なぜ|いつ|誰|どこ|どれ)(?:です|でした|します|する|なります|なる)?)(?:です|でした|でしょう|なの)?(?:か)?$`)
+	// Detect a broken noun compound structurally rather than banning a known
+	// mistranscription. A content noun immediately glued to a personal or
+	// demonstrative pronoun (without a particle/clause boundary) is a common
+	// Japanese STT splice shape and is unsafe as a standalone split subject.
+	malformedPronounCompoundPattern = regexp.MustCompile(`[一-龠々ァ-ヶー]{2,}(?:あなた|わたし|われわれ|我々|彼|彼女|これ|それ|あれ|ここ|そこ|あそこ)(?:の|が|は|を|に|へ)`)
 )
 
 // repairLowInformationIssueItems runs before canonical ID assignment. It
@@ -48,6 +53,33 @@ func repairLowInformationIssueItems(previous, diff []liveAnalysisItem, assignmen
 					split.ClientKey, split.ID = ref, ""
 				} else {
 					split.ClientKey, split.ID = "", ref
+				}
+				reason, role := validateLiveItemInformation(split, false, timeline, scope)
+				semanticCoherence := splitIssueFragmentSemanticallyCoherent(split)
+				if reason == "" && !semanticCoherence {
+					reason = "split_fragment_semantically_incoherent"
+				}
+				if reason == "" && !splitIssueFragmentGrounded(split, scope) {
+					reason = "split_fragment_not_grounded"
+				}
+				if reason != "" {
+					if stats != nil {
+						stats.LowInformationSplitFragmentsRejected++
+						stats.LowInformationItemsRejected++
+						stats.LowInformationRejections = append(stats.LowInformationRejections, liveItemRejection{
+							ModelItemID: originalRef, CanonicalItemID: ref, Kind: split.Kind,
+							GeneratedBy: "split", SourceItemID: originalRef, FragmentIndex: index + 1,
+							EvidenceSequenceNos: append([]int64(nil), split.EvidenceSequenceNos...),
+							Reason:              reason, DetectedRole: role,
+							SubjectComplete:     !liveItemTextNeedsReferent(split),
+							AnaphoraDetected:    issueAnaphoraPattern.MatchString(split.Title + " " + split.Body),
+							SemanticCoherent:    semanticCoherence,
+							RewriteCandidate:    concreteIssueRepairText(split, scope, timeline) != "",
+							ExistingItemMatchID: lowInformationExistingItemMatch(previous, split),
+							FinalDecision:       "rejected",
+						})
+					}
+					continue
 				}
 				refs = append(refs, ref)
 				repaired = append(repaired, split)
@@ -118,8 +150,8 @@ func repairLowInformationIssueItems(previous, diff []liveAnalysisItem, assignmen
 	}
 	repairedAssignments := make([]treeAssignment, 0, len(assignments)+len(replacementRefs))
 	for _, assignment := range assignments {
-		refs := replacementRefs[canonicalReferenceKey(assignment.nodeID())]
-		if len(refs) == 0 {
+		refs, replaced := replacementRefs[canonicalReferenceKey(assignment.nodeID())]
+		if !replaced {
 			repairedAssignments = append(repairedAssignments, assignment)
 			continue
 		}
@@ -130,6 +162,26 @@ func repairLowInformationIssueItems(previous, diff []liveAnalysisItem, assignmen
 		}
 	}
 	return repaired, repairedAssignments
+}
+
+func splitIssueFragmentGrounded(item liveAnalysisItem, scope liveEvidenceScope) bool {
+	itemText := strings.TrimSpace(item.Title + " " + item.Body)
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		evidence := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+		if evidence == "" {
+			continue
+		}
+		if sharedTreeAuditSubjectTerm(itemText, evidence) ||
+			semanticItemSimilarity(itemText, evidence) >= 0.12 {
+			return true
+		}
+	}
+	return false
+}
+
+func splitIssueFragmentSemanticallyCoherent(item liveAnalysisItem) bool {
+	text := strings.TrimSpace(item.Title + " " + item.Body)
+	return text != "" && !malformedPronounCompoundPattern.MatchString(text)
 }
 
 func concreteIssueStatements(item liveAnalysisItem, scope liveEvidenceScope) []string {

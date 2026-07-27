@@ -272,3 +272,71 @@ func meetingAIAnalysisRowCount(t *testing.T, db *sql.DB) int {
 	}
 	return count
 }
+
+func TestMeetingAIAnalysisRepositoryAppendLiveAnalysisHistoryIsIdempotent(t *testing.T) {
+	repository, db := newTestMeetingAIAnalysisRepository(t)
+	ctx := context.Background()
+
+	analysis := domain.MeetingAIAnalysis{
+		SessionID: "session_test",
+		Version:   1,
+		Payload:   json.RawMessage(`{"summary":"v1"}`),
+		Model:     "gpt-4o-mini",
+		UpdatedAt: time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC),
+	}
+	if err := repository.AppendLiveAnalysisHistory(ctx, analysis); err != nil {
+		t.Fatalf("AppendLiveAnalysisHistory() error = %v", err)
+	}
+	// A duplicate append for the same (session_id, version) must be a no-op,
+	// not an error, since a stale retry can call this more than once.
+	if err := repository.AppendLiveAnalysisHistory(ctx, analysis); err != nil {
+		t.Fatalf("AppendLiveAnalysisHistory(duplicate) error = %v", err)
+	}
+	if got := meetingAIAnalysisLiveHistoryRowCount(t, db); got != 1 {
+		t.Fatalf("row count = %d, want 1 (idempotent on session_id, version)", got)
+	}
+}
+
+func TestMeetingAIAnalysisRepositoryListLiveAnalysisHistoryOrdersAndLimits(t *testing.T) {
+	repository, _ := newTestMeetingAIAnalysisRepository(t)
+	ctx := context.Background()
+
+	for version := int64(1); version <= 5; version++ {
+		if err := repository.AppendLiveAnalysisHistory(ctx, domain.MeetingAIAnalysis{
+			SessionID: "session_test",
+			Version:   version,
+			Payload:   json.RawMessage(`{"summary":"v"}`),
+			UpdatedAt: time.Date(2026, 6, 27, 0, 0, int(version), 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("AppendLiveAnalysisHistory(version=%d) error = %v", version, err)
+		}
+	}
+
+	items, err := repository.ListLiveAnalysisHistory(ctx, "session_test", 3)
+	if err != nil {
+		t.Fatalf("ListLiveAnalysisHistory() error = %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %+v, want 3 (limited to the latest 3 versions)", items)
+	}
+	// LIMIT picks the 3 most recent versions (3,4,5); the outer query then
+	// re-sorts them ascending so callers can replay the progression in order.
+	wantVersions := []int64{3, 4, 5}
+	for i, want := range wantVersions {
+		if items[i].Version != want {
+			t.Fatalf("items[%d].Version = %d, want %d (items=%+v)", i, items[i].Version, want, items)
+		}
+		if items[i].Type != domain.MeetingAIAnalysisLive || items[i].Status != domain.MeetingAIAnalysisCompleted {
+			t.Fatalf("items[%d] type/status = %s/%s, want live/completed", i, items[i].Type, items[i].Status)
+		}
+	}
+}
+
+func meetingAIAnalysisLiveHistoryRowCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM meeting_session_ai_analysis_live_history").Scan(&count); err != nil {
+		t.Fatalf("count meeting_session_ai_analysis_live_history: %v", err)
+	}
+	return count
+}

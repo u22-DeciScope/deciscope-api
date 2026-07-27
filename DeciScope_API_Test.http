@@ -85,8 +85,3 @@ GET {{baseUrl}}/v1/meetings/{{meeting_id}}/events?after_seq=0
 
 ### transcript segments
 GET {{baseUrl}}/v1/meetings/{{meeting_id}}/segments?after_seq=0
-
-
-### markdown report
-GET {{baseUrl}}/v1/meetings/{{meeting_id}}/report
-Accept: text/markdown

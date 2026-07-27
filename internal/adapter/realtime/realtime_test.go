@@ -256,6 +256,40 @@ func TestTranscriptHubPublishMeetingAIAnalysisFiltersBySessionID(t *testing.T) {
 	}
 }
 
+func TestTranscriptHubAIAnalysisWriteFailureIsolatedToSubscriber(t *testing.T) {
+	hub := NewTranscriptHub()
+	server, peer := net.Pipe()
+	client := newTranscriptClient("", "session_1", server, bufio.NewReader(server))
+	hub.subscribe(client)
+	done := make(chan struct{})
+	go func() {
+		client.writeLoop(hub)
+		close(done)
+	}()
+	// Simulate a normal WebSocket delivery failure after the durable analysis
+	// has already been saved. Publishing only enqueues; the writer logs the
+	// error, removes this subscriber, and cannot feed an error back into
+	// finalization.
+	_ = peer.Close()
+	hub.PublishMeetingAIAnalysis(domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisCompleted, Version: 12,
+		Payload: json.RawMessage(`{"treeVersion":12}`),
+	})
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("failed WebSocket writer did not terminate")
+	}
+	hub.mu.RLock()
+	_, stillSubscribed := hub.clients[client]
+	hub.mu.RUnlock()
+	if stillSubscribed {
+		t.Fatal("failed WebSocket subscriber remained registered")
+	}
+	_ = server.Close()
+}
+
 func TestMeetingAIAnalysisProtocolMessage(t *testing.T) {
 	analysis := domain.MeetingAIAnalysis{
 		SessionID:       "session_1",

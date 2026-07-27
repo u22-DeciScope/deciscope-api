@@ -11,18 +11,19 @@ import (
 )
 
 type RouterDependencies struct {
-	CoreAPI           *CoreAPI
-	AuthAPI           *AuthAPI
-	WorkspaceAPI      *WorkspaceAPI
-	TranscriptAPI     *TranscriptAPI
-	MeetingSessionAPI *MeetingSessionAPI
-	AuthService       authmiddleware.SessionAuthenticator
-	Workspace         WorkspaceAccessUseCases
-	Access            ResourceAccessUseCases
-	Realtime          http.HandlerFunc
-	Healthz           http.HandlerFunc
-	Readyz            http.HandlerFunc
-	CORS              CORSConfig
+	CoreAPI              *CoreAPI
+	AuthAPI              *AuthAPI
+	WorkspaceAPI         *WorkspaceAPI
+	TranscriptAPI        *TranscriptAPI
+	MeetingSessionAPI    *MeetingSessionAPI
+	ClientDiagnosticsAPI *ClientDiagnosticsAPI
+	AuthService          authmiddleware.SessionAuthenticator
+	Workspace            WorkspaceAccessUseCases
+	Access               ResourceAccessUseCases
+	Realtime             http.HandlerFunc
+	Healthz              http.HandlerFunc
+	Readyz               http.HandlerFunc
+	CORS                 CORSConfig
 }
 
 type CORSConfig struct {
@@ -53,6 +54,14 @@ func NewRouter(deps RouterDependencies) http.Handler {
 		r.Patch("/api/v1/bot/meeting-sessions/{session_id}/metadata", deps.MeetingSessionAPI.UpdateBotMetadata)
 		r.Patch("/api/v1/bot/meeting-sessions/{session_id}/status", deps.MeetingSessionAPI.UpdateBotStatus)
 		r.Post("/api/v1/bot/meeting-sessions/{session_id}/heartbeat", deps.MeetingSessionAPI.RecordBotHeartbeat)
+	}
+	// クライアント診断ログ受け口。会議画面の議論ツリー消失を事後追跡するためのもので、
+	// 認証必須・ワークスペース/セッション単位の認可はハンドラ側で行う。
+	if deps.ClientDiagnosticsAPI != nil && deps.AuthService != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(authmiddleware.SessionAuth(deps.AuthService))
+			r.Post("/internal/client-diagnostics", deps.ClientDiagnosticsAPI.Ingest)
+		})
 	}
 	if deps.CoreAPI == nil || deps.AuthAPI == nil || deps.WorkspaceAPI == nil ||
 		deps.AuthService == nil || deps.Workspace == nil || deps.Access == nil || deps.Realtime == nil {
@@ -106,7 +115,6 @@ func NewRouter(deps RouterDependencies) http.Handler {
 				r.Post("/end", deps.CoreAPI.EndMeeting)
 				r.Get("/events", deps.CoreAPI.ListEvents)
 				r.Get("/segments", deps.CoreAPI.ListSegments)
-				r.Get("/report", deps.CoreAPI.GetReport)
 			})
 			r.With(requireRealtimeAccess(deps.Access)).Get("/realtime", deps.Realtime)
 		})

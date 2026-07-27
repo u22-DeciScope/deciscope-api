@@ -263,6 +263,7 @@ func normalizeLegacyAgendaTopicIDs(state *liveAnalysisPayload, mc *meetingContex
 		if at, exists := index[targetID]; exists {
 			target := result[at]
 			target.AgendaRefs = appendUniqueStrings(target.AgendaRefs, source.AgendaRefs...)
+			target.ModelTopicIDs = appendUniqueStrings(target.ModelTopicIDs, source.ModelTopicIDs...)
 			target.MergedFromNodeIDs = appendUniqueStrings(target.MergedFromNodeIDs, source.MergedFromNodeIDs...)
 			target.Materialized = target.Materialized || source.Materialized
 			if len(target.AgendaRefs) > 0 && target.Origin == topicOriginDynamic {
@@ -497,6 +498,149 @@ func isGroundedAgendaItem(item *liveAnalysisItem, assignment treeAssignment) boo
 		strings.TrimSpace(item.Title+item.Body) != ""
 }
 
+// resolvedAgendaModelAliases chooses at most one agenda owner for each
+// model-proposed parent alias in the current assignment set. A collision is
+// resolved from current semantic evidence and the server assignment score;
+// an ambiguous alias has no owner and is removed instead of preserving an
+// arbitrary older mapping.
+func resolvedAgendaModelAliases(assignments []treeAssignment, items map[string]*liveAnalysisItem, records map[string]agendaItem) (map[string]string, map[string]struct{}) {
+	scores := make(map[string]map[string]float64)
+	for _, assignment := range assignments {
+		alias := strings.TrimSpace(assignment.ModelParentTopicID)
+		agenda, agendaExists := records[strings.TrimSpace(assignment.ParentTopicID)]
+		item := items[assignment.nodeID()]
+		if alias == "" || !agendaExists || item == nil || !isGroundedAgendaItem(item, assignment) {
+			continue
+		}
+		score := semanticItemSimilarity(agendaSemanticText(agenda), item.Title+" "+item.Body)
+		if assignment.Confidence > score {
+			score = assignment.Confidence
+		}
+		if scores[alias] == nil {
+			scores[alias] = make(map[string]float64)
+		}
+		if score > scores[alias][agenda.ID] {
+			scores[alias][agenda.ID] = score
+		}
+	}
+	owners := make(map[string]string, len(scores))
+	ambiguous := make(map[string]struct{})
+	for alias, byAgenda := range scores {
+		bestID, bestScore, secondScore := "", 0.0, 0.0
+		for agendaID, score := range byAgenda {
+			if score > bestScore {
+				bestID, bestScore, secondScore = agendaID, score, bestScore
+			} else if score > secondScore {
+				secondScore = score
+			}
+		}
+		if bestID != "" && (len(byAgenda) == 1 || bestScore-secondScore >= agendaReconciliationMinMargin) {
+			owners[alias] = bestID
+		} else if len(byAgenda) > 1 {
+			ambiguous[alias] = struct{}{}
+		}
+	}
+	return owners, ambiguous
+}
+
+func moveModelTopicAlias(topics map[string]liveAnalysisTreeNode, targetID, alias string) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return
+	}
+	for topicID, topic := range topics {
+		kept := topic.ModelTopicIDs[:0]
+		for _, existing := range topic.ModelTopicIDs {
+			if strings.TrimSpace(existing) != alias {
+				kept = append(kept, existing)
+			}
+		}
+		topic.ModelTopicIDs = uniqueNonEmptyIDs(kept)
+		if topicID == targetID {
+			topic.ModelTopicIDs = appendUniqueStrings(topic.ModelTopicIDs, alias)
+		}
+		topics[topicID] = topic
+	}
+}
+
+// reconcileAgendaModelTopicAliasConflicts enforces one materialized topic
+// owner per model alias. Existing/legacy collisions are re-scored against the
+// current topic evidence and agenda metadata. When the evidence is ambiguous,
+// the alias is removed from every topic so a later explicit model reference
+// must go through normal semantic assignment again.
+func reconcileAgendaModelTopicAliasConflicts(tree *liveAnalysisTree, mc *meetingContext, items []liveAnalysisItem) {
+	if tree == nil || mc == nil {
+		return
+	}
+	records := agendaRecordMap(mc)
+	topicAt := make(map[string]int)
+	aliasTopics := make(map[string][]string)
+	for index, node := range tree.Nodes {
+		if node.Kind != "topic" || len(topicAgendaRefs(node, records)) == 0 {
+			continue
+		}
+		topicAt[node.ID] = index
+		for _, alias := range uniqueNonEmptyIDs(node.ModelTopicIDs) {
+			aliasTopics[alias] = appendUniqueStrings(aliasTopics[alias], node.ID)
+		}
+	}
+	itemByID := make(map[string]liveAnalysisItem, len(items))
+	for _, item := range items {
+		itemByID[item.ID] = item
+	}
+	for alias, topicIDs := range aliasTopics {
+		if len(topicIDs) < 2 {
+			continue
+		}
+		bestTopicID, bestScore, secondScore := "", 0.0, 0.0
+		for _, topicID := range topicIDs {
+			topic := tree.Nodes[topicAt[topicID]]
+			parts := []string{topic.Label, topic.Description}
+			for itemID, item := range itemByID {
+				if treeItemTopic(tree, itemID) == topicID {
+					parts = append(parts, item.Title, item.Body)
+				}
+			}
+			evidenceText := strings.Join(parts, " ")
+			score := 0.0
+			for _, agendaID := range topicAgendaRefs(topic, records) {
+				agenda := records[agendaID]
+				candidate := agendaEvidenceScore(
+					agenda,
+					liveAnalysisItem{Title: evidenceText},
+					topic.Label+" "+topic.Description,
+					evidenceText,
+				)
+				if candidate > score {
+					score = candidate
+				}
+			}
+			if score > bestScore {
+				bestTopicID, bestScore, secondScore = topicID, score, bestScore
+			} else if score > secondScore {
+				secondScore = score
+			}
+		}
+		selectedTopicID := ""
+		if bestScore >= agendaReconciliationMinScore && bestScore-secondScore >= agendaReconciliationMinMargin {
+			selectedTopicID = bestTopicID
+		}
+		for _, topicID := range topicIDs {
+			topic := tree.Nodes[topicAt[topicID]]
+			kept := topic.ModelTopicIDs[:0]
+			for _, existing := range topic.ModelTopicIDs {
+				if existing != alias || topicID == selectedTopicID {
+					kept = append(kept, existing)
+				}
+			}
+			topic.ModelTopicIDs = uniqueNonEmptyIDs(kept)
+			tree.Nodes[topicAt[topicID]] = topic
+		}
+		log.Printf("Agenda model parent alias conflict reconciled. aliasHash=%s candidateTopicIds=%v selectedTopicId=%s ambiguous=%t",
+			shortAuditHash(alias), topicIDs, selectedTopicID, selectedTopicID == "")
+	}
+}
+
 // materializePlannedAgendaTopics creates a topic only when an assignment has
 // grounded evidence. A single low-confidence proposal stays planned; two
 // independent grounded proposals are sufficient accumulation to materialize.
@@ -525,6 +669,10 @@ func materializePlannedAgendaTopics(
 	}
 	byAgenda := make(map[string][]proposal)
 	records := agendaRecordMap(mc)
+	aliasOwners, ambiguousAliases := resolvedAgendaModelAliases(assignments, itemByID, records)
+	for alias := range ambiguousAliases {
+		moveModelTopicAlias(topics, "", alias)
+	}
 	noAgendaItemIDs := make(map[string]struct{})
 	for _, assignment := range assignments {
 		if assignment.ServerSource == assignmentSourceNoAgendaSpan || assignment.ResolvedAgendaSpanMode == agendaContextModeNoAgenda {
@@ -607,6 +755,13 @@ func materializePlannedAgendaTopics(
 			continue
 		}
 		if existingTopicID := materializedTopicIDForAgenda(topics, records, agendaID); existingTopicID != "" {
+			if modelTopicID := strings.TrimSpace(assignment.ModelParentTopicID); modelTopicID != "" {
+				if aliasOwners[modelTopicID] == agendaID {
+					moveModelTopicAlias(topics, existingTopicID, modelTopicID)
+				} else if _, collision := ambiguousAliases[modelTopicID]; collision {
+					moveModelTopicAlias(topics, "", modelTopicID)
+				}
+			}
 			log.Printf("Agenda topic materialization reused. agendaId=%s materializedTopicId=%s agendaTopicIdReused=true agendaTopicIdCollision=%t", agendaID, existingTopicID, agendaID == existingTopicID)
 			if stats != nil {
 				stats.AgendaTopicIDsReused++
@@ -640,12 +795,20 @@ func materializePlannedAgendaTopics(
 			label = agenda.Title
 		}
 		description := truncateRunes(strings.TrimSpace(selected.item.Body), liveAnalysisTreeDescriptionMaxRunes)
+		modelTopicID := strings.TrimSpace(selected.assignment.ModelParentTopicID)
+		if aliasOwners[modelTopicID] != agenda.ID {
+			modelTopicID = ""
+		}
 		addTopic(liveAnalysisTreeNode{
 			ID: topicID, Kind: "topic", Label: label, Description: description,
-			Origin: topicOriginAgenda, AgendaRole: agendaRolePrimary,
+			ModelTopicIDs: uniqueNonEmptyIDs([]string{modelTopicID}),
+			Origin:        topicOriginAgenda, AgendaRole: agendaRolePrimary,
 			AgendaRefs: []string{agenda.ID}, Materialized: true,
 			CreatedAtVersion: round, UpdatedAtVersion: round,
 		})
+		if modelTopicID != "" {
+			moveModelTopicAlias(topics, topicID, modelTopicID)
+		}
 		parents[topicID] = treeRootNodeID
 		log.Printf("Agenda topic materialized. agendaId=%s materializedTopicId=%s agendaTopicIdReused=%t agendaTopicIdCollision=%t", agenda.ID, topicID, reused, agenda.ID == topicID)
 		if stats != nil {
@@ -766,6 +929,7 @@ func mergeEquivalentAgendaDynamicTopics(topics map[string]liveAnalysisTreeNode, 
 				}
 			}
 			agendaTopic.AgendaRefs = appendUniqueStrings(agendaTopic.AgendaRefs, dynamicTopic.AgendaRefs...)
+			agendaTopic.ModelTopicIDs = appendUniqueStrings(agendaTopic.ModelTopicIDs, dynamicTopic.ModelTopicIDs...)
 			agendaTopic.MergedFromNodeIDs = appendUniqueStrings(agendaTopic.MergedFromNodeIDs, dynamicID)
 			agendaTopic.Origin = topicOriginMixed
 			agendaTopic.Materialized = true

@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"log"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -473,7 +472,176 @@ func recapItemHasNovelSubject(item liveAnalysisItem, previous []liveAnalysisItem
 	return true
 }
 
-func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisItem, roundSeqNos []int64, timeline discourseTimeline, stats *liveAnalysisTreeMergeStats) []liveAnalysisItem {
+// recapItemDecision records why one recap-evidenced item was kept, merged or
+// dropped. IDと真偽値・スコアだけを持ち、発話本文やタイトルは保持しない
+// (構造化ログへ個人情報や会議本文を出さないため)。
+type recapItemDecision struct {
+	ItemID          string
+	Kind            string
+	DetectedRole    liveUtteranceRole
+	ExistingMatchID string
+	MatchScore      float64
+	MatchReason     string
+	NovelSubject    bool
+	ConcreteInfo    bool
+	Decision        string
+	RejectionReason string
+}
+
+const (
+	recapDecisionMergedExisting         = "merged_existing"
+	recapDecisionRetainedNovel          = "retained_novel_recap"
+	recapDecisionRejectedDuplicate      = "rejected_duplicate_recap"
+	recapDecisionRejectedLowInformation = "rejected_low_information"
+	recapDecisionRetainedTentative      = "retained_tentative"
+)
+
+func recapMatchReason(emptyTree bool) string {
+	if emptyTree {
+		return "empty_tree_no_match_target"
+	}
+	return "no_proposition_match"
+}
+
+// recordRecapDecision appends one decision row. recap文脈に無いitemは記録
+// しない(通常itemのログを増やさないため)。
+func recordRecapDecision(stats *liveAnalysisTreeMergeStats, item liveAnalysisItem, timeline discourseTimeline, decision, matchID string, score float64, matchReason string, novel, concrete bool, rejectionReason string) {
+	if stats == nil {
+		return
+	}
+	role := dominantLiveItemRole(item.EvidenceSequenceNos, timeline)
+	if role != liveUtteranceRecap {
+		return
+	}
+	stats.RecapDecisions = append(stats.RecapDecisions, recapItemDecision{
+		ItemID:          firstNonEmptyTrimmed(item.modelReference, item.ID),
+		Kind:            item.Kind,
+		DetectedRole:    role,
+		ExistingMatchID: matchID,
+		MatchScore:      score,
+		MatchReason:     matchReason,
+		NovelSubject:    novel,
+		ConcreteInfo:    concrete,
+		Decision:        decision,
+		RejectionReason: rejectionReason,
+	})
+}
+
+// recapItemIsSubstantive reports whether a recap-evidenced item carries enough
+// content of its own to stand as a node. これは「recapかどうか」ではなく
+// 「item自体の情報量が足りているか」だけを見る判定で、判定材料はすべて既存の
+// 述語を再利用する(新しい意味判定を増やさない)。
+//
+//   - isDiscourseOnlyItem / isMeetingEndOnlyItem: 「以上です」等のメタ発話
+//   - metaOnlyLiveItemText: 「追加論点があります」等の内容の無い項目
+//   - liveItemHasSpecificSubject: 主語・対象があるか
+//   - recapItemHasConcreteInfo: 担当者・期限・数値
+//   - liveItemHasConcreteContext: evidence近傍の日時・場所・影響・原因・決定など
+func recapItemIsSubstantive(item liveAnalysisItem, scope liveEvidenceScope) bool {
+	if isDiscourseOnlyItem(item.Title, item.Body) || isMeetingEndOnlyItem(item.Title, item.Body) ||
+		recapArtifactOnlyItem(item.Title, item.Body) {
+		return false
+	}
+	if liveItemTextNeedsReferent(item) {
+		return false
+	}
+	text := strings.TrimSpace(item.Title + " " + item.Body)
+	if metaOnlyLiveItemText(text) || !liveItemHasSpecificSubject(text) {
+		return false
+	}
+	return recapItemHasConcreteInfo(item) || liveItemHasConcreteContext(item, scope)
+}
+
+// recapNovelItemStronglyGrounded is intentionally stricter than the ordinary
+// live-item gate. Once a tree already has canonical propositions, an unmatched
+// recap paraphrase may create a new node only when it has a genuinely new
+// subject, explicit concrete detail and direct evidence grounding. This keeps
+// STT-corrupted recap subjects from becoming durable topics while preserving
+// concrete first-seen assignee/deadline/number facts.
+func recapNovelItemStronglyGrounded(item liveAnalysisItem, previous []liveAnalysisItem, scope liveEvidenceScope) bool {
+	if len(previous) == 0 {
+		return recapItemIsSubstantive(item, scope)
+	}
+	if !recapItemHasStrongNovelSubject(item, previous) || !recapItemHasConcreteInfo(item) ||
+		!recapItemIsSubstantive(item, scope) {
+		return false
+	}
+	itemText := strings.TrimSpace(item.Title + " " + item.Body)
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		evidence := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+		if evidence == "" {
+			continue
+		}
+		if sharedTreeAuditSubjectTerm(itemText, evidence) ||
+			semanticItemSimilarity(itemText, evidence) >= 0.18 {
+			return true
+		}
+	}
+	return false
+}
+
+func recapItemHasStrongNovelSubject(item liveAnalysisItem, previous []liveAnalysisItem) bool {
+	if recapItemHasNovelSubject(item, previous) {
+		return true
+	}
+	signature := numericSignature(item.Title + " " + item.Body)
+	if signature == "" {
+		return false
+	}
+	for _, existing := range previous {
+		if numericSignature(existing.Title+" "+existing.Body) == signature {
+			return false
+		}
+	}
+	return true
+}
+
+// recapArtifactOnlyPattern matches text that names only the meeting artifact
+// itself (「ここまでのまとめ」「以上が本日の要約です」)。会議の成果物名だけを
+// 指すitemは、どれだけ周辺発話が具体的でも独立したノードにはならない。
+// 「障害の振り返りで判明した原因」のように対象を伴う文はここに一致しない。
+var recapArtifactOnlyPattern = regexp.MustCompile(`^(?:以上|ここまで|本日|今日|これまで|の|が|は|を|で|と)*(?:まとめ|要約|振り返り|整理)(?:です|でした|になります|以上)?$`)
+
+func recapArtifactOnlyText(text string) bool {
+	normalized := normalizeDiscourseText(text)
+	if normalized == "" {
+		return false
+	}
+	return recapArtifactOnlyPattern.MatchString(normalized)
+}
+
+// recapArtifactOnlyItem reports whether every non-empty side of the item names
+// nothing but the recap artifact. isDiscourseOnlyItem と同じ構造で判定する。
+func recapArtifactOnlyItem(title, body string) bool {
+	title = strings.TrimSpace(title)
+	body = strings.TrimSpace(body)
+	if title == "" && body == "" {
+		return false
+	}
+	if title != "" && !recapArtifactOnlyText(title) {
+		return false
+	}
+	if body != "" && !recapArtifactOnlyText(body) {
+		return false
+	}
+	return true
+}
+
+// filterReferenceRecapDiff is the single decision point for items whose
+// evidence lies entirely inside a recap span. 判定順序は
+//
+//	既存itemとの意味的照合(bestPropositionMatch)
+//	  ├─ 同一命題が見つかった  -> 既存itemへマージ (merged_existing)
+//	  └─ 見つからない
+//	       └─ item自体の情報量を評価(recapItemIsSubstantive)
+//	            ├─ 十分 -> 新規itemとして保持 (retained_novel_recap)
+//	            └─ 不足 -> 破棄 (rejected_low_information /
+//	                              rejected_duplicate_recap)
+//
+// である。recapであること自体は破棄理由にしない。previous が空の会議
+// (振り返りから始まる会議)では照合対象が存在しないため、必ず情報量評価へ
+// 進み、具体的な候補が全件消えることはない。
+func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisItem, roundSeqNos []int64, timeline discourseTimeline, scope liveEvidenceScope, stats *liveAnalysisTreeMergeStats) []liveAnalysisItem {
 	filtered := make([]liveAnalysisItem, 0, len(diff))
 	for _, item := range diff {
 		evidence := append([]int64(nil), item.EvidenceSequenceNos...)
@@ -486,18 +654,33 @@ func filterReferenceRecapDiff(previous []liveAnalysisItem, diff []liveAnalysisIt
 		}
 		at, score := bestPropositionMatch(previous, item)
 		if at < 0 || score < 0.12 {
-			// recap中の新規item作成は原則禁止だが、どのprevious itemとも主題が
-			// 重ならず、かつ担当者/期限/数値のような具体情報を伴う場合に限り、
-			// 真に新しい命題として救済する(recapの言い換えを新規item化はしない)。
-			if recapItemHasNovelSubject(item, previous) && recapItemHasConcreteInfo(item) {
+			// bestPropositionMatch が同一命題を見つけられなかった時点で、
+			// 「既存itemと意味的に一致しない」ことは確定している。ここで更に
+			// 主題語の重なりゼロ(recapItemHasNovelSubject)まで要求すると、
+			// 同じ障害を扱う会議では初出の事実がすべて既出扱いで落ちるため、
+			// 採否は item 自体の情報量(recapItemIsSubstantive)で決める。
+			// 主題の新規性は診断ログ用の補助情報として残す。
+			novel := recapItemHasStrongNovelSubject(item, previous)
+			concrete := recapNovelItemStronglyGrounded(item, previous, scope)
+			if concrete {
 				filtered = append(filtered, item)
+				recordRecapDecision(stats, item, timeline, recapDecisionRetainedNovel, "", 0, recapMatchReason(len(previous) == 0), novel, concrete, "")
+				if stats != nil {
+					stats.ReferenceRecapItemsRetained++
+				}
 				continue
 			}
+			decision, reason := recapDecisionRejectedLowInformation, "low_information"
+			if !novel {
+				decision, reason = recapDecisionRejectedDuplicate, "paraphrase_of_existing"
+			}
+			recordRecapDecision(stats, item, timeline, decision, "", 0, recapMatchReason(len(previous) == 0), novel, concrete, reason)
 			if stats != nil {
 				stats.ReferenceRecapItemsRejected++
 			}
 			continue
 		}
+		recordRecapDecision(stats, item, timeline, recapDecisionMergedExisting, previous[at].ID, score, "proposition_match", false, recapItemIsSubstantive(item, scope), "")
 		canonical := previous[at]
 		canonical.ClientKey = modelItemReference(item)
 		canonical.EvidenceSequenceNos = evidence
@@ -527,7 +710,9 @@ func lowInformationDecisionItem(item liveAnalysisItem) bool {
 func bestPropositionMatch(items []liveAnalysisItem, target liveAnalysisItem) (int, float64) {
 	bestAt, bestScore := -1, 0.0
 	for i := range items {
-		if items[i].ID == target.ID {
+		if items[i].ID == target.ID || items[i].Inactive || items[i].MergedIntoID != "" ||
+			finalItemIsLowInformation(items[i]) ||
+			!recapPropositionKindsCompatible(items[i], target) {
 			continue
 		}
 		score := semanticItemSimilarity(items[i].Title+" "+items[i].Body, target.Title+" "+target.Body)
@@ -539,6 +724,26 @@ func bestPropositionMatch(items []liveAnalysisItem, target liveAnalysisItem) (in
 		}
 	}
 	return bestAt, bestScore
+}
+
+func recapPropositionKindsCompatible(existing, recap liveAnalysisItem) bool {
+	if existing.Kind == recap.Kind {
+		return true
+	}
+	if recap.Kind != "issue" {
+		return false
+	}
+	// An unresolved proposition is sometimes represented by the model as the
+	// concrete follow-up TODO or risk. Permit that explicit state-bearing
+	// representation, but never fold an issue recap into a merely related fact
+	// just because both mention the same incident or location.
+	text := existing.Title + " " + existing.Body
+	switch existing.Kind {
+	case "todo", "risk":
+		return openIssueMarkerPattern.MatchString(text)
+	default:
+		return false
+	}
 }
 
 func roundIsReferenceOnly(roundSeqNos []int64, timeline discourseTimeline) bool {
@@ -625,10 +830,6 @@ func sameCanonicalPropositionWithTimeline(a, b liveAnalysisItem, timeline discou
 		return false
 	}
 	return (sharedSubject && score >= 0.72) || (sharedSubject && nearEvidence && score >= 0.18)
-}
-
-func itemEvidenceOverlaps(a, b liveAnalysisItem) bool {
-	return itemPrimaryEvidenceOverlaps(a, b, discourseTimeline{})
 }
 
 func itemPrimaryEvidenceOverlaps(a, b liveAnalysisItem, timeline discourseTimeline) bool {
@@ -828,19 +1029,4 @@ func resolveRemappedID(id string, remap map[string]string) string {
 		id = remap[id]
 	}
 	return id
-}
-
-func sortedEvidenceSequenceNos(items []liveAnalysisItem) []int64 {
-	seen := make(map[int64]struct{})
-	for _, item := range items {
-		for _, sequenceNo := range item.EvidenceSequenceNos {
-			seen[sequenceNo] = struct{}{}
-		}
-	}
-	values := make([]int64, 0, len(seen))
-	for sequenceNo := range seen {
-		values = append(values, sequenceNo)
-	}
-	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
-	return values
 }

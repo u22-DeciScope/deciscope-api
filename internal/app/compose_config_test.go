@@ -33,3 +33,26 @@ func TestComposePassesTreeAuditConfigurationToAPI(t *testing.T) {
 		}
 	}
 }
+
+// クライアント診断ログはホスト側から {sessionId}.jsonl を直接読めることが要件のため、
+// 保存先の環境変数と bind mount が両方揃っていることを確認する。
+func TestComposeMountsClientDiagnosticsLogDirectory(t *testing.T) {
+	path := filepath.Join("..", "..", "compose.yaml")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	compose := string(content)
+	want := []string{
+		"DECISCOPE_CLIENT_DIAGNOSTICS_ENABLED: ${DECISCOPE_CLIENT_DIAGNOSTICS_ENABLED:-true}",
+		"DECISCOPE_CLIENT_DIAGNOSTICS_DIR: ${DECISCOPE_CLIENT_DIAGNOSTICS_DIR:-/app/logs/client-diagnostics}",
+		"DECISCOPE_CLIENT_DIAGNOSTICS_MAX_FILE_MB: ${DECISCOPE_CLIENT_DIAGNOSTICS_MAX_FILE_MB:-10}",
+		"DECISCOPE_CLIENT_DIAGNOSTICS_RETENTION_DAYS: ${DECISCOPE_CLIENT_DIAGNOSTICS_RETENTION_DAYS:-7}",
+		"- ./logs/client-diagnostics:/app/logs/client-diagnostics",
+	}
+	for _, item := range want {
+		if !strings.Contains(compose, item) {
+			t.Errorf("compose api service is missing %q", item)
+		}
+	}
+}

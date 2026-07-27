@@ -48,7 +48,8 @@ func TestFullSnapshotMetadataAndNodePreservationOnPromotion(t *testing.T) {
 	state2 := mergeForTestAtRound(t, round2, marshalPayloadForTest(t, state1), mc, 12)
 	assertTreeInvariants(t, state2.Tree)
 
-	dynamicID, _ := canonicalCandidateID("希少植物の事前調査", "")
+	candidateID, _ := canonicalCandidateID("希少植物の事前調査", "")
+	dynamicID := stableDynamicTopicID(candidateID)
 	if topic := treeNodeByID(state2.Tree, dynamicID); topic == nil || topic.Origin != topicOriginDynamic {
 		t.Fatalf("promoted dynamic topic missing: %+v", state2.Tree.Nodes)
 	}

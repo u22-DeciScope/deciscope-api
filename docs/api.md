@@ -257,6 +257,17 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
 - `items[].evidenceSequenceNos` は、そのitemを直接裏付けた発言のsequence番号をJSON整数で保持します。
   モデル互換のため受信時はnumeric stringも整数へ正規化しますが、不正文字列・小数・当該ラウンドに
   実在しないsequenceは値単位で除外し、保存・配信時は整数だけになります
+- live extraction v18では、モデル出力の各itemに`evidenceSnippets`を必須とし、引用した
+  final transcript sequence内に正規化後も実在して中心命題を支持する短い抜粋だけを保存します。
+  `evidenceSequenceNos`が構造上正しくても、subject / predicate / entity / qualifierが発言に
+  groundingされなければ表示可能itemにはなりません。事前入力、agenda metadata、semantic hints、
+  existing treeは分類・親候補には利用しますが、detail itemの一次証拠にはなりません
+- `items[].groundingDecision`（`accepted | rewritten`）、
+  `groundingConfidence`、`groundingSourceTypes`、`groundingUnsupportedAtoms`は任意の
+  サーバー所有監査メタデータです。`groundingUnsupportedAtoms`には本文ではなくcategory付きhashを
+  格納します。`createdThroughSequenceNo`と`initialEvidenceMaxSequenceNo`は、同一roundの別文や
+  split fragmentを後続証拠と誤認しないための生成時点情報です。すべてadditiveかつ`omitempty`で、
+  旧payload・旧クライアントとの契約は変わりません
 - 解消・回答・完了した論点は、モデルが `resolvedIds`（解消済みitemのid配列）で申告します。
   `resolvedIds` はモデル→サーバー間の指示用フィールドで、サーバーが該当itemと同じidのtreeノードを
   `status: "resolved"` にした後にクリアするため、保存・配信されるpayloadには現れません
@@ -280,6 +291,10 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
   `relatedItemIds` が空でも関連カードとして扱えます。`tree.nodes[].status` は任意で、
   `resolved` の場合もノードは削除されず、解決済みとして残ります。issueノードの
   `subtype` は対応itemと同じ値です
+- `tree.relations[]` は表示親を増やさない任意の意味関係です。`source` / `target` は
+  canonical item IDで、`kind` は現在 `mitigates`（todoがriskを緩和）、
+  `addresses`（todoがissueへ対応）、`supports`（factがissueを裏付ける）を使います。
+  旧payloadと未対応クライアントでは省略可能で、`parentId` / `edges`の契約は変わりません
 - `items[].relatedAgendaIds` は横断agendaへの副次的な参照です。canonicalな親は
   `tree.nodes[].parentId` の1つだけで、`relatedAgendaIds` から複数親edgeは作りません。
   `agendaRole: "action_summary"` のagenda nodeは、activeなTODO・未解決itemを
@@ -544,8 +559,8 @@ POST /v1/meetings/{meeting_id}/end
 - `source` が空の場合は `fixture_replay` になります。
 - 作成時に `meeting.state` eventが保存・配信されます。
 - `join-token` はローカル開発用のダミートークンを返します。
-- `end` は会議を終了状態にし、Markdown reportを生成して
-  `report.ready` を保存・配信します。
+- `end` は会議を終了状態にし、`meeting.state` eventを保存・配信します。
+  レスポンスは保存されたeventの一覧 (`events`) です。
 
 ## イベントと発話
 
@@ -570,16 +585,6 @@ WS /v1/realtime?meeting_id={meeting_id}&last_seq={seq}
 
 WebSocket接続後、Clientは任意で `client.hello` を送れます。Serverは
 `last_seq` より後のdurable eventを再送してからlive event配信に移ります。
-
-## レポート
-
-```http
-GET /v1/meetings/{meeting_id}/report
-```
-
-通常はJSONで `artifact_id`, `meeting_id`, `format`, `content`, `created_at`
-を返します。`Accept: text/markdown` の場合はMarkdown本文を返します。保存済みの
-Reportがない場合は、現在のSegmentと分析Eventから生成して保存します。
 
 ## エラー形式
 

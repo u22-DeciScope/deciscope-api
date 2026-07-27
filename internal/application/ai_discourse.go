@@ -118,6 +118,34 @@ var (
 
 var discourseCorrectionPattern = regexp.MustCompile(`(?:訂正|修正|変更|撤回|取り消|追加事項|新たな(?:決定|論点|課題)|まとめに追加|先ほどの.+(?:ではなく|を改め))`)
 
+// 議論再開の判定は、前置きマーカー(これから何をするかの宣言)と審議述語
+// (決める・検討する・議論する等、これから行う行為)の共起で行う。単独の語句
+// リストではなく2要素の共起にしているのは、「変更します」のような通常の内容
+// 発話を再開宣言と誤認しないためである。
+//
+// この判定は classifyDiscourseTimelineWithModel のrecapモード中でのみ参照され、
+// classifyDiscourseAct の結果は変えない。誤検知の最大の影響は「recap抑制を
+// 早めに解除する」ことに限られ、item破棄側へは倒れない。
+var (
+	// 前置きマーカーは発話冒頭に限る。「原因は設定ではなく…と考えます」のように
+	// 文中に「では」を含むだけの内容発話を再開宣言と誤認しないため。
+	discussionResumptionLeadPattern      = regexp.MustCompile(`^(?:それでは|それじゃ|では|じゃあ|ここからは|ここから|これから|今後|次に|続いて|まずは)`)
+	discussionResumptionPredicatePattern = regexp.MustCompile(`(?:決め(?:ましょう|ます|たい|ていきましょう)|検討(?:し(?:ます|ましょう|たい)|に入り(?:ます|ましょう))|議論(?:し(?:ます|ましょう|たい)|に入り(?:ます|ましょう))|話し(?:ます|ましょう|合いましょう)|相談し(?:ます|ましょう)|考え(?:ます|ましょう)|(?:に|へ)移り(?:ます|ましょう)|進め(?:ます|ましょう))`)
+)
+
+// isDiscussionResumption reports whether an utterance declares that the meeting
+// is moving from looking back to deciding or investigating what comes next
+// (「では、再発防止策を決めましょう」「それでは原因の調査に移ります」など)。
+// recapモードの解除条件としてのみ使用する。
+func isDiscussionResumption(text string) bool {
+	normalized := normalizeDiscourseText(text)
+	if normalized == "" {
+		return false
+	}
+	return discussionResumptionLeadPattern.MatchString(normalized) &&
+		discussionResumptionPredicatePattern.MatchString(normalized)
+}
+
 // classifyDiscourseAct は発話テキストのdiscourse actを判定する。
 // 制御表現とフィラーだけで構成された短い発話のみを制御発話として扱い、
 // 実質的な内容を含む発話は content のままにする。
@@ -338,8 +366,29 @@ func classifyDiscourseTimelineWithModel(scope liveEvidenceScope, modelRoles []li
 			case liveUtteranceRecap:
 				timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
 				timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
+			case liveUtteranceSubstantive:
+				// モデルが明示的に実質的発話だと判断した場合は、ルールベースの
+				// recapモードより意味判定を優先する。単独の「振り返ります。」の
+				// ようなSTT断片で始まったrecapが、実際には続いている通常議論を
+				// 飲み込み続けるのを防ぐ。
+				if mode == "recap" {
+					timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "content", Act: discourseTopicTransition})
+					mode = "content"
+				}
+				timeline.Roles[sequenceNo] = liveEvidencePrimary
+				timeline.DetectedRoles[sequenceNo] = liveUtteranceSubstantive
 			default:
 				if mode == "recap" {
+					// 「では、再発防止策を決めましょう」のような議論再開宣言は
+					// recapの終端である。明示的な話題転換表現だけを解除条件に
+					// すると、自然な議論再開で会議の残り全部がrecapのままになる。
+					if isDiscussionResumption(text) {
+						timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
+						timeline.DetectedRoles[sequenceNo] = liveUtteranceDiscourseTransition
+						timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "content", Act: discourseTopicTransition})
+						mode = "content"
+						continue
+					}
 					if discourseCorrectionPattern.MatchString(text) {
 						timeline.Roles[sequenceNo] = liveEvidenceCorrection
 						timeline.DetectedRoles[sequenceNo] = liveUtteranceCorrection

@@ -103,6 +103,66 @@ func TestLowInformationRepairSplitsCollapsedIssueAndCopiesAssignment(t *testing.
 	}
 }
 
+func TestLowInformationRepairRejectsBrokenSplitFragmentAndKeepsValidSibling(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		1: "2階の通信遅延の原因と関心あなたの条件が未解決事項として残ります。",
+	}, 1)
+	timeline := classifyDiscourseTimeline(scope)
+	stats := &liveAnalysisTreeMergeStats{}
+	items, assignments := repairLowInformationIssueItems(nil, []liveAnalysisItem{{
+		ID: "issue-recap", Kind: "issue", Subtype: issueSubtypeDiscussion,
+		Title: "2階の原因と通知条件が未解決", Status: "open", EvidenceSequenceNos: []int64{1},
+	}}, []treeAssignment{{NodeID: "issue-recap", ParentTopicID: "agenda-2"}}, timeline, scope, stats)
+
+	if len(items) != 1 || !strings.Contains(items[0].Title, "2階") {
+		t.Fatalf("items=%+v, want only the coherent fragment", items)
+	}
+	if len(assignments) != 1 || assignments[0].nodeID() != "issue-recap-split-1" {
+		t.Fatalf("assignments=%+v", assignments)
+	}
+	if stats.LowInformationSplitFragmentsRejected != 1 ||
+		len(stats.LowInformationRejections) != 1 ||
+		stats.LowInformationRejections[0].Reason != "split_fragment_semantically_incoherent" {
+		t.Fatalf("stats=%+v", stats)
+	}
+}
+
+func TestLowInformationRepairRejectsAllReferentOnlySplitFragments(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		1: "この問題と当該条件が未解決事項として残ります。",
+	}, 1)
+	stats := &liveAnalysisTreeMergeStats{}
+	items, assignments := repairLowInformationIssueItems(nil, []liveAnalysisItem{{
+		ID: "issue-referents", Kind: "issue", Subtype: issueSubtypeDiscussion,
+		Title: "この問題と当該条件が未解決", Status: "open", EvidenceSequenceNos: []int64{1},
+	}}, []treeAssignment{{NodeID: "issue-referents", ParentTopicID: "agenda-2"}},
+		classifyDiscourseTimeline(scope), scope, stats)
+
+	if len(items) != 0 || len(assignments) != 0 {
+		t.Fatalf("items=%+v assignments=%+v, want no independently displayed fragment", items, assignments)
+	}
+	if stats.LowInformationSplitFragmentsRejected != 2 {
+		t.Fatalf("stats=%+v", stats)
+	}
+}
+
+func TestIssueReferentGateCoversDemonstrativeForms(t *testing.T) {
+	for _, text := range []string{
+		"この点は未解決",
+		"その問題を確認する",
+		"上記について対応する",
+		"当該条件が未確定",
+		"前述の件を検討する",
+	} {
+		if !issueTextNeedsReferent(text) {
+			t.Errorf("%q must require a referent", text)
+		}
+	}
+	if issueTextNeedsReferent("2階の通信遅延の原因を確認する") {
+		t.Fatal("concrete subject was rejected")
+	}
+}
+
 func TestLowInformationRepairRewritesAnaphoraWithoutCrossingTopicTransition(t *testing.T) {
 	scope := evidenceScopeFromTexts(map[int64]string{
 		1: "強風日の基準風速は何m/sか決まっていません。",

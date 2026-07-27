@@ -24,11 +24,6 @@ type EventRepository interface {
 	ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Segment, error)
 }
 
-type ReportRepository interface {
-	SaveReport(ctx context.Context, meetingID, content string) (*domain.Report, error)
-	LatestReport(ctx context.Context, meetingID string) (*domain.Report, error)
-}
-
 type JobRepository interface {
 	CreateJob(ctx context.Context, workspaceID, jobType, meetingID, status string) (*domain.Job, error)
 	CompleteJob(ctx context.Context, jobID string, result any) error
@@ -166,6 +161,14 @@ type MeetingAIAnalysisRepository interface {
 	// workspace meeting history) that need a small preview per session
 	// without an N+1 fetch per card.
 	ListMeetingAIAnalysesForSessions(ctx context.Context, sessionIDs []string, analysisType domain.MeetingAIAnalysisType) ([]domain.MeetingAIAnalysis, error)
+	// AppendLiveAnalysisHistory records a completed live analysis version in
+	// the durable live-analysis history table, in addition to the single
+	// current-state row UpsertMeetingAIAnalysis/CompareAndSwapMeetingAIAnalysis
+	// maintain. It must be idempotent for a given (session_id, version).
+	AppendLiveAnalysisHistory(ctx context.Context, analysis domain.MeetingAIAnalysis) error
+	// ListLiveAnalysisHistory returns up to limit of the most recent completed
+	// live analysis versions for sessionID, ordered oldest to newest.
+	ListLiveAnalysisHistory(ctx context.Context, sessionID string, limit int) ([]domain.MeetingAIAnalysis, error)
 }
 
 // MeetingAIAnalysisCompareAndSwapRepository is an optional stronger live-row

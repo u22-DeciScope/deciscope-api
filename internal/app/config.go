@@ -25,6 +25,10 @@ const (
 	defaultAIFinalSummaryTimeoutSeconds  = 60
 	defaultAILiveAnalysisIntervalSeconds = 10
 	minAILiveAnalysisIntervalSeconds     = 5
+	defaultAILiveAnalysisDebounceMillis  = 2000
+	minAILiveAnalysisDebounceMillis      = 100
+	defaultAILiveAnalysisCooldownSeconds = 8
+	defaultAILiveAnalysisMaxWaitSeconds  = 18
 	defaultAILiveAnalysisMinChars        = 80
 	defaultAILiveAnalysisMaxInputChars   = 4000
 	defaultAIFinalSummaryMaxInputChars   = 12000
@@ -50,6 +54,14 @@ const (
 	minSpeechStalledAfterSeconds          = 5
 )
 
+const (
+	defaultClientDiagnosticsDirectory           = "logs/client-diagnostics"
+	defaultClientDiagnosticsMaxFileMB           = 10
+	defaultClientDiagnosticsRetentionDays       = 7
+	defaultClientDiagnosticsMaxEventsPerRequest = 100
+	defaultClientDiagnosticsThrottleMillis      = 1000
+)
+
 type Config struct {
 	Database            database.Config
 	TranscriptIngest    TranscriptIngestConfig
@@ -59,6 +71,7 @@ type Config struct {
 	Firebase            firebase.Config
 	AI                  AIConfig
 	SessionWatchdog     MeetingSessionWatchdogConfig
+	ClientDiagnostics   ClientDiagnosticsConfig
 	FrontendURL         string
 	AllowedOrigins      string
 	SessionCookieSecure bool
@@ -74,6 +87,22 @@ type TranscriptIngestConfig struct {
 	APIKey string
 }
 
+// ClientDiagnosticsConfig はブラウザ側クライアント診断ログの受け口設定。
+// 議論ツリー消失をブラウザの開発者コンソールに依存せず事後追跡するために使う。
+type ClientDiagnosticsConfig struct {
+	Enabled bool
+	// Directory は {sessionId}.jsonl の保存先。Dockerではvolume mountする。
+	Directory string
+	// MaxFileBytes を超えたら .1 へ退避して書き直す。
+	MaxFileBytes int64
+	// Retention より古いファイルは削除する。
+	Retention time.Duration
+	// MaxEventsPerRequest は1リクエストで受理するイベント数の上限。
+	MaxEventsPerRequest int
+	// ThrottleWindow は同一内容の高頻度イベントを抑制する時間窓。
+	ThrottleWindow time.Duration
+}
+
 type TranscriptWebSocketConfig struct {
 	ClientToken    string
 	AllowedOrigins string
@@ -87,6 +116,9 @@ type AIConfig struct {
 	AzureOpenAI               azureopenai.Config
 	LiveAnalysisEnabled       bool
 	LiveAnalysisInterval      time.Duration
+	LiveAnalysisDebounce      time.Duration
+	LiveAnalysisCooldown      time.Duration
+	LiveAnalysisMaxWait       time.Duration
 	LiveAnalysisMinChars      int
 	LiveAnalysisMaxInputChars int
 	FinalSummaryEnabled       bool
@@ -191,6 +223,7 @@ func ConfigFromEnv() Config {
 		},
 		AI:                                  aiConfigFromEnv(),
 		SessionWatchdog:                     sessionWatchdogConfigFromEnv(),
+		ClientDiagnostics:                   clientDiagnosticsConfigFromEnv(),
 		FrontendURL:                         os.Getenv("FRONTEND_URL"),
 		AllowedOrigins:                      os.Getenv("ALLOWED_ORIGINS"),
 		SessionCookieSecure:                 strings.EqualFold(os.Getenv("SESSION_COOKIE_SECURE"), "true"),
@@ -207,6 +240,23 @@ func sampleMeetingFlagFromEnv(environment string) bool {
 		return environment != "production"
 	}
 	return strings.EqualFold(value, "true")
+}
+
+// clientDiagnosticsConfigFromEnv はクライアント診断ログの設定を読む。
+// 既定値は「最大10MBでローテーション・7日保持」。
+func clientDiagnosticsConfigFromEnv() ClientDiagnosticsConfig {
+	directory := strings.TrimSpace(os.Getenv("DECISCOPE_CLIENT_DIAGNOSTICS_DIR"))
+	if directory == "" {
+		directory = defaultClientDiagnosticsDirectory
+	}
+	return ClientDiagnosticsConfig{
+		Enabled:             boolFromEnvDefaultTrue(os.Getenv("DECISCOPE_CLIENT_DIAGNOSTICS_ENABLED")),
+		Directory:           directory,
+		MaxFileBytes:        int64(positiveIntFromEnv(os.Getenv("DECISCOPE_CLIENT_DIAGNOSTICS_MAX_FILE_MB"), defaultClientDiagnosticsMaxFileMB)) * 1024 * 1024,
+		Retention:           time.Duration(positiveIntFromEnv(os.Getenv("DECISCOPE_CLIENT_DIAGNOSTICS_RETENTION_DAYS"), defaultClientDiagnosticsRetentionDays)) * 24 * time.Hour,
+		MaxEventsPerRequest: positiveIntFromEnv(os.Getenv("DECISCOPE_CLIENT_DIAGNOSTICS_MAX_EVENTS_PER_REQUEST"), defaultClientDiagnosticsMaxEventsPerRequest),
+		ThrottleWindow:      millisecondsDurationFromEnv(os.Getenv("DECISCOPE_CLIENT_DIAGNOSTICS_THROTTLE_MS"), defaultClientDiagnosticsThrottleMillis, 0),
+	}
 }
 
 // environmentFromEnv は DECISCOPE_ENV を読む。未設定時は development。
@@ -232,6 +282,9 @@ func aiConfigFromEnv() AIConfig {
 		},
 		LiveAnalysisEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_LIVE_ANALYSIS_ENABLED")),
 		LiveAnalysisInterval:      secondsDurationFromEnv(os.Getenv("AI_LIVE_ANALYSIS_INTERVAL_SECONDS"), defaultAILiveAnalysisIntervalSeconds, minAILiveAnalysisIntervalSeconds),
+		LiveAnalysisDebounce:      millisecondsDurationFromEnv(os.Getenv("AI_LIVE_ANALYSIS_DEBOUNCE_MILLISECONDS"), defaultAILiveAnalysisDebounceMillis, minAILiveAnalysisDebounceMillis),
+		LiveAnalysisCooldown:      secondsDurationFromEnv(os.Getenv("AI_LIVE_ANALYSIS_COOLDOWN_SECONDS"), defaultAILiveAnalysisCooldownSeconds, 1),
+		LiveAnalysisMaxWait:       secondsDurationFromEnv(os.Getenv("AI_LIVE_ANALYSIS_MAX_WAIT_SECONDS"), defaultAILiveAnalysisMaxWaitSeconds, 1),
 		LiveAnalysisMinChars:      positiveIntFromEnv(os.Getenv("AI_LIVE_ANALYSIS_MIN_CHARS"), defaultAILiveAnalysisMinChars),
 		LiveAnalysisMaxInputChars: positiveIntFromEnv(os.Getenv("AI_LIVE_ANALYSIS_MAX_INPUT_CHARS"), defaultAILiveAnalysisMaxInputChars),
 		FinalSummaryEnabled:       boolFromEnvDefaultTrue(os.Getenv("AI_FINAL_SUMMARY_ENABLED")),

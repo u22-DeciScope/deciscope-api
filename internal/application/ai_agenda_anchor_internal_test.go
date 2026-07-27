@@ -400,19 +400,28 @@ func TestCandidateMaterializesMatchingPlannedAgendaBeforeDynamicPromotion(t *tes
 	scope := liveEvidenceScope{
 		Allowed: map[int64]struct{}{1: {}, 2: {}},
 		TranscriptText: map[int64]string{
-			1: "旧スイッチへの切り戻し案を確認します。", 2: "復旧後に疎通確認を行います。",
+			1: "ネットワーク復旧対応として旧スイッチへ切り戻すことを決定します。", 2: "復旧後に疎通確認を行います。",
 		},
 		CoveredThrough: 2,
 	}
 	cfg := TreeClassificationConfig{PromotionMinItems: 2, PromotionMinRounds: 2}
 	scope.CurrentRound = map[int64]struct{}{1: {}}
-	round1 := `{"summary":"切り戻し","currentTopic":"ネットワーク復旧","items":[{"clientKey":"rollback","kind":"decision","severity":"high","title":"旧スイッチへの切り戻し","body":"ネットワーク復旧のため旧スイッチへ切り戻す","status":"open","evidenceSequenceNos":[1]}],"newTopics":[{"id":"topic-recovery","label":"切り戻しと疎通確認による復旧","description":"旧スイッチと疎通の確認"}],"assignments":[{"nodeId":"rollback","parentTopicId":"topic-recovery","confidence":0.9}]}`
-	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(round1, nil, mc, 1, []int64{1}, scope, cfg)
+	round1 := `{"summary":"切り戻し","currentTopic":"ネットワーク復旧","items":[{"clientKey":"rollback","kind":"decision","severity":"high","title":"旧スイッチへの切り戻し","body":"ネットワーク復旧対応として旧スイッチへ切り戻すことを決定します","status":"open","evidenceSequenceNos":[1]}],"newTopics":[{"id":"topic-recovery","label":"切り戻しと疎通確認による復旧","description":"旧スイッチと疎通の確認"}],"assignments":[{"nodeId":"rollback","parentTopicId":"topic-recovery","confidence":0.9}]}`
+	round1Stats := &liveAnalysisTreeMergeStats{}
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(round1, nil, mc, 1, []int64{1}, scope, cfg, round1Stats)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agendaTopicNodeByRef(previousLiveAnalysisState(raw).Tree, "agenda-1") != nil {
-		t.Fatal("agenda materialized before candidate had sufficient evidence")
+	state1 := previousLiveAnalysisState(raw)
+	agendaTopic1 := agendaTopicNodeByRef(state1.Tree, "agenda-1")
+	if agendaTopic1 == nil || agendaTopic1.ID == "agenda-1" || !strings.HasPrefix(agendaTopic1.ID, "topic-") ||
+		!containsExactString(agendaTopic1.ModelTopicIDs, "topic-recovery") ||
+		round1Stats.AgendaTopicsMaterialized != 1 || len(state1.EmergingTopics) != 0 {
+		t.Fatalf("first-round planned agenda was not reconciled: tree=%+v candidates=%+v stats=%+v", state1.Tree.Nodes, state1.EmergingTopics, round1Stats)
+	}
+	firstItem := findItemByTitlePart(state1.Items, "旧スイッチへの切り戻し")
+	if firstItem == nil || itemTopicID(state1.Tree, firstItem.ID) != agendaTopic1.ID {
+		t.Fatalf("first item=%+v agendaTopic=%+v", firstItem, agendaTopic1)
 	}
 
 	scope.CurrentRound = map[int64]struct{}{2: {}}
@@ -424,7 +433,7 @@ func TestCandidateMaterializesMatchingPlannedAgendaBeforeDynamicPromotion(t *tes
 	}
 	state := previousLiveAnalysisState(raw)
 	agendaTopic := agendaTopicNodeByRef(state.Tree, "agenda-1")
-	if agendaTopic == nil || agendaTopic.ID == "agenda-1" || !strings.HasPrefix(agendaTopic.ID, "topic-") || stats.AgendaTopicsMaterialized != 1 || len(state.EmergingTopics) != 0 {
+	if agendaTopic == nil || agendaTopic.ID != agendaTopic1.ID || stats.AgendaTopicsMaterialized != 0 || stats.AgendaTopicIDsReused == 0 || len(state.EmergingTopics) != 0 {
 		t.Fatalf("tree=%+v candidates=%+v stats=%+v", state.Tree.Nodes, state.EmergingTopics, stats)
 	}
 	for _, title := range []string{"旧スイッチへの切り戻し", "復旧後の疎通確認"} {

@@ -115,7 +115,7 @@ func TestMaterializedAgendaOperationsAreAllowedAndDisplayIDsAreRejected(t *testi
 
 func TestTreeIntegrityFailurePreservesPreviousCanonicalTree(t *testing.T) {
 	mc := &meetingContext{Agenda: []agendaItem{{ID: "agenda-1", Title: "渡り鳥", Role: agendaRolePrimary}}}
-	previous := fixedAgendaSkeleton(mc)
+	previous := discussionTreeSkeleton(mc)
 	broken := &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
 		{ID: treeRootNodeID, Kind: "topic", Label: "会議"},
 		{ID: "agenda-1", Kind: "topic", ParentID: treeRootNodeID, Label: "渡り鳥", Origin: topicOriginAgenda, AgendaRole: agendaRolePrimary},
@@ -256,7 +256,8 @@ func TestSession91f9cfe6aad64b7bDeterministicReplay(t *testing.T) {
 	if stats.SourceActionSummaryAgendaCount != 2 || stats.LogicalActionSummaryCount != 1 || stats.RenderedActionItems > stats.ActionSummaryCandidates {
 		t.Fatalf("action stats=%+v", stats)
 	}
-	dynamicID, _ := canonicalCandidateID("湿地・希少植物", "アジェンダ外の調査課題")
+	candidateID, _ := canonicalCandidateID("湿地・希少植物", "アジェンダ外の調査課題")
+	dynamicID := stableDynamicTopicID(candidateID)
 	wind, web, wetland := findItemByTitlePart(state.Items, "強風日"), findItemByTitlePart(state.Items, "Web公開"), findItemByTitlePart(state.Items, "湿地")
 	windsTopic := agendaTopicNodeByRef(state.Tree, "agenda-2")
 	webTopic := agendaTopicNodeByRef(state.Tree, "agenda-3")

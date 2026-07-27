@@ -3,7 +3,6 @@ package application
 type Service struct {
 	meetings  MeetingRepository
 	events    EventRepository
-	reports   ReportRepository
 	jobs      JobRepository
 	publisher Publisher
 }
@@ -17,12 +16,11 @@ type JoinToken struct {
 func NewService(
 	meetings MeetingRepository,
 	events EventRepository,
-	reports ReportRepository,
 	jobs JobRepository,
 	publisher Publisher,
 ) *Service {
 	return &Service{
-		meetings: meetings, events: events, reports: reports, jobs: jobs,
+		meetings: meetings, events: events, jobs: jobs,
 		publisher: publisher,
 	}
 }
