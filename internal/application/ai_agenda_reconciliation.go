@@ -761,7 +761,9 @@ func agendaTimelineFromSegments(segments []domain.TranscriptSegment) (liveEviden
 			scope.CoveredThrough = segment.SequenceNo
 		}
 	}
-	return scope, classifyDiscourseTimeline(scope)
+	timeline := classifyDiscourseTimeline(scope)
+	scope.EvidenceRoles = timeline.Roles
+	return scope, timeline
 }
 
 func topicNodeForItem(tree *liveAnalysisTree, itemID string) (liveAnalysisTreeNode, bool) {

@@ -400,13 +400,13 @@ func TestCandidateMaterializesMatchingPlannedAgendaBeforeDynamicPromotion(t *tes
 	scope := liveEvidenceScope{
 		Allowed: map[int64]struct{}{1: {}, 2: {}},
 		TranscriptText: map[int64]string{
-			1: "旧スイッチへの切り戻し案を確認します。", 2: "復旧後に疎通確認を行います。",
+			1: "ネットワーク復旧対応として旧スイッチへ切り戻すことを決定します。", 2: "復旧後に疎通確認を行います。",
 		},
 		CoveredThrough: 2,
 	}
 	cfg := TreeClassificationConfig{PromotionMinItems: 2, PromotionMinRounds: 2}
 	scope.CurrentRound = map[int64]struct{}{1: {}}
-	round1 := `{"summary":"切り戻し","currentTopic":"ネットワーク復旧","items":[{"clientKey":"rollback","kind":"decision","severity":"high","title":"旧スイッチへの切り戻し","body":"ネットワーク復旧のため旧スイッチへ切り戻す","status":"open","evidenceSequenceNos":[1]}],"newTopics":[{"id":"topic-recovery","label":"切り戻しと疎通確認による復旧","description":"旧スイッチと疎通の確認"}],"assignments":[{"nodeId":"rollback","parentTopicId":"topic-recovery","confidence":0.9}]}`
+	round1 := `{"summary":"切り戻し","currentTopic":"ネットワーク復旧","items":[{"clientKey":"rollback","kind":"decision","severity":"high","title":"旧スイッチへの切り戻し","body":"ネットワーク復旧対応として旧スイッチへ切り戻すことを決定します","status":"open","evidenceSequenceNos":[1]}],"newTopics":[{"id":"topic-recovery","label":"切り戻しと疎通確認による復旧","description":"旧スイッチと疎通の確認"}],"assignments":[{"nodeId":"rollback","parentTopicId":"topic-recovery","confidence":0.9}]}`
 	round1Stats := &liveAnalysisTreeMergeStats{}
 	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(round1, nil, mc, 1, []int64{1}, scope, cfg, round1Stats)
 	if err != nil {

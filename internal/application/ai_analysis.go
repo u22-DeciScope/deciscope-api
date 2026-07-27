@@ -75,7 +75,11 @@ const liveAnalysisSystemPrompt = "あなたは日本語の会議分析アシス�
 // v14の次のv15では、将来の悪影響への懸念を原因推定と区別してkind=riskへ
 // 抽出する規則、risk/issue/todoの併存を明示する規則、および「正常になった」
 // 「復旧した」「疎通を確認した」を明示的closure根拠に含める規則を追加した。
-const liveAnalysisPromptVersion = "v16"
+// v17 = fact/issue/risk/todoを時制・確実性・意味役割で区別し、原因仮説、
+// 将来悪影響、対策行動、確認事実のfew-shot境界を追加した。v18 =
+// evidenceSnippetsを追加し、事前contextは分類補助に限り、各detail itemの
+// 中心命題を引用final transcriptだけでgroundingする契約を明示した。
+const liveAnalysisPromptVersion = "v18"
 
 const liveAnalysisSchemaDescription = `{
   "summary": "議論全体のこれまでの要約(毎回全文を出力、400字程度まで)",
@@ -104,7 +108,8 @@ const liveAnalysisSchemaDescription = `{
       "title": "カード見出し(25字程度まで)",
       "body": "1〜2文の説明。todoで担当者や期限が分かる場合はここに含める",
       "status": "open | updated | resolved",
-      "evidenceSequenceNos": [123]
+      "evidenceSequenceNos": [123],
+      "evidenceSnippets": ["指定sequenceのfinal発言からそのまま抜き出した短い引用"]
     }
   ],
   "newTopics": [
@@ -128,6 +133,12 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - 通常の論点・確認事項・質問・調査事項はすべてkind=issueとし、subtypeをそれぞれdiscussion/confirmation/question/investigationにしてください。未解決はkindではなくstatus=openです。open_issue、question、confirmation、investigation、resolvedをkindにしてはいけません。
 - 確認事項は「何を確認すべきか」、todoは「誰かが何を実行するか」です。同じ話題から両方を作ってよいですが、一方へ統合しないでください。todoは原則として動作・担当者・期限・完了条件のいずれかを含めてください。
 - 「対応事項」「アクションアイテム」「次の作業」はすべてkind=todoとして扱い、同じ実施動作を別種のitemや別IDへ重複して出力しないでください。
+- factは会議中に観測・確認・確定情報として共有された現在または過去の状態です。未確認、原因仮説、将来の可能性、今後の行動はfactにしないでください。
+- issueは現在の未解決問題、原因仮説、未確認事項、open questionです。「Xが今回の原因である可能性」は過去・現在の因果を検証するissue/investigationでありriskではありません。
+- riskはfutureOrOngoingAdverseEvent、uncertainty、negativeImpactの3条件をすべて満たす将来または継続的な悪影響です。発生済み障害、現在の問題、確認済み設定差分、対策案、担当作業はriskにしないでください。
+- todoは今後実行することが決まった、または明確な次の行動です。担当者、期限、実行動詞、依頼、合意を重視し、単なる案は確定todoにせずissue/discussionとして扱ってください。
+- few-shot:「許可一覧からVLAN30が漏れていた」→fact。「この漏れが今回の障害原因である可能性が高い」→issue/investigation。「監視対象を増やすとアラートが過多になる可能性がある」→risk。「高橋さんが今週中に更新手順を確認する」→todo。
+- few-shot:「監視間隔が決まっていない」→issue。「監視間隔を次回までに決める」→todo。「通信切断を早期検知するため監視を追加する」→todoであり、文中の悪影響語から別riskを推測しません。
 - 発言に『〜すると/放置すると〜の可能性がある』『〜おそれがある』『〜しかねない』のような、将来の悪影響への懸念が明示されている場合は、kind=riskのitemを作ってください。原因の推定(「〜が原因である可能性が高い」)はriskではありません。
 - 同じ発言や近接する発言から、risk(悪影響の可能性)と、それに対処するtodo(誰かが実行する作業)やissue(設計・検討論点)は、命題が異なるならそれぞれ別itemとして併存させてください。同じ命題を種類だけ変えて重複させてはいけません。
 - 同じ話題でも「基準は何か」(issue/question)、「基準が未確定」(issue/discussion)、「気象データを確認する」(todo)は別の意味なので、同じitemへ統合しないでください。同じgroupへ分類して関係を表現してください。
@@ -138,6 +149,9 @@ const liveAnalysisRulesDescription = `- summaryとcurrentTopicは毎回全文を
 - 「この点」「本件」「それ」「上記」だけで対象を表すタイトルや、「引き続き確認が必要」「以上をまとめる」のような状態語・進行発言だけのタイトルを作らないでください。ノード単体で対象と命題が分かる具体的なタイトルにしてください。
 - 1つの抽象表現へ複数の具体的命題を潰さず、それぞれ別itemにしてください。対象がまだ復元できない途中発言は削除を指示せず、後続発言で具体化できるようissueとして保持してください。
 - evidenceSequenceNosには、そのitemを直接裏付ける保存済みfinal発言のsequenceNoだけをJSON整数(number、引用符なし)で入れてください。新規itemは原則このラウンドの発言、既存itemの更新では前回状態に既にある過去sequenceとこのラウンドの発言を指定できます。"123"のような文字列、小数、未来・別論点のsequenceNoを入れないでください。
+- evidenceSnippetsには、evidenceSequenceNosで指定したfinal発言から中心命題を直接裏付ける短い文言をそのまま引用してください。会議コンテキスト、agenda、semanticHints、既存item、常識や推測から引用を作らないでください。引用できないitemは出力しないでください。
+- 通常のdetail itemの一次証拠はfinal transcriptだけです。会議前入力、agenda title/metadata、semanticHints、既存treeは親選択・分類・同義語補助には使えますが、まだ発言されていないfact/issue/risk/todo/decisionを生成・具体化する根拠には使えません。
+- 人名、担当者、場所、階数、日付、時刻、期限、数値、製品名、技術ID、原因、対策、決定、将来影響をitemへ含める場合、同じ情報が指定したfinal発言内に必要です。発言に無い詳細を文脈から補わないでください。
 - 新しく追加するitemはstatusを"open"に、既存itemを更新した場合はstatusを"updated"にしてください。item.statusを状態遷移命令に使わず、解決・再オープンはresolutionUpdatesだけで提案してください。
 - 新しい発言によって解消されたissue/risk、または完了したtodoだけをstatus="resolved"のresolutionUpdatesへ入れてください。対象itemと意味が一致し、「解決済み」「回答済み」「対応可能」「完了」「正常になった」「復旧した」「疎通を確認した」等の明示的な根拠をevidenceSequenceNosへ指定してください。decisionが出た、別の話題へ移った、recapに現れなかった、という理由だけでは解決にしないでください。障害の復旧はその障害・接続issueをresolvedにできますが、原因調査・再発防止のissue/todoは自動でresolvedにしないでください。
 - 「未解決」「未決定」「次回検討」「再検討」と明示された既存itemはstatus="open"のresolutionUpdatesで再オープンしてください。終盤のrecapでは広い新規todoを作らず、対応する既存issueへopen更新を提案してください。
@@ -204,9 +218,10 @@ const liveAnalysisResponseJSONSchema = `{
           "title": {"type": "string"},
           "body": {"type": "string"},
           "status": {"type": "string", "enum": ["open", "updated", "resolved"]},
-          "evidenceSequenceNos": {"type": "array", "items": {"type": "integer"}}
+          "evidenceSequenceNos": {"type": "array", "items": {"type": "integer"}},
+          "evidenceSnippets": {"type": "array", "items": {"type": "string"}}
         },
-        "required": ["clientKey", "kind", "subtype", "severity", "title", "body", "status", "evidenceSequenceNos"]
+        "required": ["clientKey", "kind", "subtype", "severity", "title", "body", "status", "evidenceSequenceNos", "evidenceSnippets"]
       }
     },
     "newTopics": {
@@ -1030,6 +1045,50 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 			decision.AgendaRefs, decision.Status, decision.Decision, decision.Reason,
 			decision.MatchScore, decision.SameEvidence, decision.MergedInto)
 	}
+	for _, decision := range treeStats.GroundingDecisions {
+		log.Printf("AI item grounding evaluated. sessionId=%s analysisVersion=%d coveredThroughSequenceNo=%d stage=%s itemId=%s modelItemId=%s evidenceSequences=%v sourceTypes=%s subjectGrounded=%t predicateGrounded=%t entityGrounded=%t qualifierGrounded=%t unsupportedAtomCount=%d contextOnlyAtomCount=%d futureInformationDetected=%t decision=%s reason=%s confidence=%.2f",
+			sessionID, newVersion, evidenceScope.CoveredThrough, decision.Stage,
+			decision.ItemID, decision.ModelItemID, decision.EvidenceSequences,
+			formatGroundingSourceTypes(decision.SourceTypes), decision.SubjectGrounded,
+			decision.PredicateGrounded, decision.EntityGrounded, decision.QualifierGrounded,
+			decision.UnsupportedAtomCount, decision.ContextOnlyAtomCount,
+			decision.FutureInformationDetected, decision.Decision, decision.Reason,
+			decision.Confidence)
+		if decision.SplitFragment {
+			log.Printf("AI split fragment grounding evaluated. sessionId=%s analysisVersion=%d sourceItemId=%s fragmentId=%s evidenceSequences=%v grounded=%t unsupportedAtoms=%v decision=%s",
+				sessionID, newVersion, decision.SourceItemID, decision.ItemID,
+				decision.EvidenceSequences,
+				decision.Decision == "accepted" || decision.Decision == "rewritten",
+				decision.UnsupportedAtomHashes, decision.Decision)
+		}
+		if decision.ContextOnlyAtomCount > 0 || decision.FutureInformationDetected {
+			log.Printf("AI context leakage prevented. sessionId=%s analysisVersion=%d itemId=%s modelItemId=%s contextSource=%s evidenceSequences=%v decision=%s reason=%s unsupportedAtomHashes=%v",
+				sessionID, newVersion, decision.ItemID, decision.ModelItemID,
+				formatGroundingSourceTypes(decision.SourceTypes), decision.EvidenceSequences,
+				decision.Decision, decision.Reason, decision.UnsupportedAtomHashes)
+		}
+	}
+	log.Printf("Live semantic grounding summary. sessionId=%s analysisVersion=%d accepted=%d rewritten=%d tentative=%d candidateOnly=%d rejected=%d unsupportedAtomCount=%d contextOnlyAtomCount=%d futureInformationLeaksPrevented=%d",
+		sessionID, newVersion, treeStats.GroundingAccepted, treeStats.GroundingRewritten,
+		treeStats.GroundingTentative, treeStats.GroundingCandidateOnly,
+		treeStats.GroundingRejected, treeStats.GroundingUnsupportedAtoms,
+		treeStats.GroundingContextOnlyAtoms, treeStats.GroundingFutureLeaksPrevented)
+	for _, decision := range treeStats.KindValidationDecisions {
+		log.Printf("AI item kind validation evaluated. sessionId=%s analysisVersion=%d stage=%s sequenceNos=%v itemId=%s modelItemId=%s originalKind=%s canonicalKind=%s originalSubtype=%s canonicalSubtype=%s temporalScope=%s epistemicStatus=%s semanticRole=%s futureEventPresent=%t negativeImpactPresent=%t uncertaintyPresent=%t currentProblemPresent=%t confirmedEvidencePresent=%t actionVerbPresent=%t ownerPresent=%t deadlinePresent=%t decision=%s reason=%s confidence=%.2f",
+			sessionID, newVersion, decision.Stage, decision.SequenceNos, decision.ItemID, decision.ModelItemID,
+			decision.OriginalKind, decision.CanonicalKind, decision.OriginalSubtype, decision.CanonicalSubtype,
+			decision.Features.TemporalScope, decision.Features.EpistemicStatus, decision.Features.SemanticRole,
+			decision.Features.FutureEventPresent, decision.Features.NegativeImpactPresent,
+			decision.Features.UncertaintyPresent, decision.Features.CurrentProblemPresent,
+			decision.Features.ConfirmedEvidencePresent, decision.Features.ActionVerbPresent,
+			decision.Features.OwnerPresent, decision.Features.DeadlinePresent,
+			decision.Decision, decision.Reason, decision.Confidence)
+	}
+	for _, decision := range treeStats.KindSplitDecisions {
+		log.Printf("AI item semantic split completed. sessionId=%s analysisVersion=%d sourceItemId=%s fragmentCount=%d fragmentKinds=%v rejectedFragments=%d relationsCreated=%d",
+			sessionID, newVersion, decision.SourceItemID, decision.FragmentCount, decision.FragmentKinds,
+			decision.RejectedFragments, decision.RelationsCreated)
+	}
 	log.Printf("Live action summary projection. sessionId=%s version=%d sourceActionSummaryAgendaCount=%d actionSummaryAgendaIds=%v logicalActionSummaryCount=%d actionSummaryCandidates=%d deduplicatedActionItems=%d renderedActionItems=%d renderedActionTabs=1 renderedReferenceNodes=0 activeTodoReferences=%d activeOpenIssueFallbacks=%d completedItemsExcluded=%d resolvedItemsExcluded=%d clusteredReferences=%d",
 		sessionID, newVersion, treeStats.SourceActionSummaryAgendaCount, actionSummaryAgendaIDs, treeStats.LogicalActionSummaryCount, treeStats.ActionSummaryCandidates, treeStats.DeduplicatedActionItems, treeStats.RenderedActionItems, treeStats.ActiveTodoReferences, treeStats.ActiveOpenIssueFallbacks, treeStats.CompletedTodoExcluded, treeStats.ResolvedItemsExcluded, treeStats.ClusteredReferences)
 	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d treeHiddenTentativeItems=%d assistantVisibleTentativeItems=%d companionParentInherited=%d companionCandidateInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d tentativeMetadataLost=%d",
@@ -1082,6 +1141,18 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		stats.SubtypeCounts[issueSubtypeDiscussion], stats.SubtypeCounts[issueSubtypeConfirmation], stats.SubtypeCounts[issueSubtypeQuestion], stats.SubtypeCounts[issueSubtypeInvestigation],
 		stats.KindCounts["todo"], stats.KindCounts["todo"]-stats.ResolvedKindCounts["todo"], stats.ResolvedKindCounts["todo"],
 		stats.KindCounts["decision"], stats.KindCounts["fact"], stats.KindCounts["risk"], stats.KindCounts["risk"]-stats.ResolvedKindCounts["risk"], stats.ResolvedKindCounts["risk"], treeStats.RiskItemsSynthesized)
+	log.Printf("Final item kind distribution evaluated. sessionId=%s analysisVersion=%d factCount=%d issueCount=%d riskCount=%d todoCount=%d decisionCount=%d kindChanges=%d ambiguousItems=%d confirmedEvidenceCandidates=%d assignedActionRiskCandidates=%d causalHypothesisRiskCandidates=%d distributionWarnings=%v",
+		sessionID, newVersion, stats.KindCounts["fact"], stats.KindCounts["issue"], stats.KindCounts["risk"],
+		stats.KindCounts["todo"], stats.KindCounts["decision"], treeStats.KindValidationChanges,
+		treeStats.KindValidationAmbiguous, treeStats.ConfirmedEvidenceCandidates,
+		treeStats.AssignedActionRiskCandidates, treeStats.CausalHypothesisRiskCandidates,
+		treeStats.KindDistributionWarnings)
+	if len(treeStats.KindDistributionWarnings) > 0 {
+		log.Printf("AI item kind distribution warning. sessionId=%s analysisVersion=%d factCount=%d riskCount=%d confirmedEvidenceCandidates=%d assignedActionRiskCandidates=%d causalHypothesisRiskCandidates=%d distributionWarnings=%v",
+			sessionID, newVersion, stats.KindCounts["fact"], stats.KindCounts["risk"],
+			treeStats.ConfirmedEvidenceCandidates, treeStats.AssignedActionRiskCandidates,
+			treeStats.CausalHypothesisRiskCandidates, treeStats.KindDistributionWarnings)
+	}
 	log.Printf("Live reference integrity. sessionId=%s version=%d reservedItemIdsRejected=%d reservedItemIdsRemapped=%d duplicateNodeIdsDetected=%d crossKindIdCollisions=%d selfParentRejected=%d kindMutationRejected=%d fixedAgendaMutationRejected=%d invalidParentKindRejected=%d treePayloadRejected=%d previousTreePreserved=%d unknownAssignmentIds=%d aliasResolvedAssignmentIds=%d unknownResolvedIds=%d aliasResolvedResolvedIds=%d unknownGroupEvidenceIds=%d unknownEmergingEvidenceIds=%d aliasResolvedTreeOperationIds=%d",
 		sessionID, newVersion, treeStats.ReservedItemIDsRejected, treeStats.ReservedItemIDsRemapped, treeStats.DuplicateNodeIDsDetected, treeStats.CrossKindIDCollisions, treeStats.SelfParentRejected, treeStats.KindMutationRejected, treeStats.FixedAgendaMutationRejected, treeStats.InvalidParentKindRejected, treeStats.TreePayloadRejected, treeStats.PreviousTreePreserved, treeStats.UnknownAssignmentIDs, treeStats.AliasResolvedAssignmentIDs, treeStats.UnknownResolvedIDs, treeStats.AliasResolvedResolvedIDs, treeStats.UnknownGroupEvidenceIDs, treeStats.UnknownEmergingEvidenceIDs, treeStats.AliasResolvedTreeOperationIDs)
 	agendaAssignmentsAccepted, agendaAssignmentsDeferred, agendaAssignmentsRejected := summarizeAgendaAssignmentOutcomes(treeStats.AssignmentDecisions)
@@ -2024,22 +2095,61 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	// same-evidence risk/issue duplicate needs a sweep rather than a fresh
 	// finding). Fail-safe: on error or integrity rejection, continue with the
 	// payload from just above unmodified.
-	if repaired, repairStats := applyDeterministicFinalTreeRepairs(livePayload, meetingCtx, liveVersion, finalRepairInput{
+	repaired, repairStats := applyDeterministicFinalTreeRepairs(livePayload, meetingCtx, liveVersion, finalRepairInput{
 		Segments: finalSegments,
 		Audit:    s.config.TreeAudit,
-	}); repairStats.Error != "" || repairStats.IntegrityRejected {
+	})
+	if repairStats.Error != "" || repairStats.IntegrityRejected {
 		log.Printf("Deterministic final tree repair skipped. sessionId=%s treeVersion=%d integrityRejected=%t error=%s", sessionID, liveVersion, repairStats.IntegrityRejected, repairStats.Error)
 	} else {
 		livePayload = repaired
-		log.Printf("Deterministic final tree repair evaluated. sessionId=%s treeVersion=%d promotedTopicDuplicatesFolded=%d promotedTopicFoldsAborted=%d crossKindDuplicatesMerged=%d sameKindDuplicatesMerged=%d sameEvidenceSynthesisMerged=%d recapDuplicatesMerged=%d lowInformationItemsRewritten=%d lowInformationItemsMerged=%d lowInformationItemsRejected=%d danglingCandidatesPruned=%d validatorsRerun=%t remainingLowInformation=%d remainingSemanticDuplicates=%d",
+		log.Printf("Deterministic final tree repair evaluated. sessionId=%s treeVersion=%d promotedTopicDuplicatesFolded=%d promotedTopicFoldsAborted=%d crossKindDuplicatesMerged=%d sameKindDuplicatesMerged=%d sameEvidenceSynthesisMerged=%d recapDuplicatesMerged=%d lowInformationItemsRewritten=%d lowInformationItemsMerged=%d lowInformationItemsRejected=%d groundingAccepted=%d groundingRewritten=%d groundingTentative=%d groundingCandidateOnly=%d groundingRejected=%d unsupportedAtoms=%d contextOnlyAtoms=%d futureInformationLeaksPrevented=%d kindValidationChanges=%d ambiguousKinds=%d kindSemanticSplits=%d kindSplitFragments=%d kindSplitRejected=%d kindRelationsCreated=%d distributionWarnings=%v danglingCandidatesPruned=%d validatorsRerun=%t remainingLowInformation=%d remainingSemanticDuplicates=%d",
 			sessionID, liveVersion, repairStats.PromotedTopicDuplicatesFolded, repairStats.PromotedTopicFoldsAborted,
 			repairStats.CrossKindDuplicatesMerged, repairStats.SameKindDuplicatesMerged,
 			repairStats.SameEvidenceSynthesisMerged, repairStats.RecapDuplicatesMerged,
 			repairStats.LowInformationItemsRewritten, repairStats.LowInformationItemsMerged,
-			repairStats.LowInformationItemsRejected, repairStats.DanglingCandidatesPruned,
+			repairStats.LowInformationItemsRejected, repairStats.GroundingAccepted,
+			repairStats.GroundingRewritten, repairStats.GroundingTentative,
+			repairStats.GroundingCandidateOnly, repairStats.GroundingRejected,
+			repairStats.GroundingUnsupportedAtoms, repairStats.GroundingContextOnlyAtoms,
+			repairStats.FutureInformationLeaksPrevented, repairStats.KindValidationChanges,
+			repairStats.KindValidationAmbiguous, repairStats.KindSemanticSplits,
+			repairStats.KindSplitFragments, repairStats.KindSplitRejected, repairStats.KindRelationsCreated,
+			repairStats.KindDistributionWarnings, repairStats.DanglingCandidatesPruned,
 			repairStats.ValidatorsRerun, repairStats.RemainingLowInformation,
 			repairStats.RemainingSemanticDuplicates)
+		for _, decision := range repairStats.GroundingDecisions {
+			log.Printf("AI item grounding evaluated. sessionId=%s analysisVersion=%d coveredThroughSequenceNo=%d stage=%s itemId=%s modelItemId=%s evidenceSequences=%v sourceTypes=%s subjectGrounded=%t predicateGrounded=%t entityGrounded=%t qualifierGrounded=%t unsupportedAtomCount=%d contextOnlyAtomCount=%d futureInformationDetected=%t decision=%s reason=%s confidence=%.2f",
+				sessionID, liveVersion, prepared.LastSuccessfullyAnalyzed, decision.Stage,
+				decision.ItemID, decision.ModelItemID, decision.EvidenceSequences,
+				formatGroundingSourceTypes(decision.SourceTypes), decision.SubjectGrounded,
+				decision.PredicateGrounded, decision.EntityGrounded, decision.QualifierGrounded,
+				decision.UnsupportedAtomCount, decision.ContextOnlyAtomCount,
+				decision.FutureInformationDetected, decision.Decision, decision.Reason, decision.Confidence)
+		}
+		for _, decision := range repairStats.KindValidationDecisions {
+			log.Printf("AI item kind validation evaluated. sessionId=%s analysisVersion=%d stage=%s sequenceNos=%v itemId=%s modelItemId=%s originalKind=%s canonicalKind=%s originalSubtype=%s canonicalSubtype=%s temporalScope=%s epistemicStatus=%s semanticRole=%s futureEventPresent=%t negativeImpactPresent=%t uncertaintyPresent=%t currentProblemPresent=%t confirmedEvidencePresent=%t actionVerbPresent=%t ownerPresent=%t deadlinePresent=%t decision=%s reason=%s confidence=%.2f",
+				sessionID, liveVersion, decision.Stage, decision.SequenceNos, decision.ItemID, decision.ModelItemID,
+				decision.OriginalKind, decision.CanonicalKind, decision.OriginalSubtype, decision.CanonicalSubtype,
+				decision.Features.TemporalScope, decision.Features.EpistemicStatus, decision.Features.SemanticRole,
+				decision.Features.FutureEventPresent, decision.Features.NegativeImpactPresent,
+				decision.Features.UncertaintyPresent, decision.Features.CurrentProblemPresent,
+				decision.Features.ConfirmedEvidencePresent, decision.Features.ActionVerbPresent,
+				decision.Features.OwnerPresent, decision.Features.DeadlinePresent,
+				decision.Decision, decision.Reason, decision.Confidence)
+		}
+		for _, decision := range repairStats.KindSplitDecisions {
+			log.Printf("AI item semantic split completed. sessionId=%s analysisVersion=%d sourceItemId=%s fragmentCount=%d fragmentKinds=%v rejectedFragments=%d relationsCreated=%d",
+				sessionID, liveVersion, decision.SourceItemID, decision.FragmentCount,
+				decision.FragmentKinds, decision.RejectedFragments, decision.RelationsCreated)
+		}
 	}
+	finalKindCounts := livePayloadItemKindCounts(livePayload)
+	log.Printf("Final item kind distribution evaluated. sessionId=%s analysisVersion=%d phase=finalization factCount=%d issueCount=%d riskCount=%d todoCount=%d decisionCount=%d kindChanges=%d ambiguousItems=%d distributionWarnings=%v",
+		sessionID, liveVersion, finalKindCounts["fact"], finalKindCounts["issue"],
+		finalKindCounts["risk"], finalKindCounts["todo"], finalKindCounts["decision"],
+		repairStats.KindValidationChanges, repairStats.KindValidationAmbiguous,
+		repairStats.KindDistributionWarnings)
 	// Agenda reconciliation is deliberately the last structural pass after the
 	// final reviewer and deterministic duplicate repairs. It reuses the full
 	// final transcript and canonical items, then recomputes anchors/progress so
@@ -2292,22 +2402,40 @@ func finalizeAgendaLifecyclePayloadWithEvidenceAndHook(
 // finalRepairStats summarizes what applyDeterministicFinalTreeRepairs changed
 // (or safely declined to change).
 type finalRepairStats struct {
-	PromotedTopicDuplicatesFolded int
-	PromotedTopicFoldsAborted     int
-	CrossKindDuplicatesMerged     int
-	SameKindDuplicatesMerged      int
-	SameEvidenceSynthesisMerged   int
-	RecapDuplicatesMerged         int
-	LowInformationItemsRewritten  int
-	LowInformationItemsMerged     int
-	LowInformationItemsRejected   int
-	DanglingCandidatesPruned      int
-	ValidatorsRerun               bool
-	RemainingLowInformation       int
-	RemainingSemanticDuplicates   int
-	IntegrityRejected             bool
-	IntegrityDiagnostics          *treeIntegrityDiagnostics
-	Error                         string
+	PromotedTopicDuplicatesFolded   int
+	PromotedTopicFoldsAborted       int
+	CrossKindDuplicatesMerged       int
+	SameKindDuplicatesMerged        int
+	SameEvidenceSynthesisMerged     int
+	RecapDuplicatesMerged           int
+	LowInformationItemsRewritten    int
+	LowInformationItemsMerged       int
+	LowInformationItemsRejected     int
+	GroundingAccepted               int
+	GroundingRewritten              int
+	GroundingTentative              int
+	GroundingCandidateOnly          int
+	GroundingRejected               int
+	GroundingUnsupportedAtoms       int
+	GroundingContextOnlyAtoms       int
+	FutureInformationLeaksPrevented int
+	GroundingDecisions              []itemGroundingDecision
+	KindValidationChanges           int
+	KindValidationAmbiguous         int
+	KindRelationsCreated            int
+	KindValidationDecisions         []itemKindValidationDecision
+	KindSemanticSplits              int
+	KindSplitFragments              int
+	KindSplitRejected               int
+	KindSplitDecisions              []itemKindSplitDecision
+	KindDistributionWarnings        []string
+	DanglingCandidatesPruned        int
+	ValidatorsRerun                 bool
+	RemainingLowInformation         int
+	RemainingSemanticDuplicates     int
+	IntegrityRejected               bool
+	IntegrityDiagnostics            *treeIntegrityDiagnostics
+	Error                           string
 }
 
 type finalRepairInput struct {
@@ -2344,6 +2472,7 @@ func applyDeterministicFinalTreeRepairs(payload json.RawMessage, mc *meetingCont
 	// before attempting a repair so a safe item merge is not discarded for
 	// unrelated legacy-shape diagnostics.
 	normalizeLegacyAgendaTopicIDs(&state, mc, nil)
+	repairFinalItemKinds(&state, input.Segments, mc, version, &stats)
 	repairFinalReferenceAndLowInformationItems(&state, input.Segments, version, &stats)
 	dedupStats := &liveAnalysisTreeMergeStats{}
 	if remap := deduplicateExistingLiveState(&state, dedupStats); len(remap) > 0 {
@@ -4099,6 +4228,22 @@ type liveAnalysisItem struct {
 	AssignmentSource     string  `json:"assignmentSource,omitempty"` // model | rule | reorganizer | fallback
 	AssignmentReason     string  `json:"assignmentReason,omitempty"` // AIの分類理由(人手確認用に短縮保持)
 	EvidenceSequenceNos  []int64 `json:"evidenceSequenceNos,omitempty"`
+	// EvidenceSnippets are short model-proposed quotes. They are persisted
+	// only after the server verifies that each quote exists in one of the
+	// item's cited final transcript sequences and supports the proposition.
+	EvidenceSnippets []string `json:"evidenceSnippets,omitempty"`
+	// Grounding metadata is server-owned, additive audit state. Unsupported
+	// atoms are represented only by category-prefixed hashes; transcript and
+	// pre-meeting text never enter observability logs through these fields.
+	GroundingDecision              string                `json:"groundingDecision,omitempty"`
+	GroundingConfidence            float64               `json:"groundingConfidence,omitempty"`
+	GroundingSourceTypes           []groundingSourceType `json:"groundingSourceTypes,omitempty"`
+	GroundingUnsupportedAtomHashes []string              `json:"groundingUnsupportedAtoms,omitempty"`
+	// Creation coverage is immutable provenance used by the kind validator to
+	// distinguish a genuinely later final sequence from another sentence or
+	// split fragment in the item's original analysis round.
+	CreatedThroughSequenceNo     int64 `json:"createdThroughSequenceNo,omitempty"`
+	InitialEvidenceMaxSequenceNo int64 `json:"initialEvidenceMaxSequenceNo,omitempty"`
 	// PropositionKey and EvidenceRoles are deterministic, server-owned audit
 	// metadata. Related questions, resolution conditions and next actions keep
 	// cross-kind wording as attributes of one canonical proposition.
@@ -4125,6 +4270,7 @@ type liveAnalysisItem struct {
 	evidenceNormalizedCount int
 	modelReference          string
 	reopenFromTombstone     bool
+	semanticSplitFragment   bool
 	// RelatedAgendaIDs is a server-owned secondary relation used by
 	// cross-cutting agenda views. It never creates a second parent edge.
 	RelatedAgendaIDs []string `json:"relatedAgendaIds,omitempty"`
@@ -4432,6 +4578,13 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, stats ...*liveAnalysis
 		item.AssignmentSource = ""
 		item.AssignmentReason = ""
 		item.RelatedAgendaIDs = nil
+		item.EvidenceSnippets = uniqueSortedStrings(item.EvidenceSnippets)
+		item.GroundingDecision = ""
+		item.GroundingConfidence = 0
+		item.GroundingSourceTypes = nil
+		item.GroundingUnsupportedAtomHashes = nil
+		item.CreatedThroughSequenceNo = 0
+		item.InitialEvidenceMaxSequenceNo = 0
 		item.PropositionKey = ""
 		item.EvidenceRoles = nil
 		item.RelatedQuestions = nil
@@ -4745,6 +4898,27 @@ type liveAnalysisTreeMergeStats struct {
 	LowInformationTentativeRetained      int
 	SemanticKindMigrations               int
 	SemanticSubtypeMigrations            int
+	KindValidationChanges                int
+	KindValidationAmbiguous              int
+	KindSemanticSplits                   int
+	KindSplitFragments                   int
+	KindSplitRejected                    int
+	KindRelationsCreated                 int
+	ConfirmedEvidenceCandidates          int
+	AssignedActionRiskCandidates         int
+	CausalHypothesisRiskCandidates       int
+	KindValidationDecisions              []itemKindValidationDecision
+	KindSplitDecisions                   []itemKindSplitDecision
+	KindDistributionWarnings             []string
+	GroundingAccepted                    int
+	GroundingRewritten                   int
+	GroundingTentative                   int
+	GroundingCandidateOnly               int
+	GroundingRejected                    int
+	GroundingUnsupportedAtoms            int
+	GroundingContextOnlyAtoms            int
+	GroundingFutureLeaksPrevented        int
+	GroundingDecisions                   []itemGroundingDecision
 	LowInformationRejections             []liveItemRejection
 	DiscourseTransitions                 []discourseTimelineTransition
 	ItemResurrectionPrevented            int
@@ -5073,6 +5247,7 @@ type liveEvidenceScope struct {
 	CurrentRound   map[int64]struct{}
 	TranscriptText map[int64]string
 	Segments       map[int64]domain.TranscriptSegment
+	EvidenceRoles  map[int64]liveEvidenceRole
 	CoveredThrough int64
 }
 
@@ -5116,6 +5291,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 		treeStats.DynamicAgendaOverlapBefore = previousAgendaMetrics.DynamicOverlap
 	}
 	timeline := classifyDiscourseTimelineWithModel(evidenceScope, diff.UtteranceRoles)
+	evidenceScope.EvidenceRoles = timeline.Roles
 	if treeStats != nil {
 		treeStats.DiscourseTransitions = append(treeStats.DiscourseTransitions, timeline.Transitions...)
 	}
@@ -5124,6 +5300,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	reservedIDRemap := repairReservedPersistedItemIDs(&previous, treeStats)
 	previousIDRemap := deduplicateExistingLiveState(&previous, treeStats)
 	legacyIDRemap := mergeIDRemaps(historicalDiscourseRemap, reservedIDRemap, previousIDRemap)
+	repairPersistedItemKinds(&previous, evidenceScope, itemKindValidationLegacy, "legacy_normalization", treeStats)
 
 	requestedResolvedIDs := make(map[string]struct{}, len(diff.ResolvedIds))
 	for _, id := range diff.ResolvedIds {
@@ -5147,8 +5324,16 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	modelItems := append([]liveAnalysisItem(nil), diff.Items...)
 	diffItems, newTopics, assignments := convertLegacyTreeDiff(diff.Tree, diff.Items, newTopics, assignments, requestedResolvedIDs, treeStats)
 	diffItems = normalizeLiveAnalysisItems(diffItems, treeStats)
+	inheritItemGroundingLifecycle(previous.Items, diffItems)
 	normalizeItemEvidenceSequenceNosWithScope(diffItems, evidenceScope, treeStats)
+	diffItems, assignments = splitLiveItemKinds(previous.Items, diffItems, assignments, evidenceScope, treeStats)
+	diffItems, assignments = validateLiveItemGrounding(
+		previous.Items, diffItems, assignments, evidenceScope, mc,
+		"model_post_semantic_split", false, treeStats,
+	)
+	diffItems = validateLiveItemKinds(diffItems, evidenceScope, itemKindValidationLive, "model_post_grounding", treeStats)
 	diffItems, assignments = repairLowInformationIssueItems(previous.Items, diffItems, assignments, timeline, evidenceScope, treeStats)
+	diffItems = validateLiveItemKinds(diffItems, evidenceScope, itemKindValidationLive, "post_fragment_validation", treeStats)
 	resolver := itemReferenceResolver(previous.Items, diffItems, legacyIDRemap, treeStats)
 	requestedResolutionUpdates = append(requestedResolutionUpdates, legacyResolutionUpdates(requestedResolvedIDs, diffItems)...)
 	diffItems, assignments = filterTombstoneResurrections(&previous, diffItems, assignments, requestedResolutionUpdates, evidenceScope, treeVersion, treeStats)
@@ -5173,7 +5358,13 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	}
 	var closureUpdates []resolutionUpdate
 	diffItems, closureUpdates = synthesizeExplicitClosureUpdates(previous.Items, diffItems, evidenceScope, treeStats)
-	diffItems = append(diffItems, synthesizeExplicitRiskItems(previous.Items, diffItems, evidenceScope, timeline, treeStats)...)
+	synthesizedRisks := synthesizeExplicitRiskItems(previous.Items, diffItems, evidenceScope, timeline, treeStats)
+	synthesizedRisks, _ = validateLiveItemGrounding(
+		previous.Items, synthesizedRisks, nil, evidenceScope, mc,
+		"deterministic_risk_synthesis", false, treeStats,
+	)
+	diffItems = append(diffItems, synthesizedRisks...)
+	diffItems = validateLiveItemKinds(diffItems, evidenceScope, itemKindValidationLive, "post_deterministic_synthesis", treeStats)
 	for _, item := range diffItems {
 		resolver.add(item.ID, item.ID)
 	}
@@ -5223,6 +5414,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	}
 	merged.Items = mergeLiveAnalysisItems(previous.Items, diffItems, resolutionUpdates)
 	appendItemEvidenceSequenceNos(merged.Items, diffItems, roundSeqNos, treeStats)
+	stampItemGroundingLifecycle(merged.Items, previous.Items, evidenceScope.CoveredThrough)
 	agendaSpans := detectAgendaContextSpans(evidenceScope, mc, treeStats, timeline)
 	agendaEvidenceItems := contentEvidenceItems(diffItems, timeline)
 	agendaEvidenceItems = agendaSpanRepairItems(merged.Items, agendaEvidenceItems, agendaSpans)
@@ -5235,6 +5427,11 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 		previous.Tree, mc, merged.Items, newTopics, assignments, resolvedIDs,
 		previous.EmergingTopics, treeVersion, cfg, treeStats)
 	canonicalizePropositionItems(&merged, timeline, treeStats, treeVersion)
+	repairPersistedItemKinds(&merged, evidenceScope, itemKindValidationLive, "post_semantic_dedup", treeStats)
+	kindRelationsCreated := appendSemanticKindRelations(merged.Tree, merged.Items)
+	if treeStats != nil {
+		treeStats.KindRelationsCreated += kindRelationsCreated
+	}
 	pruneEmptyDynamicTopics(merged.Tree)
 	reconcileAgendaModelTopicAliasConflicts(merged.Tree, mc, merged.Items)
 	stampEvidenceRoles(merged.Items, timeline)
@@ -5286,6 +5483,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 		merged.DegradedReason = "tree_integrity_rejected"
 		merged.TreeIntegrity = &integrity
 	}
+	recordItemKindDistribution(&merged, evidenceScope, treeStats)
 	recordItemLifecycleEvaluations(modelItems, previous.Items, diffItems, merged.Items, requestedResolvedIDs, resolvedIDs, resolver, treeStats)
 	merged.TreeVersion = treeVersion
 	merged.TreeChanges = diffLiveAnalysisTrees(previous.Tree, merged.Tree, treeVersion)

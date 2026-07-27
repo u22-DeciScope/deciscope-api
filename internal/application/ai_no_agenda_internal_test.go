@@ -73,7 +73,10 @@ func TestSession3b279189c5094e88NoAgendaCandidateReplay(t *testing.T) {
 	if stats2.DynamicTopicsPromoted != 1 || stats2.PromotedItemsReparented < 3 || stats2.CandidateIDsMerged == 0 {
 		t.Fatalf("promotion stats=%+v candidates=%+v", stats2, state2.EmergingTopics)
 	}
-	if stats2.CrossKindCandidateInherited < 2 || stats2.CompanionCandidateInherited < 2 {
+	// The initial "希少植物が生育している可能性／未確認" proposition is a
+	// current unresolved issue, not a future adverse risk. The promoted set
+	// therefore contains two issues and one todo, with one cross-kind pair.
+	if stats2.CrossKindCandidateInherited < 1 || stats2.CompanionCandidateInherited < 2 {
 		t.Fatalf("cross-kind inheritance stats=%+v", stats2)
 	}
 	dynamicTopicID := ""

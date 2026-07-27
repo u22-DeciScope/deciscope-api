@@ -216,9 +216,13 @@ type treeAuditValidatorEvaluation struct {
 	// treeAuditEffectiveConfidence): for move-type operations it applies
 	// bounded structural bonuses/penalties on top of ModelConfidence; for
 	// every other operation type it equals ModelConfidence unchanged.
-	ModelConfidence     float64 `json:"modelConfidence"`
-	EffectiveConfidence float64 `json:"effectiveConfidence"`
-	EffectiveThreshold  float64 `json:"effectiveThreshold,omitempty"`
+	ModelConfidence      float64               `json:"modelConfidence"`
+	EffectiveConfidence  float64               `json:"effectiveConfidence"`
+	EffectiveThreshold   float64               `json:"effectiveThreshold,omitempty"`
+	GroundingDecision    string                `json:"groundingDecision,omitempty"`
+	GroundingConfidence  float64               `json:"groundingConfidence,omitempty"`
+	UnsupportedAtoms     []string              `json:"unsupportedAtoms,omitempty"`
+	GroundingSourceTypes []groundingSourceType `json:"groundingSourceTypes,omitempty"`
 }
 
 type treeAuditValidatorResult struct {

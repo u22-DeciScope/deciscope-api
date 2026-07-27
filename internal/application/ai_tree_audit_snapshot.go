@@ -527,8 +527,15 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 			if inferred != item.Subtype && validIssueSubtype(inferred) {
 				add(treeAuditPrecheckFinding{Type: TreeAuditSubtypeMismatch, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "issue subtype conflicts with the proposition wording", Score: 0.85})
 			}
-		} else if item.Kind == "fact" && (openIssueMarkerPattern.MatchString(itemText) || lowInformationQuestionPattern.MatchString(itemText)) {
-			add(treeAuditPrecheckFinding{Type: TreeAuditSemanticKindMismatch, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "open issue proposition is classified as fact", Score: 0.9})
+		}
+		kindDecision := evaluateLiveItemKind(item, liveEvidenceScope{}, "tree_audit_precheck")
+		if kindDecision.CanonicalKind != item.Kind &&
+			kindDecision.Confidence >= itemKindValidationThreshold(itemKindValidationAudit) {
+			add(treeAuditPrecheckFinding{
+				Type: TreeAuditSemanticKindMismatch, NodeIDs: []string{node.ID},
+				EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...),
+				Reason:              kindDecision.Reason, Score: kindDecision.Confidence,
+			})
 		}
 		if allTreeAuditEvidenceReference(item.EvidenceSequenceNos, roles) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditRecapReferenceContamination, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "independent item is grounded only in recap/reference evidence", Score: 0.95})

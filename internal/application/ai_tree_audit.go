@@ -606,11 +606,15 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 						execution.Version = version + 1
 						execution.Applied = true
 						execution.Result = run.Result
-						log.Printf("Tree audit deterministic fallback evaluated. sessionId=%s auditRunId=%s basedOnTreeVersion=%d resultingTreeVersion=%d consecutiveUnappliedBefore=%d fallbackAction=%s fallbackReason=%s lowInformationRewritten=%d lowInformationMerged=%d lowInformationRejected=%d sameEvidenceSynthesisMerged=%d sameKindDuplicatesMerged=%d recapDuplicatesMerged=%d",
+						log.Printf("Tree audit deterministic fallback evaluated. sessionId=%s auditRunId=%s basedOnTreeVersion=%d resultingTreeVersion=%d consecutiveUnappliedBefore=%d fallbackAction=%s fallbackReason=%s lowInformationRewritten=%d lowInformationMerged=%d lowInformationRejected=%d kindValidationChanges=%d ambiguousKinds=%d kindSemanticSplits=%d kindSplitFragments=%d kindSplitRejected=%d kindRelationsCreated=%d sameEvidenceSynthesisMerged=%d sameKindDuplicatesMerged=%d recapDuplicatesMerged=%d",
 							sessionID, runID, version, version+1, previousUnapplied,
 							validator.DeterministicFallbackAction, validator.DeterministicFallbackReason,
 							repairStats.LowInformationItemsRewritten, repairStats.LowInformationItemsMerged,
-							repairStats.LowInformationItemsRejected, repairStats.SameEvidenceSynthesisMerged,
+							repairStats.LowInformationItemsRejected, repairStats.KindValidationChanges,
+							repairStats.KindValidationAmbiguous, repairStats.KindSemanticSplits,
+							repairStats.KindSplitFragments, repairStats.KindSplitRejected,
+							repairStats.KindRelationsCreated,
+							repairStats.SameEvidenceSynthesisMerged,
 							repairStats.SameKindDuplicatesMerged, repairStats.RecapDuplicatesMerged)
 						logTreeAuditRun(run, len(response.Findings), validator)
 						return execution, nil
@@ -1053,10 +1057,12 @@ func logTreeAuditOperationDetails(sessionID, auditRunID string, response *treeAu
 	}
 	for _, evaluation := range validator.Evaluations {
 		operation := byOperationID[evaluation.OperationID]
-		log.Printf("Tree audit cleanup operation. sessionId=%s auditRunId=%s operationId=%s operationType=%s targetCanonical=%s fromParent=%s toParent=%s modelConfidence=%.2f effectiveConfidence=%.2f effectiveThreshold=%.2f validationResult=%t applicationResult=%t result=%s riskClass=%s rejectionReason=%s",
+		log.Printf("Tree audit cleanup operation. sessionId=%s auditRunId=%s operationId=%s operationType=%s targetCanonical=%s fromParent=%s toParent=%s modelConfidence=%.2f effectiveConfidence=%.2f effectiveThreshold=%.2f groundingDecision=%s groundingConfidence=%.2f groundingSourceTypes=%s unsupportedAtoms=%v validationResult=%t applicationResult=%t result=%s riskClass=%s rejectionReason=%s",
 			sessionID, auditRunID, evaluation.OperationID, evaluation.Type, treeAuditOperationTargetLabel(operation),
 			operation.FromParentCanonicalNodeID, operation.ToParentCanonicalNodeID,
 			evaluation.ModelConfidence, evaluation.EffectiveConfidence, evaluation.EffectiveThreshold,
+			evaluation.GroundingDecision, evaluation.GroundingConfidence,
+			formatGroundingSourceTypes(evaluation.GroundingSourceTypes), evaluation.UnsupportedAtoms,
 			evaluation.Valid, evaluation.Applied,
 			evaluation.Result, evaluation.Category, evaluation.Reason)
 	}

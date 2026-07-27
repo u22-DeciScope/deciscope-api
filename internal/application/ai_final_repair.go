@@ -15,7 +15,98 @@ func finalRepairStatsChanged(stats finalRepairStats) bool {
 		stats.LowInformationItemsRewritten > 0 ||
 		stats.LowInformationItemsMerged > 0 ||
 		stats.LowInformationItemsRejected > 0 ||
+		stats.GroundingRewritten > 0 ||
+		stats.GroundingTentative > 0 ||
+		stats.GroundingCandidateOnly > 0 ||
+		stats.GroundingRejected > 0 ||
+		stats.KindValidationChanges > 0 ||
+		stats.KindSemanticSplits > 0 ||
+		stats.KindRelationsCreated > 0 ||
 		stats.DanglingCandidatesPruned > 0
+}
+
+func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.TranscriptSegment, mc *meetingContext, version int64, stats *finalRepairStats) {
+	if state == nil || state.Tree == nil || len(state.Items) == 0 || len(segments) == 0 || stats == nil {
+		return
+	}
+	scope, _ := agendaTimelineFromSegments(segments)
+	kindStats := &liveAnalysisTreeMergeStats{}
+	splitPersistedItemKinds(state, scope, itemKindValidationFinal, "final_semantic_split", kindStats)
+	repairFinalItemGrounding(state, scope, mc, version, kindStats)
+	repairPersistedItemKinds(state, scope, itemKindValidationFinal, "final_deterministic_repair", kindStats)
+	recordItemKindDistribution(state, scope, kindStats)
+	stats.KindValidationChanges += kindStats.KindValidationChanges
+	stats.KindValidationAmbiguous += kindStats.KindValidationAmbiguous
+	stats.KindValidationDecisions = append(stats.KindValidationDecisions, kindStats.KindValidationDecisions...)
+	stats.KindSemanticSplits += kindStats.KindSemanticSplits
+	stats.KindSplitFragments += kindStats.KindSplitFragments
+	stats.KindSplitRejected += kindStats.KindSplitRejected
+	stats.KindSplitDecisions = append(stats.KindSplitDecisions, kindStats.KindSplitDecisions...)
+	stats.KindRelationsCreated += appendSemanticKindRelations(state.Tree, state.Items)
+	stats.KindDistributionWarnings = append(stats.KindDistributionWarnings, kindStats.KindDistributionWarnings...)
+	stats.GroundingAccepted += kindStats.GroundingAccepted
+	stats.GroundingRewritten += kindStats.GroundingRewritten
+	stats.GroundingTentative += kindStats.GroundingTentative
+	stats.GroundingCandidateOnly += kindStats.GroundingCandidateOnly
+	stats.GroundingRejected += kindStats.GroundingRejected
+	stats.GroundingUnsupportedAtoms += kindStats.GroundingUnsupportedAtoms
+	stats.GroundingContextOnlyAtoms += kindStats.GroundingContextOnlyAtoms
+	stats.FutureInformationLeaksPrevented += kindStats.GroundingFutureLeaksPrevented
+	stats.GroundingDecisions = append(stats.GroundingDecisions, kindStats.GroundingDecisions...)
+}
+
+func repairFinalItemGrounding(state *liveAnalysisPayload, scope liveEvidenceScope, mc *meetingContext, version int64, stats *liveAnalysisTreeMergeStats) {
+	if state == nil || state.Tree == nil {
+		return
+	}
+	itemIDs := activeFinalItemIDs(state.Items)
+	groundingMetadataPresent := false
+	for _, itemID := range itemIDs {
+		if item, ok := finalItemByID(state.Items, itemID); ok && strings.TrimSpace(item.GroundingDecision) != "" {
+			groundingMetadataPresent = true
+			break
+		}
+	}
+	// Snapshots created before prompt v18 have no way to prove which semantic
+	// gate produced their wording. Keep those snapshots backward compatible;
+	// every current live item carries a grounding decision before persistence.
+	if !groundingMetadataPresent {
+		return
+	}
+	for _, itemID := range itemIDs {
+		item, ok := finalItemByID(state.Items, itemID)
+		if !ok {
+			continue
+		}
+		contextItems := make([]liveAnalysisItem, 0, len(state.Items)-1)
+		for _, candidate := range state.Items {
+			if candidate.ID != item.ID {
+				contextItems = append(contextItems, candidate)
+			}
+		}
+		catalog := buildGroundingContextCatalog(mc, contextItems)
+		decision, safe := evaluateItemGrounding(item, scope, catalog, "final_grounding_repair", item.semanticSplitFragment)
+		recordGroundingDecision(stats, decision)
+		previouslyGrounded := item.GroundingDecision == "accepted" || item.GroundingDecision == "rewritten"
+		if previouslyGrounded && decision.Decision != "accepted" && decision.Decision != "rewritten" {
+			// Finalization may receive only the unanalyzed tail in legacy
+			// repositories. A narrower replay scope cannot overturn the
+			// successful full live-round grounding decision.
+			continue
+		}
+		switch decision.Decision {
+		case "accepted", "rewritten":
+			safe.GroundingDecision = decision.Decision
+			safe.GroundingConfidence = decision.Confidence
+			safe.GroundingSourceTypes = append([]groundingSourceType(nil), decision.SourceTypes...)
+			safe.GroundingUnsupportedAtomHashes = append([]string(nil), decision.UnsupportedAtomHashes...)
+			updateFinalItemAndNode(state, safe)
+		default:
+			rejectFinalItem(state, item.ID, "final_semantic_grounding_rejected", version)
+		}
+	}
+	pruneEmptyDynamicTopics(state.Tree)
+	rebuildTreeAuditEdges(state.Tree)
 }
 
 // repairFinalReferenceAndLowInformationItems is the deterministic final-review

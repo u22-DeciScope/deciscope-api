@@ -114,6 +114,18 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 			reject(reason)
 			continue
 		}
+		grounding, groundingItemID := evaluateTreeAuditOperationGrounding(candidate, operation, segmentText, evidenceRoles, mc)
+		evaluation.GroundingDecision = grounding.Decision
+		evaluation.GroundingConfidence = grounding.Confidence
+		evaluation.UnsupportedAtoms = append([]string(nil), grounding.UnsupportedAtomHashes...)
+		evaluation.GroundingSourceTypes = append([]groundingSourceType(nil), grounding.SourceTypes...)
+		if grounding.Decision != "" && grounding.Decision != "not_applicable" && grounding.Decision != "accepted" {
+			reject("semantic_grounding_not_verified")
+			continue
+		}
+		if grounding.Decision == "accepted" {
+			setTreeAuditItemGroundingMetadata(&candidate, groundingItemID, grounding)
+		}
 		// Any container the operation just took a child away from (by moving,
 		// merging away, or deactivating it) may now be empty; prune it - and
 		// cascade upward through its own ancestors - before checking integrity,
@@ -209,6 +221,115 @@ func validateAndDryRunTreeAuditOperations(original liveAnalysisPayload, operatio
 	}
 	dry.AgendaAnchors = reconcileAgendaAnchors(dry.AgendaAnchors, mc, dry.Tree, dry.Items, dry.TreeVersion, false)
 	return dry, result
+}
+
+func evaluateTreeAuditOperationGrounding(state liveAnalysisPayload, operation treeAuditOperation, segmentText map[int64]string, evidenceRoles map[int64]treeAuditEvidenceRole, mc *meetingContext) (itemGroundingDecision, string) {
+	semanticOperation := false
+	targetID := strings.TrimSpace(operation.TargetCanonicalItemID)
+	switch operation.Type {
+	case TreeAuditRewriteItem, TreeAuditRewriteItemTitle, TreeAuditRewriteItemDescription,
+		TreeAuditReclassifyKind, TreeAuditReclassifySubtype:
+		semanticOperation = true
+	case TreeAuditMergeItems:
+		semanticOperation = true
+		if len(operation.TargetCanonicalItemIDs) > 0 {
+			targetID = strings.TrimSpace(operation.TargetCanonicalItemIDs[0])
+		}
+	}
+	if !semanticOperation || len(segmentText) == 0 {
+		return itemGroundingDecision{Decision: "not_applicable", Reason: "non_semantic_or_legacy_scope"}, targetID
+	}
+	item, ok := finalItemByID(state.Items, targetID)
+	if !ok {
+		return itemGroundingDecision{Decision: "rejected", Reason: "unknown_grounding_target", Confidence: 1}, targetID
+	}
+	scope := liveEvidenceScope{
+		Allowed:        make(map[int64]struct{}, len(segmentText)),
+		CurrentRound:   make(map[int64]struct{}, len(segmentText)),
+		TranscriptText: make(map[int64]string, len(segmentText)),
+		Segments:       make(map[int64]domain.TranscriptSegment, len(segmentText)),
+		EvidenceRoles:  make(map[int64]liveEvidenceRole, len(evidenceRoles)),
+	}
+	for sequenceNo, text := range segmentText {
+		if sequenceNo <= 0 || strings.TrimSpace(text) == "" {
+			continue
+		}
+		scope.Allowed[sequenceNo] = struct{}{}
+		scope.CurrentRound[sequenceNo] = struct{}{}
+		scope.TranscriptText[sequenceNo] = strings.TrimSpace(text)
+		scope.Segments[sequenceNo] = domain.TranscriptSegment{SequenceNo: sequenceNo, Text: text, IsFinal: true}
+		if sequenceNo > scope.CoveredThrough {
+			scope.CoveredThrough = sequenceNo
+		}
+	}
+	for sequenceNo, role := range evidenceRoles {
+		if role == treeAuditEvidenceReference {
+			scope.EvidenceRoles[sequenceNo] = liveEvidenceReferenceRecap
+		} else {
+			scope.EvidenceRoles[sequenceNo] = liveEvidencePrimary
+		}
+	}
+	if len(operation.EvidenceSequenceNos) > 0 {
+		item.EvidenceSequenceNos = append([]int64(nil), operation.EvidenceSequenceNos...)
+		item.EvidenceRoles = item.EvidenceRoles[:0]
+		for _, sequenceNo := range item.EvidenceSequenceNos {
+			item.EvidenceRoles = append(item.EvidenceRoles, liveEvidenceRoleRef{
+				SequenceNo: sequenceNo,
+				Role:       scope.EvidenceRoles[sequenceNo],
+			})
+		}
+	}
+	item.evidenceSpecified = true
+	contextItems := make([]liveAnalysisItem, 0, len(state.Items)-1)
+	for _, candidate := range state.Items {
+		if candidate.ID != item.ID {
+			contextItems = append(contextItems, candidate)
+		}
+	}
+	catalog := buildGroundingContextCatalog(mc, contextItems)
+	if reason := strings.TrimSpace(operation.Reason); reason != "" {
+		catalog = append(catalog, groundingContextEntry{Source: groundingSourceAuditFinding, Text: reason})
+	}
+	decision, _ := evaluateItemGrounding(item, scope, catalog, "tree_audit_operation", false)
+	if decision.Decision == "rewritten" && decision.ContextOnlyAtomCount == 0 &&
+		decision.SubjectGrounded && decision.EntityGrounded && decision.QualifierGrounded &&
+		groundingCategoriesOnly(decision.UnsupportedAtomCategories, "predicate") {
+		decision.Decision = "accepted"
+		decision.Reason = "audit_predicate_paraphrase_grounded"
+		decision.Confidence = 0.90
+		decision.UnsupportedAtomCount = 0
+		decision.UnsupportedAtomCategories = nil
+		decision.UnsupportedAtomHashes = nil
+	}
+	return decision, targetID
+}
+
+func groundingCategoriesOnly(categories []string, allowed string) bool {
+	if len(categories) == 0 {
+		return false
+	}
+	for _, category := range categories {
+		if category != allowed {
+			return false
+		}
+	}
+	return true
+}
+
+func setTreeAuditItemGroundingMetadata(state *liveAnalysisPayload, itemID string, decision itemGroundingDecision) {
+	if state == nil || itemID == "" {
+		return
+	}
+	for index := range state.Items {
+		if state.Items[index].ID != itemID {
+			continue
+		}
+		state.Items[index].GroundingDecision = decision.Decision
+		state.Items[index].GroundingConfidence = decision.Confidence
+		state.Items[index].GroundingSourceTypes = append([]groundingSourceType(nil), decision.SourceTypes...)
+		state.Items[index].GroundingUnsupportedAtomHashes = append([]string(nil), decision.UnsupportedAtomHashes...)
+		return
+	}
 }
 
 // treeAuditOperationClass is the coarse two-value classification of an
@@ -835,17 +956,17 @@ func applyOneTreeAuditOperation(state *liveAnalysisPayload, operation treeAuditO
 			}
 			requestedKind = "issue"
 		} else if requestedKind != item.Kind {
-			if item.Kind == "decision" || item.Kind == "todo" || item.Kind == "risk" || requestedKind == "decision" || requestedKind == "todo" || requestedKind == "risk" {
+			if item.Kind == "decision" || requestedKind == "decision" {
 				return 0, 0, "protected_semantic_kind"
 			}
-			text := evidenceText.String()
-			supported := requestedKind == "issue" && (openIssueMarkerPattern.MatchString(text) || lowInformationQuestionPattern.MatchString(text) || confirmationStatementPattern.MatchString(text))
-			if requestedKind == "fact" {
-				supported = lowInformationAssertionPattern.MatchString(text) && !openIssueMarkerPattern.MatchString(text) && !lowInformationQuestionPattern.MatchString(text)
-			}
-			if !supported {
+			probe := item
+			probe.Body = strings.TrimSpace(item.Body + " " + evidenceText.String())
+			kindDecision := evaluateLiveItemKind(probe, liveEvidenceScope{}, "tree_audit_operation")
+			if kindDecision.CanonicalKind != requestedKind ||
+				kindDecision.Confidence < itemKindValidationThreshold(itemKindValidationAudit) {
 				return 0, 0, "semantic_reclassification_not_grounded"
 			}
+			requestedSubtype = kindDecision.CanonicalSubtype
 		}
 		state.Items[itemAt].Kind = requestedKind
 		state.Items[itemAt].Subtype = requestedSubtype

@@ -126,8 +126,83 @@ survivor優先で欠落させません。被統合itemはtreeから除去され�
 
 `kind`（`issue | risk | fact | decision | todo`）とissueの`subtype`
 （`discussion | confirmation | question | investigation`）を、statusやツリー階層とは
-独立して修正します。primary evidenceが必須で、decision/TODO/riskへの変更またはそれらからの
-自動変更は保護されます。適用時はitemと対応tree nodeを同時に更新します。
+独立して修正します。primary evidenceが必須です。decisionへの変更とdecisionからの
+自動変更は引き続き保護されます。`fact` / `issue` / `risk` / `todo`間の変更は、
+共通semantic kind validatorが同じ変更先をaudit閾値以上で判定した場合だけ許可します。
+適用時はitemと対応tree nodeを同時に更新し、evidenceとstatusはkindから独立して維持します。
+
+## Semantic grounding validator
+
+表示可能なdetail itemの一次証拠は、同一sessionのcovered range内にあるfinal transcriptです。
+`partial_transcript`は採用せず、`recap_transcript`は既存命題の再確認を優先して、新規命題には
+通常より厳しい直接一致を要求します。入力は次のsource typeとして区別します。
+
+- `final_transcript` / `partial_transcript` / `recap_transcript`
+- `pre_meeting_input` / `agenda_title` / `agenda_metadata` / `semantic_hint`
+- `existing_tree` / `audit_finding` / `model_inference`
+
+事前入力とagenda系情報はagenda作成、topic・parent候補、同義語補助には利用できますが、
+fact / issue / risk / todo / decisionの事実根拠にはなりません。sequenceの存在・final・covered
+rangeを確認するstructural validationの後、subject、predicate、entity、qualifierを検査します。
+人名、担当者、場所、階数、日時、数値、識別子、原因、対策、決定、将来影響は引用発言による
+直接支持を必須とします。
+
+live extraction v18の`evidenceSnippets`は、指定sequenceのfinal発言からの短い引用です。
+全角半角、空白、句読点、数字表記、英字大小文字を正規化して実在性と命題支持を確認します。
+安全に発言範囲へ縮約できる場合は`rewritten`、一部だけ支持される場合は`tentative`、
+事前contextだけにある場合は`candidate_only`、支持されない場合は`rejected`とし、後三者は
+通常の表示ツリーへ追加しません。旧v17以前のpersisted payloadは、grounding metadataが
+一件もないsnapshotに限ってfinal repairで破壊的に再解釈しない後方互換を維持します。
+
+semantic splitでは各fragmentのsubject・predicateを各evidence sequenceへ再照合し、対応する
+sequenceとsnippetだけを引き継ぎます。元itemがgroundedでも、対応sequenceを特定できない
+fragmentは棄却します。その後にlow-information、kind、dedup、agenda assignmentを実行します。
+
+`later_confirmed_evidence_supersedes_open_state`は、primary/correctionのfinal sequenceが
+`createdThroughSequenceNo`と`initialEvidenceMaxSequenceNo`の両方より大きく、同じ命題を
+明示的に確認し、recapでない場合だけ使用します。同一sequence、同一roundの別fragment、
+事前context、agenda metadata、existing treeはlater evidenceになりません。
+
+tree auditのrewrite / merge / reclassifyとfinal deterministic repairにも同じvalidatorを適用します。
+operation評価には`groundingDecision`、`groundingConfidence`、hash化した`unsupportedAtoms`、
+`groundingSourceTypes`を記録し、未検証の意味追加は`semantic_grounding_not_verified`で拒否します。
+本文を出さない`AI item grounding evaluated.`、`AI split fragment grounding evaluated.`、
+`AI context leakage prevented.`ログで判定を追跡できます。
+
+## Semantic kind validator
+
+live prompt v18とサーバー共通validatorは、単語だけでなく次の特徴を組み合わせて
+`fact` / `issue` / `risk` / `todo`を判定します。
+
+- 時制: `past` / `current` / `future` / `unknown`
+- 確実性: `confirmed` / `reported` / `hypothesis` / `uncertain` /
+  `unresolved` / `proposed` / `committed`
+- 意味役割: 状態、原因仮説、未解決の問い、将来悪影響、行動、提案
+- 補助特徴: 悪影響、不確実性、未来事象、現在問題、確認表現、実行動詞、
+  担当者、期限、commitment、調査意図、mitigation意図
+
+優先順位は、強い担当・期限・commitment付き行動、確認済み事実、原因仮説・
+現在の未解決事項、将来の不確定な悪影響、その他の明示的行動です。
+原因である可能性は`issue/investigation`、将来の悪影響・不確実性・negative
+impactをすべて満たす場合だけ`risk`、対策行動は`todo`として扱います。
+単なる提案として既に`todo`になっている項目は強制変更せずtentative判定を記録し、
+誤って`risk`になっている明確な提案は`issue/discussion`へ修正します。
+
+同一itemのdescriptionに複数の強い意味役割を持つ文がある場合は、各文を再検証して
+別itemへ分割します。subjectを持たない短いfragmentはlow-information gateで棄却し、
+元itemのID、parent、evidenceを保持します。分割または既存の別命題として共存する
+itemには、既存`tree.relations`で`todo -> risk: mitigates`、
+`todo -> issue: addresses`、`fact -> issue: supports`を追加します。
+この追加は既存Web payloadのoptional fieldを使うためschema変更はありません。
+
+validatorはmodel受信後、split後、deterministic synthesis後、semantic dedup後、
+legacy normalization、audit operation適用前、final deterministic repairで再利用します。
+変更閾値はlive `0.90`、legacy/audit `0.92`、final `0.88`です。閾値未満は元kindを
+維持し、ambiguous/tentativeとして観測します。
+
+本文を出さない`AI item kind validation evaluated`、
+`AI item semantic split completed`、`Final item kind distribution evaluated`
+ログで、判定特徴、変更理由、confidence、分割数、kind分布の偏りを確認できます。
 
 ### deactivate_item
 
