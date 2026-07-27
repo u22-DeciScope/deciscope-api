@@ -457,7 +457,6 @@ Invoke-RestMethod `
 - `GET /v1/meetings/{meeting_id}`
 - `GET /v1/meetings/{meeting_id}/events?after_seq=0`
 - `GET /v1/meetings/{meeting_id}/segments?after_seq=0`
-- `GET /v1/meetings/{meeting_id}/report`
 - `WS /v1/realtime?meeting_id={meeting_id}`
 
 API一覧は [docs/api.md](docs/api.md)、ローカル起動手順は

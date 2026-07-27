@@ -53,12 +53,12 @@ func (api *CoreAPI) CreateJoinToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *CoreAPI) EndMeeting(w http.ResponseWriter, r *http.Request) {
-	report, events, err := api.service.EndMeeting(r.Context(), chi.URLParam(r, "meeting_id"))
+	events, err := api.service.EndMeeting(r.Context(), chi.URLParam(r, "meeting_id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"report": reportDTO(*report), "events": eventDTOs(events)})
+	writeJSON(w, http.StatusOK, map[string]any{"events": eventDTOs(events)})
 }
 
 func (api *CoreAPI) ListEvents(w http.ResponseWriter, r *http.Request) {

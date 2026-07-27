@@ -149,8 +149,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	}
 	tokenVerifier := firebase.NewTokenVerifier(authClient)
 	service := application.NewService(
-		repositories.Meetings, repositories.Events, repositories.Reports,
-		repositories.Jobs, hub,
+		repositories.Meetings, repositories.Events, repositories.Jobs, hub,
 	)
 	authService := appauth.NewService(authRepository, tokenVerifier, 7*24*time.Hour)
 	workspaceService := appworkspace.NewService(authRepository, buildInvitationMailer(config), config.FrontendURL)
@@ -270,7 +269,6 @@ func MigrateDatabase(ctx context.Context) error {
 type repositorySet struct {
 	Meetings application.MeetingRepository
 	Events   application.EventRepository
-	Reports  application.ReportRepository
 	Jobs     application.JobRepository
 }
 
@@ -518,12 +516,11 @@ func closeAll(closers []func() error) error {
 type repositoryStore interface {
 	application.MeetingRepository
 	application.EventRepository
-	application.ReportRepository
 	application.JobRepository
 }
 
 func repositoriesFromStore(store repositoryStore) repositorySet {
 	return repositorySet{
-		Meetings: store, Events: store, Reports: store, Jobs: store,
+		Meetings: store, Events: store, Jobs: store,
 	}
 }

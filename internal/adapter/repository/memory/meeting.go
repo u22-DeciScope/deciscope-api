@@ -62,7 +62,6 @@ func (m *MemoryStore) ResetMeeting(_ context.Context, meetingID string) error {
 	m.meetings[meetingID], m.nextSeq[meetingID] = meeting, 1
 	delete(m.events, meetingID)
 	delete(m.segments, meetingID)
-	delete(m.reports, meetingID)
 	return nil
 }
 

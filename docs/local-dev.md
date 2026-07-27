@@ -87,7 +87,7 @@ GET http://<PC_TAILSCALE_IP>:9090/readyz
 ```
 
 現在、ブラウザ用の `/debug` 画面は提供していません。以下のAPIとWebSocketを
-使ってdurable event、transcript segment、Markdown reportを確認します。
+使ってdurable eventとtranscript segmentを確認します。
 
 ## 手動クイックデモ
 
@@ -119,13 +119,11 @@ ws://localhost:9090/v1/realtime?meeting_id={meeting_id}
 }
 ```
 
-イベント、発話、レポートを確認します。
+イベントと発話を確認します。
 
 ```http
 GET http://localhost:9090/v1/meetings/{meeting_id}/events?after_seq=0
 GET http://localhost:9090/v1/meetings/{meeting_id}/segments?after_seq=0
-GET http://localhost:9090/v1/meetings/{meeting_id}/report
-Accept: text/markdown
 ```
 
 EchoBot形式の文字起こしを保存します。

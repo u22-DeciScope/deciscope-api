@@ -559,8 +559,8 @@ POST /v1/meetings/{meeting_id}/end
 - `source` が空の場合は `fixture_replay` になります。
 - 作成時に `meeting.state` eventが保存・配信されます。
 - `join-token` はローカル開発用のダミートークンを返します。
-- `end` は会議を終了状態にし、Markdown reportを生成して
-  `report.ready` を保存・配信します。
+- `end` は会議を終了状態にし、`meeting.state` eventを保存・配信します。
+  レスポンスは保存されたeventの一覧 (`events`) です。
 
 ## イベントと発話
 
@@ -585,16 +585,6 @@ WS /v1/realtime?meeting_id={meeting_id}&last_seq={seq}
 
 WebSocket接続後、Clientは任意で `client.hello` を送れます。Serverは
 `last_seq` より後のdurable eventを再送してからlive event配信に移ります。
-
-## レポート
-
-```http
-GET /v1/meetings/{meeting_id}/report
-```
-
-通常はJSONで `artifact_id`, `meeting_id`, `format`, `content`, `created_at`
-を返します。`Accept: text/markdown` の場合はMarkdown本文を返します。保存済みの
-Reportがない場合は、現在のSegmentと分析Eventから生成して保存します。
 
 ## エラー形式
 

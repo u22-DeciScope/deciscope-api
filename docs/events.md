@@ -76,7 +76,6 @@ WS /v1/realtime?meeting_id={meeting_id}&last_seq={seq}
 - `analysis.delta`
 - `tree.update`
 - `speaker.summary.delta`
-- `report.ready`
 - `error`
 
 REST では次の API から取得できます。
@@ -220,22 +219,6 @@ owner/adminの手動statusは別レコードに保存され、配信時の`manua
 ```
 
 話者ごとの要約差分です。
-
-### report.ready
-
-```json
-{
-  "artifact_id": "art_xxxxx",
-  "format": "markdown"
-}
-```
-
-レポート生成が完了したことを通知します。本文は次の API で取得します。
-
-```http
-GET /v1/meetings/{meeting_id}/report
-Accept: text/markdown
-```
 
 ### error
 

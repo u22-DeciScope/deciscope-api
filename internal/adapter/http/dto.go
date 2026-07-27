@@ -36,14 +36,6 @@ type segmentResponse struct {
 	CreatedAt    string `json:"created_at"`
 }
 
-type reportResponse struct {
-	ArtifactID string `json:"artifact_id"`
-	MeetingID  string `json:"meeting_id"`
-	Format     string `json:"format"`
-	Content    string `json:"content"`
-	CreatedAt  string `json:"created_at"`
-}
-
 func meetingDTO(v domain.Meeting) meetingResponse {
 	return meetingResponse(v)
 }
@@ -54,10 +46,6 @@ func eventDTO(v domain.Event) eventResponse {
 
 func segmentDTO(v domain.Segment) segmentResponse {
 	return segmentResponse(v)
-}
-
-func reportDTO(v domain.Report) reportResponse {
-	return reportResponse(v)
 }
 
 func meetingDTOs(values []domain.Meeting) []meetingResponse {

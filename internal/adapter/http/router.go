@@ -115,7 +115,6 @@ func NewRouter(deps RouterDependencies) http.Handler {
 				r.Post("/end", deps.CoreAPI.EndMeeting)
 				r.Get("/events", deps.CoreAPI.ListEvents)
 				r.Get("/segments", deps.CoreAPI.ListSegments)
-				r.Get("/report", deps.CoreAPI.GetReport)
 			})
 			r.With(requireRealtimeAccess(deps.Access)).Get("/realtime", deps.Realtime)
 		})

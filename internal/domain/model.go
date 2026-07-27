@@ -18,7 +18,6 @@ const (
 	EventAnalysisDelta       = "analysis.delta"
 	EventTreeUpdate          = "tree.update"
 	EventSpeakerSummaryDelta = "speaker.summary.delta"
-	EventReportReady         = "report.ready"
 	EventError               = "error"
 )
 
@@ -206,14 +205,6 @@ type Job struct {
 	UpdatedAt   string
 }
 
-type Report struct {
-	ArtifactID string
-	MeetingID  string
-	Format     string
-	Content    string
-	CreatedAt  string
-}
-
 type User struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
@@ -279,7 +270,7 @@ type TranscriptFinalPayload struct {
 
 func IsDurableEventType(eventType string) bool {
 	switch eventType {
-	case EventTranscriptFinal, EventAnalysisDelta, EventTreeUpdate, EventSpeakerSummaryDelta, EventMeetingState, EventReportReady, EventError:
+	case EventTranscriptFinal, EventAnalysisDelta, EventTreeUpdate, EventSpeakerSummaryDelta, EventMeetingState, EventError:
 		return true
 	default:
 		return false

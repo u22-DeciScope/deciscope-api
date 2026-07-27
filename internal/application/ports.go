@@ -24,11 +24,6 @@ type EventRepository interface {
 	ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Segment, error)
 }
 
-type ReportRepository interface {
-	SaveReport(ctx context.Context, meetingID, content string) (*domain.Report, error)
-	LatestReport(ctx context.Context, meetingID string) (*domain.Report, error)
-}
-
 type JobRepository interface {
 	CreateJob(ctx context.Context, workspaceID, jobType, meetingID, status string) (*domain.Job, error)
 	CompleteJob(ctx context.Context, jobID string, result any) error
