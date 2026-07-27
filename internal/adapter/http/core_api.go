@@ -12,10 +12,9 @@ type CoreUseCases interface {
 	CreateMeeting(ctx context.Context, workspaceID, title, source string) (*domain.Meeting, error)
 	GetMeeting(ctx context.Context, meetingID string) (*domain.Meeting, error)
 	CreateJoinToken(ctx context.Context, meetingID string) (*application.JoinToken, error)
-	EndMeeting(ctx context.Context, meetingID string) (*domain.Report, []domain.Event, error)
+	EndMeeting(ctx context.Context, meetingID string) ([]domain.Event, error)
 	ListEvents(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Event, error)
 	ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Segment, error)
-	GetOrCreateReport(ctx context.Context, meetingID string) (*domain.Report, error)
 }
 
 type CoreAPI struct {

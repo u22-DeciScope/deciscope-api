@@ -217,7 +217,8 @@ func TestClassificationPromotesPersistentEmergingTopic(t *testing.T) {
 	state2 := mergeForTestAtRound(t, round2, marshalPayloadForTest(t, state1), mc, 2)
 	assertTreeInvariants(t, state2.Tree)
 
-	dynamicID, _ := canonicalCandidateID("レポート形式", "")
+	candidateID, _ := canonicalCandidateID("レポート形式", "")
+	dynamicID := stableDynamicTopicID(candidateID)
 	topic := treeNodeByID(state2.Tree, dynamicID)
 	if topic == nil || topic.Kind != "topic" || topic.Origin != topicOriginDynamic {
 		t.Fatalf("topic = %+v, want promoted dynamic topic with stable id", topic)
@@ -371,8 +372,10 @@ func TestClassificationLimitsTopicGrowth(t *testing.T) {
 	if _, dynamic, _ := countTopics(state2.Tree); dynamic != maxPromotionsPerRound {
 		t.Fatalf("dynamic topics = %d, want %d (promotion is rate-limited)", dynamic, maxPromotionsPerRound)
 	}
-	topicAID, _ := canonicalCandidateID("話題A", "")
-	topicBID, _ := canonicalCandidateID("話題B", "")
+	candidateAID, _ := canonicalCandidateID("話題A", "")
+	candidateBID, _ := canonicalCandidateID("話題B", "")
+	topicAID := stableDynamicTopicID(candidateAID)
+	topicBID := stableDynamicTopicID(candidateBID)
 	if treeNodeByID(state2.Tree, topicAID) == nil {
 		t.Fatalf("first candidate topic-a must be promoted first: %+v", state2.Tree.Nodes)
 	}

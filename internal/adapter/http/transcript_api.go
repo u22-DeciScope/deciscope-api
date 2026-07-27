@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"deciscope-core-api/internal/domain"
-
-	"github.com/go-chi/chi/v5"
 )
 
 const transcriptSegmentBodyLimitBytes int64 = 64 * 1024
@@ -27,21 +25,15 @@ var errEmptyTranscriptText = errors.New("transcript text is empty")
 type TranscriptIngestUseCases interface {
 	StoreTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
 	PublishTranscriptPartial(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
-	ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error)
 }
 
 type TranscriptAPI struct {
-	service     TranscriptIngestUseCases
-	apiKey      string
-	clientToken string
+	service TranscriptIngestUseCases
+	apiKey  string
 }
 
-func NewTranscriptAPI(service TranscriptIngestUseCases, apiKey string, clientToken ...string) *TranscriptAPI {
-	var token string
-	if len(clientToken) > 0 {
-		token = clientToken[0]
-	}
-	return &TranscriptAPI{service: service, apiKey: apiKey, clientToken: token}
+func NewTranscriptAPI(service TranscriptIngestUseCases, apiKey string) *TranscriptAPI {
+	return &TranscriptAPI{service: service, apiKey: apiKey}
 }
 
 func (api *TranscriptAPI) Store(w http.ResponseWriter, r *http.Request) {
@@ -139,66 +131,8 @@ func (api *TranscriptAPI) Store(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (api *TranscriptAPI) List(w http.ResponseWriter, r *http.Request) {
-	if !api.authorizedClient(r) {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
-		return
-	}
-	limit, err := parseTranscriptLimit(r.URL.Query().Get("limit"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	callID := strings.TrimSpace(r.URL.Query().Get("callId"))
-	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
-	segments, err := api.service.ListTranscriptSegments(r.Context(), callID, sessionID, limit)
-	if err != nil {
-		log.Printf("List transcript segments failed. callId=%s sessionId=%s limit=%d error=%v", callID, sessionID, limit, err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
-		return
-	}
-	log.Printf("List transcript segments response. callId=%s sessionId=%s limit=%d count=%d", callID, sessionID, limit, len(segments))
-	writeJSON(w, http.StatusOK, transcriptSegmentListResponse{Items: transcriptSegmentItems(segments)})
-}
-
-func (api *TranscriptAPI) ListByMeetingSession(w http.ResponseWriter, r *http.Request) {
-	if !api.authorizedClient(r) {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
-		return
-	}
-	limit, err := parseTranscriptLimit(r.URL.Query().Get("limit"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
-	if sessionID == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "session_id is required")
-		return
-	}
-	segments, err := api.service.ListTranscriptSegments(r.Context(), "", sessionID, limit)
-	if err != nil {
-		log.Printf("List transcript segments failed. sessionId=%s limit=%d error=%v", sessionID, limit, err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
-		return
-	}
-	log.Printf("List transcript segments response. sessionId=%s limit=%d count=%d", sessionID, limit, len(segments))
-	writeJSON(w, http.StatusOK, transcriptSegmentListResponse{Items: transcriptSegmentItems(segments)})
-}
-
 func (api *TranscriptAPI) authorized(value string) bool {
 	return authorizedSecret(value, api.apiKey)
-}
-
-func (api *TranscriptAPI) authorizedClient(r *http.Request) bool {
-	if strings.TrimSpace(api.clientToken) == "" {
-		return true
-	}
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	if token == "" {
-		token = bearerToken(r.Header.Get("Authorization"))
-	}
-	return authorizedSecret(token, api.clientToken)
 }
 
 func authorizedSecret(value, secret string) bool {
@@ -344,14 +278,6 @@ func parseTranscriptLimit(value string) (int, error) {
 		return 500, nil
 	}
 	return limit, nil
-}
-
-func bearerToken(value string) string {
-	const prefix = "Bearer "
-	if !strings.HasPrefix(value, prefix) {
-		return ""
-	}
-	return strings.TrimSpace(strings.TrimPrefix(value, prefix))
 }
 
 func transcriptSegmentItems(segments []domain.TranscriptSegment) []transcriptSegmentItem {

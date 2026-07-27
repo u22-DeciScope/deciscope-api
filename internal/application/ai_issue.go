@@ -21,13 +21,36 @@ type issueCandidate struct {
 	Recap bool
 }
 
+const issueSynthesisAssignmentReason = "server unresolved candidate"
+
 type issueExtractionAudit struct {
-	QuestionCandidates  int
-	OpenIssueCandidates int
-	QuestionsAccepted   int
-	OpenIssuesAccepted  int
-	ExistingMerged      int
-	RecapMerged         int
+	QuestionCandidates              int
+	OpenIssueCandidates             int
+	QuestionsAccepted               int
+	OpenIssuesAccepted              int
+	ExistingMerged                  int
+	RecapMerged                     int
+	SameEvidenceSynthesisSuppressed int
+	Decisions                       []issueSynthesisDecision
+}
+
+// issueSynthesisDecision deliberately excludes transcript and item text.
+// Sequence numbers and canonical/model references are sufficient to trace why
+// the deterministic extractor did or did not create a node.
+type issueSynthesisDecision struct {
+	SequenceNo   int64
+	Subtype      string
+	MatchedItem  string
+	Decision     string
+	Reason       string
+	MatchScore   float64
+	SameEvidence bool
+	GeneratedBy  string
+	EvidenceHash string
+	ParentID     string
+	AgendaRefs   []string
+	Status       string
+	MergedInto   string
 }
 
 var (
@@ -127,10 +150,55 @@ func reconcileIssueCandidates(content string, previousPayload json.RawMessage, c
 			}
 			continue
 		}
+		// The model may already have represented the unresolved proposition as
+		// a concrete TODO/risk/fact rather than kind=issue. Before creating the
+		// server fallback, compare the candidate against every model item using
+		// evidence identity, unresolved state, subject overlap and semantic
+		// specificity. Requiring subject overlap preserves independent issues
+		// extracted from one utterance.
+		if at, score, sameEvidence := bestRepresentedIssueCandidate(diff, candidate); at >= 0 {
+			decision, reason := "suppressed", "model_item_represents_same_unresolved_evidence"
+			if issueModelRepresentationAbstract(diff.Items[at]) && !issueTextNeedsReferent(candidate.Statement) {
+				diff.Items[at].Title = issueCandidateTitle(candidate)
+				diff.Items[at].Body = truncateRunes(candidate.Statement, liveAnalysisTreeDescriptionMaxRunes)
+				diff.Items[at].InformationStatus = informationStatusGrounded
+				diff.Items[at].EvidenceSequenceNos = appendUniqueSequence(diff.Items[at].EvidenceSequenceNos, candidate.SequenceNo)
+				decision, reason = "rewritten", "abstract_model_item_enriched_from_same_evidence"
+			}
+			audit.ExistingMerged++
+			audit.SameEvidenceSynthesisSuppressed++
+			audit.Decisions = append(audit.Decisions, issueSynthesisDecision{
+				SequenceNo: candidate.SequenceNo, Subtype: candidate.Subtype,
+				MatchedItem: modelItemReference(diff.Items[at]), Decision: decision,
+				Reason:     reason,
+				MatchScore: score, SameEvidence: sameEvidence,
+				GeneratedBy: "open_issue_synthesis",
+				EvidenceHash: itemEvidenceFingerprint(liveAnalysisItem{
+					EvidenceSequenceNos: []int64{candidate.SequenceNo},
+				}),
+				ParentID:   issueItemParent(diff, diff.Items[at]),
+				AgendaRefs: append([]string(nil), diff.Items[at].RelatedAgendaIDs...),
+				Status:     diff.Items[at].ClassificationStatus,
+				MergedInto: modelItemReference(diff.Items[at]),
+			})
+			continue
+		}
 		if at, score := bestSameKindMatch(diff.Items, candidate, false); at >= 0 && score >= 0.16 {
 			diff.Items[at].EvidenceSequenceNos = appendUniqueSequence(diff.Items[at].EvidenceSequenceNos, candidate.SequenceNo)
 			appendIssueOpenUpdate(&diff, modelItemReference(diff.Items[at]), candidate)
 			audit.ExistingMerged++
+			audit.Decisions = append(audit.Decisions, issueSynthesisDecision{
+				SequenceNo: candidate.SequenceNo, Subtype: candidate.Subtype,
+				MatchedItem: modelItemReference(diff.Items[at]), Decision: "merged",
+				Reason: "same_kind_semantic_match", MatchScore: score,
+				SameEvidence: containsInt64(diff.Items[at].EvidenceSequenceNos, candidate.SequenceNo),
+				GeneratedBy:  "open_issue_synthesis",
+				EvidenceHash: itemEvidenceFingerprint(diff.Items[at]),
+				ParentID:     issueItemParent(diff, diff.Items[at]),
+				AgendaRefs:   append([]string(nil), diff.Items[at].RelatedAgendaIDs...),
+				Status:       diff.Items[at].ClassificationStatus,
+				MergedInto:   modelItemReference(diff.Items[at]),
+			})
 			continue
 		}
 		if at, score := bestSameKindMatch(previous.Items, candidate, false); at >= 0 && score >= 0.22 {
@@ -140,6 +208,17 @@ func reconcileIssueCandidates(content string, previousPayload json.RawMessage, c
 			diff.Items = append(diff.Items, updated)
 			appendIssueOpenUpdate(&diff, updated.ID, candidate)
 			audit.ExistingMerged++
+			audit.Decisions = append(audit.Decisions, issueSynthesisDecision{
+				SequenceNo: candidate.SequenceNo, Subtype: candidate.Subtype,
+				MatchedItem: updated.ID, Decision: "merged",
+				Reason: "previous_same_kind_semantic_match", MatchScore: score,
+				SameEvidence: containsInt64(previous.Items[at].EvidenceSequenceNos, candidate.SequenceNo),
+				GeneratedBy:  "open_issue_synthesis",
+				EvidenceHash: itemEvidenceFingerprint(updated),
+				AgendaRefs:   append([]string(nil), updated.RelatedAgendaIDs...),
+				Status:       updated.ClassificationStatus,
+				MergedInto:   updated.ID,
+			})
 			continue
 		}
 
@@ -151,6 +230,17 @@ func reconcileIssueCandidates(content string, previousPayload json.RawMessage, c
 			diff.Items = append(diff.Items, updated)
 			appendIssueOpenUpdate(&diff, updated.ID, candidate)
 			audit.ExistingMerged++
+			audit.Decisions = append(audit.Decisions, issueSynthesisDecision{
+				SequenceNo: candidate.SequenceNo, Subtype: candidate.Subtype,
+				MatchedItem: updated.ID, Decision: "merged",
+				Reason:       "stable_issue_id_match",
+				SameEvidence: containsInt64(existing.EvidenceSequenceNos, candidate.SequenceNo),
+				GeneratedBy:  "open_issue_synthesis",
+				EvidenceHash: itemEvidenceFingerprint(updated),
+				AgendaRefs:   append([]string(nil), updated.RelatedAgendaIDs...),
+				Status:       updated.ClassificationStatus,
+				MergedInto:   updated.ID,
+			})
 			continue
 		}
 		parentID := relatedCandidateParent(diff, candidate.Statement)
@@ -159,18 +249,113 @@ func reconcileIssueCandidates(content string, previousPayload json.RawMessage, c
 			Title: issueCandidateTitle(candidate), Body: candidate.Statement,
 			Status: "open", InformationStatus: informationStatusGrounded, EvidenceSequenceNos: []int64{candidate.SequenceNo},
 		})
-		diff.Assignments = append(diff.Assignments, treeAssignment{NodeID: id, ParentTopicID: parentID, Confidence: 0.6, Reason: "server unresolved candidate"})
+		diff.Assignments = append(diff.Assignments, treeAssignment{NodeID: id, ParentTopicID: parentID, Confidence: 0.6, Reason: issueSynthesisAssignmentReason})
 		if candidate.Subtype == issueSubtypeQuestion {
 			audit.QuestionsAccepted++
 		} else {
 			audit.OpenIssuesAccepted++
 		}
+		audit.Decisions = append(audit.Decisions, issueSynthesisDecision{
+			SequenceNo: candidate.SequenceNo, Subtype: candidate.Subtype,
+			MatchedItem: id, Decision: "created", Reason: "no_existing_representation",
+			SameEvidence: true, GeneratedBy: "open_issue_synthesis",
+			EvidenceHash: itemEvidenceFingerprint(liveAnalysisItem{
+				EvidenceSequenceNos: []int64{candidate.SequenceNo},
+			}),
+			ParentID: parentID,
+		})
 	}
 	encoded, err := json.Marshal(diff)
 	if err != nil {
 		return content, audit, err
 	}
 	return string(encoded), audit, nil
+}
+
+func issueItemParent(diff liveAnalysisPayload, item liveAnalysisItem) string {
+	reference := canonicalReferenceKey(modelItemReference(item))
+	for _, assignment := range diff.Assignments {
+		if canonicalReferenceKey(assignment.nodeID()) == reference {
+			return strings.TrimSpace(assignment.ParentTopicID)
+		}
+	}
+	return ""
+}
+
+func bestRepresentedIssueCandidate(diff liveAnalysisPayload, candidate issueCandidate) (int, float64, bool) {
+	bestAt, bestScore, bestSameEvidence := -1, 0.0, false
+	candidateText := strings.TrimSpace(candidate.Statement)
+	candidateSubject := semanticIssueKey(candidateText)
+	candidateNeedsReferent := issueTextNeedsReferent(candidateText)
+	candidateParent := relatedCandidateParent(diff, candidate.Statement)
+	for i, item := range diff.Items {
+		if item.Inactive || item.MergedIntoID != "" {
+			continue
+		}
+		itemText := strings.TrimSpace(item.Title + " " + item.Body)
+		itemSubject := semanticIssueKey(itemText)
+		sameEvidence := containsInt64(item.EvidenceSequenceNos, candidate.SequenceNo)
+		similarity := semanticItemSimilarity(itemText, candidateText)
+		subjectSimilarity := semanticItemSimilarity(itemSubject, candidateSubject)
+		sharedSubject := itemSubject != "" && candidateSubject != "" &&
+			sharedTreeAuditSubjectTerm(itemSubject, candidateSubject) &&
+			subjectSimilarity >= 0.18
+		unresolved := openIssueMarkerPattern.MatchString(itemText) ||
+			(item.Kind == "issue" && item.Status != "resolved" && item.Status != "dismissed")
+		abstractRepresentation := sameEvidence && issueModelRepresentationAbstract(item) && !candidateNeedsReferent
+
+		// Evidence identity alone is insufficient: a single utterance can state
+		// several independent unresolved propositions. A referent-free fallback
+		// carries no independent subject, so an unresolved model item on the same
+		// evidence is the only safe canonical representation for it.
+		if !unresolved || (!abstractRepresentation && !sharedSubject && subjectSimilarity < 0.48 && !candidateNeedsReferent) {
+			continue
+		}
+		score := similarity
+		if sameEvidence {
+			score += 0.55
+		}
+		if sharedSubject {
+			score += 0.20
+		}
+		if unresolved {
+			score += 0.15
+		}
+		if item.Kind == "issue" {
+			score += 0.10
+			if item.Subtype == candidate.Subtype {
+				score += 0.08
+			}
+		}
+		itemParent := issueItemParent(diff, item)
+		if itemParent != "" && itemParent == candidateParent {
+			score += 0.08
+		}
+		if candidateParent != "" && containsExactString(item.RelatedAgendaIDs, candidateParent) {
+			score += 0.05
+		}
+		if candidateNeedsReferent && sameEvidence {
+			score += 0.10
+		}
+		if abstractRepresentation {
+			score += 0.25
+		}
+		threshold := 0.72
+		if !sameEvidence {
+			threshold = 0.90
+		}
+		if score >= threshold && score > bestScore {
+			bestAt, bestScore, bestSameEvidence = i, score, sameEvidence
+		}
+	}
+	return bestAt, bestScore, bestSameEvidence
+}
+
+func issueModelRepresentationAbstract(item liveAnalysisItem) bool {
+	text := strings.TrimSpace(item.Title + " " + item.Body)
+	return liveItemTextNeedsReferent(item) ||
+		metaOnlyLiveItemText(text) ||
+		len([]rune(semanticIssueKey(text))) < 8
 }
 
 func mergeIssueRecap(diff *liveAnalysisPayload, previous []liveAnalysisItem, candidate issueCandidate) bool {

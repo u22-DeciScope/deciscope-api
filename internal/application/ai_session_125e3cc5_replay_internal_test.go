@@ -300,12 +300,11 @@ func TestSession125e3cc5ReplayFixesVpnDuplicationRecapAndDecisionDefects(t *test
 		if item.Inactive || item.MergedIntoID != "" {
 			continue
 		}
-		if !strings.Contains(item.Title+item.Body, "アラート") {
-			continue
-		}
 		switch item.Kind {
 		case "risk":
-			alertRiskCount++
+			if strings.Contains(item.Title+item.Body, "アラート") {
+				alertRiskCount++
+			}
 		case "issue":
 			if strings.Contains(item.Title+item.Body, "検討") {
 				alertConditionIssueCount++

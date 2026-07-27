@@ -10,14 +10,9 @@ import (
 	"deciscope-core-api/internal/domain"
 )
 
-// DefaultMeetingSessionWatchdogInterval, DefaultMeetingSessionBotLostAfter and
-// DefaultMeetingSessionBotEndAfter mirror the defaults documented for the
-// DECISCOPE_SESSION_WATCHDOG_* environment variables in internal/app/config.go.
-const (
-	DefaultMeetingSessionWatchdogInterval = 15 * time.Second
-	DefaultMeetingSessionBotLostAfter     = 60 * time.Second
-	DefaultMeetingSessionBotEndAfter      = 180 * time.Second
-)
+// DefaultMeetingSessionWatchdogInterval mirrors the default documented for
+// DECISCOPE_SESSION_WATCHDOG_INTERVAL in internal/app/config.go.
+const DefaultMeetingSessionWatchdogInterval = 15 * time.Second
 
 // MeetingSessionEnder is the subset of MeetingSessionService the watchdog
 // needs to force-end an unresponsive session. It is defined narrowly here (in

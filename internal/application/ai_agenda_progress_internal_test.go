@@ -415,10 +415,9 @@ func TestAgendaProgressAdditionalTopicTwoRoundsDisplayedAndPromotionCarriesTrack
 		t.Fatalf("round-2 candidate weightRaw = %v, want > 0", weightAfterRound2)
 	}
 
-	// Round 3: the candidate promotes to a real dynamic topic node reusing
-	// the same id (matches promoteEmergingCandidates' own id reuse), with
-	// more activity. Tracking (WeightRaw/ActiveRounds) must carry over from
-	// the still-emerging entry rather than restarting at zero.
+	// Round 3 uses a legacy persisted dynamic node whose ID equals the
+	// candidate entry ID. New payloads use SourceCandidateID + a distinct
+	// topic-dynamic-* ID, while this compatibility path must keep tracking.
 	addAgendaProgressDynamicTopicNode(tree, "topic-side", "サイドトピック(昇格後)")
 	itemSide3 := liveAnalysisItem{ID: "item-side-3", Kind: "issue", EvidenceSequenceNos: []int64{3, 4}}
 	tree.Nodes = append(tree.Nodes, liveAnalysisTreeNode{ID: "item-side-3", Kind: "issue", ParentID: "topic-side"})
@@ -461,6 +460,89 @@ func TestAgendaProgressDynamicEntryDroppedWhenBackingDisappears(t *testing.T) {
 	}
 	if entry := agendaProgressEntryByID(state, "agenda-1"); entry == nil {
 		t.Fatalf("fixed agenda entry must remain")
+	}
+}
+
+func TestFinalizeAgendaProgressPromotesDiscussingOnlyWithDiscussionEvidence(t *testing.T) {
+	mc := agendaProgressTestMC(agendaItem{
+		ID: "agenda-1", Title: "対応方針の決定", Order: 1, Role: agendaRolePrimary,
+	})
+	tree := agendaProgressTestTree("agenda-1")
+	addAgendaProgressItemNode(tree, "item-issue", "agenda-1", "issue")
+	state := &liveAnalysisPayload{
+		Tree: tree,
+		Items: []liveAnalysisItem{{
+			ID: "item-issue", Kind: "issue", Title: "未解決の選択肢",
+		}},
+		AgendaAnchors: []agendaAnchor{{
+			AgendaID: "agenda-1", OriginalTitle: "対応方針の決定", Order: 1,
+			Status: agendaStatusMaterialized, MaterializedTopicIDs: []string{"agenda-1"},
+		}},
+		AgendaProgress: &agendaProgressState{
+			ComputedCurrentTopicID: "agenda-1",
+			Entries: []agendaProgressEntry{{
+				ID: "agenda-1", SourceType: agendaProgressSourceFixed,
+				Title: "対応方針の決定", Order: 1,
+				ComputedStatus:     agendaProgressDiscussing,
+				ManualStatus:       agendaProgressDiscussing,
+				ActiveRounds:       2,
+				OutcomeExpectation: outcomeExpectationDecision,
+			}},
+		},
+	}
+
+	finalizeAgendaProgress(state, mc, 18)
+
+	entry := agendaProgressEntryByID(state.AgendaProgress, "agenda-1")
+	if entry == nil || entry.ComputedStatus != agendaProgressDiscussed {
+		t.Fatalf("finalized entry=%+v, want evidence-backed discussed", entry)
+	}
+	if entry.OutcomeStatus != agendaOutcomeUnresolved {
+		t.Fatalf("outcomeStatus=%q, want unresolved independently of discussed status", entry.OutcomeStatus)
+	}
+	if entry.ManualStatus != agendaProgressDiscussing {
+		t.Fatalf("manualStatus=%q, want untouched", entry.ManualStatus)
+	}
+	if state.AgendaProgress.ComputedCurrentTopicID != "" {
+		t.Fatalf("computedCurrentTopicId=%q, want cleared at meeting end", state.AgendaProgress.ComputedCurrentTopicID)
+	}
+}
+
+func TestFinalizeAgendaProgressDoesNotPromoteDiscussingFromMeetingEndAlone(t *testing.T) {
+	mc := agendaProgressTestMC(agendaItem{
+		ID: "agenda-1", Title: "対応方針の決定", Order: 1, Role: agendaRolePrimary,
+	})
+	tree := agendaProgressTestTree("agenda-1")
+	addAgendaProgressItemNode(tree, "item-issue", "agenda-1", "issue")
+	state := &liveAnalysisPayload{
+		Tree: tree,
+		Items: []liveAnalysisItem{{
+			ID: "item-issue", Kind: "issue", Title: "単発の言及",
+		}},
+		AgendaAnchors: []agendaAnchor{{
+			AgendaID: "agenda-1", OriginalTitle: "対応方針の決定", Order: 1,
+			Status: agendaStatusMaterialized, MaterializedTopicIDs: []string{"agenda-1"},
+		}},
+		AgendaProgress: &agendaProgressState{
+			ComputedCurrentTopicID: "agenda-1",
+			Entries: []agendaProgressEntry{{
+				ID: "agenda-1", SourceType: agendaProgressSourceFixed,
+				Title: "対応方針の決定", Order: 1,
+				ComputedStatus:     agendaProgressDiscussing,
+				ActiveRounds:       1,
+				OutcomeExpectation: outcomeExpectationDecision,
+			}},
+		},
+	}
+
+	finalizeAgendaProgress(state, mc, 19)
+
+	entry := agendaProgressEntryByID(state.AgendaProgress, "agenda-1")
+	if entry == nil || entry.ComputedStatus != agendaProgressDiscussing {
+		t.Fatalf("finalized entry=%+v, want discussing without sufficient activity evidence", entry)
+	}
+	if entry.OutcomeStatus != "" {
+		t.Fatalf("outcomeStatus=%q, want empty until the agenda is discussed", entry.OutcomeStatus)
 	}
 }
 

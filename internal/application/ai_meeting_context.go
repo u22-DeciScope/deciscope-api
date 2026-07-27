@@ -62,9 +62,12 @@ type meetingContext struct {
 }
 
 type agendaItem struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Order int    `json:"order"`
+	ID            string   `json:"id"`
+	Title         string   `json:"title"`
+	Description   string   `json:"description,omitempty"`
+	Goal          string   `json:"goal,omitempty"`
+	SemanticHints []string `json:"semanticHints,omitempty"`
+	Order         int      `json:"order"`
 	// Role separates a normal content agenda from a cross-cutting action
 	// summary. It is optional for old context payloads; an empty role is
 	// treated as primary everywhere.
@@ -173,18 +176,30 @@ func reconcileMeetingContextWithFallback(planned, fallback *meetingContext) *mee
 		return planned
 	}
 	reconciled := *planned
-	limit := len(planned.Agenda)
-	if limit > len(fallback.Agenda) {
-		limit = len(fallback.Agenda)
-	}
-	reconciled.Agenda = make([]agendaItem, 0, limit)
-	for index := 0; index < limit; index++ {
+	// The persisted meeting input, rather than the model response, owns agenda
+	// cardinality and positional identity. A v4 metadata response that omits,
+	// duplicates, merges, or splits an entry must therefore leave the original
+	// count/order/IDs intact.
+	reconciled.Agenda = make([]agendaItem, 0, len(fallback.Agenda))
+	for index := range fallback.Agenda {
 		source := fallback.Agenda[index]
-		item := planned.Agenda[index]
+		item := source
+		if index < len(planned.Agenda) {
+			item = planned.Agenda[index]
+		}
 		if strings.TrimSpace(item.Title) == "" {
 			item.Title = source.Title
 		}
 		item.Role = effectiveAgendaRole(item.Role, item.Title, "")
+		if strings.TrimSpace(item.Description) == "" {
+			item.Description = source.Description
+		}
+		if strings.TrimSpace(item.Goal) == "" {
+			item.Goal = source.Goal
+		}
+		if len(item.SemanticHints) == 0 {
+			item.SemanticHints = append([]string(nil), source.SemanticHints...)
+		}
 		item.ID = source.ID
 		item.Order = index + 1
 		reconciled.Agenda = append(reconciled.Agenda, item)
@@ -350,6 +365,15 @@ func renderAgendaTopics(c *meetingContext) string {
 	for _, item := range c.Agenda {
 		role := normalizeAgendaRole(item.Role)
 		b.WriteString(item.ID + ": " + item.Title)
+		if item.Description != "" {
+			b.WriteString(" / 説明: " + item.Description)
+		}
+		if item.Goal != "" {
+			b.WriteString(" / ゴール: " + item.Goal)
+		}
+		if len(item.SemanticHints) > 0 {
+			b.WriteString(" / semanticHints: " + strings.Join(item.SemanticHints, ", "))
+		}
 		if role == agendaRoleActionSummary {
 			b.WriteString(" [role=action_summary, 横断参照専用・primary parentにしない]")
 		}

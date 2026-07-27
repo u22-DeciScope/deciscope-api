@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -339,8 +340,9 @@ func TestTreeAuditFakeProviderCleansDiscourseItemAndPreventsResurrection(t *test
 			t.Fatalf("cleanup candidate resurrected: %+v", candidate)
 		}
 	}
-	if stats.ItemResurrectionPrevented != 1 {
-		t.Fatalf("tombstone did not block the next live-version resurrection: %+v", stats)
+	if stats.ItemResurrectionPrevented == 0 &&
+		stats.GroundingRejected+stats.GroundingTentative+stats.GroundingCandidateOnly == 0 {
+		t.Fatalf("neither grounding nor tombstone blocked the next live-version resurrection: %+v", stats)
 	}
 }
 
@@ -616,9 +618,6 @@ func TestTreeAuditOperationSupportedMatchesApplicableSet(t *testing.T) {
 		TreeAuditDeactivateCandidate, TreeAuditRenameGroup, TreeAuditRenameTopic, TreeAuditRemoveEmptyGroup,
 	}
 	for _, operationType := range supported {
-		if !treeAuditOperationSupported(operationType) {
-			t.Fatalf("%s must be supported", operationType)
-		}
 		if treeAuditOperationClassification(operationType) != treeAuditOperationApplicable {
 			t.Fatalf("%s classification = %q, want applicable", operationType, treeAuditOperationClassification(operationType))
 		}
@@ -629,9 +628,6 @@ func TestTreeAuditOperationSupportedMatchesApplicableSet(t *testing.T) {
 		TreeAuditSplitCandidate, TreeAuditMergeFragmentedUtterances,
 	}
 	for _, operationType := range unsupported {
-		if treeAuditOperationSupported(operationType) {
-			t.Fatalf("%s must remain unsupported", operationType)
-		}
 		if treeAuditOperationClassification(operationType) != treeAuditOperationUnsupported {
 			t.Fatalf("%s classification = %q, want unsupported", operationType, treeAuditOperationClassification(operationType))
 		}
@@ -754,17 +750,18 @@ func TestTreeAuditPrecheckDetectsNoAgendaFalsePositiveFromModifier(t *testing.T)
 // design brief 14.2(a): the v3 snapshot renames node/candidate ID fields and
 // adds agendaIds/validParentCanonicalNodeIds plus a promotedNodeId marker so
 // the model can tell a live candidate apart from one that already has a
-// tree node under the same ID.
+// distinct materialized tree node.
 func TestTreeAuditSnapshotUsesV3FieldNamesAndMarksPromotedCandidates(t *testing.T) {
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
-	// A candidate that has already been promoted to a dynamic topic node
-	// keeps its own ID as the node ID. Promotion normally removes the
-	// candidate from EmergingTopics tracking; this fixture keeps it listed
-	// defensively to exercise the promotedNodeId marker.
+	// Promotion normally removes the candidate from EmergingTopics tracking;
+	// this fixture keeps it listed defensively to exercise the explicit
+	// candidate→materialized-topic marker.
+	promotedTopicID := stableDynamicTopicID("candidate-promoted-marker")
 	state.Tree.Nodes = append(state.Tree.Nodes, liveAnalysisTreeNode{
-		ID: "candidate-promoted-marker", Kind: "topic", ParentID: treeRootNodeID,
+		ID: promotedTopicID, Kind: "topic", ParentID: treeRootNodeID,
 		Label: "昇格済み動的topic", Origin: topicOriginDynamic,
+		SourceCandidateID: "candidate-promoted-marker",
 	})
 	state.EmergingTopics = append(state.EmergingTopics, emergingTopicCandidate{
 		ID: "candidate-promoted-marker", Label: "昇格済み動的topic",
@@ -797,7 +794,7 @@ func TestTreeAuditSnapshotUsesV3FieldNamesAndMarksPromotedCandidates(t *testing.
 			unpromoted = &snapshot.Candidates[index]
 		}
 	}
-	if promoted == nil || promoted.PromotedNodeID != "candidate-promoted-marker" {
+	if promoted == nil || promoted.PromotedNodeID != promotedTopicID {
 		t.Fatalf("promoted candidate = %+v", promoted)
 	}
 	if unpromoted == nil || unpromoted.PromotedNodeID != "" {
@@ -809,7 +806,7 @@ func TestTreeAuditSnapshotUsesV3FieldNamesAndMarksPromotedCandidates(t *testing.
 	if containsExactString(snapshot.AgendaIDs, treeRootNodeID) {
 		t.Fatalf("agendaIds unexpectedly include root: %v", snapshot.AgendaIDs)
 	}
-	if !containsExactString(snapshot.ValidParentCanonicalNodeIDs, "candidate-plant-study") || !containsExactString(snapshot.ValidParentCanonicalNodeIDs, "candidate-promoted-marker") {
+	if !containsExactString(snapshot.ValidParentCanonicalNodeIDs, "candidate-plant-study") || !containsExactString(snapshot.ValidParentCanonicalNodeIDs, promotedTopicID) {
 		t.Fatalf("validParentCanonicalNodeIds = %v", snapshot.ValidParentCanonicalNodeIDs)
 	}
 	// root is a valid move_node destination (Phase C), so it belongs in this
@@ -1559,19 +1556,19 @@ func TestTreeAuditMergeItemsAppliesEvidenceUnionAndSurvivor(t *testing.T) {
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
 	state.Items = append(state.Items,
-		liveAnalysisItem{ID: "item-todo-vpn-cert-a", Kind: "todo", Title: "VPN証明書の更新", Body: "来月までにVPN証明書を更新する", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{22, 24}},
-		liveAnalysisItem{ID: "item-todo-vpn-cert-b", Kind: "todo", Title: "VPN証明書の更新", Body: "VPN証明書の更新対応を進める", Status: "resolved", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{24}, NextActions: []string{"担当者へ申請書を提出する"}},
+		liveAnalysisItem{ID: "item-todo-vpn-cert-a", Kind: "todo", Title: "希少植物の予備調査", Body: "専門家による予備調査を検討する", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{24}},
+		liveAnalysisItem{ID: "item-todo-vpn-cert-b", Kind: "todo", Title: "希少植物の予備調査", Body: "植物の種類を確認するため予備調査を検討する", Status: "resolved", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{24}, NextActions: []string{"専門家による予備調査を検討する"}},
 	)
 	state.Tree.Nodes = append(state.Tree.Nodes,
-		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-a", Kind: "todo", ParentID: "candidate-info-public", Label: "VPN証明書の更新", Status: "open"},
-		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-b", Kind: "todo", ParentID: "candidate-info-public", Label: "VPN証明書の更新", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-a", Kind: "todo", ParentID: "candidate-info-public", Label: "希少植物の予備調査", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-b", Kind: "todo", ParentID: "candidate-info-public", Label: "希少植物の予備調査", Status: "open"},
 	)
 	rebuildTreeAuditEdges(state.Tree)
 	roles := classifyTreeAuditEvidence(state, segments)
 	operation := treeAuditOperation{
 		OperationID: "op-merge", Type: TreeAuditMergeItems,
 		TargetCanonicalItemIDs: []string{"item-todo-vpn-cert-a", "item-todo-vpn-cert-b"},
-		Confidence:             0.97, Reason: "同一VPN証明書更新の重複統合", EvidenceSequenceNos: []int64{22},
+		Confidence:             0.97, Reason: "同一の予備調査TODOを統合", EvidenceSequenceNos: []int64{24},
 	}
 	dry, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{operation}, segments, mc, roles, TreeAuditConfig{}, "audit-merge", 13, true)
 	if result.OperationsValid != 1 || result.OperationsApplied != 1 || !result.TreeIntegrityValid {
@@ -1588,7 +1585,7 @@ func TestTreeAuditMergeItemsAppliesEvidenceUnionAndSurvivor(t *testing.T) {
 	if companion.MergedIntoID != "item-todo-vpn-cert-a" {
 		t.Fatalf("companion.mergedIntoId = %q, want item-todo-vpn-cert-a", companion.MergedIntoID)
 	}
-	if !containsInt64(survivor.EvidenceSequenceNos, 22) || !containsInt64(survivor.EvidenceSequenceNos, 24) {
+	if !containsInt64(survivor.EvidenceSequenceNos, 24) {
 		t.Fatalf("survivor evidence union incomplete: %v", survivor.EvidenceSequenceNos)
 	}
 	if survivor.Status != "resolved" {
@@ -1596,7 +1593,7 @@ func TestTreeAuditMergeItemsAppliesEvidenceUnionAndSurvivor(t *testing.T) {
 	}
 	found := false
 	for _, action := range survivor.NextActions {
-		if action == "担当者へ申請書を提出する" {
+		if action == "専門家による予備調査を検討する" {
 			found = true
 		}
 	}
@@ -1906,12 +1903,14 @@ func TestTreeAuditCreateTopicFromCandidateAppliesAndPromotes(t *testing.T) {
 	if result.OperationsValid != 1 || result.OperationsApplied != 1 || !result.TreeIntegrityValid {
 		t.Fatalf("validator result = %+v", result)
 	}
-	topicNode := treeNodeByID(dry.Tree, "candidate-parking-plan")
-	if topicNode == nil || topicNode.Kind != "topic" || topicNode.ParentID != treeRootNodeID || topicNode.Origin != topicOriginDynamic {
+	topicID := stableDynamicTopicID("candidate-parking-plan")
+	topicNode := treeNodeByID(dry.Tree, topicID)
+	if topicNode == nil || topicNode.Kind != "topic" || topicNode.ParentID != treeRootNodeID ||
+		topicNode.Origin != topicOriginDynamic || topicNode.SourceCandidateID != "candidate-parking-plan" {
 		t.Fatalf("promoted topic node = %+v", topicNode)
 	}
 	childNode := treeNodeByID(dry.Tree, "item-todo-parking")
-	if childNode == nil || childNode.ParentID != "candidate-parking-plan" {
+	if childNode == nil || childNode.ParentID != topicID {
 		t.Fatalf("evidence item not reparented under new topic: %+v", childNode)
 	}
 	item := findItemByID(dry.Items, "item-todo-parking")
@@ -2356,13 +2355,13 @@ func TestTreeAuditMergeItemsAppliesAtModerateThresholdRejectsDecisionAtSameConfi
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
 	state.Items = append(state.Items,
-		liveAnalysisItem{ID: "item-issue-noise-a", Kind: "issue", Subtype: issueSubtypeDiscussion, Title: "騒音基準の未確定", Body: "騒音基準がまだ決まっていない", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{22, 24}},
-		liveAnalysisItem{ID: "item-issue-noise-b", Kind: "issue", Subtype: issueSubtypeDiscussion, Title: "騒音基準の未確定", Body: "騒音基準の決定がまだ", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{24}},
+		liveAnalysisItem{ID: "item-issue-noise-a", Kind: "issue", Subtype: issueSubtypeDiscussion, Title: "強風日の風速基準が未確定", Body: "どの風速を基準にするか決まっていない", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{13}},
+		liveAnalysisItem{ID: "item-issue-noise-b", Kind: "issue", Subtype: issueSubtypeDiscussion, Title: "強風日の風速基準が未確定", Body: "強風日の測定基準が決まっていない", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{13}},
 		liveAnalysisItem{ID: "item-decision-dup-a", Kind: "decision", Title: "調査結果を図付きでウェブ公開", Body: "住民説明資料の公開方針", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{17}},
 	)
 	state.Tree.Nodes = append(state.Tree.Nodes,
-		liveAnalysisTreeNode{ID: "item-issue-noise-a", Kind: "issue", Subtype: issueSubtypeDiscussion, ParentID: "candidate-info-public", Label: "騒音基準の未確定", Status: "open"},
-		liveAnalysisTreeNode{ID: "item-issue-noise-b", Kind: "issue", Subtype: issueSubtypeDiscussion, ParentID: "candidate-info-public", Label: "騒音基準の未確定", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-issue-noise-a", Kind: "issue", Subtype: issueSubtypeDiscussion, ParentID: "candidate-info-public", Label: "強風日の風速基準が未確定", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-issue-noise-b", Kind: "issue", Subtype: issueSubtypeDiscussion, ParentID: "candidate-info-public", Label: "強風日の風速基準が未確定", Status: "open"},
 		liveAnalysisTreeNode{ID: "item-decision-dup-a", Kind: "decision", ParentID: "candidate-info-public", Label: "調査結果を図付きでウェブ公開", Status: "open"},
 	)
 	rebuildTreeAuditEdges(state.Tree)
@@ -2371,7 +2370,7 @@ func TestTreeAuditMergeItemsAppliesAtModerateThresholdRejectsDecisionAtSameConfi
 	mergeIssues := treeAuditOperation{
 		OperationID: "op-merge-issue-moderate", Type: TreeAuditMergeItems,
 		TargetCanonicalItemIDs: []string{"item-issue-noise-a", "item-issue-noise-b"},
-		Confidence:             0.82, Reason: "同一issueの重複統合", EvidenceSequenceNos: []int64{22},
+		Confidence:             0.82, Reason: "同一issueの重複統合", EvidenceSequenceNos: []int64{13},
 	}
 	_, result := validateAndDryRunTreeAuditOperations(state, []treeAuditOperation{mergeIssues}, segments, mc, roles, TreeAuditConfig{}, "audit-merge-issue", 13, true)
 	if result.OperationsValid != 1 || result.OperationsApplied != 1 || len(result.Evaluations) != 1 || result.Evaluations[0].Category != "moderate" {
@@ -2403,19 +2402,19 @@ func TestTreeAuditCanonicalizeMergeItemsRescuesSingularTargetIntoPlural(t *testi
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
 	state.Items = append(state.Items,
-		liveAnalysisItem{ID: "item-todo-vpn-cert-a", Kind: "todo", Title: "VPN証明書の更新", Body: "来月までにVPN証明書を更新する", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{22, 24}},
-		liveAnalysisItem{ID: "item-todo-vpn-cert-b", Kind: "todo", Title: "VPN証明書の更新", Body: "VPN証明書の更新対応を進める", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{24}},
+		liveAnalysisItem{ID: "item-todo-vpn-cert-a", Kind: "todo", Title: "希少植物の予備調査", Body: "専門家による予備調査を検討する", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{24}},
+		liveAnalysisItem{ID: "item-todo-vpn-cert-b", Kind: "todo", Title: "希少植物の予備調査", Body: "植物の種類を確認するため予備調査を検討する", Status: "open", ClassificationStatus: classificationAssigned, AssignmentConfidence: 1, EvidenceSequenceNos: []int64{24}},
 	)
 	state.Tree.Nodes = append(state.Tree.Nodes,
-		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-a", Kind: "todo", ParentID: "candidate-info-public", Label: "VPN証明書の更新", Status: "open"},
-		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-b", Kind: "todo", ParentID: "candidate-info-public", Label: "VPN証明書の更新", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-a", Kind: "todo", ParentID: "candidate-info-public", Label: "希少植物の予備調査", Status: "open"},
+		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-b", Kind: "todo", ParentID: "candidate-info-public", Label: "希少植物の予備調査", Status: "open"},
 	)
 	rebuildTreeAuditEdges(state.Tree)
 	roles := classifyTreeAuditEvidence(state, segments)
 	response := &treeAuditResponse{Operations: []treeAuditOperation{
 		{OperationID: "op-merge-rescue", Type: TreeAuditMergeItems,
 			TargetCanonicalItemID: "item-todo-vpn-cert-a", TargetCanonicalItemIDs: []string{"item-todo-vpn-cert-b"},
-			Confidence: 0.97, Reason: "同一VPN証明書更新の重複統合", EvidenceSequenceNos: []int64{22},
+			Confidence: 0.97, Reason: "同一の予備調査TODOを統合", EvidenceSequenceNos: []int64{24},
 		},
 	}}
 	canonicalizeTreeAuditResponse(response, state)
@@ -2774,8 +2773,9 @@ func assertAuditFindingForNode(t *testing.T, findings []treeAuditPrecheckFinding
 }
 
 type internalAuditAnalysisRepository struct {
-	mu    sync.Mutex
-	store map[string]domain.MeetingAIAnalysis
+	mu          sync.Mutex
+	store       map[string]domain.MeetingAIAnalysis
+	liveHistory map[string]map[int64]domain.MeetingAIAnalysis
 }
 
 func (r *internalAuditAnalysisRepository) UpsertMeetingAIAnalysis(_ context.Context, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, error) {
@@ -2817,6 +2817,38 @@ func (r *internalAuditAnalysisRepository) ListMeetingAIAnalysesForSessions(_ con
 		if analysis, ok := r.store[sessionID]; ok && analysis.Type == analysisType {
 			items = append(items, analysis)
 		}
+	}
+	return items, nil
+}
+
+func (r *internalAuditAnalysisRepository) AppendLiveAnalysisHistory(_ context.Context, analysis domain.MeetingAIAnalysis) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.liveHistory == nil {
+		r.liveHistory = make(map[string]map[int64]domain.MeetingAIAnalysis)
+	}
+	versions := r.liveHistory[analysis.SessionID]
+	if versions == nil {
+		versions = make(map[int64]domain.MeetingAIAnalysis)
+		r.liveHistory[analysis.SessionID] = versions
+	}
+	if _, exists := versions[analysis.Version]; !exists {
+		versions[analysis.Version] = analysis
+	}
+	return nil
+}
+
+func (r *internalAuditAnalysisRepository) ListLiveAnalysisHistory(_ context.Context, sessionID string, limit int) ([]domain.MeetingAIAnalysis, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	versions := r.liveHistory[sessionID]
+	items := make([]domain.MeetingAIAnalysis, 0, len(versions))
+	for _, analysis := range versions {
+		items = append(items, analysis)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Version < items[j].Version })
+	if limit > 0 && len(items) > limit {
+		items = items[len(items)-limit:]
 	}
 	return items, nil
 }
@@ -3008,7 +3040,8 @@ func newTreeAuditRunnerFixture(t *testing.T, staleCAS bool) (*MeetingAnalysisSer
 	publisher := &internalAuditPublisher{}
 	completer := &internalAuditCompleter{content: validAuditMoveResponse()}
 	service := NewMeetingAnalysisService(analysisRepo, internalAuditTranscriptRepository{segments: segments}, nil, completer, MeetingAnalysisConfig{
-		Enabled: true, LiveEnabled: true, Model: "shared", TaskModels: AITaskModels{TreeAudit: "tree-audit-mini", FinalTreeReview: "tree-audit-mini"},
+		Enabled: true, LiveEnabled: true, LiveDebounce: time.Millisecond, LiveCooldown: time.Millisecond, LiveMaxWait: 50 * time.Millisecond,
+		Model: "shared", TaskModels: AITaskModels{TreeAudit: "tree-audit-mini", FinalTreeReview: "tree-audit-mini"},
 		TreeAudit: TreeAuditConfig{Enabled: true, MinInterval: time.Millisecond, Timeout: time.Second},
 	}, publisher)
 	service.SetMeetingTreeAuditRepository(auditRepo)

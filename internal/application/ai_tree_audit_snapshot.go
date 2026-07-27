@@ -79,7 +79,7 @@ type treeAuditSnapshotCandidate struct {
 	RoundCount      int      `json:"roundCount"`
 	Inactive        bool     `json:"inactive"`
 	// PromotedNodeID is set when this candidate has already been promoted to
-	// a dynamic topic tree node (which keeps the candidate's own ID). A
+	// a dynamic topic tree node linked through SourceCandidateID. A
 	// promoted candidate is removed from EmergingTopics tracking on the round
 	// it is promoted, so seeing this set for a still-listed candidate is
 	// unexpected but handled defensively.
@@ -110,9 +110,17 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 	for _, item := range state.Items {
 		items[item.ID] = item
 	}
-	allNodeIDs := make(map[string]struct{}, len(state.Tree.Nodes))
+	promotedTopicByCandidate := make(map[string]string)
 	for _, node := range state.Tree.Nodes {
-		allNodeIDs[node.ID] = struct{}{}
+		if node.Kind == "topic" && node.Origin == topicOriginDynamic {
+			candidateID := strings.TrimSpace(node.SourceCandidateID)
+			if candidateID == "" && strings.HasPrefix(node.ID, "candidate-") {
+				candidateID = node.ID
+			}
+			if candidateID != "" {
+				promotedTopicByCandidate[candidateID] = node.ID
+			}
+		}
 	}
 	nodes := make([]treeAuditSnapshotNode, 0, len(selected))
 	var agendaIDs, validParentIDs []string
@@ -164,8 +172,8 @@ func buildTreeAuditSnapshot(sessionID string, payload json.RawMessage, segments 
 			FirstVersion:    candidate.FirstRound, LastVersion: candidate.LastRound,
 			RoundCount: candidate.RoundCount, Inactive: candidate.Inactive,
 		}
-		if _, promoted := allNodeIDs[candidate.ID]; promoted {
-			snapshotCandidate.PromotedNodeID = candidate.ID
+		if promotedNodeID := promotedTopicByCandidate[candidate.ID]; promotedNodeID != "" {
+			snapshotCandidate.PromotedNodeID = promotedNodeID
 		}
 		candidates = append(candidates, snapshotCandidate)
 	}
@@ -519,8 +527,15 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 			if inferred != item.Subtype && validIssueSubtype(inferred) {
 				add(treeAuditPrecheckFinding{Type: TreeAuditSubtypeMismatch, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "issue subtype conflicts with the proposition wording", Score: 0.85})
 			}
-		} else if item.Kind == "fact" && (openIssueMarkerPattern.MatchString(itemText) || lowInformationQuestionPattern.MatchString(itemText)) {
-			add(treeAuditPrecheckFinding{Type: TreeAuditSemanticKindMismatch, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "open issue proposition is classified as fact", Score: 0.9})
+		}
+		kindDecision := evaluateLiveItemKind(item, liveEvidenceScope{}, "tree_audit_precheck")
+		if kindDecision.CanonicalKind != item.Kind &&
+			kindDecision.Confidence >= itemKindValidationThreshold(itemKindValidationAudit) {
+			add(treeAuditPrecheckFinding{
+				Type: TreeAuditSemanticKindMismatch, NodeIDs: []string{node.ID},
+				EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...),
+				Reason:              kindDecision.Reason, Score: kindDecision.Confidence,
+			})
 		}
 		if allTreeAuditEvidenceReference(item.EvidenceSequenceNos, roles) {
 			add(treeAuditPrecheckFinding{Type: TreeAuditRecapReferenceContamination, NodeIDs: []string{node.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "independent item is grounded only in recap/reference evidence", Score: 0.95})

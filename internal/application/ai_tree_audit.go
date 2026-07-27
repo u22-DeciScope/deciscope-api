@@ -535,6 +535,105 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		logTreeAuditDetails(sessionID, runID, response, validator)
 		run.Result = "no_safe_operations"
 		run.Disposition = "rejected"
+		previousUnapplied := 0
+		if latest != nil && latest.SessionID == sessionID {
+			previousUnapplied = latest.ConsecutiveUnappliedRuns
+		}
+		threshold := s.config.TreeAudit.normalized().UnappliedWarningThreshold
+		if previousUnapplied+1 >= threshold {
+			validator.DeterministicFallbackEvaluated = true
+			repairedPayload, repairStats := applyDeterministicFinalTreeRepairs(payload, mc, version, finalRepairInput{
+				Segments: segments,
+				Audit:    s.config.TreeAudit,
+			})
+			validator.DeterministicFallbackReason = dominantAuditValidatorRejection(validator)
+			switch {
+			case repairStats.Error != "":
+				validator.DeterministicFallbackAction = "preserve_last_good"
+				validator.DeterministicFallbackReason = "repair_error"
+			case repairStats.IntegrityRejected:
+				validator.DeterministicFallbackAction = "preserve_last_good"
+				validator.DeterministicFallbackReason = "repair_integrity_rejected"
+			case !finalRepairStatsChanged(repairStats):
+				validator.DeterministicFallbackAction = "no_safe_deterministic_change"
+				if validator.DeterministicFallbackReason == "" {
+					validator.DeterministicFallbackReason = "no_repairable_precheck"
+				}
+			default:
+				current, currentErr := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive)
+				if currentErr != nil {
+					return execution, s.failTreeAuditRun(ctx, &run, "analysis_repository_error", currentErr)
+				}
+				switch {
+				case ctx.Err() != nil || !s.treeAuditApplyAllowed(sessionID, finalReview):
+					validator.DeterministicFallbackAction = "preserve_last_good"
+					validator.DeterministicFallbackReason = "session_not_applyable"
+				case current.Version != version:
+					validator.DeterministicFallbackAction = "preserve_newer_version"
+					validator.DeterministicFallbackReason = "stale_tree_version"
+				default:
+					repairedState := previousLiveAnalysisState(repairedPayload)
+					repairedState.TreeVersion = version + 1
+					repairedState.ChangeSource = "tree_audit_deterministic_fallback"
+					repairedState.AuditRunID = runID
+					repairedState.BasedOnTreeVersion = version
+					repairedState.TreeChanges = diffLiveAnalysisTrees(state.Tree, repairedState.Tree, version+1)
+					applyLiveTreeSnapshotMetadata(&repairedState, state.Tree, version, nil)
+					repairedPayload, err = json.Marshal(repairedState)
+					if err != nil {
+						return execution, s.failTreeAuditRun(ctx, &run, "payload_encode_error", err)
+					}
+					validator.DeterministicFallbackApplied = true
+					validator.DeterministicFallbackAction = "apply_safe_repair"
+					run.Result = "deterministic_fallback_applied"
+					run.Disposition = "applied"
+					run.ResultingTreeVersion = version + 1
+					run.ValidatorResult = boundedAuditJSON(validator, s.config.TreeAudit.MaxPersistedJSONBytes)
+					classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
+					saved, applied, applyErr := s.auditRepo.ApplyMeetingTreeAudit(ctx, run, version, domain.MeetingAIAnalysis{
+						SessionID: sessionID, Type: domain.MeetingAIAnalysisLive,
+						Status: domain.MeetingAIAnalysisCompleted, Version: version + 1,
+						Payload: repairedPayload, Model: model,
+						SegmentCount: current.SegmentCount, InputChars: current.InputChars,
+						UpdatedAt: s.now().UTC(),
+					})
+					if applyErr != nil {
+						return execution, s.failTreeAuditRun(ctx, &run, "apply_transaction_error", applyErr)
+					}
+					if applied {
+						s.publishAnalysis(*saved)
+						execution.Payload = repairedPayload
+						execution.Version = version + 1
+						execution.Applied = true
+						execution.Result = run.Result
+						log.Printf("Tree audit deterministic fallback evaluated. sessionId=%s auditRunId=%s basedOnTreeVersion=%d resultingTreeVersion=%d consecutiveUnappliedBefore=%d fallbackAction=%s fallbackReason=%s lowInformationRewritten=%d lowInformationMerged=%d lowInformationRejected=%d kindValidationChanges=%d ambiguousKinds=%d kindSemanticSplits=%d kindSplitFragments=%d kindSplitRejected=%d kindRelationsCreated=%d sameEvidenceSynthesisMerged=%d sameKindDuplicatesMerged=%d recapDuplicatesMerged=%d",
+							sessionID, runID, version, version+1, previousUnapplied,
+							validator.DeterministicFallbackAction, validator.DeterministicFallbackReason,
+							repairStats.LowInformationItemsRewritten, repairStats.LowInformationItemsMerged,
+							repairStats.LowInformationItemsRejected, repairStats.KindValidationChanges,
+							repairStats.KindValidationAmbiguous, repairStats.KindSemanticSplits,
+							repairStats.KindSplitFragments, repairStats.KindSplitRejected,
+							repairStats.KindRelationsCreated,
+							repairStats.SameEvidenceSynthesisMerged,
+							repairStats.SameKindDuplicatesMerged, repairStats.RecapDuplicatesMerged)
+						logTreeAuditRun(run, len(response.Findings), validator)
+						return execution, nil
+					}
+					validator.DeterministicFallbackApplied = false
+					validator.DeterministicFallbackAction = "preserve_newer_version"
+					validator.DeterministicFallbackReason = "stale_tree_version"
+					run.Result = "stale_tree_version"
+					run.Disposition = "stale"
+					run.ResultingTreeVersion = 0
+				}
+			}
+			log.Printf("Tree audit deterministic fallback evaluated. sessionId=%s auditRunId=%s basedOnTreeVersion=%d consecutiveUnappliedBefore=%d fallbackAction=%s fallbackReason=%s applied=%t",
+				sessionID, runID, version, previousUnapplied, validator.DeterministicFallbackAction,
+				validator.DeterministicFallbackReason, validator.DeterministicFallbackApplied)
+		} else {
+			validator.DeterministicFallbackAction = "below_unapplied_threshold"
+		}
+		run.ValidatorResult = boundedAuditJSON(validator, s.config.TreeAudit.MaxPersistedJSONBytes)
 		classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
 		if err := s.auditRepo.SaveMeetingTreeAuditRun(ctx, run); err != nil {
 			return execution, err
@@ -812,6 +911,8 @@ func classifyTreeAuditRun(run *domain.MeetingTreeAuditRun, previous *domain.Meet
 	}
 	if auditedOutcome {
 		switch {
+		case validator.DeterministicFallbackApplied && run.ResultingTreeVersion > run.BasedOnTreeVersion:
+			classification = domain.MeetingTreeAuditResultApplied
 		case run.OperationsApplied > 0 && run.ResultingTreeVersion > run.BasedOnTreeVersion:
 			classification = domain.MeetingTreeAuditResultApplied
 		case findingCount == 0 && run.OperationsProposed == 0:
@@ -840,17 +941,42 @@ func classifyTreeAuditRun(run *domain.MeetingTreeAuditRun, previous *domain.Meet
 	if run.ResultingTreeVersion > latestVersion {
 		latestVersion = run.ResultingTreeVersion
 	}
-	log.Printf("Tree audit result classified. auditRunId=%s sessionId=%s classification=%s findingsCount=%d operationsProposed=%d operationsCanonicalized=%d operationsValid=%d operationsApplied=%d operationsRejected=%d consecutiveUnappliedRuns=%d resultTreeVersion=%d",
+	log.Printf("Tree audit result classified. auditRunId=%s sessionId=%s classification=%s findingsCount=%d operationsProposed=%d operationsCanonicalized=%d operationsValid=%d operationsApplied=%d operationsRejected=%d consecutiveUnappliedRuns=%d resultTreeVersion=%d deterministicFallbackEvaluated=%t deterministicFallbackApplied=%t deterministicFallbackAction=%s deterministicFallbackReason=%s",
 		run.ID, run.SessionID, classification, findingCount, run.OperationsProposed,
 		run.OperationsCanonicalized, run.OperationsValid, run.OperationsApplied,
-		run.OperationsRejected, run.ConsecutiveUnappliedRuns, run.ResultingTreeVersion)
+		run.OperationsRejected, run.ConsecutiveUnappliedRuns, run.ResultingTreeVersion,
+		validator.DeterministicFallbackEvaluated, validator.DeterministicFallbackApplied,
+		validator.DeterministicFallbackAction, validator.DeterministicFallbackReason)
 	threshold := cfg.normalized().UnappliedWarningThreshold
 	if run.ConsecutiveUnappliedRuns == threshold &&
 		(classification == domain.MeetingTreeAuditResultFindingsOnly || classification == domain.MeetingTreeAuditResultRejected) {
-		log.Printf("Tree audit findings remain unapplied. sessionId=%s consecutiveUnappliedAuditRuns=%d latestFindingsCount=%d latestOperationsProposed=%d latestRejectionReasons=%v latestTreeVersion=%d",
+		log.Printf("Tree audit findings remain unapplied. sessionId=%s consecutiveUnappliedAuditRuns=%d latestFindingsCount=%d latestOperationsProposed=%d latestRejectionReasons=%v dominantRejectionReason=%s deterministicFallbackEvaluated=%t deterministicFallbackApplied=%t deterministicFallbackAction=%s deterministicFallbackReason=%s latestTreeVersion=%d",
 			run.SessionID, run.ConsecutiveUnappliedRuns, findingCount,
-			run.OperationsProposed, rejectionReasons, latestVersion)
+			run.OperationsProposed, rejectionReasons, dominantAuditRejectionReason(rejectionReasons),
+			validator.DeterministicFallbackEvaluated, validator.DeterministicFallbackApplied,
+			validator.DeterministicFallbackAction, validator.DeterministicFallbackReason, latestVersion)
 	}
+}
+
+func dominantAuditRejectionReason(reasons map[string]int) string {
+	bestReason, bestCount := "", 0
+	for reason, count := range reasons {
+		if count > bestCount || (count == bestCount && (bestReason == "" || reason < bestReason)) {
+			bestReason, bestCount = reason, count
+		}
+	}
+	return bestReason
+}
+
+func dominantAuditValidatorRejection(validator treeAuditValidatorResult) string {
+	reasons := make(map[string]int)
+	for _, evaluation := range validator.Evaluations {
+		if evaluation.Valid || strings.TrimSpace(evaluation.Reason) == "" {
+			continue
+		}
+		reasons[evaluation.Reason]++
+	}
+	return dominantAuditRejectionReason(reasons)
 }
 
 func auditJSONArrayLength(value json.RawMessage) int {
@@ -887,6 +1013,10 @@ func logTreeAuditDetails(sessionID, auditRunID string, response *treeAuditRespon
 		for _, finding := range response.Findings {
 			byType[string(finding.Type)]++
 			bySeverity[finding.Severity]++
+			log.Printf("Tree audit finding evaluated. sessionId=%s auditRunId=%s findingId=%s findingFingerprint=%s category=%s severity=%s confidence=%.2f nodeIds=%v evidenceFingerprint=%s",
+				sessionID, auditRunID, finding.FindingID, treeAuditFindingFingerprint(finding),
+				finding.Type, finding.Severity, finding.Confidence, finding.NodeIDs,
+				itemEvidenceFingerprint(liveAnalysisItem{EvidenceSequenceNos: finding.EvidenceSequenceNos}))
 		}
 	}
 	rejected := make(map[string]int)
@@ -927,12 +1057,26 @@ func logTreeAuditOperationDetails(sessionID, auditRunID string, response *treeAu
 	}
 	for _, evaluation := range validator.Evaluations {
 		operation := byOperationID[evaluation.OperationID]
-		log.Printf("Tree audit cleanup operation. sessionId=%s auditRunId=%s operationId=%s operationType=%s targetCanonical=%s fromParent=%s toParent=%s modelConfidence=%.2f effectiveConfidence=%.2f validationResult=%t applicationResult=%t result=%s category=%s rejectionReason=%s",
+		log.Printf("Tree audit cleanup operation. sessionId=%s auditRunId=%s operationId=%s operationType=%s targetCanonical=%s fromParent=%s toParent=%s modelConfidence=%.2f effectiveConfidence=%.2f effectiveThreshold=%.2f groundingDecision=%s groundingConfidence=%.2f groundingSourceTypes=%s unsupportedAtoms=%v validationResult=%t applicationResult=%t result=%s riskClass=%s rejectionReason=%s",
 			sessionID, auditRunID, evaluation.OperationID, evaluation.Type, treeAuditOperationTargetLabel(operation),
 			operation.FromParentCanonicalNodeID, operation.ToParentCanonicalNodeID,
-			evaluation.ModelConfidence, evaluation.EffectiveConfidence, evaluation.Valid, evaluation.Applied,
+			evaluation.ModelConfidence, evaluation.EffectiveConfidence, evaluation.EffectiveThreshold,
+			evaluation.GroundingDecision, evaluation.GroundingConfidence,
+			formatGroundingSourceTypes(evaluation.GroundingSourceTypes), evaluation.UnsupportedAtoms,
+			evaluation.Valid, evaluation.Applied,
 			evaluation.Result, evaluation.Category, evaluation.Reason)
 	}
+}
+
+func treeAuditFindingFingerprint(finding treeAuditFinding) string {
+	nodeIDs := append([]string(nil), finding.NodeIDs...)
+	relatedIDs := append([]string(nil), finding.RelatedNodeIDs...)
+	sequenceNos := append([]int64(nil), finding.EvidenceSequenceNos...)
+	sort.Strings(nodeIDs)
+	sort.Strings(relatedIDs)
+	sort.Slice(sequenceNos, func(i, j int) bool { return sequenceNos[i] < sequenceNos[j] })
+	return tombstoneLogHash(fmt.Sprintf("%s|%s|%v|%v|%v",
+		finding.Type, finding.Severity, nodeIDs, relatedIDs, sequenceNos))
 }
 
 // treeAuditOperationTargetLabel picks whichever target identifier the

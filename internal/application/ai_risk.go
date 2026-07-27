@@ -85,6 +85,19 @@ func synthesizeExplicitRiskItems(previous, diff []liveAnalysisItem, scope liveEv
 		if evidenceRoleIsReference(sequenceNo, timeline) {
 			continue
 		}
+		title := explicitRiskItemTitle(text)
+		if title == "" {
+			continue
+		}
+		probe := liveAnalysisItem{
+			Kind: "risk", Title: title, Body: explicitRiskSentence(text), Status: "open",
+			EvidenceSequenceNos: []int64{sequenceNo},
+		}
+		validation := evaluateLiveItemKind(probe, liveEvidenceScope{}, "risk_synthesis")
+		if validation.CanonicalKind != "risk" ||
+			validation.Confidence < itemKindValidationThreshold(itemKindValidationLive) {
+			continue
+		}
 		// 同一発話(sequenceNo)だけをevidenceに持つdiscussion issueが既に提案
 		// されている場合、そのissueとこのrisk合成は実質同じ発話の重複表現
 		// (modelのissue抽出とサーバーのrisk合成が併存してしまう)。diff側は
@@ -97,10 +110,6 @@ func synthesizeExplicitRiskItems(previous, diff []liveAnalysisItem, scope liveEv
 			continue
 		}
 		if riskItemDuplicatesExisting(text, sequenceNo, existingRisks) {
-			continue
-		}
-		title := explicitRiskItemTitle(text)
-		if title == "" {
 			continue
 		}
 		item := liveAnalysisItem{
@@ -193,7 +202,20 @@ func riskItemDuplicatesExisting(text string, sequenceNo int64, existingRisks []l
 // "という可能性があります" style boilerplate and truncating to the same
 // 40-rune budget explicitClosureIssueTitle uses.
 func explicitRiskItemTitle(text string) string {
-	subject := text
+	subject := explicitRiskSentence(text)
+	if subject == "" {
+		return ""
+	}
+	subject = riskTitleTrailingPattern.ReplaceAllString(subject, "")
+	subject = strings.Trim(strings.TrimSpace(subject), "、。 ")
+	if subject == "" {
+		return ""
+	}
+	return truncateRunes(subject, 40)
+}
+
+func explicitRiskSentence(text string) string {
+	subject := ""
 	for _, sentence := range strings.Split(text, "。") {
 		trimmed := strings.TrimSpace(sentence)
 		if trimmed == "" {
@@ -204,10 +226,5 @@ func explicitRiskItemTitle(text string) string {
 			break
 		}
 	}
-	subject = riskTitleTrailingPattern.ReplaceAllString(subject, "")
-	subject = strings.Trim(strings.TrimSpace(subject), "、。 ")
-	if subject == "" {
-		return ""
-	}
-	return truncateRunes(subject, 40)
+	return subject
 }

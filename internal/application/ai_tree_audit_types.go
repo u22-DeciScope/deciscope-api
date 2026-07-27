@@ -216,8 +216,13 @@ type treeAuditValidatorEvaluation struct {
 	// treeAuditEffectiveConfidence): for move-type operations it applies
 	// bounded structural bonuses/penalties on top of ModelConfidence; for
 	// every other operation type it equals ModelConfidence unchanged.
-	ModelConfidence     float64 `json:"modelConfidence"`
-	EffectiveConfidence float64 `json:"effectiveConfidence"`
+	ModelConfidence      float64               `json:"modelConfidence"`
+	EffectiveConfidence  float64               `json:"effectiveConfidence"`
+	EffectiveThreshold   float64               `json:"effectiveThreshold,omitempty"`
+	GroundingDecision    string                `json:"groundingDecision,omitempty"`
+	GroundingConfidence  float64               `json:"groundingConfidence,omitempty"`
+	UnsupportedAtoms     []string              `json:"unsupportedAtoms,omitempty"`
+	GroundingSourceTypes []groundingSourceType `json:"groundingSourceTypes,omitempty"`
 }
 
 type treeAuditValidatorResult struct {
@@ -246,6 +251,10 @@ type treeAuditValidatorResult struct {
 	DeactivationsApplied           int                            `json:"deactivationsApplied"`
 	ParserElementsRejected         int                            `json:"parserElementsRejected"`
 	OperationsCanonicalized        int                            `json:"operationsCanonicalized"`
+	DeterministicFallbackEvaluated bool                           `json:"deterministicFallbackEvaluated,omitempty"`
+	DeterministicFallbackApplied   bool                           `json:"deterministicFallbackApplied,omitempty"`
+	DeterministicFallbackAction    string                         `json:"deterministicFallbackAction,omitempty"`
+	DeterministicFallbackReason    string                         `json:"deterministicFallbackReason,omitempty"`
 }
 
 type treeAuditPrecheckFinding struct {

@@ -23,7 +23,6 @@ func TestCoreAPIHTTPContractWithFakeUseCases(t *testing.T) {
 	router.Get("/meetings/{meeting_id}", api.GetMeeting)
 	router.Get("/meetings/{meeting_id}/events", api.ListEvents)
 	router.Get("/meetings/{meeting_id}/segments", api.ListSegments)
-	router.Get("/meetings/{meeting_id}/report", api.GetReport)
 
 	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/workspaces/w_test/meetings", nil), "meetings")
 	assertJSONEmptyArray(t, serveJSON(t, router, http.MethodGet, "/meetings/m_http/events", nil), "events")
@@ -37,17 +36,6 @@ func TestCoreAPIHTTPContractWithFakeUseCases(t *testing.T) {
 	get := serveJSON(t, router, http.MethodGet, "/meetings/m_http", nil)
 	if get.Code != http.StatusOK || !bytes.Contains(get.Body.Bytes(), []byte(`"title":"HTTP contract"`)) {
 		t.Fatalf("get response = %d %s", get.Code, get.Body.String())
-	}
-
-	reportReq := httptest.NewRequest(http.MethodGet, "/meetings/m_http/report", nil)
-	reportReq.Header.Set("Accept", "text/markdown")
-	report := httptest.NewRecorder()
-	router.ServeHTTP(report, reportReq)
-	if report.Code != http.StatusOK || report.Header().Get("Content-Type") != "text/markdown; charset=utf-8" {
-		t.Fatalf("report response = %d %q", report.Code, report.Header().Get("Content-Type"))
-	}
-	if !bytes.Contains(report.Body.Bytes(), []byte("# HTTP contract")) {
-		t.Fatalf("report body = %s", report.Body.String())
 	}
 
 	missing := serveJSON(t, router, http.MethodGet, "/meetings/missing", nil)
@@ -83,8 +71,8 @@ func (*fakeCoreUseCases) CreateJoinToken(context.Context, string) (*application.
 	return &application.JoinToken{}, nil
 }
 
-func (*fakeCoreUseCases) EndMeeting(context.Context, string) (*domain.Report, []domain.Event, error) {
-	return &domain.Report{}, nil, nil
+func (*fakeCoreUseCases) EndMeeting(context.Context, string) ([]domain.Event, error) {
+	return nil, nil
 }
 
 func (*fakeCoreUseCases) ListEvents(context.Context, string, int64) ([]domain.Event, error) {
@@ -93,13 +81,6 @@ func (*fakeCoreUseCases) ListEvents(context.Context, string, int64) ([]domain.Ev
 
 func (*fakeCoreUseCases) ListSegments(context.Context, string, int64) ([]domain.Segment, error) {
 	return nil, nil
-}
-
-func (f *fakeCoreUseCases) GetOrCreateReport(_ context.Context, meetingID string) (*domain.Report, error) {
-	if f.meeting == nil || f.meeting.ID != meetingID {
-		return nil, domain.ErrNotFound
-	}
-	return &domain.Report{MeetingID: meetingID, Format: "markdown", Content: "# " + f.meeting.Title}, nil
 }
 
 func serveJSON(t *testing.T, handler http.Handler, method, path string, payload any) *httptest.ResponseRecorder {

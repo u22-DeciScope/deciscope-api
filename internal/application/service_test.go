@@ -14,7 +14,7 @@ import (
 func TestServiceCoreUseCasesWithFakePorts(t *testing.T) {
 	ctx := context.Background()
 	ports := newFakePorts()
-	service := application.NewService(ports, ports, ports, ports, ports)
+	service := application.NewService(ports, ports, ports, ports)
 
 	meeting, err := service.CreateMeeting(ctx, "w_test", "Service use cases", "fixture_replay")
 	if err != nil {
@@ -32,19 +32,21 @@ func TestServiceCoreUseCasesWithFakePorts(t *testing.T) {
 		t.Fatalf("token = %q, want meeting-scoped local token", token.Token)
 	}
 
-	report, err := service.GetOrCreateReport(ctx, meeting.ID)
+	endEvents, err := service.EndMeeting(ctx, meeting.ID)
 	if err != nil {
-		t.Fatalf("GetOrCreateReport() error = %v", err)
+		t.Fatalf("EndMeeting() error = %v", err)
 	}
-	if report.MeetingID != meeting.ID || !strings.Contains(report.Content, "# Service use cases") {
-		t.Fatalf("report = %+v", report)
+	if len(endEvents) != 1 || endEvents[0].Type != domain.EventMeetingState {
+		t.Fatalf("end events = %+v", endEvents)
+	}
+	if !strings.Contains(string(endEvents[0].Payload), `"status":"ended"`) {
+		t.Fatalf("end payload = %s", endEvents[0].Payload)
 	}
 }
 
 type fakePorts struct {
 	meeting   *domain.Meeting
 	events    []domain.Event
-	reports   []domain.Report
 	jobs      map[string]domain.Job
 	published []domain.Event
 }
@@ -111,20 +113,6 @@ func (f *fakePorts) ListEvents(_ context.Context, meetingID string, afterSeq int
 
 func (f *fakePorts) ListSegments(context.Context, string, int64) ([]domain.Segment, error) {
 	return nil, nil
-}
-
-func (f *fakePorts) SaveReport(_ context.Context, meetingID, content string) (*domain.Report, error) {
-	report := domain.Report{ArtifactID: "art_test", MeetingID: meetingID, Format: "markdown", Content: content}
-	f.reports = append(f.reports, report)
-	return &report, nil
-}
-
-func (f *fakePorts) LatestReport(context.Context, string) (*domain.Report, error) {
-	if len(f.reports) == 0 {
-		return nil, domain.ErrNotFound
-	}
-	report := f.reports[len(f.reports)-1]
-	return &report, nil
 }
 
 func (f *fakePorts) CreateJob(_ context.Context, workspaceID, jobType, meetingID, status string) (*domain.Job, error) {

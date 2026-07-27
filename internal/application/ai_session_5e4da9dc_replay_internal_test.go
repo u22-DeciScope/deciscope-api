@@ -30,11 +30,11 @@ func TestSession5e4da9dc40d50940OfflineQualityReplay(t *testing.T) {
 		{ID: "item-issue-discussion-8a91d2b7edb2", Kind: "issue", Subtype: issueSubtypeDiscussion, Severity: "high",
 			Title:  "3階アクセススイッチのVLAN設定不一致",
 			Body:   "前日の夜に交換した3階のアクセススイッチのVLAN20とVLAN30の通信が不安定。正しいトランク設定と上位機器との接続形態の再確認が必要。",
-			Status: "open", EvidenceSequenceNos: []int64{6}},
+			Status: "open", EvidenceSequenceNos: []int64{6}, CreatedThroughSequenceNo: 6, InitialEvidenceMaxSequenceNo: 6},
 		{ID: "item-issue-discussion-598289c07dd0", Kind: "issue", Subtype: issueSubtypeDiscussion, Severity: "high",
 			Title:  "3階スイッチVLAN設定不一致の再確認",
 			Body:   "3階スイッチのVLAN設定不一致が障害原因候補として挙がっている。現状、再現性と監視ログの不足から確定には至っていない。追加の監視と設定チェックを行う必要あり。",
-			Status: "open", EvidenceSequenceNos: []int64{8}},
+			Status: "open", EvidenceSequenceNos: []int64{8}, CreatedThroughSequenceNo: 6, InitialEvidenceMaxSequenceNo: 6},
 		{ID: "item-issue-investigation-c4a8496b7ca2", Kind: "issue", Subtype: issueSubtypeInvestigation, Severity: "medium",
 			Title:  "インターネット接続状況の混在と影響範囲の再整理",
 			Body:   "インターネット接続状況が混在しており、影響範囲の再整理が必要。",
@@ -106,12 +106,13 @@ func TestSession5e4da9dc40d50940OfflineQualityReplay(t *testing.T) {
 	}
 	after := previousLiveAnalysisState(replayed)
 
-	// 1. VLAN sibling dedup: exactly one surviving VLAN item, evidence union
-	// of 6 and 8, tombstone recorded with the sibling-specific source.
+	// 1. VLAN sibling dedup: the two confirmed VLAN observations become one
+	// fact with the evidence union of 6 and 8. The separate monitoring
+	// proposal remains an issue and is not part of this duplicate count.
 	vlanItems := 0
 	var survivor liveAnalysisItem
 	for _, item := range after.Items {
-		if item.Kind != "issue" || item.Subtype != issueSubtypeDiscussion {
+		if item.Kind != "fact" {
 			continue
 		}
 		if strings.Contains(item.Title+item.Body, "VLAN") || strings.Contains(item.Title+item.Body, "vラン") {
@@ -120,7 +121,7 @@ func TestSession5e4da9dc40d50940OfflineQualityReplay(t *testing.T) {
 		}
 	}
 	if vlanItems != 1 {
-		t.Fatalf("expected exactly 1 surviving VLAN item after sibling dedup, got %d items=%+v", vlanItems, after.Items)
+		t.Fatalf("expected exactly 1 surviving VLAN fact after sibling dedup, got %d items=%+v", vlanItems, after.Items)
 	}
 	hasSix, hasEight := false, false
 	for _, sequenceNo := range survivor.EvidenceSequenceNos {
@@ -168,19 +169,20 @@ func TestSession5e4da9dc40d50940OfflineQualityReplay(t *testing.T) {
 		t.Fatalf("expected at least one risk item about alert volume or connectivity, got %+v", riskItems)
 	}
 
-	// 3. Recovery closure resolves the VLAN issue.
+	// 3. The confirmed VLAN observations are now a fact, so the issue-only
+	// closure path does not apply a resolved lifecycle state to this item.
 	resolvedIssueCount := 0
 	for _, item := range after.Items {
 		if item.Kind == "issue" && item.Status == "resolved" {
 			resolvedIssueCount++
 		}
 	}
-	if resolvedIssueCount != 1 {
-		t.Fatalf("expected resolvedIssueCount == 1 (only the surviving VLAN item), got %d items=%+v", resolvedIssueCount, after.Items)
+	if resolvedIssueCount != 0 {
+		t.Fatalf("expected no resolved issue after the confirmed VLAN item became fact, got %d items=%+v", resolvedIssueCount, after.Items)
 	}
 	survivorAfterResolution := itemByID(after.Items, survivor.ID)
-	if survivorAfterResolution == nil || survivorAfterResolution.Status != "resolved" {
-		t.Fatalf("expected surviving VLAN item %s to be resolved by the recovery closure, got %+v", survivor.ID, survivorAfterResolution)
+	if survivorAfterResolution == nil || survivorAfterResolution.Kind != "fact" || survivorAfterResolution.Status != "open" {
+		t.Fatalf("expected surviving VLAN item %s to remain a confirmed fact, got %+v", survivor.ID, survivorAfterResolution)
 	}
 
 	// 3b. Over-resolution regression guard: item-issue-discussion-39aa3681095d

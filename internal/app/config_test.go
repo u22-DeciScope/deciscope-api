@@ -31,6 +31,24 @@ func TestAIConfigRoutesDeploymentsPerTaskAndFallsBackToShared(t *testing.T) {
 	}
 }
 
+func TestAIConfigLiveSchedulerDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("AI_LIVE_ANALYSIS_DEBOUNCE_MILLISECONDS", "")
+	t.Setenv("AI_LIVE_ANALYSIS_COOLDOWN_SECONDS", "")
+	t.Setenv("AI_LIVE_ANALYSIS_MAX_WAIT_SECONDS", "")
+	config := aiConfigFromEnv()
+	if config.LiveAnalysisDebounce != 2*time.Second || config.LiveAnalysisCooldown != 8*time.Second || config.LiveAnalysisMaxWait != 18*time.Second {
+		t.Fatalf("live scheduler defaults = debounce:%s cooldown:%s maxWait:%s", config.LiveAnalysisDebounce, config.LiveAnalysisCooldown, config.LiveAnalysisMaxWait)
+	}
+
+	t.Setenv("AI_LIVE_ANALYSIS_DEBOUNCE_MILLISECONDS", "1250")
+	t.Setenv("AI_LIVE_ANALYSIS_COOLDOWN_SECONDS", "9")
+	t.Setenv("AI_LIVE_ANALYSIS_MAX_WAIT_SECONDS", "20")
+	config = aiConfigFromEnv()
+	if config.LiveAnalysisDebounce != 1250*time.Millisecond || config.LiveAnalysisCooldown != 9*time.Second || config.LiveAnalysisMaxWait != 20*time.Second {
+		t.Fatalf("live scheduler overrides = debounce:%s cooldown:%s maxWait:%s", config.LiveAnalysisDebounce, config.LiveAnalysisCooldown, config.LiveAnalysisMaxWait)
+	}
+}
+
 func TestAIConfigTreeAuditDefaultsToEnabled(t *testing.T) {
 	t.Setenv("TREE_AUDIT_ENABLED", "")
 	t.Setenv("TREE_AUDIT_MODE", "")

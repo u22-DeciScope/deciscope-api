@@ -126,8 +126,83 @@ survivor優先で欠落させません。被統合itemはtreeから除去され�
 
 `kind`（`issue | risk | fact | decision | todo`）とissueの`subtype`
 （`discussion | confirmation | question | investigation`）を、statusやツリー階層とは
-独立して修正します。primary evidenceが必須で、decision/TODO/riskへの変更またはそれらからの
-自動変更は保護されます。適用時はitemと対応tree nodeを同時に更新します。
+独立して修正します。primary evidenceが必須です。decisionへの変更とdecisionからの
+自動変更は引き続き保護されます。`fact` / `issue` / `risk` / `todo`間の変更は、
+共通semantic kind validatorが同じ変更先をaudit閾値以上で判定した場合だけ許可します。
+適用時はitemと対応tree nodeを同時に更新し、evidenceとstatusはkindから独立して維持します。
+
+## Semantic grounding validator
+
+表示可能なdetail itemの一次証拠は、同一sessionのcovered range内にあるfinal transcriptです。
+`partial_transcript`は採用せず、`recap_transcript`は既存命題の再確認を優先して、新規命題には
+通常より厳しい直接一致を要求します。入力は次のsource typeとして区別します。
+
+- `final_transcript` / `partial_transcript` / `recap_transcript`
+- `pre_meeting_input` / `agenda_title` / `agenda_metadata` / `semantic_hint`
+- `existing_tree` / `audit_finding` / `model_inference`
+
+事前入力とagenda系情報はagenda作成、topic・parent候補、同義語補助には利用できますが、
+fact / issue / risk / todo / decisionの事実根拠にはなりません。sequenceの存在・final・covered
+rangeを確認するstructural validationの後、subject、predicate、entity、qualifierを検査します。
+人名、担当者、場所、階数、日時、数値、識別子、原因、対策、決定、将来影響は引用発言による
+直接支持を必須とします。
+
+live extraction v18の`evidenceSnippets`は、指定sequenceのfinal発言からの短い引用です。
+全角半角、空白、句読点、数字表記、英字大小文字を正規化して実在性と命題支持を確認します。
+安全に発言範囲へ縮約できる場合は`rewritten`、一部だけ支持される場合は`tentative`、
+事前contextだけにある場合は`candidate_only`、支持されない場合は`rejected`とし、後三者は
+通常の表示ツリーへ追加しません。旧v17以前のpersisted payloadは、grounding metadataが
+一件もないsnapshotに限ってfinal repairで破壊的に再解釈しない後方互換を維持します。
+
+semantic splitでは各fragmentのsubject・predicateを各evidence sequenceへ再照合し、対応する
+sequenceとsnippetだけを引き継ぎます。元itemがgroundedでも、対応sequenceを特定できない
+fragmentは棄却します。その後にlow-information、kind、dedup、agenda assignmentを実行します。
+
+`later_confirmed_evidence_supersedes_open_state`は、primary/correctionのfinal sequenceが
+`createdThroughSequenceNo`と`initialEvidenceMaxSequenceNo`の両方より大きく、同じ命題を
+明示的に確認し、recapでない場合だけ使用します。同一sequence、同一roundの別fragment、
+事前context、agenda metadata、existing treeはlater evidenceになりません。
+
+tree auditのrewrite / merge / reclassifyとfinal deterministic repairにも同じvalidatorを適用します。
+operation評価には`groundingDecision`、`groundingConfidence`、hash化した`unsupportedAtoms`、
+`groundingSourceTypes`を記録し、未検証の意味追加は`semantic_grounding_not_verified`で拒否します。
+本文を出さない`AI item grounding evaluated.`、`AI split fragment grounding evaluated.`、
+`AI context leakage prevented.`ログで判定を追跡できます。
+
+## Semantic kind validator
+
+live prompt v18とサーバー共通validatorは、単語だけでなく次の特徴を組み合わせて
+`fact` / `issue` / `risk` / `todo`を判定します。
+
+- 時制: `past` / `current` / `future` / `unknown`
+- 確実性: `confirmed` / `reported` / `hypothesis` / `uncertain` /
+  `unresolved` / `proposed` / `committed`
+- 意味役割: 状態、原因仮説、未解決の問い、将来悪影響、行動、提案
+- 補助特徴: 悪影響、不確実性、未来事象、現在問題、確認表現、実行動詞、
+  担当者、期限、commitment、調査意図、mitigation意図
+
+優先順位は、強い担当・期限・commitment付き行動、確認済み事実、原因仮説・
+現在の未解決事項、将来の不確定な悪影響、その他の明示的行動です。
+原因である可能性は`issue/investigation`、将来の悪影響・不確実性・negative
+impactをすべて満たす場合だけ`risk`、対策行動は`todo`として扱います。
+単なる提案として既に`todo`になっている項目は強制変更せずtentative判定を記録し、
+誤って`risk`になっている明確な提案は`issue/discussion`へ修正します。
+
+同一itemのdescriptionに複数の強い意味役割を持つ文がある場合は、各文を再検証して
+別itemへ分割します。subjectを持たない短いfragmentはlow-information gateで棄却し、
+元itemのID、parent、evidenceを保持します。分割または既存の別命題として共存する
+itemには、既存`tree.relations`で`todo -> risk: mitigates`、
+`todo -> issue: addresses`、`fact -> issue: supports`を追加します。
+この追加は既存Web payloadのoptional fieldを使うためschema変更はありません。
+
+validatorはmodel受信後、split後、deterministic synthesis後、semantic dedup後、
+legacy normalization、audit operation適用前、final deterministic repairで再利用します。
+変更閾値はlive `0.90`、legacy/audit `0.92`、final `0.88`です。閾値未満は元kindを
+維持し、ambiguous/tentativeとして観測します。
+
+本文を出さない`AI item kind validation evaluated`、
+`AI item semantic split completed`、`Final item kind distribution evaluated`
+ログで、判定特徴、変更理由、confidence、分割数、kind分布の偏りを確認できます。
 
 ### deactivate_item
 
@@ -424,6 +499,18 @@ evidence role、担当・期限、decision/correction marker、前後発言を�
 独立した命題を持たない新規itemを拒否します。transcript文脈を持たない
 historical replayでは推測で削除せず、audit-time validatorへ委ねます。
 
+open issue補完はmodel itemの後に実行しますが、生成前にevidenceの重なり、
+未解決状態、kind/subtype、具体的subject、semantic similarityを比較します。
+同じ発話内の具体的model itemが同じ未解決命題を既に表す場合は補完itemを
+生成せず、独立したsubjectを持つ複数論点は維持します。指示対象を単体で
+特定できないitemはtentative例外を含めて共通validatorへ通します。
+
+low-information rewriteが複合issueを分割した場合、各fragmentに対して
+subject/referent、evidence grounding、通常item validatorを再実行し、
+成立したfragmentだけを採用します。recap-only evidenceから既存itemに
+対応しない新規itemを確定するには、通常roundより厳しい新規subjectと、
+担当・期限・数値等の具体性および直接evidence groundingが必要です。
+
 監査の`deactivate_item`、`merge_items`、およびlive semantic mergeで除外した
 itemは、live payloadの`itemTombstones`へsession scopeで保存します。各entryは
 canonical item ID、proposition key、semantic key hash、evidence fingerprint、
@@ -448,6 +535,14 @@ tombstoneへ記録します。
 `Tree audit findings remain unapplied.`を出し、同じstreakの4回目以降では
 繰り返しません。runには分類、連続数、proposed/canonicalized/valid/applied/
 rejected件数、rejection reason集計、resulting versionを永続化します。
+
+閾値到達時にoperationが1件も安全適用できなかった場合は、追加のAI呼び出しを
+せず、同じ決定的final repairを最新treeへ試行します。low-information itemの
+一意な既存itemへの統合、同一evidence補完重複、recap重複、dangling candidate
+など、安全に検証できる変更だけをversion CASで適用します。修復不能、
+manual保護、integrity違反の場合はlast-known-good treeを保持します。
+validator resultとログには、finding分類、reject理由の集計、
+`deterministicFallbackEvaluated`、action、reason、適用versionを記録します。
 
 ## Scheduling
 
@@ -496,9 +591,43 @@ final reviewだけは保存済みtranscriptを広く読み、同じ上限付きs
 tree snapshotとsummaryを保存します。reviewのtimeout・schema failure・
 provider failure時も最後の正常live treeで継続し、
 finalization/tree snapshotの`finalTreeReviewFailed`と`degraded`で観測できます。
+final transcript repositoryの読取自体が失敗した場合も、最後の正常live projectionを
+入力としてtree snapshotとsummary生成を継続します。この場合はfinalization payloadの
+`transcriptFallbackUsed=true`と`finalizationIncomplete=true`、および
+`Final transcript fetch failed`ログで、transcript coverageが完全でないことを明示します。
 
-順序は常に`final flush → final_tree_review → deterministic agenda lifecycle
+順序は常に`final flush → final_tree_review → deterministic tree repair →
+deterministic agenda reconciliation → agenda lifecycle
 (空topic整理・not_discussed確定) → final tree snapshot → final summary`です。
+deterministic tree repairは、review後にlow-information、recap/same-evidence
+duplicate、candidate参照、tree integrityを再検証します。旧agenda node IDを
+使うsnapshotは既存の互換正規化をin-memoryで適用してから検証します。
+agenda reconciliationは追加のAI呼び出しを行わず、未着手anchorと全final transcript、
+canonical item、dynamic candidate / unclassified topicを再照合します。強く一意な一致だけを
+採用し、itemのparent、topicの`agendaRefs`、anchorの`materializedTopicIds`、
+`agendaProgress`を同じpassで修復します。失敗時またはintegrity違反時は修復前payloadへ
+戻してfinalizationを継続します。
+
+final snapshotを保存するときは、最終整理済みの同一treeを先にlive projectionへ
+同期し、再取得したlive rowの`updatedAt`をfinal rowにも使います。同じ
+treeVersion/analysisVersion/updatedAtを持つliveとfinalはnode countだけでなく
+tree hashとtree payloadが一致します。live同期に失敗した場合は内容の異なる
+final rowを同じversion/timeで保存しません。REST sanitizationはintegrity修復が
+必要な場合に限ってtreeを再構築し、正常なcanonical treeを別形状へ投影し直しません。
+
+agenda progressの`discussing`（UI上のin_progress相当）は、会議終了だけでは
+`discussed`へ昇格しません。固定agendaに関連itemがあり、かつ2 active rounds、
+4 substantive segments、またはdiscussed/merged anchorのいずれかで十分な活動根拠が
+ある場合だけ昇格します。根拠が不足する場合は`discussing`のままです。
+`outcomeStatus`はこの進捗statusとは別軸で、十分に議論されても結論や必要な担当・期限が
+なければ`unresolved`になり得ます。終了時にはcurrent topic参照だけを解除し、
+manual statusは変更しません。
+
+materialized topicのmodel parent aliasはlive payload内だけで管理します。topic mergeでは
+統合先へ移し、splitでは曖昧なaliasを新branchへ複製せず、dematerialize/candidate削除では
+消滅または有効な統合先へ移します。同一aliasの複数agenda topic所有は許可せず、現在の
+topic/item evidenceとagenda scoreに一意な優位がある場合だけ所有者を選びます。以前の
+server補正は証拠の一つであり、後続の明確な訂正を妨げません。
 
 agenda lifecycleのintegrityは、tree node数ではなく`agendaRecordCount` /
 `agendaRecordsPreserved`、agenda/node ID名前空間、`agendaRefs`と
@@ -508,8 +637,9 @@ merge / rename / reparent / dematerialize、assignment結果、空topicとdynami
 before/after、`agendaTopicIdCollisions`、`agendaNodeIdNamespaceValid`、
 `orphanMaterializedTopicIds`、`agendaReferenceIntegrityValid`、`treeIntegrityValid`を記録します。
 
-agenda anchor(`agendaAnchor`)の`Status`は`planned` / `discussed` / `merged` /
-`not_discussed`のいずれか1つだけを持つ排他的な値です。`MaterializedTopicIDs`の
+agenda anchor(`agendaAnchor`)の`Status`は`planned` / `materialized` /
+`discussed` / `merged` / `not_discussed`のいずれか1つだけを持つ排他的な値です。
+`MaterializedTopicIDs`の
 有無はこれとは直交する別属性で、たとえば`action_summary`アジェンダのanchorは
 materializeされないまま`discussed`になり得ます。ログは2系統あり、意味が異なる
 点に注意してください。「Live agenda anchor lifecycle」のplanned/discussed/

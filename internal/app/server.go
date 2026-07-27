@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"deciscope-core-api/internal/domain"
 	"deciscope-core-api/internal/infrastructure/azureopenai"
 	"deciscope-core-api/internal/infrastructure/botcontrol"
+	"deciscope-core-api/internal/infrastructure/clientdiagnostics"
 	"deciscope-core-api/internal/infrastructure/database"
 	"deciscope-core-api/internal/infrastructure/email"
 	"deciscope-core-api/internal/infrastructure/firebase"
@@ -147,8 +149,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	}
 	tokenVerifier := firebase.NewTokenVerifier(authClient)
 	service := application.NewService(
-		repositories.Meetings, repositories.Events, repositories.Reports,
-		repositories.Jobs, hub,
+		repositories.Meetings, repositories.Events, repositories.Jobs, hub,
 	)
 	authService := appauth.NewService(authRepository, tokenVerifier, 7*24*time.Hour)
 	workspaceService := appworkspace.NewService(authRepository, buildInvitationMailer(config), config.FrontendURL)
@@ -160,6 +161,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	}
 	accessService := appaccess.NewService(authRepository)
 	connectionCloser := workspaceConnectionCloser{hub: hub, transcripts: transcriptHub}
+	clientDiagnosticsAPI := buildClientDiagnosticsAPI(config.ClientDiagnostics, workspaceService, meetingSessionService)
 
 	// workspace経由のtranscript購読には認証済みユーザーを紐づけ、
 	// メンバー削除時に既存WebSocket接続を切断できるようにする。
@@ -187,11 +189,12 @@ func NewServerRuntime() (*ServerRuntime, error) {
 			httpadapter.WithMeetingSessionAIAnalysisService(analysisService),
 			httpadapter.WithMeetingSessionBotMetricsStore(botMediaMetricsStore),
 		),
-		AuthService: authService,
-		Workspace:   workspaceService,
-		Access:      accessService,
-		Healthz:     healthAPI.Healthz,
-		Readyz:      healthAPI.Readyz,
+		ClientDiagnosticsAPI: clientDiagnosticsAPI,
+		AuthService:          authService,
+		Workspace:            workspaceService,
+		Access:               accessService,
+		Healthz:              healthAPI.Healthz,
+		Readyz:               healthAPI.Readyz,
 		Realtime: hub.ServeWS(service, func(r *http.Request) (realtime.ClientIdentity, bool) {
 			session, ok := authmiddleware.SessionFromContext(r.Context())
 			if !ok || session.User == nil || session.Session == nil {
@@ -204,6 +207,49 @@ func NewServerRuntime() (*ServerRuntime, error) {
 		},
 	})
 	return &ServerRuntime{Handler: handler, closers: closers}, nil
+}
+
+// buildClientDiagnosticsAPI はクライアント診断ログの受け口を組み立てる。
+// 出力先ディレクトリを作れない場合でも nil を返してサーバー起動は続行する
+// (診断機能の失敗が会議機能を止めないことを優先する)。
+func buildClientDiagnosticsAPI(
+	config ClientDiagnosticsConfig,
+	workspace httpadapter.WorkspaceAccessUseCases,
+	sessions httpadapter.ClientDiagnosticsSessionLookup,
+) *httpadapter.ClientDiagnosticsAPI {
+	if !config.Enabled {
+		log.Printf("client diagnostics disabled (DECISCOPE_CLIENT_DIAGNOSTICS_ENABLED=false)")
+		return nil
+	}
+	options := []application.ClientDiagnosticsServiceOption{
+		application.WithClientDiagnosticsLimits(application.ClientDiagnosticsLimits{
+			MaxEventsPerRequest: config.MaxEventsPerRequest,
+			ThrottleWindow:      config.ThrottleWindow,
+		}),
+		application.WithClientDiagnosticsSink("stdlog", clientdiagnostics.NewLogSink(os.Stdout)),
+		application.WithClientDiagnosticsSinkErrorReporter(func(sink string, err error) {
+			log.Printf("client diagnostics sink write failed. sink=%s error=%v", sink, err)
+		}),
+	}
+
+	fileSink, err := clientdiagnostics.NewFileSink(clientdiagnostics.FileSinkConfig{
+		Directory:    config.Directory,
+		MaxFileBytes: config.MaxFileBytes,
+		Retention:    config.Retention,
+	})
+	if err != nil {
+		log.Printf("client diagnostics JSONL file sink unavailable; falling back to standard log only. directory=%s error=%v", config.Directory, err)
+	} else {
+		options = append(options, application.WithClientDiagnosticsSink("jsonl", fileSink))
+		log.Printf("client diagnostics enabled. directory=%s maxFileBytes=%d retentionHours=%.0f maxEventsPerRequest=%d throttleMs=%d",
+			fileSink.Directory(), config.MaxFileBytes, config.Retention.Hours(), config.MaxEventsPerRequest, config.ThrottleWindow.Milliseconds())
+	}
+
+	return httpadapter.NewClientDiagnosticsAPI(
+		application.NewClientDiagnosticsService(options...),
+		workspace,
+		sessions,
+	)
 }
 
 func MigrateDatabase(ctx context.Context) error {
@@ -223,7 +269,6 @@ func MigrateDatabase(ctx context.Context) error {
 type repositorySet struct {
 	Meetings application.MeetingRepository
 	Events   application.EventRepository
-	Reports  application.ReportRepository
 	Jobs     application.JobRepository
 }
 
@@ -297,8 +342,9 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 	if !enabled {
 		log.Printf("AI meeting analysis disabled; missing environment variables: %s", strings.Join(config.MissingAzureOpenAIVars(), ", "))
 	} else {
-		log.Printf("AI meeting analysis enabled. deployment=%s liveAnalysisEnabled=%t finalSummaryEnabled=%t liveIntervalSeconds=%.0f",
-			config.AzureOpenAI.Deployment, config.LiveAnalysisEnabled, config.FinalSummaryEnabled, config.LiveAnalysisInterval.Seconds())
+		log.Printf("AI meeting analysis enabled. deployment=%s liveAnalysisEnabled=%t finalSummaryEnabled=%t liveIntervalSeconds=%.0f liveDebounceMs=%d liveCooldownSeconds=%.0f liveMaxWaitSeconds=%.0f",
+			config.AzureOpenAI.Deployment, config.LiveAnalysisEnabled, config.FinalSummaryEnabled, config.LiveAnalysisInterval.Seconds(),
+			config.LiveAnalysisDebounce.Milliseconds(), config.LiveAnalysisCooldown.Seconds(), config.LiveAnalysisMaxWait.Seconds())
 	}
 
 	analysisRepository := postgresrepository.NewMeetingAIAnalysisRepository(postgresDB)
@@ -332,6 +378,9 @@ func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSes
 			Enabled:                 enabled,
 			LiveEnabled:             config.LiveAnalysisEnabled,
 			LiveInterval:            config.LiveAnalysisInterval,
+			LiveDebounce:            config.LiveAnalysisDebounce,
+			LiveCooldown:            config.LiveAnalysisCooldown,
+			LiveMaxWait:             config.LiveAnalysisMaxWait,
 			LiveMinChars:            config.LiveAnalysisMinChars,
 			LiveMaxInputChars:       config.LiveAnalysisMaxInputChars,
 			LiveRequestTimeout:      config.AzureOpenAI.Timeout,
@@ -467,12 +516,11 @@ func closeAll(closers []func() error) error {
 type repositoryStore interface {
 	application.MeetingRepository
 	application.EventRepository
-	application.ReportRepository
 	application.JobRepository
 }
 
 func repositoriesFromStore(store repositoryStore) repositorySet {
 	return repositorySet{
-		Meetings: store, Events: store, Reports: store, Jobs: store,
+		Meetings: store, Events: store, Jobs: store,
 	}
 }

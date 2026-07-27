@@ -54,21 +54,3 @@ type MeetingAIAnalysis struct {
 	// persisted.
 	IntervalSeconds int
 }
-
-func ValidMeetingAIAnalysisType(analysisType MeetingAIAnalysisType) bool {
-	switch analysisType {
-	case MeetingAIAnalysisLive, MeetingAIAnalysisFinal, MeetingAIAnalysisContext, MeetingAIAnalysisTree, MeetingAIAnalysisFinalization:
-		return true
-	default:
-		return false
-	}
-}
-
-func ValidMeetingAIAnalysisStatus(status MeetingAIAnalysisStatus) bool {
-	switch status {
-	case MeetingAIAnalysisRunning, MeetingAIAnalysisCompleted, MeetingAIAnalysisFailed:
-		return true
-	default:
-		return false
-	}
-}
