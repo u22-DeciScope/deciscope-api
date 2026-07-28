@@ -1,8 +1,6 @@
 package realtime
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -31,7 +29,6 @@ var defaultTranscriptAllowedOrigins = []string{
 }
 
 type TranscriptWebSocketConfig struct {
-	ClientToken    string
 	AllowedOrigins string
 	// ResolveMember はworkspace経由の接続で認証済みユーザーを接続に紐づける。
 	// 設定されている場合、メンバー削除時に CloseWorkspaceMember で該当接続を切断できる。
@@ -155,11 +152,6 @@ func (h *TranscriptHub) ServeTranscriptSegments(config TranscriptWebSocketConfig
 		sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 		log.Printf("Transcript websocket request received. path=%s callId=%s sessionId=%s origin=%s remoteAddr=%s", path, callID, sessionID, origin, r.RemoteAddr)
 
-		if !config.authorized(r.URL.Query().Get("token")) {
-			log.Printf("Transcript websocket request rejected. path=%s callId=%s sessionId=%s origin=%s reason=unauthorized", path, callID, sessionID, origin)
-			writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
-			return
-		}
 		if !config.originAllowed(origin) {
 			log.Printf("Transcript websocket request rejected. path=%s callId=%s sessionId=%s origin=%s reason=forbidden_origin", path, callID, sessionID, origin)
 			writeError(w, http.StatusForbidden, "forbidden_origin", "origin is not allowed")
@@ -224,19 +216,6 @@ func (h *TranscriptHub) unsubscribe(c *transcriptClient) {
 		close(c.done)
 		log.Printf("Transcript websocket subscriber removed. callId=%s sessionId=%s subscriberCount=%d", c.callID, c.sessionID, count)
 	})
-}
-
-func (config TranscriptWebSocketConfig) authorized(token string) bool {
-	secret := strings.TrimSpace(config.ClientToken)
-	if secret == "" {
-		return true
-	}
-	if strings.TrimSpace(token) == "" {
-		return false
-	}
-	got := sha256.Sum256([]byte(token))
-	want := sha256.Sum256([]byte(secret))
-	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
 }
 
 func (config TranscriptWebSocketConfig) originAllowed(origin string) bool {

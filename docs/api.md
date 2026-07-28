@@ -36,6 +36,20 @@ PUT  /v1/session/current-workspace
 `/health`、`/debug`、`/login`、`/register` は現在のRouterには
 登録されていません。
 
+## クライアント診断
+
+```http
+POST /internal/client-diagnostics
+```
+
+- `DECISCOPE_CLIENT_DIAGNOSTICS_ENABLED=true` のときだけ登録されます。
+- `deciscope_session` Cookieによる認証、workspace所属、`sessionId` がその
+  workspaceに属することの検査を行います。
+- `workspaceId`、`sessionId`、1件以上の`events`を含むJSONを受け取り、
+  `accepted`、`rejected`、`suppressed`、`reasons`を`202 Accepted`で返します。
+- リクエスト上限、保存先、ローテーション、保持期間は
+  [configuration.md](./configuration.md) のクライアント診断設定を参照してください。
+
 ## Workspace
 
 ```http
@@ -354,6 +368,10 @@ X-DeciScope-Api-Key: <shared secret>
   `503 bot_control_not_configured` を返します。
 - Bot制御APIの4xx/5xx/timeout時は `meeting_sessions.status=failed` と
   `last_error` を保存し、HTTPでは `502 bot_control_command_failed` を返します。
+- 参加命令は設定した `DECISCOPE_BOT_CONTROL_URL`（通常
+  `/internal/bot/join`）へ送ります。終了命令は同じURLの末尾の`/join`を除き、
+  `/internal/bot/meeting-sessions/{sessionId}/end`へ送ります。Go APIホストから
+  Botホストへのfirewall/proxyでは両方のパスを許可してください。
 
 取得 (APIキー必須):
 
@@ -462,6 +480,23 @@ WebSocketイベント形式（[events.md](./events.md) と同じ配信経路。`
 }
 ```
 
+文字起こしの流入状態が変化した場合は、Botの生死とは別に次を配信します。
+`transcriptHealth` は通常 `ok` / `transcript_delayed` /
+`transcript_stalled` で、Botの音声メトリクスが利用できる場合は `silent` /
+`audio_stalled` / `speech_stalled` に細分類されます。
+
+```json
+{
+  "type": "meeting_session.transcript_health_changed",
+  "sentAtUtc": "2026-07-07T00:01:30.000000000Z",
+  "data": {
+    "sessionId": "session_...",
+    "transcriptHealth": "transcript_stalled",
+    "secondsSinceLastTranscript": 90
+  }
+}
+```
+
 保守/デバッグ用（`X-DeciScope-Api-Key` が必要）:
 
 ```http
@@ -476,25 +511,38 @@ Workspace配下の会議セッション（認証必須、フロントエンド�
 
 ```http
 GET  /v1/workspaces/{workspace_code}/meeting-sessions
+GET  /v1/workspaces/{workspace_code}/meeting-sessions/final-summaries
 POST /v1/workspaces/{workspace_code}/meeting-sessions
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}
 POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/end
+DELETE /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
+PATCH /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/agenda-progress
 ```
 
-- `POST`（作成）と `POST .../end`（終了）はworkspaceのadmin/ownerロールが必要です。
+- `POST`（作成）、`POST .../end`（終了）、`DELETE`、`PATCH .../agenda-progress`
+  はworkspaceのadmin/ownerロールが必要です。
+- `final-summaries` はworkspace内の完了済み最終要約を一括取得し、
+  `{"items":[{"sessionId":"...","overview":"..."}]}` を返します。最終要約がない
+  セッションは含まれず、AI分析が無効な場合は空配列です。
 - `POST .../end` はまずセッションを `ending` にしてBotへ終了コマンドを送ります。Botのdrain通知後に
   final flush → tree再編成/snapshot → summaryの順で処理し、完了後にだけ `ended` へ進みます。
   Botへの終了コマンドがタイムアウト・エラーになった場合も、DB静穏判定を使ってfinalizationを開始し、
   最終的には `ended` として終了します（不完全時は`lastError`と`finalization`分析に記録）。
   Bot制御が未設定（`503 bot_control_not_configured`）の場合のみ終了に失敗します。
+- `DELETE` は `ended` / `failed` / `stale` の終了済みセッションだけを、その
+  transcriptとAI分析を含めて完全削除し、`204 No Content`を返します。進行中は`400`です。
 - `transcript-segments` は保存済みSegmentの取得、`transcript-stream` はWebSocketでの
   リアルタイム配信です。どちらもSession Cookie認証とworkspace所属検査を通ります。
 - `ai-analyses` は最新のライブ分析・最終要約・durable tree・finalization進行状態を返します。
   存在しない分析は `null` で、`404` にはなりません。`finalization.payload` にはtarget sequence、
   tree/summaryのcoverage、timeout、retry回数、不完全終了の有無が入ります。
+- `agenda-progress` は手動上書きを1操作ずつ受け付けます。本文は
+  `{"entryId":"agenda-1","manualStatus":"discussed"}`（`null`で解除）、または
+  `{"manualCurrentTopicId":"agenda-1"}`（`null`で解除）のどちらか一方です。
+  応答は更新後の`agendaProgress`です。
 
 ```json
 {

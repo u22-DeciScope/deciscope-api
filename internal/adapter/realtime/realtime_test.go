@@ -149,16 +149,9 @@ func TestTranscriptHubPublishFiltersBySessionID(t *testing.T) {
 	}
 }
 
-func TestTranscriptWebSocketConfigChecksTokenAndOrigin(t *testing.T) {
+func TestTranscriptWebSocketConfigChecksOrigin(t *testing.T) {
 	config := TranscriptWebSocketConfig{
-		ClientToken:    "client-token",
 		AllowedOrigins: "http://localhost:3000,http://127.0.0.1:3000",
-	}
-	if !config.authorized("client-token") {
-		t.Fatal("authorized token rejected")
-	}
-	if config.authorized("wrong-token") {
-		t.Fatal("wrong token accepted")
 	}
 	if !config.originAllowed("http://localhost:3000") {
 		t.Fatal("allowed origin rejected")

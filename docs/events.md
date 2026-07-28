@@ -4,7 +4,8 @@ DeciScope の画面更新は、会議ごとのイベントを REST と WebSocket
 
 このドキュメントは `/v1/realtime` (meeting_id ベース) のイベントを扱います。Teams Bot
 会議セッションの `transcript_segment.created` / `meeting_session.status_changed` /
-`ai_analysis.updated` / `meeting_session.bot_health_changed` イベントは
+`ai_analysis.updated` / `meeting_session.bot_health_changed` /
+`meeting_session.transcript_health_changed` イベントは
 `/v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream` で
 配信され、詳細は [api.md](./api.md) を参照してください。
 
@@ -155,9 +156,6 @@ transcript.partial
   ]
 }
 ```
-
-現在のmockレポート生成では、`decision`を決定事項へ、未解決の`risk`と
-`issue`（subtypeを含む）をリスク・未解決事項へMarkdown出力します。
 
 ### tree.update
 

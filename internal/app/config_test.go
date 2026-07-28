@@ -144,7 +144,6 @@ func TestTreeAuditSchedulerRegistrationRequiresActiveConfigAndRepository(t *test
 func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://deciscope:secret@localhost:5432/deciscope")
 	t.Setenv("DECISCOPE_INGEST_API_KEY", "0123456789abcdef0123456789abcdef")
-	t.Setenv("DECISCOPE_WS_CLIENT_TOKEN", "dev-ws-token")
 	t.Setenv("DECISCOPE_WS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
 	t.Setenv("DECISCOPE_TRANSCRIPT_ONLY", "true")
 	t.Setenv("DECISCOPE_BOT_CONTROL_URL", "http://100.64.0.1:7071/internal/bot/join")
@@ -154,8 +153,7 @@ func TestConfigFromEnvReadsDatabaseURL(t *testing.T) {
 	if config.Database.URL != "postgres://deciscope:secret@localhost:5432/deciscope" {
 		t.Fatalf("ConfigFromEnv() = %+v", config)
 	}
-	if config.TranscriptWebSocket.ClientToken != "dev-ws-token" ||
-		config.TranscriptWebSocket.AllowedOrigins != "http://localhost:3000,http://localhost:5173" {
+	if config.TranscriptWebSocket.AllowedOrigins != "http://localhost:3000,http://localhost:5173" {
 		t.Fatalf("ConfigFromEnv() = %+v, want websocket config", config)
 	}
 	if !config.TranscriptOnly {
@@ -227,6 +225,14 @@ func TestConfigFromEnvSessionWatchdogCorrectsEndAfterBelowLostAfter(t *testing.T
 	}
 	if config.SessionWatchdog.EndAfter <= config.SessionWatchdog.LostAfter {
 		t.Fatalf("SessionWatchdog.EndAfter = %s, want strictly greater than LostAfter = %s", config.SessionWatchdog.EndAfter, config.SessionWatchdog.LostAfter)
+	}
+}
+
+func TestConfigFromEnvAllowsDisablingClientDiagnosticsThrottle(t *testing.T) {
+	t.Setenv("DECISCOPE_CLIENT_DIAGNOSTICS_THROTTLE_MS", "0")
+	config := ConfigFromEnv()
+	if config.ClientDiagnostics.ThrottleWindow != 0 {
+		t.Fatalf("ClientDiagnostics.ThrottleWindow = %s, want disabled", config.ClientDiagnostics.ThrottleWindow)
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 func TestServiceCoreUseCasesWithFakePorts(t *testing.T) {
 	ctx := context.Background()
 	ports := newFakePorts()
-	service := application.NewService(ports, ports, ports, ports)
+	service := application.NewService(ports, ports, ports)
 
 	meeting, err := service.CreateMeeting(ctx, "w_test", "Service use cases", "fixture_replay")
 	if err != nil {
@@ -47,12 +47,11 @@ func TestServiceCoreUseCasesWithFakePorts(t *testing.T) {
 type fakePorts struct {
 	meeting   *domain.Meeting
 	events    []domain.Event
-	jobs      map[string]domain.Job
 	published []domain.Event
 }
 
 func newFakePorts() *fakePorts {
-	return &fakePorts{jobs: make(map[string]domain.Job)}
+	return &fakePorts{}
 }
 
 func (f *fakePorts) CreateMeeting(_ context.Context, workspaceID, title, source string) (*domain.Meeting, error) {
@@ -113,41 +112,6 @@ func (f *fakePorts) ListEvents(_ context.Context, meetingID string, afterSeq int
 
 func (f *fakePorts) ListSegments(context.Context, string, int64) ([]domain.Segment, error) {
 	return nil, nil
-}
-
-func (f *fakePorts) CreateJob(_ context.Context, workspaceID, jobType, meetingID, status string) (*domain.Job, error) {
-	job := domain.Job{ID: "job_test", WorkspaceID: workspaceID, Type: jobType, MeetingID: meetingID, Status: status}
-	f.jobs[job.ID] = job
-	return &job, nil
-}
-
-func (f *fakePorts) CompleteJob(_ context.Context, jobID string, result any) error {
-	job, ok := f.jobs[jobID]
-	if !ok {
-		return domain.ErrNotFound
-	}
-	job.Status = "completed"
-	job.Result, _ = json.Marshal(result)
-	f.jobs[jobID] = job
-	return nil
-}
-
-func (f *fakePorts) FailJob(_ context.Context, jobID, message string) error {
-	job, ok := f.jobs[jobID]
-	if !ok {
-		return domain.ErrNotFound
-	}
-	job.Status, job.Error = "failed", message
-	f.jobs[jobID] = job
-	return nil
-}
-
-func (f *fakePorts) GetJob(_ context.Context, jobID string) (*domain.Job, error) {
-	job, ok := f.jobs[jobID]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	return &job, nil
 }
 
 func (f *fakePorts) Publish(event domain.Event) {

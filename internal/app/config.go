@@ -104,7 +104,6 @@ type ClientDiagnosticsConfig struct {
 }
 
 type TranscriptWebSocketConfig struct {
-	ClientToken    string
 	AllowedOrigins string
 }
 
@@ -206,7 +205,6 @@ func ConfigFromEnv() Config {
 			APIKey: strings.TrimSpace(os.Getenv("DECISCOPE_INGEST_API_KEY")),
 		},
 		TranscriptWebSocket: TranscriptWebSocketConfig{
-			ClientToken:    strings.TrimSpace(os.Getenv("DECISCOPE_WS_CLIENT_TOKEN")),
 			AllowedOrigins: os.Getenv("DECISCOPE_WS_ALLOWED_ORIGINS"),
 		},
 		TranscriptOnly: transcriptOnly,
@@ -408,7 +406,7 @@ func secondsDurationFromEnv(value string, defaultSeconds, minSeconds int) time.D
 
 func millisecondsDurationFromEnv(value string, defaultMilliseconds, minMilliseconds int) time.Duration {
 	milliseconds, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil || milliseconds <= 0 {
+	if err != nil || milliseconds < 0 || (milliseconds == 0 && minMilliseconds > 0) {
 		milliseconds = defaultMilliseconds
 	}
 	if milliseconds < minMilliseconds {

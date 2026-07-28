@@ -3,7 +3,7 @@
 DeciScopeのローカルMVP向け、Go + `chi`製バックエンドです。
 
 会議API、WebSocketリアルタイム配信、PostgreSQL永続化、
-Azure EchoBot向け文字起こし取り込み、Markdownレポート生成を
+Azure EchoBot向け文字起こし取り込みを
 提供します。Teams音声のSTTはVM上のTeams Botが担当し、このAPIはBotから送られる
 transcript segmentを受け取ります。Azure OpenAIを設定した場合は、会議中ライブ分析と
 会議終了時の最終要約も生成します。raw audioのMedia IngressやファイルSTT/ffmpeg処理は
@@ -29,7 +29,8 @@ internal/app
 - `internal/domain`: Domain Entity、Error、純粋なRule
 - `internal/application`: Use CaseとOutbound Port
 - `internal/adapter`: HTTP、WebSocket、Repository実装
-- `internal/infrastructure`: DB接続、Migration、Firebase、filesystem storage
+- `internal/infrastructure`: DB接続・Migration、Azure OpenAI、Bot制御、
+  クライアント診断ログ、メール、Firebase
 
 詳細は [docs/backend-architecture.md](docs/backend-architecture.md) を参照してください。
 
@@ -76,6 +77,9 @@ Docker Composeでは `migrate` serviceが先に成功してから `api` service�
   詳細は [docs/firebase-auth.md](docs/firebase-auth.md) を参照してください
 
 完全な例は [.env.example](.env.example) を参照してください。`.env` はGit管理対象外です。
+
+Bot/watchdog、文字起こしヘルス、クライアント診断、AIツリー分類を含む全設定の
+用途と既定値は [docs/configuration.md](docs/configuration.md) を参照してください。
 
 ### AI会議分析 (Azure OpenAI)
 
@@ -359,6 +363,18 @@ X-DeciScope-Bot-Control-Token: <DECISCOPE_BOT_CONTROL_TOKEN>
 }
 ```
 
+会議終了時は、設定URL末尾の `/join` を除いた同じベースURLへ次を送ります。
+
+```http
+POST http://<VM_TAILSCALE_IP>:<PORT>/internal/bot/meeting-sessions/{session_id}/end
+Content-Type: application/json
+X-DeciScope-Bot-Control-Token: <DECISCOPE_BOT_CONTROL_TOKEN>
+```
+
+Go APIホストからBotホストへのfirewall/proxyでは、参加用の
+`/internal/bot/join` と終了用の `/internal/bot/meeting-sessions/{session_id}/end`
+の両方を許可してください。
+
 VM Botが2xxを返すと `meeting_sessions.status` は `command_sent` になります。
 4xx/5xx/timeoutの場合は `failed` と `last_error` を保存します。
 `joinUrl` 全文とtokenはログへ出さず、ログには `sessionId` と `joinUrlHash` を使います。
@@ -446,12 +462,16 @@ Invoke-RestMethod `
 - `POST /api/v1/meeting-sessions` (互換/手動確認用。API key必須)
 - `GET /api/v1/meeting-sessions/{session_id}` (互換/手動確認用。API key必須)
 - `PATCH /api/v1/bot/meeting-sessions/{session_id}/status`
+- `POST /internal/client-diagnostics` (有効時。Session Cookie必須)
 - `GET /v1/workspaces/{workspace_code}/meetings`
 - `POST /v1/workspaces/{workspace_code}/meetings`
 - `GET /v1/workspaces/{workspace_code}/meeting-sessions`
+- `GET /v1/workspaces/{workspace_code}/meeting-sessions/final-summaries`
 - `POST /v1/workspaces/{workspace_code}/meeting-sessions`
 - `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}`
 - `POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/end`
+- `DELETE /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/`
+- `PATCH /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/agenda-progress`
 - `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments`
 - `GET /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream`
 - `GET /v1/meetings/{meeting_id}`

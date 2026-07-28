@@ -1,3 +1,26 @@
+
+## Tool execution and concurrency
+
+When operating in Code Mode:
+
+* Within each bounded stage, run independent tool calls concurrently when they
+  are available through `functions.exec`.
+* Batch those calls into a single `functions.exec` invocation rather than
+  splitting otherwise batchable inspections across separate top-level tool
+  calls.
+* Use `await Promise.allSettled([...])` when partial results remain useful, and
+  inspect every fulfilled and rejected result.
+* Use `await Promise.all([...])` only when any single failure should abort the
+  entire batch.
+* Keep the following operations sequential:
+
+  * dependent operations;
+  * waits, resumes, and approval steps;
+  * conflicting or interdependent mutations;
+  * adaptive investigations where one result may change the next action.
+* Do not parallelize work merely for speed when doing so could change behavior,
+  hide a failure, or create conflicting mutations.
+
 # Backend Development Rules
 
 Before changing backend code, read `docs/clean-architecture-policy.md` and
