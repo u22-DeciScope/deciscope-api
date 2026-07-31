@@ -939,6 +939,29 @@ type fakeAIAnalysisRepository struct {
 	liveHistory map[string]map[int64]domain.MeetingAIAnalysis
 }
 
+type finalizationStartedAIAnalysisRepository struct {
+	*fakeAIAnalysisRepository
+	started     chan struct{}
+	startedOnce sync.Once
+}
+
+func newFinalizationStartedAIAnalysisRepository() *finalizationStartedAIAnalysisRepository {
+	return &finalizationStartedAIAnalysisRepository{
+		fakeAIAnalysisRepository: newFakeAIAnalysisRepository(),
+		started:                  make(chan struct{}),
+	}
+}
+
+func (f *finalizationStartedAIAnalysisRepository) UpsertMeetingAIAnalysis(ctx context.Context, analysis domain.MeetingAIAnalysis) (*domain.MeetingAIAnalysis, error) {
+	saved, err := f.fakeAIAnalysisRepository.UpsertMeetingAIAnalysis(ctx, analysis)
+	if err == nil &&
+		analysis.Type == domain.MeetingAIAnalysisFinalization &&
+		analysis.Status == domain.MeetingAIAnalysisRunning {
+		f.startedOnce.Do(func() { close(f.started) })
+	}
+	return saved, err
+}
+
 type failOnceAIAnalysisRepository struct {
 	*fakeAIAnalysisRepository
 	mu       sync.Mutex
@@ -1127,6 +1150,105 @@ type fakeAIChatCompleter struct {
 	errs     []error
 	block    chan struct{}
 	calls    int
+}
+
+const (
+	finalizationTestLiveDeployment         = "test-live-extraction"
+	finalizationTestTreeDeployment         = "test-tree-reorganizer"
+	finalizationTestFinalSummaryDeployment = "test-final-summary"
+)
+
+// taskRoutedFinalizationCompleter keeps each AI task's response independent
+// from global call order. Only the first live extraction is gated so the test
+// can place another durable transcript segment behind its frozen input range.
+type taskRoutedFinalizationCompleter struct {
+	mu                        sync.Mutex
+	requests                  []application.AIChatRequest
+	callsByDeployment         map[string]int
+	callsStartedBeforeRelease []string
+	firstLiveStarted          chan struct{}
+	releaseFirstLive          chan struct{}
+	firstLiveStartedOnce      sync.Once
+	releaseFirstLiveOnce      sync.Once
+	firstLiveReleased         bool
+}
+
+func newTaskRoutedFinalizationCompleter() *taskRoutedFinalizationCompleter {
+	return &taskRoutedFinalizationCompleter{
+		callsByDeployment: make(map[string]int),
+		firstLiveStarted:  make(chan struct{}),
+		releaseFirstLive:  make(chan struct{}),
+	}
+}
+
+func (c *taskRoutedFinalizationCompleter) Complete(ctx context.Context, request application.AIChatRequest) (application.AIChatResult, error) {
+	c.mu.Lock()
+	c.requests = append(c.requests, request)
+	c.callsByDeployment[request.Deployment]++
+	taskCall := c.callsByDeployment[request.Deployment]
+	if !c.firstLiveReleased &&
+		!(request.Deployment == finalizationTestLiveDeployment && taskCall == 1) {
+		c.callsStartedBeforeRelease = append(c.callsStartedBeforeRelease, request.Deployment)
+	}
+	c.mu.Unlock()
+
+	switch request.Deployment {
+	case finalizationTestLiveDeployment:
+		if taskCall == 1 {
+			c.firstLiveStartedOnce.Do(func() { close(c.firstLiveStarted) })
+			select {
+			case <-c.releaseFirstLive:
+			case <-ctx.Done():
+				return application.AIChatResult{}, ctx.Err()
+			}
+		}
+		return application.AIChatResult{Content: liveAnalysisResultJSON}, nil
+	case finalizationTestTreeDeployment:
+		return application.AIChatResult{Content: `{"basedOnTreeVersion":2,"operations":[]}`}, nil
+	case finalizationTestFinalSummaryDeployment:
+		return application.AIChatResult{Content: finalAnalysisResultJSON}, nil
+	default:
+		return application.AIChatResult{}, fmt.Errorf("unexpected test AI deployment %q", request.Deployment)
+	}
+}
+
+func (c *taskRoutedFinalizationCompleter) releaseLive() {
+	c.releaseFirstLiveOnce.Do(func() {
+		c.mu.Lock()
+		c.firstLiveReleased = true
+		c.mu.Unlock()
+		close(c.releaseFirstLive)
+	})
+}
+
+func (c *taskRoutedFinalizationCompleter) liveReleased() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.firstLiveReleased
+}
+
+func (c *taskRoutedFinalizationCompleter) callCountFor(deployment string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.callsByDeployment[deployment]
+}
+
+func (c *taskRoutedFinalizationCompleter) requestsFor(deployment string) []application.AIChatRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	requests := make([]application.AIChatRequest, 0, c.callsByDeployment[deployment])
+	for _, request := range c.requests {
+		if request.Deployment == deployment {
+			requests = append(requests, request)
+		}
+	}
+	return requests
+}
+
+func (c *taskRoutedFinalizationCompleter) callsBeforeRelease() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.callsStartedBeforeRelease...)
 }
 
 type contextGateCompleter struct {
@@ -1335,6 +1457,7 @@ func (f *fakeAnalysisSessionRepository) DeleteMeetingSession(context.Context, st
 }
 
 type fakeAnalysisTranscriptRepository struct {
+	mu       sync.Mutex
 	segments []domain.TranscriptSegment
 }
 
@@ -1379,7 +1502,15 @@ func (f *fakeAnalysisTranscriptRepository) SaveTranscriptSegment(context.Context
 }
 
 func (f *fakeAnalysisTranscriptRepository) ListTranscriptSegments(context.Context, string, string, int) ([]domain.TranscriptSegment, error) {
-	return f.segments, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.TranscriptSegment(nil), f.segments...), nil
+}
+
+func (f *fakeAnalysisTranscriptRepository) addSegment(segment domain.TranscriptSegment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.segments = append(f.segments, segment)
 }
 
 // TestMeetingSessionEndedPersistsDurableTreeSnapshot verifies Task F: at
@@ -1637,43 +1768,103 @@ func TestMeetingFinalizationCallsFinalTreeReviewDeployment(t *testing.T) {
 }
 
 func TestMeetingFinalizationWaitsForInFlightLiveAnalysis(t *testing.T) {
-	repository := newFakeAIAnalysisRepository()
-	transcriptRepo := &fakeAnalysisTranscriptRepository{segments: finalSegmentsThrough(2)}
-	block := make(chan struct{})
-	completer := &fakeAIChatCompleter{block: block, results: []application.AIChatResult{
-		{Content: liveAnalysisResultJSON},
-		{Content: liveAnalysisResultJSON},
-		{Content: `{"basedOnTreeVersion":2,"operations":[]}`},
-		{Content: finalAnalysisResultJSON},
-	}}
+	segments := finalSegmentsThrough(2)
+	repository := newFinalizationStartedAIAnalysisRepository()
+	transcriptRepo := &fakeAnalysisTranscriptRepository{segments: []domain.TranscriptSegment{segments[0]}}
+	completer := newTaskRoutedFinalizationCompleter()
 	config := testLiveOnlyConfig(5*time.Millisecond, 1)
 	config.FinalEnabled = true
 	config.FinalMaxInputChars = 12000
 	config.FinalizationWaitTimeout = time.Second
+	config.TaskModels = application.AITaskModels{
+		LiveExtraction:  finalizationTestLiveDeployment,
+		TreeReorganizer: finalizationTestTreeDeployment,
+		FinalSummary:    finalizationTestFinalSummaryDeployment,
+	}
 	service := application.NewMeetingAnalysisService(repository, transcriptRepo, &fakeAnalysisSessionRepository{}, completer, config)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	service.Start(ctx)
 	defer service.Close()
-	service.PublishTranscriptSegment(finalSegmentsThrough(1)[0])
-	waitUntil(t, time.Second, func() bool { return completer.callCount() == 1 })
+	service.PublishTranscriptSegment(segments[0])
+	select {
+	case <-completer.firstLiveStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first live extraction did not start")
+	}
 
-	result := make(chan error, 1)
+	// The first live request has already frozen its input at seq-1. Make seq-2
+	// durable and publish it only while that request is synchronously blocked.
+	transcriptRepo.addSegment(segments[1])
+	service.PublishTranscriptSegment(segments[1])
+
+	type finalizationResult struct {
+		err                    error
+		completedBeforeRelease bool
+	}
+	result := make(chan finalizationResult, 1)
 	go func() {
-		result <- service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
+		err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
 			BotLastForwardedFinalSequence: 2, TranscriptQueueDrained: true,
 		})
+		result <- finalizationResult{err: err, completedBeforeRelease: !completer.liveReleased()}
 	}()
-	time.Sleep(40 * time.Millisecond)
-	if got := completer.callCount(); got != 1 {
-		t.Fatalf("AI calls while live extraction blocked = %d, want 1", got)
+
+	select {
+	case <-repository.started:
+	case <-time.After(time.Second):
+		t.Fatal("finalization did not start")
 	}
-	close(block)
-	if err := <-result; err != nil {
-		t.Fatalf("FinalizeMeetingSession() error = %v", err)
+	select {
+	case completed := <-result:
+		t.Fatalf("finalization completed before live extraction release: %v", completed.err)
+	default:
 	}
-	if got := completer.callCount(); got != 4 {
-		t.Fatalf("AI calls = %d, want live + tail flush + reorganizer + summary", got)
+
+	completer.releaseLive()
+	var completed finalizationResult
+	select {
+	case completed = <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("finalization did not complete after live extraction release")
+	}
+	if completed.completedBeforeRelease {
+		t.Fatal("finalization completed before live extraction release")
+	}
+	if completed.err != nil {
+		t.Fatalf("FinalizeMeetingSession() error = %v", completed.err)
+	}
+	if beforeRelease := completer.callsBeforeRelease(); len(beforeRelease) != 0 {
+		t.Fatalf("AI tasks started before first live extraction release = %v", beforeRelease)
+	}
+	if got := completer.callCountFor(finalizationTestLiveDeployment); got != 2 {
+		t.Fatalf("live extraction calls = %d, want initial + finalization tail flush", got)
+	}
+	if got := completer.callCountFor(finalizationTestTreeDeployment); got != 1 {
+		t.Fatalf("tree reorganizer calls = %d, want 1", got)
+	}
+	if got := completer.callCountFor(finalizationTestFinalSummaryDeployment); got != 1 {
+		t.Fatalf("final summary calls = %d, want 1", got)
+	}
+	liveRequests := completer.requestsFor(finalizationTestLiveDeployment)
+	if len(liveRequests) != 2 ||
+		!strings.Contains(liveRequests[0].User, "seq-1") ||
+		strings.Contains(liveRequests[0].User, "seq-2") ||
+		!strings.Contains(liveRequests[1].User, "seq-2") {
+		t.Fatalf("live request batches were not deterministically split at seq-1/seq-2: %+v", liveRequests)
+	}
+	live, err := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisLive)
+	if err != nil {
+		t.Fatalf("GetMeetingAIAnalysis(live) error = %v", err)
+	}
+	var coverage struct {
+		CoveredThroughSequenceNo int64 `json:"coveredThroughSequenceNo"`
+	}
+	if err := json.Unmarshal(live.Payload, &coverage); err != nil {
+		t.Fatalf("unmarshal live coverage: %v", err)
+	}
+	if coverage.CoveredThroughSequenceNo != 2 {
+		t.Fatalf("coveredThroughSequenceNo = %d, want 2", coverage.CoveredThroughSequenceNo)
 	}
 }
 

@@ -2050,9 +2050,143 @@ func resolveRootTopic(nodeID string, parents map[string]string, topics map[strin
 	return ""
 }
 
-// promoteEmergingCandidates promotes candidates that satisfy the evidence
-// conditions (PromotionMinItems現存item・PromotionMinRoundsラウンド)を
-// dynamic topic へ昇格させ、証拠itemを追加論点から新topicへ付け替える。
+type candidateBatchEvidenceAssessment struct {
+	CurrentBatchItemCount        int
+	IndependenceDedupBeforeCount int
+	IndependentItemIDs           []string
+	ExcludedEvidence             []string
+	DistinctEvidenceCount        int
+}
+
+func (a candidateBatchEvidenceAssessment) independentCount() int {
+	return len(a.IndependentItemIDs)
+}
+
+func candidateEvidenceMatchesSubject(candidate emergingTopicCandidate, item liveAnalysisItem) bool {
+	subject := strings.TrimSpace(candidate.Label + " " + candidate.Description)
+	itemText := strings.TrimSpace(item.Title + " " + item.Body)
+	if subject == "" || itemText == "" {
+		return false
+	}
+	if semanticItemSimilarity(subject, itemText) >= candidateSubjectCoherenceThreshold {
+		return true
+	}
+	return sharesSubjectBigram(emergingTopicCore(candidate.Label), itemText)
+}
+
+// candidateEvidenceSemanticallyDuplicates reports whether two otherwise
+// grounded observations express the same proposition. This check deliberately
+// ignores kind: changing issue/risk/todo alone must not turn one fact into two
+// independent observations.
+func candidateEvidenceSemanticallyDuplicates(left, right liveAnalysisItem) bool {
+	if left.ID == right.ID {
+		return true
+	}
+	if leftKey, rightKey := itemSemanticKeyHash(left), itemSemanticKeyHash(right); leftKey != "" && leftKey == rightKey {
+		return true
+	}
+	if duplicate, _ := sameKindSemanticDuplicate(left, right); duplicate {
+		return true
+	}
+	leftText := semanticTopicCore(left.Title + " " + left.Body)
+	rightText := semanticTopicCore(right.Title + " " + right.Body)
+	score := semanticItemSimilarity(leftText, rightText)
+	if titleScore := semanticItemSimilarity(left.Title, right.Title); titleScore > score {
+		score = titleScore
+	}
+	if score >= 0.88 {
+		return true
+	}
+	return normalizeForMatch(left.Title) != "" &&
+		normalizeForMatch(left.Title) == normalizeForMatch(right.Title) &&
+		score >= 0.65
+}
+
+// assessCandidateBatchEvidence applies the stricter evidence gate used only by
+// the single-batch promotion path. The normal multi-round path intentionally
+// keeps its established thresholds. By the time this runs, model items have
+// already passed grounding, information validation, kind validation, and the
+// normal semantic-dedup pass; the checks below make those guarantees explicit
+// and prevent split/evidence/kind variants from being counted twice.
+func assessCandidateBatchEvidence(
+	candidate emergingTopicCandidate,
+	itemAt func(string) *liveAnalysisItem,
+	parents map[string]string,
+	topics map[string]liveAnalysisTreeNode,
+) candidateBatchEvidenceAssessment {
+	var assessment candidateBatchEvidenceAssessment
+	evidenceFingerprints := make(map[string]struct{})
+	independentItems := make([]liveAnalysisItem, 0, len(candidate.EvidenceItemIDs))
+	exclude := func(itemID, reason string) {
+		assessment.ExcludedEvidence = append(assessment.ExcludedEvidence, itemID+":"+reason)
+	}
+
+	for _, itemID := range candidate.EvidenceItemIDs {
+		item := itemAt(itemID)
+		switch {
+		case item == nil:
+			exclude(itemID, "missing_item")
+			continue
+		case !item.observedInCurrentBatch:
+			exclude(itemID, "not_current_batch")
+			continue
+		}
+		assessment.CurrentBatchItemCount++
+		switch {
+		case item.Inactive || item.MergedIntoID != "" || item.Status == "dismissed":
+			exclude(itemID, "inactive_item")
+			continue
+		case resolveRootTopic(itemID, parents, topics) != "":
+			exclude(itemID, "already_placed")
+			continue
+		case item.GroundingDecision != "accepted" && item.GroundingDecision != "rewritten":
+			exclude(itemID, "grounding_not_accepted")
+			continue
+		case item.semanticSplitFragment:
+			exclude(itemID, "semantic_split_fragment")
+			continue
+		case finalItemIsLowInformation(*item):
+			exclude(itemID, "low_information")
+			continue
+		case !candidateEvidenceMatchesSubject(candidate, *item):
+			exclude(itemID, "candidate_subject_incoherent")
+			continue
+		}
+
+		fingerprint := itemEvidenceFingerprint(*item)
+		if fingerprint == "" {
+			exclude(itemID, "missing_evidence")
+			continue
+		}
+		assessment.IndependenceDedupBeforeCount++
+		if _, duplicate := evidenceFingerprints[fingerprint]; duplicate {
+			exclude(itemID, "duplicate_evidence")
+			continue
+		}
+		evidenceFingerprints[fingerprint] = struct{}{}
+
+		semanticDuplicate := false
+		for _, accepted := range independentItems {
+			if candidateEvidenceSemanticallyDuplicates(accepted, *item) {
+				semanticDuplicate = true
+				break
+			}
+		}
+		if semanticDuplicate {
+			exclude(itemID, "semantic_duplicate")
+			continue
+		}
+		independentItems = append(independentItems, *item)
+		assessment.IndependentItemIDs = append(assessment.IndependentItemIDs, itemID)
+	}
+	assessment.DistinctEvidenceCount = len(evidenceFingerprints)
+	return assessment
+}
+
+// promoteEmergingCandidates promotes candidates through either the existing
+// multi-round route (PromotionMinItems現存item・PromotionMinRoundsラウンド)
+// or the independent-current-batch route (PromotionMinItems以上、最低2件)。
+// 昇格時は候補の全証拠itemを追加論点から新topicへ付け替える。
 // 既存topicとラベルが重複するようになった候補は、そのtopicへ吸収する。
 // 昇格は1ラウンドに maxPromotionsPerRound 件まで。
 func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
@@ -2083,7 +2217,8 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 		return orderKey(pc.candidates[order[a]]) < orderKey(pc.candidates[order[b]])
 	})
 
-	reparentEvidence := func(candidate emergingTopicCandidate, topicID string) {
+	reparentEvidence := func(candidate emergingTopicCandidate, topicID string) int {
+		reparented := 0
 		for _, itemID := range candidate.EvidenceItemIDs {
 			current := pc.parents[itemID]
 			if current != "" && current != treeUnclassifiedTopicID {
@@ -2103,7 +2238,9 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 				pc.stats.PromotedItemsReparented++
 				pc.stats.PromotedItemIDs = append(pc.stats.PromotedItemIDs, itemID)
 			}
+			reparented++
 		}
+		return reparented
 	}
 	semanticExistingTopic := func(candidate emergingTopicCandidate) string {
 		return semanticExistingTopicID(candidate.Label, candidate.Description, pc.topics)
@@ -2153,6 +2290,23 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 	for _, at := range order {
 		candidate := &pc.candidates[at]
 		pruneCandidateEvidence(candidate, detailIDs)
+		batchEvidence := assessCandidateBatchEvidence(*candidate, pc.itemAt, pc.parents, pc.topics)
+		withEvidenceDiagnostics := func(decision emergingDecision) emergingDecision {
+			if decision.EvidenceItemCount == 0 {
+				decision.EvidenceItemCount = len(candidate.EvidenceItemIDs)
+			}
+			if decision.RoundCount == 0 {
+				decision.RoundCount = candidate.RoundCount
+			}
+			decision.BatchRound = pc.round
+			decision.CurrentBatchItemCount = batchEvidence.CurrentBatchItemCount
+			decision.IndependenceDedupBeforeCount = batchEvidence.IndependenceDedupBeforeCount
+			decision.IndependenceDedupAfterCount = batchEvidence.independentCount()
+			decision.IndependentItemIDs = append([]string(nil), batchEvidence.IndependentItemIDs...)
+			decision.ExcludedEvidence = append([]string(nil), batchEvidence.ExcludedEvidence...)
+			decision.DistinctEvidenceCount = batchEvidence.DistinctEvidenceCount
+			return decision
+		}
 		// A candidate semantically equivalent to an existing agenda/dynamic
 		// topic is a classification proposal, not a new topic. Fold it as soon
 		// as it is recognized so its tentative items do not accumulate.
@@ -2160,12 +2314,12 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			existingTopic := pc.topics[existingID]
 			existingTopic.ModelTopicIDs = appendUniqueStrings(existingTopic.ModelTopicIDs, candidate.ModelTopicIDs...)
 			pc.topics[existingID] = existingTopic
-			reparentEvidence(*candidate, existingID)
+			reparented := reparentEvidence(*candidate, existingID)
 			removed[candidate.ID] = struct{}{}
 			if pc.stats != nil {
 				pc.stats.CandidateFoldedIntoAgenda++
 			}
-			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingFoldedIntoExisting, TopicID: existingID})
+			record(withEvidenceDiagnostics(emergingDecision{CandidateID: candidate.ID, Decision: emergingFoldedIntoExisting, TopicID: existingID, PromotionPath: "existing_topic_fold", ReparentedItemCount: reparented}))
 			continue
 		}
 		stableLongEnough := candidate.RoundCount >= pc.cfg.PromotionMinRounds
@@ -2199,12 +2353,12 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			if sharedTreeAuditSubjectTerm(candidate.Label+" "+candidate.Description, placedTopic.Label+" "+placedTopic.Description) {
 				placedTopic.ModelTopicIDs = appendUniqueStrings(placedTopic.ModelTopicIDs, candidate.ModelTopicIDs...)
 				pc.topics[placedTopicID] = placedTopic
-				reparentEvidence(*candidate, placedTopicID)
+				reparented := reparentEvidence(*candidate, placedTopicID)
 				removed[candidate.ID] = struct{}{}
 				if pc.stats != nil {
 					pc.stats.CandidateFoldedIntoAgenda++
 				}
-				record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingFoldedIntoExisting, TopicID: placedTopicID, Reason: "evidence_already_in_topic"})
+				record(withEvidenceDiagnostics(emergingDecision{CandidateID: candidate.ID, Decision: emergingFoldedIntoExisting, TopicID: placedTopicID, Reason: "evidence_already_in_topic", PromotionPath: "existing_topic_fold", ReparentedItemCount: reparented}))
 				continue
 			}
 		}
@@ -2224,7 +2378,24 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 				evidenceCount = unplacedOriginCount
 			}
 		}
-		if evidenceCount < pc.cfg.PromotionMinItems || !stableLongEnough {
+		minIndependentItems := pc.cfg.PromotionMinItems
+		if minIndependentItems < 2 {
+			minIndependentItems = 2
+		}
+		multiRoundQualified := evidenceCount >= pc.cfg.PromotionMinItems && stableLongEnough
+		singleBatchQualified := batchEvidence.independentCount() >= minIndependentItems
+		promotionPath := ""
+		switch {
+		case multiRoundQualified:
+			promotionPath = "multi_round"
+		case singleBatchQualified:
+			promotionPath = "single_batch_independent_items"
+		}
+		if promotionPath == "" {
+			waitReason := "insufficient_rounds_and_independent_batch_evidence"
+			if evidenceCount < pc.cfg.PromotionMinItems {
+				waitReason = "insufficient_canonical_evidence"
+			}
 			if candidate.LastRound > 0 && pc.round-candidate.LastRound >= 4 &&
 				(evidenceCount < pc.cfg.PromotionMinItems || !stableLongEnough) {
 				wasInactive := candidate.Inactive
@@ -2237,25 +2408,26 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 					pc.stats.CandidateInactive++
 				}
 				if !wasInactive {
-					record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingWaitingEvidence, Reason: "inactive_stale_no_evidence_growth"})
+					waitReason = "inactive_stale_no_evidence_growth"
 				}
 			}
+			record(withEvidenceDiagnostics(emergingDecision{CandidateID: candidate.ID, Decision: emergingWaitingEvidence, Reason: waitReason}))
 			continue
 		}
 		if existingID, dup := pc.labelIndex[normalizeForMatch(candidate.Label)]; dup {
 			existingTopic := pc.topics[existingID]
 			existingTopic.ModelTopicIDs = appendUniqueStrings(existingTopic.ModelTopicIDs, candidate.ModelTopicIDs...)
 			pc.topics[existingID] = existingTopic
-			reparentEvidence(*candidate, existingID)
+			reparented := reparentEvidence(*candidate, existingID)
 			removed[candidate.ID] = struct{}{}
 			if pc.stats != nil {
 				pc.stats.CandidateFoldedIntoAgenda++
 			}
-			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingFoldedIntoExisting, TopicID: existingID})
+			record(withEvidenceDiagnostics(emergingDecision{CandidateID: candidate.ID, Decision: emergingFoldedIntoExisting, TopicID: existingID, PromotionPath: promotionPath, ReparentedItemCount: reparented}))
 			continue
 		}
 		if *pc.dynamicTopicCount >= pc.cfg.MaxDynamicTopics {
-			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingRejectedTopicCap})
+			record(withEvidenceDiagnostics(emergingDecision{CandidateID: candidate.ID, Decision: emergingRejectedTopicCap, PromotionPath: promotionPath, Reason: "dynamic_topic_cap"}))
 			continue
 		}
 		// 昇格前にcandidate labelと証拠itemの意味的一貫性を検証する。subjectが
@@ -2265,7 +2437,7 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			if pc.stats != nil {
 				pc.stats.CandidateSubjectIncoherentDeferred++
 			}
-			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingWaitingEvidence, Reason: reason})
+			record(withEvidenceDiagnostics(emergingDecision{CandidateID: candidate.ID, Decision: emergingWaitingEvidence, Reason: reason, PromotionPath: promotionPath}))
 			continue
 		}
 		if agendaID := plannedAgendaMatch(*candidate); agendaID != "" {
@@ -2280,7 +2452,7 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			})
 			pc.parents[topicID] = treeRootNodeID
 			pc.labelIndex[normalizeForMatch(candidate.Label)] = topicID
-			reparentEvidence(*candidate, topicID)
+			reparented := reparentEvidence(*candidate, topicID)
 			removed[candidate.ID] = struct{}{}
 			log.Printf("Agenda topic materialized from emerging candidate. agendaId=%s materializedTopicId=%s agendaTopicIdReused=%t agendaTopicIdCollision=%t", agendaID, topicID, reused, agendaID == topicID)
 			if pc.stats != nil {
@@ -2293,11 +2465,11 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 					pc.stats.AgendaTopicIDCollisions++
 				}
 			}
-			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingFoldedIntoExisting, TopicID: topicID, Reason: "planned_agenda_materialized_from_candidate"})
+			record(withEvidenceDiagnostics(emergingDecision{CandidateID: candidate.ID, Decision: emergingFoldedIntoExisting, TopicID: topicID, Reason: "planned_agenda_materialized_from_candidate", PromotionPath: promotionPath, ReparentedItemCount: reparented}))
 			continue
 		}
 		if promotions >= maxPromotionsPerRound {
-			record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingDeferredPromoteCap})
+			record(withEvidenceDiagnostics(emergingDecision{CandidateID: candidate.ID, Decision: emergingDeferredPromoteCap, PromotionPath: promotionPath, Reason: "round_promotion_cap"}))
 			continue
 		}
 		topicID := stableDynamicTopicID(candidate.ID)
@@ -2314,7 +2486,7 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 		})
 		pc.parents[topicID] = treeRootNodeID
 		pc.labelIndex[normalizeForMatch(candidate.Label)] = topicID
-		reparentEvidence(*candidate, topicID)
+		reparented := reparentEvidence(*candidate, topicID)
 		*pc.dynamicTopicCount++
 		promotions++
 		removed[candidate.ID] = struct{}{}
@@ -2323,8 +2495,13 @@ func promoteEmergingCandidates(pc promotionContext) []emergingTopicCandidate {
 			stats.DiffNewNodes++
 			stats.DynamicTopicsPromoted++
 			stats.CandidatePromoted++
+			if promotionPath == "multi_round" {
+				stats.CandidatePromotedMultiRound++
+			} else {
+				stats.CandidatePromotedSingleBatch++
+			}
 		}
-		record(emergingDecision{CandidateID: candidate.ID, EvidenceItemCount: len(candidate.EvidenceItemIDs), RoundCount: candidate.RoundCount, Decision: emergingPromoted, TopicID: topicID})
+		record(withEvidenceDiagnostics(emergingDecision{CandidateID: candidate.ID, Decision: emergingPromoted, TopicID: topicID, PromotionPath: promotionPath, ReparentedItemCount: reparented}))
 	}
 	if len(removed) == 0 {
 		return pc.candidates

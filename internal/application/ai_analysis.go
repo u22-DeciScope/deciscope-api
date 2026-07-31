@@ -1142,8 +1142,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.SourceActionSummaryAgendaCount, actionSummaryAgendaIDs, treeStats.LogicalActionSummaryCount, treeStats.ActionSummaryCandidates, treeStats.DeduplicatedActionItems, treeStats.RenderedActionItems, treeStats.ActiveTodoReferences, treeStats.ActiveOpenIssueFallbacks, treeStats.CompletedTodoExcluded, treeStats.ResolvedItemsExcluded, treeStats.ClusteredReferences)
 	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d treeHiddenTentativeItems=%d assistantVisibleTentativeItems=%d companionParentInherited=%d companionCandidateInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d tentativeMetadataLost=%d",
 		sessionID, newVersion, treeStats.TrueUnclassifiedItems, stats.TentativeItems, treeStats.TreeHiddenTentativeItems, treeStats.AssistantVisibleTentativeItems, treeStats.CompanionParentInherited, treeStats.CompanionCandidateInherited, treeStats.SemanticParentCorrected, treeStats.PromotedItemsReparented, treeStats.StaleCandidatesHidden, treeStats.TentativeMetadataLost)
-	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d discourseOnlyItemsRejected=%d discourseOnlyCandidatesRejected=%d candidateSubjectIncoherentDeferred=%d candidateSubjectMutationRejected=%d candidateSubjectsSplit=%d",
-		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited, treeStats.DiscourseOnlyItemsRejected, treeStats.DiscourseOnlyCandidatesRejected, treeStats.CandidateSubjectIncoherentDeferred, treeStats.CandidateSubjectMutationRejected, treeStats.CandidateSubjectsSplit)
+	log.Printf("Live candidate lifecycle. sessionId=%s version=%d candidateCreated=%d candidateCreationRejectedNoEvidence=%d candidateEvidenceAdded=%d candidateEvidenceDeduplicated=%d candidateEvidenceRemapped=%d candidatePromoted=%d candidatePromotedMultiRound=%d candidatePromotedSingleBatch=%d candidateFoldedIntoAgenda=%d candidateInactive=%d companionCandidateInherited=%d discourseOnlyItemsRejected=%d discourseOnlyCandidatesRejected=%d candidateSubjectIncoherentDeferred=%d candidateSubjectMutationRejected=%d candidateSubjectsSplit=%d",
+		sessionID, newVersion, treeStats.CandidateCreated, treeStats.CandidateCreationRejectedNoEvidence, treeStats.CandidateEvidenceAdded, treeStats.CandidateEvidenceDeduplicated, treeStats.CandidateEvidenceRemapped, treeStats.CandidatePromoted, treeStats.CandidatePromotedMultiRound, treeStats.CandidatePromotedSingleBatch, treeStats.CandidateFoldedIntoAgenda, treeStats.CandidateInactive, treeStats.CompanionCandidateInherited, treeStats.DiscourseOnlyItemsRejected, treeStats.DiscourseOnlyCandidatesRejected, treeStats.CandidateSubjectIncoherentDeferred, treeStats.CandidateSubjectMutationRejected, treeStats.CandidateSubjectsSplit)
 	log.Printf("Live no-agenda candidate lifecycle. sessionId=%s version=%d noAgendaSpanCount=%d noAgendaSpanStartSequence=%v noAgendaSpansClosed=%d explicitAgendaReentries=%d implicitAgendaReentries=%d lowConfidenceNoAgendaOverridesRejected=%d staleAgendaFallbackRejected=%d fixedAgendaAssignmentRejectedByNoAgendaSpan=%d candidateSubjectKey=%v candidateIdsMerged=%d companionCandidateInherited=%d crossKindCandidateInherited=%d dynamicTopicPromoted=%d promotedItemIds=%v promotedItemsRemainingOutsideTopic=%d",
 		sessionID, newVersion, treeStats.NoAgendaSpanCount, treeStats.NoAgendaSpanStartSequences, treeStats.NoAgendaSpansClosed, treeStats.ExplicitAgendaReentries, treeStats.ImplicitAgendaReentries, treeStats.LowConfidenceNoAgendaOverridesRejected, treeStats.StaleAgendaFallbackRejected, treeStats.FixedAgendaAssignmentRejectedByNoAgendaSpan, uniqueNonEmptyIDs(treeStats.CandidateSubjectKeys), treeStats.CandidateIDsMerged, treeStats.CompanionCandidateInherited, treeStats.CrossKindCandidateInherited, treeStats.DynamicTopicsPromoted, uniqueNonEmptyIDs(treeStats.PromotedItemIDs), treeStats.PromotedItemsRemainingOutsideTopic)
 	log.Printf("Live subject repair. sessionId=%s version=%d genericCandidateLabelsRewritten=%d genericTopicLabelsRewritten=%d subjectFragmentationRepairs=%d",
@@ -1434,8 +1434,8 @@ func logClassificationDecisions(sessionID string, treeVersion int64, stats *live
 			sessionID, transition.SequenceNo, transition.Mode, transition.AgendaID, transition.Confidence)
 	}
 	for _, d := range stats.EmergingDecisions {
-		log.Printf("Emerging topic evaluated. sessionId=%s candidateId=%s candidateSubjectKey=%s candidateIdsMerged=%v evidenceItemCount=%d evidenceRoundCount=%d decision=%s newTopicId=%s reason=%s",
-			sessionID, d.CandidateID, d.SubjectKey, d.MergedCandidateIDs, d.EvidenceItemCount, d.RoundCount, d.Decision, d.TopicID, d.Reason)
+		log.Printf("Emerging topic evaluated. sessionId=%s candidateId=%s candidateSubjectKey=%s candidateIdsMerged=%v batchRound=%d evidenceItemCount=%d evidenceRoundCount=%d currentBatchItemCount=%d independenceDedupBeforeItemCount=%d independenceDedupAfterItemCount=%d independentItemIds=%v excludedEvidence=%v distinctEvidenceCount=%d decision=%s promotionPath=%s newTopicId=%s reparentedItemCount=%d reason=%s",
+			sessionID, d.CandidateID, d.SubjectKey, d.MergedCandidateIDs, d.BatchRound, d.EvidenceItemCount, d.RoundCount, d.CurrentBatchItemCount, d.IndependenceDedupBeforeCount, d.IndependenceDedupAfterCount, d.IndependentItemIDs, d.ExcludedEvidence, d.DistinctEvidenceCount, d.Decision, d.PromotionPath, d.TopicID, d.ReparentedItemCount, d.Reason)
 	}
 	logAgendaReconciliations(sessionID, treeVersion, stats.AgendaReconciliations)
 	for _, d := range stats.GroupDecisions {
@@ -4410,8 +4410,9 @@ type liveAnalysisPayload struct {
 	// (schema v2) and is converted to proposals when present.
 	NewTopics   []liveAnalysisTreeNode `json:"newTopics,omitempty"`
 	Assignments []treeAssignment       `json:"assignments,omitempty"`
-	// EmergingTopics is the server-tracked list of 未昇格の新topic候補。ラウンドを
-	// またいで証拠を蓄積し、昇格条件を満たしたものだけが dynamic topic になる。
+	// EmergingTopics is the server-tracked list of 未昇格の新topic候補。複数
+	// ラウンドの継続証拠、または同一バッチ内の独立した複数証拠が昇格条件を
+	// 満たしたものだけが dynamic topic になる。
 	// モデル出力には含まれない(サーバー専有フィールド)。
 	EmergingTopics []emergingTopicCandidate `json:"emergingTopics,omitempty"`
 	// AgendaAnchors are the durable, server-owned agenda records. An anchor
@@ -4786,6 +4787,12 @@ type liveAnalysisItem struct {
 	modelReference          string
 	reopenFromTombstone     bool
 	semanticSplitFragment   bool
+	// observedInCurrentBatch is transient merge provenance. It is set only
+	// after the current model batch has passed grounding, information, kind,
+	// and semantic-dedup gates, and is consumed by dynamic-topic promotion.
+	// It is intentionally not persisted: a later round must not reuse old
+	// items as if they were independent observations from its own batch.
+	observedInCurrentBatch bool
 	// RelatedAgendaIDs is a server-owned secondary relation used by
 	// cross-cutting agenda views. It never creates a second parent edge.
 	RelatedAgendaIDs []string `json:"relatedAgendaIds,omitempty"`
@@ -5482,6 +5489,8 @@ type liveAnalysisTreeMergeStats struct {
 	StaleCandidatesHidden               int
 	CandidateCreated                    int
 	CandidateCreationRejectedNoEvidence int
+	CandidatePromotedMultiRound         int
+	CandidatePromotedSingleBatch        int
 	// DiscourseOnlyItemsRejected counts model diff items whose title/body were
 	// pure meeting-control speech (recap intro, topic transition, greetings)
 	// and were therefore never turned into canonical items.
@@ -6006,8 +6015,9 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	)
 	diffItems = append(diffItems, synthesizedRisks...)
 	diffItems = validateLiveItemKinds(diffItems, evidenceScope, itemKindValidationLive, "post_deterministic_synthesis", treeStats)
-	for _, item := range diffItems {
-		resolver.add(item.ID, item.ID)
+	for i := range diffItems {
+		diffItems[i].observedInCurrentBatch = true
+		resolver.add(diffItems[i].ID, diffItems[i].ID)
 	}
 	requestedResolutionUpdates = mergeExplicitClosureUpdates(requestedResolutionUpdates, closureUpdates, resolver)
 	for i := range assignments {

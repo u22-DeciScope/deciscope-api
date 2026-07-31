@@ -110,8 +110,8 @@
 | 変数 | 既定値 | 用途 |
 | --- | --- | --- |
 | `AI_TREE_AGENDA_ASSIGNMENT_THRESHOLD` | `0.55` | agendaへ即時確定するconfidence境界 |
-| `AI_TREE_TOPIC_PROMOTION_MIN_ITEMS` | `2` | dynamic topic昇格に必要なitem数 |
-| `AI_TREE_TOPIC_PROMOTION_MIN_ROUNDS` | `2` | dynamic topic昇格に必要なround数 |
+| `AI_TREE_TOPIC_PROMOTION_MIN_ITEMS` | `2` | dynamic topic昇格に必要なitem数。複数ラウンド経路では現存item数、単一バッチ経路では独立した現バッチitem数に適用（単一バッチは最低2件） |
+| `AI_TREE_TOPIC_PROMOTION_MIN_ROUNDS` | `2` | 複数ラウンド経路でdynamic topic昇格に必要なround数（独立した複数itemによる単一バッチ経路には不適用） |
 | `AI_TREE_MAX_DYNAMIC_TOPICS` | `6` | 1会議のdynamic topic上限 |
 
 ## Tree audit
