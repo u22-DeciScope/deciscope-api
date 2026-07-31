@@ -1,0 +1,1528 @@
+{
+  "schemaVersion": 1,
+  "name": "deterministic",
+  "scenarios": [
+    {
+      "id": "agenda-misassignment",
+      "description": "VPNセキュリティ論点を予算アジェンダへ誤割り当てしない",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "佐藤",
+          "text": "VPNの多要素認証が未設定なので、不正接続のリスクがあります。"
+        }
+      ],
+      "meetingContext": {
+        "title": "VPN運用会議",
+        "agendaItems": [
+          {
+            "id": "agenda-1",
+            "title": "VPNセキュリティ",
+            "semanticHints": ["認証", "不正接続"],
+            "order": 1
+          },
+          {
+            "id": "agenda-2",
+            "title": "次期予算",
+            "semanticHints": ["費用", "見積"],
+            "order": 2
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "VPN認証リスク",
+            "currentTopic": "VPNセキュリティ",
+            "items": [
+              {
+                "clientKey": "vpn-auth-risk",
+                "kind": "risk",
+                "severity": "high",
+                "title": "VPN多要素認証未設定による不正接続リスク",
+                "body": "多要素認証が未設定で不正接続の可能性がある",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["VPNの多要素認証が未設定なので、不正接続のリスクがあります"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": [
+              {
+                "nodeId": "vpn-auth-risk",
+                "parentTopicId": "agenda-1",
+                "confidence": 0.96
+              }
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "vpn-auth-risk",
+          "text": "VPN多要素認証の未設定により不正接続のリスクがある",
+          "requiredKind": "risk",
+          "evidenceSequenceNos": [1],
+          "requiredAgendaId": "agenda-1"
+        }
+      ],
+      "forbiddenResults": [
+        {
+          "type": "agenda_assignment",
+          "text": "VPN多要素認証未設定による不正接続リスク",
+          "agendaId": "agenda-2"
+        }
+      ],
+      "finalCoverage": 1,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "unexpected-candidate-promotion",
+      "description": "予定外の湿地調査論点をcandidateとして保持し複数roundで昇格する",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "建設予定地の湿地に希少植物が存在する可能性があります。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "鈴木",
+          "text": "植物の種類を確認するため専門家による予備調査を実施します。"
+        }
+      ],
+      "meetingContext": {
+        "title": "建設計画会議",
+        "agendaItems": [
+          {
+            "id": "agenda-1",
+            "title": "工事日程",
+            "order": 1
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "湿地の希少植物",
+            "currentTopic": "湿地・希少植物",
+            "items": [
+              {
+                "clientKey": "wetland-risk",
+                "kind": "risk",
+                "severity": "high",
+                "title": "建設予定地の湿地に希少植物が存在する可能性",
+                "body": "希少植物の存在により工事へ影響する可能性がある",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["建設予定地の湿地に希少植物が存在する可能性があります"]
+              }
+            ],
+            "newTopics": [
+              {
+                "id": "topic-wetland",
+                "label": "湿地・希少植物調査",
+                "description": "予定外の環境調査"
+              }
+            ],
+            "assignments": [
+              {
+                "nodeId": "wetland-risk",
+                "parentTopicId": "topic-wetland",
+                "confidence": 0.92
+              }
+            ]
+          }
+        },
+        {
+          "sequenceNos": [2],
+          "fixedAIResponse": {
+            "summary": "湿地調査を実施",
+            "currentTopic": "湿地・希少植物",
+            "items": [
+              {
+                "clientKey": "wetland-survey",
+                "kind": "todo",
+                "severity": "high",
+                "title": "専門家による湿地植物の予備調査を実施する",
+                "body": "植物の種類を確認する",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["植物の種類を確認するため専門家による予備調査を実施します"]
+              }
+            ],
+            "newTopics": [
+              {
+                "id": "topic-wetland",
+                "label": "湿地・希少植物調査",
+                "description": "予定外の環境調査"
+              }
+            ],
+            "assignments": [
+              {
+                "nodeId": "wetland-survey",
+                "parentTopicId": "topic-wetland",
+                "confidence": 0.94
+              }
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "wetland-risk",
+          "text": "建設予定地の湿地に希少植物が存在する可能性",
+          "requiredKind": "risk",
+          "evidenceSequenceNos": [1]
+        },
+        {
+          "id": "wetland-survey",
+          "text": "専門家による湿地植物の予備調査を実施する",
+          "requiredKind": "todo",
+          "evidenceSequenceNos": [2]
+        }
+      ],
+      "requiredRelations": [
+        {
+          "from": "wetland-survey",
+          "to": "wetland-risk",
+          "kind": "action_for",
+          "requireSameBranch": true
+        }
+      ],
+      "forbiddenResults": [
+        {
+          "type": "active_candidate",
+          "text": "湿地・希少植物調査"
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "same-batch-candidate-promotion",
+      "description": "同一batchの独立した複数項目で予定外topicを昇格する",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "山田",
+          "text": "外部接続証明書は来週失効し、未更新だと取引先へ接続できません。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "佐藤",
+          "text": "証明書更新の担当者を決めて、今週中に更新手順を確認します。"
+        }
+      ],
+      "meetingContext": {
+        "title": "販売計画",
+        "agendaItems": [
+          {
+            "id": "agenda-1",
+            "title": "販売目標",
+            "order": 1
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2],
+          "fixedAIResponse": {
+            "summary": "外部接続証明書の更新",
+            "currentTopic": "証明書更新",
+            "items": [
+              {
+                "clientKey": "certificate-risk",
+                "kind": "risk",
+                "severity": "high",
+                "title": "外部接続証明書失効による接続不能リスク",
+                "body": "来週の失効前に更新しないと取引先へ接続できない",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["外部接続証明書は来週失効し、未更新だと取引先へ接続できません"]
+              },
+              {
+                "clientKey": "certificate-todo",
+                "kind": "todo",
+                "severity": "high",
+                "title": "証明書更新担当者を決めて手順を確認する",
+                "body": "今週中に担当者決定と手順確認を行う",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["証明書更新の担当者を決めて、今週中に更新手順を確認します"]
+              }
+            ],
+            "newTopics": [
+              {
+                "id": "topic-certificate-maintenance",
+                "label": "外部接続証明書更新の別管理",
+                "description": "期限、担当、更新手順"
+              }
+            ],
+            "assignments": [
+              {
+                "nodeId": "certificate-risk",
+                "parentTopicId": "topic-certificate-maintenance",
+                "confidence": 0.94
+              },
+              {
+                "nodeId": "certificate-todo",
+                "parentTopicId": "topic-certificate-maintenance",
+                "confidence": 0.94
+              }
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "certificate-risk",
+          "text": "外部接続証明書の失効により取引先へ接続できなくなるリスク",
+          "requiredKind": "risk",
+          "evidenceSequenceNos": [1]
+        },
+        {
+          "id": "certificate-todo",
+          "text": "証明書更新の担当者を決めて更新手順を確認する",
+          "requiredKind": "todo",
+          "evidenceSequenceNos": [2]
+        }
+      ],
+      "requiredRelations": [
+        {
+          "from": "certificate-todo",
+          "to": "certificate-risk",
+          "kind": "action_for",
+          "requireSameBranch": true
+        }
+      ],
+      "forbiddenResults": [
+        {
+          "type": "active_candidate",
+          "text": "外部接続証明書更新"
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "recap-preserves-tree",
+      "description": "recap後も既存の議論ツリーを消失または0ノード化しない",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "旧スイッチへ切り戻した結果、3階の通信は復旧しました。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "司会",
+          "text": "ここまでの内容をまとめると、復旧対応を確認しました。"
+        }
+      ],
+      "meetingContext": {},
+      "seedPayload": {
+        "summary": "復旧確認",
+        "currentTopic": "ネットワーク復旧",
+        "items": [
+          {
+            "id": "recovery-fact",
+            "kind": "fact",
+            "severity": "high",
+            "title": "旧スイッチへの切り戻しで3階通信が復旧",
+            "body": "3階の通信復旧を確認した",
+            "status": "open",
+            "evidenceSequenceNos": [1],
+            "createdThroughSequenceNo": 1,
+            "groundingDecision": "accepted"
+          }
+        ],
+        "tree": {
+          "nodes": [
+            {
+              "id": "root",
+              "kind": "topic",
+              "label": "会議全体"
+            },
+            {
+              "id": "topic-recovery",
+              "kind": "topic",
+              "parentId": "root",
+              "label": "ネットワーク復旧",
+              "origin": "dynamic",
+              "materialized": true
+            },
+            {
+              "id": "recovery-fact",
+              "kind": "fact",
+              "parentId": "topic-recovery",
+              "label": "旧スイッチへの切り戻しで3階通信が復旧"
+            }
+          ],
+          "edges": [
+            {
+              "source": "root",
+              "target": "topic-recovery"
+            },
+            {
+              "source": "topic-recovery",
+              "target": "recovery-fact"
+            }
+          ]
+        },
+        "analyzedFinalSegments": [
+          {
+            "callId": "quality-call",
+            "sequenceNo": 1
+          }
+        ],
+        "coveredThroughSequenceNo": 1,
+        "treeVersion": 1
+      },
+      "rounds": [
+        {
+          "sequenceNos": [2],
+          "fixedAIResponse": {
+            "summary": "復旧対応のrecap",
+            "currentTopic": "まとめ",
+            "items": [],
+            "newTopics": [],
+            "assignments": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "recovery",
+          "text": "旧スイッチへの切り戻しで3階の通信が復旧した",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [1]
+        }
+      ],
+      "forbiddenResults": [
+        {
+          "type": "zero_nodes"
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "unspoken-information-contamination",
+      "description": "発話されていない予算承認をツリーへ混入させない",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "佐藤",
+          "text": "VPN証明書の更新手順を金曜日までに確認します。"
+        }
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "証明書更新",
+            "currentTopic": "VPN証明書",
+            "items": [
+              {
+                "clientKey": "procedure-todo",
+                "kind": "todo",
+                "severity": "medium",
+                "title": "金曜日までにVPN証明書の更新手順を確認する",
+                "body": "更新手順を確認する",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["VPN証明書の更新手順を金曜日までに確認します"]
+              },
+              {
+                "clientKey": "invented-budget",
+                "kind": "decision",
+                "severity": "high",
+                "title": "VPN更新予算100万円を承認した",
+                "body": "予算を承認した",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["VPN証明書の更新手順を金曜日までに確認します"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "procedure-todo",
+          "text": "金曜日までにVPN証明書の更新手順を確認する",
+          "requiredKind": "todo",
+          "evidenceSequenceNos": [1]
+        }
+      ],
+      "forbiddenResults": [
+        {
+          "type": "proposition",
+          "text": "VPN更新予算100万円を承認した"
+        }
+      ],
+      "finalCoverage": 1,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "semantic-kind-classification",
+      "description": "fact、issue、risk、todo、decisionを個別に分類する",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "監視ログで午前9時に通信障害が発生したことを確認しました。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "佐藤",
+          "text": "障害の根本原因はまだ特定できていません。"
+        },
+        {
+          "sequenceNo": 3,
+          "speaker": "鈴木",
+          "text": "未対応のままだと顧客向けサービスが停止する可能性があります。"
+        },
+        {
+          "sequenceNo": 4,
+          "speaker": "田中",
+          "text": "田中が明日までに監視ログを詳しく調査します。"
+        },
+        {
+          "sequenceNo": 5,
+          "speaker": "司会",
+          "text": "復旧のため旧構成へ切り戻すことを決定しました。"
+        }
+      ],
+      "meetingContext": {
+        "agendaItems": [
+          {
+            "id": "agenda-1",
+            "title": "障害対応",
+            "order": 1
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3, 4, 5],
+          "fixedAIResponse": {
+            "summary": "障害対応",
+            "currentTopic": "障害対応",
+            "items": [
+              {
+                "clientKey": "outage-fact",
+                "kind": "fact",
+                "severity": "high",
+                "title": "監視ログで午前9時の通信障害発生を確認",
+                "body": "午前9時に通信障害が発生した",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["監視ログで午前9時に通信障害が発生したことを確認しました"]
+              },
+              {
+                "clientKey": "cause-issue",
+                "kind": "issue",
+                "severity": "high",
+                "title": "通信障害の根本原因が未特定",
+                "body": "根本原因を特定する必要がある",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["障害の根本原因はまだ特定できていません"]
+              },
+              {
+                "clientKey": "service-risk",
+                "kind": "risk",
+                "severity": "high",
+                "title": "未対応による顧客向けサービス停止リスク",
+                "body": "未対応のままだとサービスが停止する可能性がある",
+                "status": "open",
+                "evidenceSequenceNos": [3],
+                "evidenceSnippets": ["未対応のままだと顧客向けサービスが停止する可能性があります"]
+              },
+              {
+                "clientKey": "log-todo",
+                "kind": "todo",
+                "severity": "high",
+                "title": "田中が明日までに監視ログを詳しく調査する",
+                "body": "監視ログを調査する",
+                "status": "open",
+                "evidenceSequenceNos": [4],
+                "evidenceSnippets": ["田中が明日までに監視ログを詳しく調査します"]
+              },
+              {
+                "clientKey": "rollback-decision",
+                "kind": "decision",
+                "severity": "high",
+                "title": "復旧のため旧構成へ切り戻す",
+                "body": "旧構成への切り戻しを決定した",
+                "status": "open",
+                "evidenceSequenceNos": [5],
+                "evidenceSnippets": ["復旧のため旧構成へ切り戻すことを決定しました"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": [
+              {
+                "nodeId": "outage-fact",
+                "parentTopicId": "agenda-1",
+                "confidence": 0.95
+              },
+              {
+                "nodeId": "cause-issue",
+                "parentTopicId": "agenda-1",
+                "confidence": 0.95
+              },
+              {
+                "nodeId": "service-risk",
+                "parentTopicId": "agenda-1",
+                "confidence": 0.95
+              },
+              {
+                "nodeId": "log-todo",
+                "parentTopicId": "agenda-1",
+                "confidence": 0.95
+              },
+              {
+                "nodeId": "rollback-decision",
+                "parentTopicId": "agenda-1",
+                "confidence": 0.95
+              }
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "outage-fact",
+          "text": "監視ログで午前9時の通信障害発生を確認した",
+          "requiredKind": "fact"
+        },
+        {
+          "id": "cause-issue",
+          "text": "通信障害の根本原因がまだ特定できていない",
+          "requiredKind": "issue"
+        },
+        {
+          "id": "service-risk",
+          "text": "未対応のままだと顧客向けサービスが停止する可能性",
+          "requiredKind": "risk"
+        },
+        {
+          "id": "log-todo",
+          "text": "田中が明日までに監視ログを詳しく調査する",
+          "requiredKind": "todo"
+        },
+        {
+          "id": "rollback-decision",
+          "text": "復旧のため旧構成へ切り戻すことを決定した",
+          "requiredKind": "decision"
+        }
+      ],
+      "finalCoverage": 5,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "low-information-node-repair",
+      "description": "指示語だけのlow-information nodeを具体的な命題へ修復する",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "佐藤",
+          "text": "VPN証明書の有効期限を担当者が確認する必要があります。"
+        }
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "証明書確認",
+            "currentTopic": "VPN証明書",
+            "items": [
+              {
+                "clientKey": "anaphora-todo",
+                "kind": "todo",
+                "severity": "medium",
+                "title": "それを確認する",
+                "body": "担当者が確認する",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["VPN証明書の有効期限を担当者が確認する必要があります"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "certificate-expiry-check",
+          "text": "担当者がVPN証明書の有効期限を確認する",
+          "requiredKind": "todo",
+          "evidenceSequenceNos": [1]
+        }
+      ],
+      "forbiddenResults": [
+        {
+          "type": "low_information"
+        }
+      ],
+      "finalCoverage": 1,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "correction-removes-stale-proposition",
+      "description": "訂正発話後に古い期限命題を残さない",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "証明書更新の期限は金曜日です。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "田中",
+          "text": "先ほどの期限を訂正します。証明書更新の期限は来週月曜日です。"
+        }
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "更新期限",
+            "currentTopic": "証明書更新",
+            "items": [
+              {
+                "id": "certificate-deadline",
+                "kind": "fact",
+                "severity": "medium",
+                "title": "証明書更新の期限は金曜日",
+                "body": "更新期限は金曜日である",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["証明書更新の期限は金曜日です"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": []
+          }
+        },
+        {
+          "sequenceNos": [2],
+          "fixedAIResponse": {
+            "summary": "更新期限を訂正",
+            "currentTopic": "証明書更新",
+            "items": [
+              {
+                "id": "certificate-deadline",
+                "kind": "fact",
+                "severity": "medium",
+                "title": "証明書更新の期限は来週月曜日",
+                "body": "金曜日ではなく来週月曜日へ訂正した",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["証明書更新の期限は来週月曜日です"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "corrected-deadline",
+          "text": "証明書更新の期限は来週月曜日",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [2]
+        }
+      ],
+      "forbiddenResults": [
+        {
+          "type": "proposition",
+          "text": "証明書更新の期限は金曜日"
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "semantic-evidence-mismatch",
+      "description": "evidenceSequenceNosが命題を支持しないitemを混入させない",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "司会",
+          "text": "これから予算会議を開始します。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "佐藤",
+          "text": "VPN証明書更新の見積額は50万円です。"
+        }
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1, 2],
+          "fixedAIResponse": {
+            "summary": "証明書更新見積",
+            "currentTopic": "予算",
+            "items": [
+              {
+                "clientKey": "valid-estimate",
+                "kind": "fact",
+                "severity": "medium",
+                "title": "VPN証明書更新の見積額は50万円",
+                "body": "見積額を確認した",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["VPN証明書更新の見積額は50万円です"]
+              },
+              {
+                "clientKey": "mismatched-approval",
+                "kind": "decision",
+                "severity": "high",
+                "title": "VPN証明書更新予算100万円を承認",
+                "body": "予算を承認した",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["これから予算会議を開始します"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "valid-estimate",
+          "text": "VPN証明書更新の見積額は50万円",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [2]
+        }
+      ],
+      "forbiddenResults": [
+        {
+          "type": "proposition",
+          "text": "VPN証明書更新予算100万円を承認"
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "split-fragment-future-evidence",
+      "description": "後続split fragmentを先行roundのfuture evidenceとして参照しない",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "3階で通信障害が発生しています。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "田中",
+          "text": "VLAN30が許可一覧から漏れていました。"
+        }
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "3階通信障害",
+            "currentTopic": "通信障害",
+            "items": [
+              {
+                "clientKey": "outage-issue",
+                "kind": "issue",
+                "severity": "high",
+                "title": "3階で通信障害が発生",
+                "body": "3階の通信が利用できない",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["3階で通信障害が発生しています"]
+              },
+              {
+                "clientKey": "future-vlan",
+                "kind": "fact",
+                "severity": "high",
+                "title": "VLAN30が許可一覧から漏れていた",
+                "body": "設定漏れを確認した",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["VLAN30が許可一覧から漏れていました"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": []
+          }
+        },
+        {
+          "sequenceNos": [2],
+          "fixedAIResponse": {
+            "summary": "VLAN設定漏れ",
+            "currentTopic": "通信障害",
+            "items": [
+              {
+                "clientKey": "vlan-fact",
+                "kind": "fact",
+                "severity": "high",
+                "title": "VLAN30が許可一覧から漏れていた",
+                "body": "VLAN30の設定漏れを確認した",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["VLAN30が許可一覧から漏れていました"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "outage",
+          "text": "3階で通信障害が発生している",
+          "requiredKind": "issue",
+          "evidenceSequenceNos": [1]
+        },
+        {
+          "id": "vlan",
+          "text": "VLAN30が許可一覧から漏れていた",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [2]
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "finalization-inflight-tail-flush",
+      "description": "in-flightライブ分析の完了後にtail transcriptまでflushする",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "佐藤",
+          "text": "VPN証明書は来週失効するため接続不能のリスクがあります。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "田中",
+          "text": "証明書更新手順を明日までに確認します。"
+        }
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "証明書失効リスク",
+            "currentTopic": "VPN証明書",
+            "items": [
+              {
+                "clientKey": "tail-risk",
+                "kind": "risk",
+                "severity": "high",
+                "title": "VPN証明書失効による接続不能リスク",
+                "body": "来週の失効により接続できなくなる可能性がある",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["VPN証明書は来週失効するため接続不能のリスクがあります"]
+              }
+            ],
+            "newTopics": [
+              {
+                "id": "topic-vpn-tail",
+                "label": "VPN証明書更新",
+                "description": "失効と更新"
+              }
+            ],
+            "assignments": [
+              {
+                "nodeId": "tail-risk",
+                "parentTopicId": "topic-vpn-tail",
+                "confidence": 0.93
+              }
+            ]
+          }
+        },
+        {
+          "sequenceNos": [2],
+          "fixedAIResponse": {
+            "summary": "証明書更新手順",
+            "currentTopic": "VPN証明書",
+            "items": [
+              {
+                "clientKey": "tail-todo",
+                "kind": "todo",
+                "severity": "high",
+                "title": "明日までにVPN証明書更新手順を確認する",
+                "body": "更新手順を確認する",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["証明書更新手順を明日までに確認します"]
+              }
+            ],
+            "newTopics": [
+              {
+                "id": "topic-vpn-tail",
+                "label": "VPN証明書更新",
+                "description": "失効と更新"
+              }
+            ],
+            "assignments": [
+              {
+                "nodeId": "tail-todo",
+                "parentTopicId": "topic-vpn-tail",
+                "confidence": 0.93
+              }
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "tail-risk",
+          "text": "VPN証明書の失効により接続不能になるリスク",
+          "requiredKind": "risk",
+          "evidenceSequenceNos": [1]
+        },
+        {
+          "id": "tail-todo",
+          "text": "明日までにVPN証明書更新手順を確認する",
+          "requiredKind": "todo",
+          "evidenceSequenceNos": [2]
+        }
+      ],
+      "requiredRelations": [
+        {
+          "from": "tail-todo",
+          "to": "tail-risk",
+          "kind": "action_for",
+          "requireSameBranch": true
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "label-rewrite-failure-preserves-risk",
+      "description": "ラベル書き直しが失敗してもevidence付き重要riskを消失させない",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "佐藤",
+          "text": "VPN証明書が来週失効し、更新しなければ全社員が接続できなくなるリスクがあります。"
+        }
+      ],
+      "meetingContext": {},
+      "seedPayload": {
+        "summary": "証明書失効",
+        "currentTopic": "VPN証明書",
+        "items": [
+          {
+            "id": "important-vpn-risk",
+            "kind": "issue",
+            "subtype": "discussion",
+            "severity": "high",
+            "title": "VPN証明書失効により全社員が接続不能になるリスク",
+            "body": "来週までに更新しなければ接続できなくなる",
+            "status": "open",
+            "evidenceSequenceNos": [1],
+            "createdThroughSequenceNo": 1,
+            "groundingDecision": "accepted"
+          }
+        ],
+        "tree": {
+          "nodes": [
+            {
+              "id": "root",
+              "kind": "topic",
+              "label": "会議全体"
+            },
+            {
+              "id": "topic-vpn-risk",
+              "kind": "topic",
+              "parentId": "root",
+              "label": "VPN証明書失効",
+              "origin": "dynamic",
+              "materialized": true
+            },
+            {
+              "id": "important-vpn-risk",
+              "kind": "issue",
+              "parentId": "topic-vpn-risk",
+              "label": "VPN証明書失効により全社員が接続不能になるリスク"
+            }
+          ],
+          "edges": [
+            {
+              "source": "root",
+              "target": "topic-vpn-risk"
+            },
+            {
+              "source": "topic-vpn-risk",
+              "target": "important-vpn-risk"
+            }
+          ]
+        },
+        "treeVersion": 1
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "既存の安全なラベルを保持",
+            "currentTopic": "VPN証明書",
+            "items": [
+              {
+                "id": "important-vpn-risk",
+                "kind": "risk",
+                "severity": "high",
+                "title": "VPN証明書失効により全社員が接続不能になるリスク",
+                "body": "来週までに更新しなければ接続できなくなる",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["VPN証明書が来週失効し、更新しなければ全社員が接続できなくなるリスクがあります"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "important-risk",
+          "text": "VPN証明書失効により全社員が接続できなくなるリスク",
+          "requiredKind": "risk",
+          "evidenceSequenceNos": [1]
+        }
+      ],
+      "safetyExpectations": [
+        {
+          "principle": "grounded_proposition_survives_label_failure",
+          "propositionId": "important-risk"
+        },
+        {
+          "principle": "repair_failure_preserves_last_safe_representation",
+          "propositionId": "important-risk"
+        },
+        {
+          "principle": "new_repair_does_not_deactivate_valid_item",
+          "propositionId": "important-risk"
+        },
+        {
+          "principle": "classification_change_preserves_proposition",
+          "propositionId": "important-risk"
+        },
+        {
+          "principle": "temporary_validator_does_not_erase_durable_information",
+          "propositionId": "important-risk"
+        }
+      ],
+      "finalCoverage": 1,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "network-logical-hierarchy",
+      "description": "fact、原因仮説、適用範囲を限定する未解決事項を論理的に関連付ける",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "VLAN30が許可一覧から漏れていました。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "佐藤",
+          "text": "この設定漏れが3階障害の直接原因である可能性が高いです。"
+        },
+        {
+          "sequenceNo": 3,
+          "speaker": "鈴木",
+          "text": "ただし2階の通信遅延まで説明できるかは未確認です。"
+        },
+        {
+          "sequenceNo": 4,
+          "speaker": "司会",
+          "text": "原因と未確認範囲を整理しました。"
+        }
+      ],
+      "meetingContext": {},
+      "seedPayload": {
+        "summary": "ネットワーク障害原因",
+        "currentTopic": "障害原因と適用範囲",
+        "items": [
+          {
+            "id": "vlan-fact",
+            "kind": "fact",
+            "severity": "high",
+            "title": "VLAN30が許可一覧から漏れていた",
+            "body": "許可VLAN設定の漏れを確認した",
+            "status": "open",
+            "evidenceSequenceNos": [1],
+            "createdThroughSequenceNo": 1,
+            "groundingDecision": "accepted"
+          },
+          {
+            "id": "cause-hypothesis",
+            "kind": "issue",
+            "subtype": "investigation",
+            "severity": "high",
+            "title": "設定漏れが3階障害の直接原因である可能性が高い",
+            "body": "VLAN30設定漏れを原因仮説とする",
+            "status": "open",
+            "evidenceSequenceNos": [2],
+            "createdThroughSequenceNo": 2,
+            "groundingDecision": "accepted"
+          },
+          {
+            "id": "scope-limit",
+            "kind": "issue",
+            "subtype": "confirmation",
+            "severity": "high",
+            "title": "2階の通信遅延まで説明できるかは未確認",
+            "body": "原因仮説の適用範囲が未確認",
+            "status": "open",
+            "evidenceSequenceNos": [3],
+            "createdThroughSequenceNo": 3,
+            "groundingDecision": "accepted"
+          }
+        ],
+        "tree": {
+          "nodes": [
+            {
+              "id": "root",
+              "kind": "topic",
+              "label": "会議全体"
+            },
+            {
+              "id": "topic-network",
+              "kind": "topic",
+              "parentId": "root",
+              "label": "ネットワーク障害",
+              "origin": "dynamic",
+              "materialized": true
+            },
+            {
+              "id": "group-cause-scope",
+              "kind": "group",
+              "parentId": "topic-network",
+              "label": "障害原因と適用範囲"
+            },
+            {
+              "id": "vlan-fact",
+              "kind": "fact",
+              "parentId": "group-cause-scope",
+              "label": "VLAN30が許可一覧から漏れていた"
+            },
+            {
+              "id": "cause-hypothesis",
+              "kind": "issue",
+              "parentId": "group-cause-scope",
+              "label": "設定漏れが3階障害の直接原因である可能性が高い"
+            },
+            {
+              "id": "scope-limit",
+              "kind": "issue",
+              "parentId": "group-cause-scope",
+              "label": "2階の通信遅延まで説明できるかは未確認"
+            }
+          ],
+          "edges": [
+            {
+              "source": "root",
+              "target": "topic-network"
+            },
+            {
+              "source": "topic-network",
+              "target": "group-cause-scope"
+            },
+            {
+              "source": "group-cause-scope",
+              "target": "vlan-fact"
+            },
+            {
+              "source": "group-cause-scope",
+              "target": "cause-hypothesis"
+            },
+            {
+              "source": "group-cause-scope",
+              "target": "scope-limit"
+            }
+          ],
+          "relations": [
+            {
+              "source": "cause-hypothesis",
+              "target": "vlan-fact",
+              "kind": "supported_by"
+            },
+            {
+              "source": "scope-limit",
+              "target": "cause-hypothesis",
+              "kind": "limits"
+            }
+          ]
+        },
+        "analyzedFinalSegments": [
+          {
+            "callId": "quality-call",
+            "sequenceNo": 1
+          },
+          {
+            "callId": "quality-call",
+            "sequenceNo": 2
+          },
+          {
+            "callId": "quality-call",
+            "sequenceNo": 3
+          }
+        ],
+        "coveredThroughSequenceNo": 3,
+        "treeVersion": 3
+      },
+      "rounds": [
+        {
+          "sequenceNos": [4],
+          "fixedAIResponse": {
+            "summary": "原因と適用範囲のrecap",
+            "currentTopic": "障害原因と適用範囲",
+            "items": [],
+            "newTopics": [],
+            "assignments": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "vlan-fact",
+          "text": "VLAN30が許可一覧から漏れていた",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [1]
+        },
+        {
+          "id": "cause-hypothesis",
+          "text": "設定漏れが3階障害の直接原因である可能性が高い",
+          "allowedKinds": ["issue", "fact"],
+          "evidenceSequenceNos": [2]
+        },
+        {
+          "id": "scope-limit",
+          "text": "2階の通信遅延まで説明できるかは未確認",
+          "requiredKind": "issue",
+          "evidenceSequenceNos": [3]
+        }
+      ],
+      "requiredRelations": [
+        {
+          "from": "cause-hypothesis",
+          "to": "vlan-fact",
+          "kind": "supported_by",
+          "requireSameBranch": true,
+          "requiredAncestor": "障害原因と適用範囲"
+        },
+        {
+          "from": "scope-limit",
+          "to": "cause-hypothesis",
+          "kind": "limits",
+          "requireSameBranch": true,
+          "requiredAncestor": "障害原因と適用範囲"
+        }
+      ],
+      "finalCoverage": 4,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "semantic-duplicate-proposition",
+      "description": "同一命題の言い換えを重複itemとして残さない",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "旧スイッチへの切り戻しで3階の通信が復旧しました。"
+        }
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "通信復旧",
+            "currentTopic": "復旧",
+            "items": [
+              {
+                "clientKey": "recovery-a",
+                "kind": "fact",
+                "severity": "high",
+                "title": "旧スイッチへの切り戻しで3階通信が復旧",
+                "body": "3階の通信復旧を確認した",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["旧スイッチへの切り戻しで3階の通信が復旧しました"]
+              },
+              {
+                "clientKey": "recovery-b",
+                "kind": "fact",
+                "severity": "high",
+                "title": "3階通信は旧スイッチへ戻して回復",
+                "body": "切り戻しにより3階が復旧した",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["旧スイッチへの切り戻しで3階の通信が復旧しました"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "recovery",
+          "text": "旧スイッチへの切り戻しで3階の通信が復旧した",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [1]
+        }
+      ],
+      "finalCoverage": 1,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "vpn-certificate-card-tree-consistency",
+      "description": "VPN証明書更新の別管理化をカードと議論ツリーで一致させる",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "佐藤",
+          "text": "VPN証明書は来週期限切れになり、未更新だと在宅勤務者が接続できません。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "田中",
+          "text": "VPN証明書更新の担当者と期限を決めて手順を確認します。"
+        }
+      ],
+      "meetingContext": {
+        "title": "社内ネットワーク障害対応",
+        "agendaItems": [
+          {
+            "id": "agenda-1",
+            "title": "社内LANの障害原因",
+            "semanticHints": ["VLAN", "スイッチ"],
+            "order": 1
+          },
+          {
+            "id": "agenda-2",
+            "title": "社内LANの復旧確認",
+            "semanticHints": ["切り戻し", "疎通"],
+            "order": 2
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2],
+          "fixedAIResponse": {
+            "summary": "VPN証明書更新",
+            "currentTopic": "VPN証明書",
+            "items": [
+              {
+                "clientKey": "vpn-cert-risk",
+                "kind": "risk",
+                "severity": "high",
+                "title": "VPN証明書期限切れによる在宅勤務接続不能リスク",
+                "body": "来週までに更新しないと在宅勤務者が接続できない",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["VPN証明書は来週期限切れになり、未更新だと在宅勤務者が接続できません"]
+              },
+              {
+                "clientKey": "vpn-cert-todo",
+                "kind": "todo",
+                "severity": "high",
+                "title": "VPN証明書更新の担当者と期限を決めて手順を確認する",
+                "body": "担当、期限、更新手順を確定する",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["VPN証明書更新の担当者と期限を決めて手順を確認します"]
+              }
+            ],
+            "newTopics": [
+              {
+                "id": "topic-vpn-certificate",
+                "label": "VPN証明書更新の別管理",
+                "description": "期限、担当、更新手順"
+              }
+            ],
+            "assignments": [
+              {
+                "nodeId": "vpn-cert-risk",
+                "parentTopicId": "topic-vpn-certificate",
+                "confidence": 0.96
+              },
+              {
+                "nodeId": "vpn-cert-todo",
+                "parentTopicId": "topic-vpn-certificate",
+                "confidence": 0.96
+              }
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "vpn-cert-risk",
+          "text": "VPN証明書の期限切れで在宅勤務者が接続できなくなるリスク",
+          "requiredKind": "risk",
+          "evidenceSequenceNos": [1]
+        },
+        {
+          "id": "vpn-cert-todo",
+          "text": "VPN証明書更新の担当者と期限を決めて手順を確認する",
+          "requiredKind": "todo",
+          "evidenceSequenceNos": [2]
+        }
+      ],
+      "requiredRelations": [
+        {
+          "from": "vpn-cert-todo",
+          "to": "vpn-cert-risk",
+          "kind": "action_for",
+          "requireSameBranch": true,
+          "requiredAncestor": "VPN証明書更新"
+        }
+      ],
+      "forbiddenResults": [
+        {
+          "type": "agenda_assignment",
+          "text": "VPN証明書期限切れによる在宅勤務接続不能リスク",
+          "agendaId": "agenda-1"
+        },
+        {
+          "type": "agenda_assignment",
+          "text": "VPN証明書更新の担当者と期限を決めて手順を確認する",
+          "agendaId": "agenda-2"
+        },
+        {
+          "type": "active_candidate",
+          "text": "VPN証明書更新"
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
+    }
+  ]
+}

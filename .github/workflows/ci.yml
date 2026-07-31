@@ -28,5 +28,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go vet ./...
-      - run: go test ./...
+      - name: Evaluator unit and mutation tests
+        run: go test ./internal/application/... ./cmd/meeting-quality-eval -run MeetingQuality -count=1
+      - name: Architecture dependency tests
+        run: go test ./internal/architecture -count=1
+      - name: Go tests
+        run: go test ./...
+      - name: Go vet
+        run: go vet ./...
+      - name: Deterministic meeting quality regression
+        run: go run ./cmd/meeting-quality-eval -suite deterministic -compare-baseline
