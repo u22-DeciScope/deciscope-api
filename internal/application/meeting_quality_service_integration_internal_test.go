@@ -514,6 +514,79 @@ func qualityServiceFallbackRelationScenario() MeetingQualityScenario {
 	}
 }
 
+func qualityServiceCorrectionTemporalScenario() MeetingQualityScenario {
+	return MeetingQualityScenario{
+		ID:          "service-correction-temporal-lifecycle",
+		Description: "self-contained correction and temporal lifecycle survive service finalization",
+		TranscriptSegments: []MeetingQualityTranscriptSegment{
+			{SequenceNo: 1, Speaker: "田中", Text: "完全なアクセスポート設定ではありません。トランク設定自体は入っていましたが、許可VLAN一覧からVLAN30が漏れていました。"},
+			{SequenceNo: 2, Speaker: "佐藤", Text: "現時点では、この設定漏れが3階障害の直接原因である可能性が最も高いです。"},
+			{SequenceNo: 3, Speaker: "鈴木", Text: "ただし、2階の通信遅延までこの設定漏れで説明できるかは未確認です。"},
+			{SequenceNo: 4, Speaker: "田中", Text: "インターネットが完全に停止したわけではなく、接続できる端末と接続できない端末が混在していました。"},
+			{SequenceNo: 5, Speaker: "佐藤", Text: "午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になりました。"},
+			{SequenceNo: 6, Speaker: "田中", Text: "現在も一部端末で接続できません。原因はまだ分かっておらず、調査が必要です。"},
+			{SequenceNo: 7, Speaker: "佐藤", Text: "設定を修正し、すべての端末で接続を確認しました。"},
+		},
+		Rounds: []MeetingQualityRound{
+			{
+				SequenceNos: []int64{1, 2, 3, 4, 5, 6},
+				FixedAIResponse: json.RawMessage(`{
+					"summary":"VLAN設定漏れと接続状態の確認",
+					"currentTopic":"障害原因と接続状態",
+					"items":[
+						{"clientKey":"cause-hypothesis","kind":"issue","subtype":"investigation","severity":"high","title":"現時点では、この設定漏れが3階障害の","body":"現時点では、この設定漏れが3階障害の","status":"open","evidenceSequenceNos":[1,2],"evidenceSnippets":["この設定漏れが3階障害の直接原因である可能性が最も高い"]},
+						{"clientKey":"scope-limit","kind":"issue","subtype":"confirmation","severity":"medium","title":"2階の通信遅延までこの設定漏れで説明できるかは未確認","body":"2階の通信遅延までこの設定漏れで説明できるかは未確認","status":"open","evidenceSequenceNos":[3],"evidenceSnippets":["2階の通信遅延までこの設定漏れで説明できるかは未確認"]},
+						{"clientKey":"historical-connectivity","kind":"issue","subtype":"discussion","severity":"medium","title":"障害時に接続できる端末と接続できない端末が混在","body":"インターネットが完全に停止したわけではなく、接続できる端末と接続できない端末が混在していました","status":"open","evidenceSequenceNos":[4],"evidenceSnippets":["接続できる端末と接続できない端末が混在していました"]},
+						{"clientKey":"historical-recovery","kind":"fact","subtype":"","severity":"medium","title":"午前10時5分に有線LAN・無線LAN・ファイルサーバー接続が正常化","body":"午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になりました","status":"open","evidenceSequenceNos":[5],"evidenceSnippets":["午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になりました"]},
+						{"clientKey":"current-connectivity","kind":"issue","subtype":"investigation","severity":"high","title":"現在も一部端末で接続できない","body":"現在も一部端末で接続できず、原因はまだ分かっていないため調査が必要","status":"open","evidenceSequenceNos":[6],"evidenceSnippets":["現在も一部端末で接続できません。原因はまだ分かっておらず、調査が必要です"]}
+					],
+					"newTopics":[
+						{"id":"topic-network-cause","label":"VLAN設定漏れの原因と範囲","description":"確認済み設定、原因仮説、未確認範囲"},
+						{"id":"topic-connectivity-state","label":"端末接続状態の時系列","description":"過去観測、復旧、現在の問題"}
+					],
+					"assignments":[
+						{"nodeId":"cause-hypothesis","parentTopicId":"topic-network-cause","confidence":0.96},
+						{"nodeId":"scope-limit","parentTopicId":"topic-network-cause","confidence":0.96},
+						{"nodeId":"historical-connectivity","parentTopicId":"topic-connectivity-state","confidence":0.96},
+						{"nodeId":"historical-recovery","parentTopicId":"topic-connectivity-state","confidence":0.96},
+						{"nodeId":"current-connectivity","parentTopicId":"topic-connectivity-state","confidence":0.96}
+					],
+					"resolvedIds":[],
+					"resolutionUpdates":[{"itemId":"historical-connectivity","status":"resolved","evidenceSequenceNos":[5],"reason":"接続が正常になった"}],
+					"utteranceRoles":[]
+				}`),
+			},
+			{
+				SequenceNos: []int64{7},
+				FixedAIResponse: json.RawMessage(`{
+					"summary":"全端末の接続を確認",
+					"currentTopic":"接続復旧",
+					"items":[],
+					"newTopics":[],
+					"assignments":[],
+					"resolvedIds":[],
+					"resolutionUpdates":[{"itemId":"item-issue-investigation-6be3d76c146b","status":"resolved","evidenceSequenceNos":[7],"reason":"設定修正後にすべての端末で接続を確認した"}],
+					"utteranceRoles":[]
+				}`),
+			},
+		},
+		RequiredPropositions: []MeetingQualityProposition{
+			{ID: "vlan-fact", Text: "許可VLAN一覧からVLAN30が漏れていた", RequiredKind: "fact", EvidenceSequenceNos: []int64{1}, RequiredTemporalScope: "past", RequiredEpistemicStatus: "confirmed", RequiredStatus: "open"},
+			{ID: "cause-hypothesis", Text: "VLAN30設定漏れが3階障害の直接原因である可能性が高い", RequiredKind: "issue", EvidenceSequenceNos: []int64{2}, RequiredEpistemicStatus: "hypothesis", RequiredStatus: "open"},
+			{ID: "scope-limit", Text: "2階の通信遅延までVLAN30設定漏れで説明できるかは未確認", RequiredKind: "issue", EvidenceSequenceNos: []int64{3}, RequiredEpistemicStatus: "unresolved", RequiredStatus: "open"},
+			{ID: "historical-connectivity", Text: "障害時に接続できる端末と接続できない端末が混在していた", RequiredKind: "fact", EvidenceSequenceNos: []int64{4}, RequiredTemporalScope: "past", RequiredEpistemicStatus: "confirmed", RequiredStatus: "open"},
+			{ID: "historical-recovery", Text: "午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になった", RequiredKind: "fact", EvidenceSequenceNos: []int64{5}, RequiredTemporalScope: "past", RequiredEpistemicStatus: "confirmed", RequiredStatus: "open"},
+			{ID: "current-connectivity", Text: "現在も一部端末で接続できず原因不明で調査が必要", RequiredKind: "issue", EvidenceSequenceNos: []int64{6}, RequiredTemporalScope: "current", RequiredEpistemicStatus: "unresolved", RequiredStatus: "resolved"},
+		},
+		RequiredRelations: []MeetingQualityRelation{
+			{From: "cause-hypothesis", To: "vlan-fact", Kind: itemRelationSupportedBy},
+			{From: "scope-limit", To: "cause-hypothesis", Kind: itemRelationLimits},
+		},
+		FinalCoverage:    7,
+		ApplyFinalRepair: true,
+	}
+}
+
 func qualityServiceDomainSegments(sessionID string, scenario MeetingQualityScenario) []domain.TranscriptSegment {
 	segments := make([]domain.TranscriptSegment, 0, len(scenario.TranscriptSegments))
 	for _, fixture := range scenario.TranscriptSegments {
@@ -673,6 +746,96 @@ func TestMeetingQualityServiceIntegration(t *testing.T) {
 	t.Run("E_final_artifacts_reload_with_agenda_metadata", testMeetingQualityServiceIntegrationReload)
 	t.Run("F_stale_live_CAS_cannot_overwrite_final_projection", testMeetingQualityServiceIntegrationStaleCAS)
 	t.Run("G_label_fallback_and_relations_survive_fresh_reader", testMeetingQualityServiceIntegrationFallbackRelations)
+	t.Run("H_correction_and_temporal_lifecycle_survive_fresh_reader", testMeetingQualityServiceIntegrationCorrectionTemporal)
+}
+
+func testMeetingQualityServiceIntegrationCorrectionTemporal(t *testing.T) {
+	scenario := qualityServiceCorrectionTemporalScenario()
+	h := newQualityServiceHarness(t, qualityServiceRoundResponses(scenario))
+	segments := qualityServiceDomainSegments("quality-correction-temporal", scenario)
+	qualityServiceSaveDurable(t, h.transcript, segments[:6])
+	h.start()
+	h.service.PrepareMeetingSession(domain.MeetingSession{ID: segments[0].SessionID})
+	qualityServiceWaitWrite(t, h.repo, domain.MeetingAIAnalysisLive, domain.MeetingAIAnalysisCompleted, 1)
+	qualityServiceIngest(t, NewTranscriptIngestService(h.transcript, h.service), segments[6])
+	qualityServiceWaitWrite(t, h.repo, domain.MeetingAIAnalysisLive, domain.MeetingAIAnalysisCompleted, 2)
+
+	qualityServiceFinalize(t, h.service, segments[0].SessionID, 7)
+	snapshot := qualityServiceReload(t, h, segments[0].SessionID)
+	live, tree := qualityServiceAssertPersistence(t, snapshot, 7)
+	result := qualityServiceAssertEvaluation(t, scenario, snapshot.Live.Payload)
+	if live.TreeVersion < 2 || snapshot.Live.Version < 2 {
+		t.Fatalf("tree version rolled back: payload=%d row=%d", live.TreeVersion, snapshot.Live.Version)
+	}
+	if result.Metrics.RequiredPropositionRecall != 1 || result.Metrics.HierarchyRelationAccuracy != 1 ||
+		result.Metrics.ClassificationAccuracy != 1 || result.Metrics.TemporalScopeAccuracy != 1 ||
+		result.Metrics.PastFactCount < 3 || result.Metrics.ResolvedIssueCount != 1 ||
+		result.Metrics.IncorrectResolvedIssueCount != 0 {
+		t.Fatalf("correction/temporal quality metrics=%+v", result.Metrics)
+	}
+
+	matchedIDs := make(map[string]string, len(result.PropositionMatches))
+	for _, match := range result.PropositionMatches {
+		if match.Matched && match.BestActualCandidate != nil {
+			matchedIDs[match.PropositionID] = match.BestActualCandidate.ID
+		}
+	}
+	active := make(map[string]liveAnalysisItem)
+	for _, item := range live.Items {
+		if !item.Inactive && item.MergedIntoID == "" {
+			active[item.ID] = item
+		}
+	}
+	vlanFact := active[matchedIDs["vlan-fact"]]
+	hypothesis := active[matchedIDs["cause-hypothesis"]]
+	limit := active[matchedIDs["scope-limit"]]
+	historical := active[matchedIDs["historical-connectivity"]]
+	current := active[matchedIDs["current-connectivity"]]
+	if vlanFact.Kind != "fact" || !strings.Contains(vlanFact.Title, "VLAN30") || vlanFact.Status == "resolved" ||
+		hypothesis.Kind != "issue" || limit.Kind != "issue" {
+		t.Fatalf("correction structure not preserved: fact=%+v hypothesis=%+v limit=%+v", vlanFact, hypothesis, limit)
+	}
+	if historical.Kind != "fact" || historical.Status == "resolved" {
+		t.Fatalf("historical observation was not retained as an open fact: %+v", historical)
+	}
+	if current.Kind != "issue" || current.Status != "resolved" ||
+		!containsInt64(current.ResolutionEvidenceSequenceNos, 7) {
+		t.Fatalf("current issue did not resolve from explicit later evidence: %+v", current)
+	}
+
+	relationKeys := make(map[string]bool, len(live.Tree.Relations))
+	for _, relation := range live.Tree.Relations {
+		if _, ok := active[relation.Source]; !ok {
+			t.Fatalf("relation source is not active: %+v", relation)
+		}
+		if _, ok := active[relation.Target]; !ok {
+			t.Fatalf("relation target is not active: %+v", relation)
+		}
+		relationKeys[relationKey(relation)] = true
+	}
+	for _, key := range []string{
+		matchedIDs["cause-hypothesis"] + "\x00" + itemRelationSupportedBy + "\x00" + matchedIDs["vlan-fact"],
+		matchedIDs["scope-limit"] + "\x00" + itemRelationLimits + "\x00" + matchedIDs["cause-hypothesis"],
+	} {
+		if !relationKeys[key] {
+			t.Fatalf("required relation %q missing after fresh reload: %+v", key, live.Tree.Relations)
+		}
+	}
+	if !reflect.DeepEqual(live.Tree.Relations, tree.Tree.Relations) {
+		t.Fatalf("live/final relations differ: live=%+v final=%+v", live.Tree.Relations, tree.Tree.Relations)
+	}
+	if got, want := qualityServiceActiveItemIDs(live.Items), qualityServiceTreeDetailIDs(tree.Tree); strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("assistant/card and final tree item ids differ: live=%v tree=%v", got, want)
+	}
+	if got := h.completer.callCount(qualityServiceLiveDeployment); got != 2 {
+		t.Fatalf("live_extraction calls=%d, want 2 task-routed rounds", got)
+	}
+	if got := h.completer.callCount(qualityServiceTreeDeployment); got != 2 {
+		t.Fatalf("tree_reorganizer calls=%d, want one task-routed review per live version", got)
+	}
+	if got := h.completer.callCount(qualityServiceFinalDeployment); got != 1 {
+		t.Fatalf("final_summary calls=%d, want 1", got)
+	}
 }
 
 func testMeetingQualityServiceIntegrationFallbackRelations(t *testing.T) {

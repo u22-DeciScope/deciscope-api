@@ -559,7 +559,15 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 		}
 		clearAlternative := bestScore-currentScore >= cfg.RequiredImprovementMargin ||
 			(currentScore < cfg.CohesionThreshold && bestScore > currentScore && sharedTreeAuditSubjectTerm(itemText, bestText) && !sharedTreeAuditSubjectTerm(itemText, containerText(node.ParentID)))
-		if bestID != "" && clearAlternative && (currentScore < cfg.CohesionThreshold || bestScore-currentScore >= 0.08) {
+		// Planned-agenda reconciliation uses transcript context and all agenda
+		// candidates, whereas this audit fallback compares only compact topic
+		// labels. Do not let a weaker label-only alternative contradict a direct,
+		// high-confidence reconciliation decision. Other assignment sources and
+		// low-confidence decisions remain fully auditable.
+		trustedAgendaReconciliation := item.AssignmentReason == agendaReconciliationDynamicCandidate &&
+			item.AssignmentConfidence >= agendaReconciliationMinScore+cfg.RequiredImprovementMargin
+		if bestID != "" && clearAlternative && !trustedAgendaReconciliation &&
+			(currentScore < cfg.CohesionThreshold || bestScore-currentScore >= 0.08) {
 			typeName := TreeAuditSubjectMismatch
 			currentTop := byID[topContainer(node.ID)]
 			if currentTop.Origin == topicOriginAgenda || inferredAgendaForTopic(currentTop, mc) != "" {

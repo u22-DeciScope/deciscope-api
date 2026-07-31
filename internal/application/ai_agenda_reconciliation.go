@@ -582,6 +582,25 @@ func reconcileDynamicCandidateAssignments(
 			DynamicCandidateChecked: true,
 		}
 		if selected.ID == "" {
+			if fallback := initialAgendaForSelfContainedCorrection(item, items, spans, mc); fallback.ID != "" {
+				const fallbackConfidence = 0.55
+				assignments = replaceItemAssignments(assignments, item.ID, treeAssignment{
+					NodeID: item.ID, ParentTopicID: fallback.ID, Confidence: fallbackConfidence,
+					Reason: "self-contained correction before first agenda transition", ServerSource: assignmentSourceRule,
+					ModelParentTopicID:  candidateParentID,
+					EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...),
+				})
+				decision.SelectedAgendaID = fallback.ID
+				decision.Score = fallbackConfidence
+				decision.RejectedReason = "initial_agenda_self_contained_correction_fallback"
+				decision.NewStatus = agendaProgressDiscussing
+				decision.AgendaRefsRepaired = true
+				decision.ItemMoved = true
+				if stats != nil {
+					stats.AgendaReconciliations = append(stats.AgendaReconciliations, decision)
+				}
+				continue
+			}
 			if !dynamicSignal && rejected == "score_below_threshold" &&
 				score >= agendaReconciliationPendingMinScore &&
 				len(candidateIDs) > 0 &&
@@ -648,6 +667,54 @@ func reconcileDynamicCandidateAssignments(
 		}
 	}
 	return assignments
+}
+
+// initialAgendaForSelfContainedCorrection is a narrow fallback for a
+// server-reconstructed correction before the meeting records its first topic
+// transition. It does not lower semantic matching thresholds: once any agenda
+// or no-agenda span has started, normal span and candidate reconciliation stay
+// authoritative.
+func initialAgendaForSelfContainedCorrection(item liveAnalysisItem, items []liveAnalysisItem, spans []agendaContextSpan, mc *meetingContext) agendaItem {
+	if item.AssignmentReason != deterministicCorrectionAssignmentReason || mc == nil || len(item.EvidenceSequenceNos) == 0 {
+		return agendaItem{}
+	}
+	itemText := item.Title + " " + item.Body
+	for _, companion := range items {
+		if companion.ID == item.ID || companion.Inactive || companion.MergedIntoID != "" ||
+			!companion.observedInCurrentBatch || !itemEvidenceWithin(item, companion, 3) {
+			continue
+		}
+		companionText := companion.Title + " " + companion.Body
+		if sharedTreeAuditSubjectTerm(itemText, companionText) || semanticItemSimilarity(itemText, companionText) >= 0.18 {
+			// Let normal semantic grouping place a same-round logical family
+			// together instead of pinning one member to a planned agenda first.
+			return agendaItem{}
+		}
+	}
+	firstEvidence := item.EvidenceSequenceNos[0]
+	for _, sequenceNo := range item.EvidenceSequenceNos[1:] {
+		if sequenceNo < firstEvidence {
+			firstEvidence = sequenceNo
+		}
+	}
+	if mode, _, _ := agendaContextForEvidence(item.EvidenceSequenceNos, spans); mode != "" {
+		return agendaItem{}
+	}
+	for _, span := range spans {
+		if span.StartSequenceNo <= firstEvidence {
+			return agendaItem{}
+		}
+	}
+	var selected agendaItem
+	for _, agenda := range mc.Agenda {
+		if effectiveAgendaRole(agenda.Role, agenda.Title, agenda.Description) != agendaRolePrimary {
+			continue
+		}
+		if selected.ID == "" || (agenda.Order > 0 && (selected.Order <= 0 || agenda.Order < selected.Order)) {
+			selected = agenda
+		}
+	}
+	return selected
 }
 
 func agendaCandidateScoreMargin(scores []string) float64 {

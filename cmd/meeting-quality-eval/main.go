@@ -126,7 +126,8 @@ func comparisonContainsRegression(comparison application.MeetingQualityCompariso
 		len(comparison.NewHardInvariantViolations) > 0 ||
 		len(comparison.NewRelationFailures) > 0 ||
 		len(comparison.NewKindMismatches) > 0 ||
-		len(comparison.NewEvidenceMismatches) > 0
+		len(comparison.NewEvidenceMismatches) > 0 ||
+		len(comparison.NewSemanticStateMismatches) > 0
 }
 
 func readSuite(path string) (application.MeetingQualitySuite, error) {

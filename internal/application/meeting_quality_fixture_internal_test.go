@@ -43,6 +43,9 @@ func TestDeterministicMeetingQualitySuiteRegistersInitialRegressions(t *testing.
 		"network-logical-hierarchy",
 		"semantic-duplicate-proposition",
 		"vpn-certificate-card-tree-consistency",
+		"self-contained-correction-logical-relations",
+		"past-observation-remains-fact",
+		"current-issue-resolution-lifecycle",
 	}
 	if len(suite.Scenarios) < len(required) {
 		t.Fatalf("scenario count=%d, want at least %d", len(suite.Scenarios), len(required))
@@ -136,8 +139,8 @@ func TestDeterministicMeetingQualitySuiteUsesProductionStages(t *testing.T) {
 			}
 		}
 	}
-	if direct != 13 || seeded != 2 || completedOnly != 0 {
-		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 13/2/0",
+	if direct != 16 || seeded != 2 || completedOnly != 0 {
+		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 16/2/0",
 			direct, seeded, completedOnly)
 	}
 }
@@ -180,6 +183,24 @@ func TestDeterministicMeetingQualityKnownProblemsHaveMetricProvenance(t *testing
 	if finalization.Metrics.ClassificationAccuracy != 1 ||
 		finalization.Metrics.RiskRecall != 1 || len(finalization.KindMismatches) != 0 {
 		t.Fatalf("finalization risk regression was not repaired: %+v", finalization)
+	}
+	correction := byID["self-contained-correction-logical-relations"]
+	if correction.Metrics.RequiredPropositionRecall != 1 || correction.Metrics.HierarchyRelationAccuracy != 1 ||
+		correction.Metrics.PastFactCount != 1 || correction.Metrics.IssueCount != 2 {
+		t.Fatalf("self-contained correction metrics do not prove fact and relations: %+v", correction)
+	}
+	past := byID["past-observation-remains-fact"]
+	if past.Metrics.ClassificationAccuracy != 1 || past.Metrics.TemporalScopeAccuracy != 1 ||
+		past.Metrics.PastFactCount != 2 || past.Metrics.IssueCount != 0 ||
+		past.Metrics.ResolvedIssueCount != 0 || past.Metrics.IncorrectResolvedIssueCount != 0 ||
+		len(past.SemanticStateMismatches) != 0 {
+		t.Fatalf("historical observation metrics do not prove immutable past facts: %+v", past)
+	}
+	current := byID["current-issue-resolution-lifecycle"]
+	if current.Metrics.ClassificationAccuracy != 1 || current.Metrics.TemporalScopeAccuracy != 1 ||
+		current.Metrics.IssueCount != 1 || current.Metrics.ResolvedIssueCount != 1 ||
+		current.Metrics.IncorrectResolvedIssueCount != 0 || len(current.SemanticStateMismatches) != 0 {
+		t.Fatalf("current issue lifecycle metrics do not prove explicit resolution: %+v", current)
 	}
 }
 

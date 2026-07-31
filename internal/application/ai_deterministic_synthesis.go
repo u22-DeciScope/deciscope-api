@@ -13,7 +13,18 @@ const (
 	deterministicCorrectionAssignmentReason = "explicit_correction_reconstruction"
 )
 
-var deterministicTodoObjectPattern = regexp.MustCompile(`(?:を|について|に対して|の(?:確認|更新|作成|策定|調査|対応|実施|適用|管理|監視))`)
+var (
+	deterministicTodoObjectPattern      = regexp.MustCompile(`(?:を|について|に対して|の(?:確認|更新|作成|策定|調査|対応|実施|適用|管理|監視))`)
+	correctionDependentStatementPattern = regexp.MustCompile(
+		`^(?:(?:いや|いえ)[、,]?)?(?:違います|そうではありません|その(?:設定|件|点|内容)ではありません|それではありません|この(?:設定|件|点)(?:ではありません)?)$`,
+	)
+	correctionNegativeLeadClausePattern = regexp.MustCompile(
+		`^(?:完全な|すべてが|全てが).{1,80}(?:ではありません|ではない)$`,
+	)
+	correctionGroundingQualifierPattern = regexp.MustCompile(
+		`(?i)(?:VLAN\s*\d+|\d+\s*階|月曜(?:日)?|火曜(?:日)?|水曜(?:日)?|木曜(?:日)?|金曜(?:日)?|土曜(?:日)?|日曜(?:日)?|旧スイッチ|交換後スイッチ)`,
+	)
+)
 
 type deterministicSynthesisDecision struct {
 	SequenceNo        int64
@@ -575,12 +586,13 @@ func synthesizeCorrectionFactItems(
 		if correctionSequenceRepresented(known, sequenceNo, statement, scope) {
 			continue
 		}
-		// A correction replacement exists to supersede a tracked proposition.
-		// Do not manufacture a standalone historical Fact merely because the
-		// full-session transcript contains correction wording.
+		// A reference-dependent correction still requires a tracked target.
+		// A self-contained replacement can stand on its own, so target absence
+		// must not discard the grounded corrected proposition.
+		selfContained := selfContainedCorrectionFact(statement, text)
 		if targetAt, _ := bestSupersededCorrectionItem(
 			known, text, sequenceNo, "", scope,
-		); targetAt < 0 {
+		); targetAt < 0 && !selfContained {
 			continue
 		}
 		probe := liveAnalysisItem{
@@ -750,7 +762,73 @@ func correctionReplacementStatement(text string) string {
 			break
 		}
 	}
-	return strings.Trim(strings.TrimSpace(statement), "、。.!！ ")
+	statement = strings.Trim(strings.TrimSpace(statement), "、。.!！ ")
+	clauses := semanticKindClauses(statement)
+	for index := len(clauses) - 1; index >= 0; index-- {
+		candidate := strings.Trim(strings.TrimSpace(clauses[index]), "、。.!！ ")
+		for _, separator := range []string{"が、", "が,", "ものの、", "ものの,"} {
+			if at := strings.LastIndex(candidate, separator); at > 0 {
+				tail := strings.Trim(strings.TrimSpace(candidate[at+len(separator):]), "、。.!！ ")
+				if selfContainedCorrectionFact(tail, text) {
+					candidate = tail
+				}
+				break
+			}
+		}
+		if correctionNegativeLeadClausePattern.MatchString(candidate) && len(clauses) > 1 {
+			continue
+		}
+		if selfContainedCorrectionFact(candidate, text) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func selfContainedCorrectionFact(statement, evidenceText string) bool {
+	statement = strings.Trim(strings.TrimSpace(statement), "、。.!！ ")
+	if statement == "" || correctionDependentStatementPattern.MatchString(statement) ||
+		correctionNegativeLeadClausePattern.MatchString(statement) ||
+		strongCorrectionLeadPattern.MatchString(statement) {
+		return false
+	}
+	probe := liveAnalysisItem{Kind: "fact", Title: statement, Body: statement}
+	if liveItemTextNeedsReferent(probe) || finalItemIsLowInformation(probe) ||
+		!liveItemHasSpecificSubject(statement) ||
+		kindOpenQuestionPattern.MatchString(statement) ||
+		kindUncertaintyPattern.MatchString(statement) ||
+		kindProposalPattern.MatchString(statement) || futureActionIntent(statement) {
+		return false
+	}
+	if semanticItemSimilarity(statement, evidenceText) < 0.12 &&
+		!strings.Contains(canonicalReferenceKey(evidenceText), canonicalReferenceKey(statement)) {
+		return false
+	}
+	if !correctionQualifiersGrounded(statement, evidenceText) {
+		return false
+	}
+	decision := evaluateLiveItemKind(probe, liveEvidenceScope{}, "self_contained_correction")
+	historicalFact := kindPastEventPattern.MatchString(statement) &&
+		!futureActionIntent(statement) &&
+		!kindOpenQuestionPattern.MatchString(statement) &&
+		!kindUncertaintyPattern.MatchString(statement) &&
+		!kindProposalPattern.MatchString(statement)
+	return historicalFact || (decision.CanonicalKind == "fact" &&
+		decision.Confidence >= itemKindValidationThreshold(itemKindValidationLive) &&
+		(decision.Features.TemporalScope == "past" || decision.Features.TemporalScope == "unknown"))
+}
+
+func correctionQualifiersGrounded(statement, evidenceText string) bool {
+	evidenceQualifiers := make(map[string]struct{})
+	for _, qualifier := range correctionGroundingQualifierPattern.FindAllString(evidenceText, -1) {
+		evidenceQualifiers[canonicalReferenceKey(qualifier)] = struct{}{}
+	}
+	for _, qualifier := range correctionGroundingQualifierPattern.FindAllString(statement, -1) {
+		if _, grounded := evidenceQualifiers[canonicalReferenceKey(qualifier)]; !grounded {
+			return false
+		}
+	}
+	return true
 }
 
 func addOrUpdateFinalSynthesizedItems(

@@ -75,6 +75,12 @@ var (
 	kindOngoingEventPattern = regexp.MustCompile(
 		`(?i)(?:継続的|断続的|引き続き|依然として|常時|繰り返し|ongoing|continuing|recurring)`,
 	)
+	kindPastObservationPattern = regexp.MustCompile(
+		`(?i)(?:(?:混在していました|混在していた|発生していました|発生していた|遅延していました|遅延していた|停止していました|停止していた|影響が出ていました|影響が出ていた|接続できませんでした|接続できなかった|利用できませんでした|利用できなかった)|(?:障害発生時|当時|昨日|先週|午前|午後).{0,80}(?:でした|ました|していた|していました|できなかった|できませんでした|解消した|解消しました|正常になった|正常になりました))`,
+	)
+	kindExplicitCurrentIssuePattern = regexp.MustCompile(
+		`(?i)(?:現在(?:も|は)|現時点(?:でも|では)|今も|引き続き|依然として|発生中|継続中|まだ.{0,24}(?:解決していな|分かっていな|わかっていな|特定できていな|接続できな)|原因.{0,16}(?:不明|分かっていな|わかっていな|特定できていな)|(?:調査|対応|判断|確認)(?:する)?(?:こと)?が必要|未解決|unresolved|currently)`,
+	)
 	kindNegativeImpactPattern = regexp.MustCompile(
 		`(?i)(?:障害|停止|切断|切れ|接続(?:が)?できな|利用(?:が)?できな|過多|多くなりすぎ|見落と|失敗|損失|漏えい|遅延|再発|不能|悪化|欠落|期限切れ|危険|adverse|outage|failure|loss|unavailable)`,
 	)
@@ -82,10 +88,10 @@ var (
 		`(?i)(?:現在|現時点|発生中|発生している|継続している|できていな(?:い|く|かった)|できていません|接続できない|未解決|未確認|未確定|未決定|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|unknown|unresolved|currently)`,
 	)
 	kindConfirmedPattern = regexp.MustCompile(
-		`(?i)(?:確認した|確認しました|確認済み|判明した|判明しました|分かりました|わかりました|明らかになった|観測した|報告された|報告されました|報告がありました|報告があった|漏れてい(?:た|ました)|異常はなかった|正常になった|復旧した|切り戻した|修正した後|であることが分かった|confirmed|observed|verified|reported)`,
+		`(?i)(?:確認した|確認しました|確認済み|判明した|判明しました|分かりました|わかりました|明らかになった|観測した|報告された|報告されました|報告がありました|報告があった|漏れてい(?:た|ました)|異常はなかった|正常になった|復旧した|解消した|解消しました|切り戻した|修正した後|であることが分かった|confirmed|observed|verified|reported)`,
 	)
 	kindPastEventPattern = regexp.MustCompile(
-		`(?i)(?:発生した|発生しました|していた|だった|でした|行った|実施した|完了した|occurred|was |were |completed)`,
+		`(?i)(?:発生した|発生しました|していた|していました|しておりました|できなかった|できませんでした|だった|でした|行った|実施した|完了した|解消した|解消しました|正常になった|正常になりました|occurred|was |were |completed)`,
 	)
 	kindCompletedActionPattern = regexp.MustCompile(
 		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続|切り戻|復旧)(?:しました|した|済み|を完了(?:しました|した))|(?:行|おこな)(?:いました|った)|完了(?:しました|した|済み)|completed|was (?:updated|created|checked|reviewed|implemented))`,
@@ -160,13 +166,35 @@ func semanticKindClauses(text string) []string {
 	raw := kindSentenceBoundaryPattern.Split(text, -1)
 	clauses := make([]string, 0, len(raw))
 	for _, clause := range raw {
-		for _, split := range splitImplicitTodoOwnerTransitions(clause) {
-			if trimmed := strings.TrimSpace(split); trimmed != "" {
-				clauses = append(clauses, trimmed)
+		for _, temporalSplit := range splitPastCurrentTransition(clause) {
+			for _, split := range splitImplicitTodoOwnerTransitions(temporalSplit) {
+				if trimmed := strings.TrimSpace(split); trimmed != "" {
+					clauses = append(clauses, trimmed)
+				}
 			}
 		}
 	}
 	return clauses
+}
+
+func splitPastCurrentTransition(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	for _, marker := range []string{"が、原因", "が原因", "が、理由", "が理由", "が、要因", "が要因"} {
+		at := strings.Index(text, marker)
+		if at <= 0 {
+			continue
+		}
+		left := strings.TrimSpace(text[:at])
+		right := strings.TrimSpace(text[at+len("が"):])
+		right = strings.TrimLeft(right, "、, ")
+		if kindPastObservationPattern.MatchString(left) && kindExplicitCurrentIssuePattern.MatchString(right) {
+			return []string{left, right}
+		}
+	}
+	return []string{text}
 }
 
 func splitImplicitTodoOwnerTransitions(text string) []string {
@@ -386,8 +414,15 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		text = proposition
 	}
 
-	confirmedEvidence := kindConfirmedPattern.MatchString(text) &&
+	pastObservation := kindPastObservationPattern.MatchString(text)
+	explicitCurrentIssue := kindExplicitCurrentIssuePattern.MatchString(text)
+	confirmedEvidence := (kindConfirmedPattern.MatchString(text) ||
+		(pastObservation && !explicitCurrentIssue)) &&
 		!kindRecommendationPattern.MatchString(text)
+	currentProblem := kindCurrentProblemPattern.MatchString(text)
+	if pastObservation && !explicitCurrentIssue {
+		currentProblem = false
+	}
 	completedAction := kindCompletedActionPattern.MatchString(text) &&
 		!kindProposalPattern.MatchString(text)
 	actionIntent := futureActionIntent(text)
@@ -398,7 +433,7 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		UncertaintyPresent:         kindUncertaintyPattern.MatchString(text),
 		FutureEventPresent:         kindFutureEventPattern.MatchString(text) || scheduledEvent,
 		ScheduledEventPresent:      scheduledEvent,
-		CurrentProblemPresent:      kindCurrentProblemPattern.MatchString(text),
+		CurrentProblemPresent:      currentProblem,
 		ConfirmedEvidencePresent:   confirmedEvidence,
 		ActionVerbPresent:          kindActionVerbPattern.MatchString(text),
 		CompletedActionPresent:     completedAction,
@@ -525,7 +560,7 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 	preserveOpenIssue := originalKind == "issue" && validIssueSubtype(originalSubtype) &&
 		!features.ConfirmationSupersedesOpen &&
 		(kindOpenQuestionPattern.MatchString(item.Title+" "+item.Body) ||
-			kindCurrentProblemPattern.MatchString(item.Title+" "+item.Body))
+			features.CurrentProblemPresent)
 
 	switch {
 	case features.CompletedActionPresent && !actionIntent &&
@@ -1202,19 +1237,23 @@ func semanticRelationItemsRelated(tree *liveAnalysisTree, source, target liveAna
 	sourceText := source.Title + " " + source.Body
 	targetText := target.Title + " " + target.Body
 	sourceTopic, targetTopic := treeItemTopic(tree, source.ID), treeItemTopic(tree, target.ID)
-	if sourceTopic != "" && targetTopic != "" && sourceTopic != targetTopic {
-		return false
-	}
+	crossTopic := sourceTopic != "" && targetTopic != "" && sourceTopic != targetTopic
 	sharedSubject := sharedTreeAuditSubjectTerm(sourceText, targetText)
+	similarity := semanticItemSimilarity(sourceText, targetText)
 	switch kind {
 	case itemRelationLimits:
+		if crossTopic {
+			return evidenceFollowsWithin(source, target, 2) && sharedSubject && similarity >= 0.08
+		}
 		return evidenceFollowsWithin(source, target, 2) &&
 			(sharedSubject || itemLabelContextDependentPattern.MatchString(source.Title) ||
 				itemLabelDeicticSettingPattern.MatchString(sourceText))
 	default:
+		if crossTopic {
+			return itemEvidenceWithin(source, target, 2) && sharedSubject && similarity >= 0.10
+		}
 		return itemEvidenceOverlaps(source, target) ||
-			(itemEvidenceWithin(source, target, 2) && sharedSubject &&
-				semanticItemSimilarity(sourceText, targetText) >= 0.10)
+			(itemEvidenceWithin(source, target, 2) && sharedSubject && similarity >= 0.10)
 	}
 }
 

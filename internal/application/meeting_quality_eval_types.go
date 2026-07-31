@@ -67,13 +67,16 @@ type MeetingQualityClassificationOptions struct {
 }
 
 type MeetingQualityProposition struct {
-	ID                  string   `json:"id"`
-	Text                string   `json:"text"`
-	RequiredKind        string   `json:"requiredKind,omitempty"`
-	AllowedKinds        []string `json:"allowedKinds,omitempty"`
-	EvidenceSequenceNos []int64  `json:"evidenceSequenceNos,omitempty"`
-	RequiredAgendaID    string   `json:"requiredAgendaId,omitempty"`
-	MinimumSimilarity   float64  `json:"minimumSimilarity,omitempty"`
+	ID                      string   `json:"id"`
+	Text                    string   `json:"text"`
+	RequiredKind            string   `json:"requiredKind,omitempty"`
+	AllowedKinds            []string `json:"allowedKinds,omitempty"`
+	EvidenceSequenceNos     []int64  `json:"evidenceSequenceNos,omitempty"`
+	RequiredAgendaID        string   `json:"requiredAgendaId,omitempty"`
+	RequiredTemporalScope   string   `json:"requiredTemporalScope,omitempty"`
+	RequiredEpistemicStatus string   `json:"requiredEpistemicStatus,omitempty"`
+	RequiredStatus          string   `json:"requiredStatus,omitempty"`
+	MinimumSimilarity       float64  `json:"minimumSimilarity,omitempty"`
 }
 
 // Relation is evaluated against the semantic proposition matches. Explicit
@@ -105,6 +108,11 @@ type MeetingQualityMetrics struct {
 	RequiredPropositionRecall     float64 `json:"requiredPropositionRecall"`
 	UnsupportedPropositionCount   int     `json:"unsupportedPropositionCount"`
 	ClassificationAccuracy        float64 `json:"classificationAccuracy"`
+	TemporalScopeAccuracy         float64 `json:"temporalScopeAccuracy"`
+	PastFactCount                 int     `json:"pastFactCount"`
+	IssueCount                    int     `json:"issueCount"`
+	ResolvedIssueCount            int     `json:"resolvedIssueCount"`
+	IncorrectResolvedIssueCount   int     `json:"incorrectResolvedIssueCount"`
 	RiskRecall                    float64 `json:"riskRecall"`
 	TodoRecall                    float64 `json:"todoRecall"`
 	DecisionRecall                float64 `json:"decisionRecall"`
@@ -133,18 +141,22 @@ type MeetingQualityActualItem struct {
 	Kind                string  `json:"kind"`
 	Title               string  `json:"title"`
 	Body                string  `json:"body,omitempty"`
+	Status              string  `json:"status,omitempty"`
 	EvidenceSequenceNos []int64 `json:"evidenceSequenceNos,omitempty"`
 }
 
 type MeetingQualityPropositionMatch struct {
-	PropositionID       string                    `json:"propositionId"`
-	ExpectedText        string                    `json:"expectedText"`
-	RequiredKind        string                    `json:"requiredKind,omitempty"`
-	AllowedKinds        []string                  `json:"allowedKinds,omitempty"`
-	ExpectedEvidence    []int64                   `json:"expectedEvidence,omitempty"`
-	Matched             bool                      `json:"matched"`
-	Similarity          float64                   `json:"similarity"`
-	BestActualCandidate *MeetingQualityActualItem `json:"bestActualCandidate,omitempty"`
+	PropositionID           string                    `json:"propositionId"`
+	ExpectedText            string                    `json:"expectedText"`
+	RequiredKind            string                    `json:"requiredKind,omitempty"`
+	AllowedKinds            []string                  `json:"allowedKinds,omitempty"`
+	ExpectedEvidence        []int64                   `json:"expectedEvidence,omitempty"`
+	RequiredTemporalScope   string                    `json:"requiredTemporalScope,omitempty"`
+	RequiredEpistemicStatus string                    `json:"requiredEpistemicStatus,omitempty"`
+	RequiredStatus          string                    `json:"requiredStatus,omitempty"`
+	Matched                 bool                      `json:"matched"`
+	Similarity              float64                   `json:"similarity"`
+	BestActualCandidate     *MeetingQualityActualItem `json:"bestActualCandidate,omitempty"`
 }
 
 type MeetingQualityKindMismatch struct {
@@ -161,6 +173,14 @@ type MeetingQualityEvidenceMismatch struct {
 	ActualSequences  []int64 `json:"actualSequences,omitempty"`
 }
 
+type MeetingQualitySemanticStateMismatch struct {
+	PropositionID string `json:"propositionId"`
+	ActualItemID  string `json:"actualItemId"`
+	Field         string `json:"field"`
+	Expected      string `json:"expected"`
+	Actual        string `json:"actual"`
+}
+
 type MeetingQualityMetricEvidence struct {
 	Metric         string   `json:"metric"`
 	ExpectationIDs []string `json:"expectationIds,omitempty"`
@@ -170,27 +190,28 @@ type MeetingQualityMetricEvidence struct {
 }
 
 type MeetingQualityScenarioResult struct {
-	ID                          string                           `json:"id"`
-	Passed                      bool                             `json:"passed"`
-	Metrics                     MeetingQualityMetrics            `json:"metrics"`
-	InputMode                   string                           `json:"inputMode,omitempty"`
-	ProductionStages            []string                         `json:"productionStages,omitempty"`
-	HardInvariantViolations     []string                         `json:"hardInvariantViolations,omitempty"`
-	MissingRequiredPropositions []string                         `json:"missingRequiredPropositions,omitempty"`
-	UnsupportedPropositions     []string                         `json:"unsupportedPropositions,omitempty"`
-	PropositionMatches          []MeetingQualityPropositionMatch `json:"propositionMatches,omitempty"`
-	UnsupportedItems            []MeetingQualityActualItem       `json:"unsupportedItems,omitempty"`
-	KindMismatches              []MeetingQualityKindMismatch     `json:"kindMismatches,omitempty"`
-	EvidenceMismatches          []MeetingQualityEvidenceMismatch `json:"evidenceMismatches,omitempty"`
-	MetricEvidence              []MeetingQualityMetricEvidence   `json:"metricEvidence,omitempty"`
-	RelationFailures            []string                         `json:"relationFailures,omitempty"`
-	ForbiddenResultsFound       []string                         `json:"forbiddenResultsFound,omitempty"`
-	SafetyFailures              []string                         `json:"safetyFailures,omitempty"`
-	ParentAssignments           []MeetingQualityParentAssignment `json:"parentAssignments,omitempty"`
-	KindDistribution            []MeetingQualityKindCount        `json:"kindDistribution,omitempty"`
-	FinalCoverage               int64                            `json:"finalCoverage"`
-	TreeVersion                 int64                            `json:"treeVersion"`
-	Error                       string                           `json:"error,omitempty"`
+	ID                          string                                `json:"id"`
+	Passed                      bool                                  `json:"passed"`
+	Metrics                     MeetingQualityMetrics                 `json:"metrics"`
+	InputMode                   string                                `json:"inputMode,omitempty"`
+	ProductionStages            []string                              `json:"productionStages,omitempty"`
+	HardInvariantViolations     []string                              `json:"hardInvariantViolations,omitempty"`
+	MissingRequiredPropositions []string                              `json:"missingRequiredPropositions,omitempty"`
+	UnsupportedPropositions     []string                              `json:"unsupportedPropositions,omitempty"`
+	PropositionMatches          []MeetingQualityPropositionMatch      `json:"propositionMatches,omitempty"`
+	UnsupportedItems            []MeetingQualityActualItem            `json:"unsupportedItems,omitempty"`
+	KindMismatches              []MeetingQualityKindMismatch          `json:"kindMismatches,omitempty"`
+	EvidenceMismatches          []MeetingQualityEvidenceMismatch      `json:"evidenceMismatches,omitempty"`
+	SemanticStateMismatches     []MeetingQualitySemanticStateMismatch `json:"semanticStateMismatches,omitempty"`
+	MetricEvidence              []MeetingQualityMetricEvidence        `json:"metricEvidence,omitempty"`
+	RelationFailures            []string                              `json:"relationFailures,omitempty"`
+	ForbiddenResultsFound       []string                              `json:"forbiddenResultsFound,omitempty"`
+	SafetyFailures              []string                              `json:"safetyFailures,omitempty"`
+	ParentAssignments           []MeetingQualityParentAssignment      `json:"parentAssignments,omitempty"`
+	KindDistribution            []MeetingQualityKindCount             `json:"kindDistribution,omitempty"`
+	FinalCoverage               int64                                 `json:"finalCoverage"`
+	TreeVersion                 int64                                 `json:"treeVersion"`
+	Error                       string                                `json:"error,omitempty"`
 }
 
 type MeetingQualitySuiteReport struct {
@@ -234,6 +255,7 @@ type MeetingQualityKindDistributionDiff struct {
 type MeetingQualityComparisonReport struct {
 	Passed                     bool                                 `json:"passed"`
 	BaselineUpdateRequired     bool                                 `json:"baselineUpdateRequired"`
+	NewScenarios               []string                             `json:"newScenarios,omitempty"`
 	ImprovedMetrics            []MeetingQualityMetricChange         `json:"improvedMetrics,omitempty"`
 	WorsenedMetrics            []MeetingQualityMetricChange         `json:"worsenedMetrics,omitempty"`
 	NewFailures                []string                             `json:"newFailures,omitempty"`
@@ -244,6 +266,7 @@ type MeetingQualityComparisonReport struct {
 	NewRelationFailures        []MeetingQualityTextDiff             `json:"newRelationFailures,omitempty"`
 	NewKindMismatches          []MeetingQualityTextDiff             `json:"newKindMismatches,omitempty"`
 	NewEvidenceMismatches      []MeetingQualityTextDiff             `json:"newEvidenceMismatches,omitempty"`
+	NewSemanticStateMismatches []MeetingQualityTextDiff             `json:"newSemanticStateMismatches,omitempty"`
 	ParentRelationDiffs        []MeetingQualityParentDiff           `json:"parentRelationDiffs,omitempty"`
 	KindDistributionDiffs      []MeetingQualityKindDistributionDiff `json:"kindDistributionDiffs,omitempty"`
 }
@@ -251,5 +274,6 @@ type MeetingQualityComparisonReport struct {
 type MeetingQualityBaselineUpdateReport struct {
 	AppliedMetrics    []MeetingQualityMetricChange `json:"appliedMetrics,omitempty"`
 	AppliedRepairs    []string                     `json:"appliedRepairs,omitempty"`
+	AddedScenarios    []string                     `json:"addedScenarios,omitempty"`
 	UnchangedBaseline bool                         `json:"unchangedBaseline"`
 }

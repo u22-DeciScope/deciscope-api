@@ -127,6 +127,47 @@ func TestMeetingQualityBaselineRejectsSchemaAndScenarioDeletion(t *testing.T) {
 	}
 }
 
+func TestMeetingQualityBaselineAddsPassingScenarioOnlyByExplicitAcceptance(t *testing.T) {
+	kept := MeetingQualityScenarioResult{ID: "kept", Passed: true}
+	added := MeetingQualityScenarioResult{ID: "added", Passed: true}
+	baseline := NewMeetingQualityBaseline(MeetingQualitySuiteReport{
+		SchemaVersion: meetingQualitySchemaVersion,
+		Suite:         "deterministic",
+		Passed:        true,
+		Scenarios:     []MeetingQualityScenarioResult{kept},
+	})
+	current := MeetingQualitySuiteReport{
+		SchemaVersion: meetingQualitySchemaVersion,
+		Suite:         "deterministic",
+		Passed:        true,
+		Scenarios:     []MeetingQualityScenarioResult{kept, added},
+	}
+	comparison := CompareMeetingQualityBaseline(baseline, current)
+	if comparison.Passed || !comparison.BaselineUpdateRequired ||
+		len(comparison.NewScenarios) != 1 || comparison.NewScenarios[0] != "added" ||
+		len(comparison.NewFailures) != 0 {
+		t.Fatalf("new passing scenario was not reported as an explicit update: %+v", comparison)
+	}
+	updated, report, err := AcceptMeetingQualityImprovements(baseline, current)
+	if err != nil {
+		t.Fatalf("accept new passing scenario: %v", err)
+	}
+	if len(report.AddedScenarios) != 1 || report.AddedScenarios[0] != "added" {
+		t.Fatalf("added scenarios=%v", report.AddedScenarios)
+	}
+	if comparison := CompareMeetingQualityBaseline(updated, current); !comparison.Passed {
+		t.Fatalf("accepted scenario did not ratchet: %+v", comparison)
+	}
+	if _, _, err := AcceptMeetingQualityImprovements(updated, MeetingQualitySuiteReport{
+		SchemaVersion: meetingQualitySchemaVersion,
+		Suite:         "deterministic",
+		Passed:        true,
+		Scenarios:     []MeetingQualityScenarioResult{kept},
+	}); err == nil {
+		t.Fatal("scenario deletion was accepted after ratcheting")
+	}
+}
+
 func TestMeetingQualityEvaluatorDetectsGroundedRiskLoss(t *testing.T) {
 	scenario := MeetingQualityScenario{
 		ID: "risk-loss",
@@ -154,6 +195,69 @@ func TestMeetingQualityEvaluatorDetectsGroundedRiskLoss(t *testing.T) {
 	}
 	if result.Metrics.RiskRecall != 0 {
 		t.Fatalf("riskRecall=%v, want 0", result.Metrics.RiskRecall)
+	}
+}
+
+func TestMeetingQualityEvaluatorReportsTemporalAndResolutionLifecycle(t *testing.T) {
+	text := "障害発生時には接続できる端末と接続できない端末が混在していました。"
+	scenario := MeetingQualityScenario{
+		ID: "temporal-lifecycle-metrics",
+		RequiredPropositions: []MeetingQualityProposition{{
+			ID: "historical", Text: "障害時に接続可否が端末ごとに混在していた",
+			RequiredKind: "fact", RequiredTemporalScope: "past", RequiredEpistemicStatus: "confirmed", RequiredStatus: "open",
+			EvidenceSequenceNos: []int64{1},
+		}},
+		FinalCoverage: 1,
+	}
+	item := liveAnalysisItem{
+		ID: "historical", Kind: "fact", Title: "障害時に端末ごとの接続可否が混在",
+		Body: text, Status: "open", EvidenceSequenceNos: []int64{1}, CreatedThroughSequenceNo: 1,
+	}
+	state := liveAnalysisPayload{
+		Items: []liveAnalysisItem{item},
+		Tree: &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+			{ID: treeRootNodeID, Kind: "topic", Label: "会議全体"},
+			{ID: "historical", Kind: "fact", ParentID: treeRootNodeID, Label: item.Title},
+		}},
+		CoveredThroughSequenceNo: 1,
+	}
+	rebuildTreeAuditEdges(state.Tree)
+	segments := []domain.TranscriptSegment{{SequenceNo: 1, CallID: "call", IsFinal: true, Text: text}}
+	var correct MeetingQualityScenarioResult
+	evaluateMeetingQualityResult(&correct, scenario, state, &meetingContext{}, segments)
+	if correct.Metrics.TemporalScopeAccuracy != 1 || correct.Metrics.PastFactCount != 1 ||
+		correct.Metrics.IssueCount != 0 || correct.Metrics.ResolvedIssueCount != 0 ||
+		correct.Metrics.IncorrectResolvedIssueCount != 0 || len(correct.SemanticStateMismatches) != 0 {
+		t.Fatalf("correct temporal lifecycle metrics=%+v mismatches=%+v", correct.Metrics, correct.SemanticStateMismatches)
+	}
+
+	state.Items[0].Kind = "issue"
+	state.Items[0].Status = "resolved"
+	state.Tree.Nodes[1].Kind = "issue"
+	var corrupted MeetingQualityScenarioResult
+	evaluateMeetingQualityResult(&corrupted, scenario, state, &meetingContext{}, segments)
+	if corrupted.Metrics.ClassificationAccuracy != 0 || corrupted.Metrics.IssueCount != 1 ||
+		corrupted.Metrics.ResolvedIssueCount != 1 || corrupted.Metrics.IncorrectResolvedIssueCount != 1 ||
+		len(corrupted.KindMismatches) != 1 || len(corrupted.SemanticStateMismatches) != 1 {
+		t.Fatalf("incorrect historical resolution escaped evaluator: metrics=%+v kind=%+v state=%+v",
+			corrupted.Metrics, corrupted.KindMismatches, corrupted.SemanticStateMismatches)
+	}
+
+	state.Items[0] = item
+	state.Items[0].Title = "現在も全端末で接続できない"
+	state.Items[0].Body = "現在も全端末で接続できません。"
+	state.Tree.Nodes[1].Kind = "fact"
+	state.Tree.Nodes[1].Label = state.Items[0].Title
+	temporalScenario := scenario
+	temporalScenario.RequiredPropositions = append([]MeetingQualityProposition(nil), scenario.RequiredPropositions...)
+	temporalScenario.RequiredPropositions[0].Text = "現在も全端末で接続できない"
+	temporalSegments := append([]domain.TranscriptSegment(nil), segments...)
+	temporalSegments[0].Text = state.Items[0].Body
+	var temporalMismatch MeetingQualityScenarioResult
+	evaluateMeetingQualityResult(&temporalMismatch, temporalScenario, state, &meetingContext{}, temporalSegments)
+	if temporalMismatch.Metrics.TemporalScopeAccuracy != 0 || len(temporalMismatch.SemanticStateMismatches) == 0 ||
+		!containsStringPrefix(temporalMismatch.HardInvariantViolations, "semantic_state_mismatch:historical:temporalScope:") {
+		t.Fatalf("temporal mismatch escaped evaluator: %+v", temporalMismatch)
 	}
 }
 

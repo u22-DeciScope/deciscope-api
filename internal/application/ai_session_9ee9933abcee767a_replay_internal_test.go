@@ -349,7 +349,7 @@ func TestSession9EE9933ABCEE767AStoredV18DeterministicReplay(t *testing.T) {
 	}
 	if !replayItemInactive(repaired.Items, "item-fact-7161d2ee8b5c") ||
 		stats.CorrectionItemsSuperseded != 1 ||
-		stats.CorrectionItemsReconstructed != 1 ||
+		stats.CorrectionItemsReconstructed != 2 ||
 		stats.StrongTodosSynthesized < 2 ||
 		stats.EvidenceReferencesPruned == 0 {
 		t.Fatalf("items=%+v stats=%+v", repaired.Items, stats)

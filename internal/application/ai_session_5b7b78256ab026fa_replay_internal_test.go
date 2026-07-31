@@ -122,6 +122,20 @@ func TestSession5b7b78256ab026faSemanticReplay(t *testing.T) {
 			t.Fatalf("generic visible topic=%+v", node)
 		}
 	}
+	var correctionFact *liveAnalysisItem
+	for index := range state.Items {
+		if !state.Items[index].Inactive && state.Items[index].MergedIntoID == "" &&
+			containsInt64(state.Items[index].EvidenceSequenceNos, 3) {
+			correctionFact = &state.Items[index]
+			break
+		}
+	}
+	if correctionFact == nil || correctionFact.Kind != "fact" ||
+		!strings.Contains(correctionFact.Title, "2階") || !strings.Contains(correctionFact.Title, "通信遅延") ||
+		treeItemTopic(state.Tree, correctionFact.ID) != "topic-agenda-a5f8fcd0c7a2" {
+		t.Fatalf("correction fact=%+v topic=%q reconciliations=%+v", correctionFact,
+			treeItemTopic(state.Tree, correctionFact.ID), stats.AgendaReconciliations)
+	}
 	if node := treeNodeByID(state.Tree, treeUnclassifiedTopicID); node != nil {
 		var children []liveAnalysisTreeNode
 		for _, candidate := range state.Tree.Nodes {

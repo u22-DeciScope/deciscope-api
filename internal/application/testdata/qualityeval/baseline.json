@@ -1,10 +1,15 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "suite": "deterministic",
   "metricSchema": [
     "requiredPropositionRecall",
     "unsupportedPropositionCount",
     "classificationAccuracy",
+    "temporalScopeAccuracy",
+    "pastFactCount",
+    "issueCount",
+    "resolvedIssueCount",
+    "incorrectResolvedIssueCount",
     "riskRecall",
     "todoRecall",
     "decisionRecall",
@@ -24,6 +29,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -60,6 +70,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -107,6 +122,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -154,6 +174,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -190,6 +215,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -230,6 +260,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -310,6 +345,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -346,6 +386,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -382,6 +427,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -418,6 +468,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -465,6 +520,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -479,7 +539,7 @@
       "parentAssignments": [
         {
           "propositionId": "tail-risk",
-		  "kind": "risk",
+          "kind": "risk",
           "parentPath": [
             "VPN証明書更新"
           ]
@@ -494,7 +554,7 @@
       ],
       "kindDistribution": [
         {
-		  "kind": "risk",
+          "kind": "risk",
           "count": 1
         },
         {
@@ -512,6 +572,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -548,6 +613,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 2,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -564,21 +634,21 @@
           "propositionId": "cause-hypothesis",
           "kind": "issue",
           "parentPath": [
-			"障害原因と適用範囲"
+            "障害原因と適用範囲"
           ]
         },
         {
           "propositionId": "scope-limit",
           "kind": "issue",
           "parentPath": [
-			"障害原因と適用範囲"
+            "障害原因と適用範囲"
           ]
         },
         {
           "propositionId": "vlan-fact",
           "kind": "fact",
           "parentPath": [
-			"障害原因と適用範囲"
+            "障害原因と適用範囲"
           ]
         }
       ],
@@ -602,6 +672,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 2,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -638,6 +713,11 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
         "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
@@ -677,6 +757,333 @@
       ],
       "finalCoverage": 0,
       "treeVersion": 0
+    },
+    {
+      "id": "current-issue-resolution-lifecycle",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 1,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "current-connectivity",
+          "expectedText": "現在も一部端末で接続できず原因不明で調査が必要",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            1
+          ],
+          "requiredTemporalScope": "current",
+          "requiredEpistemicStatus": "unresolved",
+          "requiredStatus": "resolved",
+          "matched": true,
+          "similarity": 0.6792452830188679,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-6be3d76c146b",
+            "kind": "issue",
+            "title": "現在も一部端末で接続できない",
+            "body": "現在も一部端末で接続できず、原因はまだ分かっていないため調査が必要",
+            "status": "resolved",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "current-connectivity",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "issue",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 2,
+      "treeVersion": 2
+    },
+    {
+      "id": "past-observation-remains-fact",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 2,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "historical-connectivity",
+          "expectedText": "障害時に接続できる端末と接続できない端末が混在していた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.9555555555555555,
+          "bestActualCandidate": {
+            "id": "item-fact-a5cda5eec7c8",
+            "kind": "fact",
+            "title": "障害時に接続できる端末と接続できない端末が混在",
+            "body": "インターネットが完全に停止したわけではなく、接続できる端末と接続できない端末が混在していました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "recovery-fact",
+          "expectedText": "午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になった",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.9142857142857143,
+          "bestActualCandidate": {
+            "id": "item-fact-dc4842f9233d",
+            "kind": "fact",
+            "title": "午前10時5分に有線LAN・無線LAN・ファイルサーバー接続が正常化",
+            "body": "午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になりました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "historical-connectivity",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "recovery-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 2,
+      "treeVersion": 1
+    },
+    {
+      "id": "self-contained-correction-logical-relations",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 1,
+        "issueCount": 2,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "vlan-fact",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.9090909090909091,
+          "bestActualCandidate": {
+            "id": "item-fact-a45546316d61",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていました",
+            "body": "許可VLAN一覧からVLAN30が漏れていました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "cause-hypothesis",
+          "expectedText": "VLAN30設定漏れが3階障害の直接原因である可能性が高い",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            2
+          ],
+          "requiredEpistemicStatus": "hypothesis",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.8307692307692308,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-be582ac23ed1",
+            "kind": "issue",
+            "title": "現時点では、VLAN30設定漏れが3階障害の直接原因である可能性が最も高いです",
+            "body": "現時点では、VLAN30設定漏れが3階障害の直接原因である可能性が最も高いです",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "scope-limit",
+          "expectedText": "2階の通信遅延までVLAN30設定漏れで説明できるかは未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            3
+          ],
+          "requiredEpistemicStatus": "unresolved",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.8148148148148148,
+          "bestActualCandidate": {
+            "id": "item-issue-confirmation-3d9b2b13490c",
+            "kind": "issue",
+            "title": "2階の通信遅延までこの設定漏れで説明できるかは未確認",
+            "body": "2階の通信遅延までこの設定漏れで説明できるかは未確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "cause-hypothesis",
+          "kind": "issue",
+          "parentPath": [
+            "現時点では、VLAN30設定漏れが3階障"
+          ]
+        },
+        {
+          "propositionId": "scope-limit",
+          "kind": "issue",
+          "parentPath": [
+            "2階の通信遅延までこの設定漏れで説明でき"
+          ]
+        },
+        {
+          "propositionId": "vlan-fact",
+          "kind": "fact",
+          "parentPath": [
+            "現時点では、VLAN30設定漏れが3階障"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 3,
+      "treeVersion": 1
     }
   ]
 }

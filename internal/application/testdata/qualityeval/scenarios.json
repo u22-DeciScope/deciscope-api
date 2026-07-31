@@ -1430,6 +1430,294 @@
       ],
       "finalCoverage": 2,
       "applyFinalRepair": true
+    },
+    {
+      "id": "self-contained-correction-logical-relations",
+      "description": "訂正対象がなくても自己完結した訂正からVLAN30設定漏れfactを復元し論理relationを保持する",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "完全なアクセスポート設定ではありません。トランク設定自体は入っていましたが、許可VLAN一覧からVLAN30が漏れていました。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "佐藤",
+          "text": "現時点では、この設定漏れが3階障害の直接原因である可能性が最も高いです。"
+        },
+        {
+          "sequenceNo": 3,
+          "speaker": "鈴木",
+          "text": "ただし、2階の通信遅延までこの設定漏れで説明できるかは未確認です。"
+        }
+      ],
+      "meetingContext": {
+        "title": "ネットワーク障害原因の確認",
+        "agendaItems": [
+          {
+            "id": "agenda-1",
+            "title": "スイッチ設定の確認済み事実",
+            "semanticHints": ["VLAN30", "許可VLAN一覧", "設定漏れ"],
+            "order": 1
+          },
+          {
+            "id": "agenda-2",
+            "title": "障害原因と影響範囲",
+            "semanticHints": ["3階障害", "直接原因", "2階通信遅延"],
+            "order": 2
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3],
+          "fixedAIResponse": {
+            "summary": "VLAN設定漏れの原因仮説と未確認範囲",
+            "currentTopic": "障害原因と影響範囲",
+            "items": [
+              {
+                "clientKey": "cause-hypothesis",
+                "kind": "issue",
+                "subtype": "investigation",
+                "severity": "high",
+                "title": "現時点では、この設定漏れが3階障害の",
+                "body": "現時点では、この設定漏れが3階障害の",
+                "status": "open",
+                "evidenceSequenceNos": [1, 2],
+                "evidenceSnippets": ["この設定漏れが3階障害の直接原因である可能性が最も高い"]
+              },
+              {
+                "clientKey": "scope-limit",
+                "kind": "issue",
+                "subtype": "confirmation",
+                "severity": "medium",
+                "title": "2階の通信遅延までVLAN30設定漏れで説明できるかは未確認",
+                "body": "2階の通信遅延までこの設定漏れで説明できるかは未確認",
+                "status": "open",
+                "evidenceSequenceNos": [3],
+                "evidenceSnippets": ["2階の通信遅延までこの設定漏れで説明できるかは未確認"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": [
+              {
+                "nodeId": "cause-hypothesis",
+                "parentTopicId": "agenda-2",
+                "confidence": 0.96
+              },
+              {
+                "nodeId": "scope-limit",
+                "parentTopicId": "agenda-1",
+                "confidence": 0.96
+              }
+            ],
+            "resolvedIds": [],
+            "resolutionUpdates": [],
+            "utteranceRoles": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "vlan-fact",
+          "text": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [1],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open"
+        },
+        {
+          "id": "cause-hypothesis",
+          "text": "VLAN30設定漏れが3階障害の直接原因である可能性が高い",
+          "requiredKind": "issue",
+          "evidenceSequenceNos": [2],
+          "requiredEpistemicStatus": "hypothesis",
+          "requiredStatus": "open"
+        },
+        {
+          "id": "scope-limit",
+          "text": "2階の通信遅延までVLAN30設定漏れで説明できるかは未確認",
+          "requiredKind": "issue",
+          "evidenceSequenceNos": [3],
+          "requiredEpistemicStatus": "unresolved",
+          "requiredStatus": "open"
+        }
+      ],
+      "requiredRelations": [
+        {
+          "from": "cause-hypothesis",
+          "to": "vlan-fact",
+          "kind": "supported_by"
+        },
+        {
+          "from": "scope-limit",
+          "to": "cause-hypothesis",
+          "kind": "limits"
+        }
+      ],
+      "finalCoverage": 3,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "past-observation-remains-fact",
+      "description": "障害時の過去観測をfactとして保持し後続復旧でresolved issueへ変えない",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "インターネットが完全に停止したわけではなく、接続できる端末と接続できない端末が混在していました。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "佐藤",
+          "text": "午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になりました。"
+        }
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1, 2],
+          "fixedAIResponse": {
+            "summary": "障害時の接続状況と復旧時刻",
+            "currentTopic": "接続状況",
+            "items": [
+              {
+                "clientKey": "historical-connectivity",
+                "kind": "issue",
+                "subtype": "discussion",
+                "severity": "medium",
+                "title": "障害時に接続できる端末と接続できない端末が混在",
+                "body": "インターネットが完全に停止したわけではなく、接続できる端末と接続できない端末が混在していました",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["接続できる端末と接続できない端末が混在していました"]
+              },
+              {
+                "clientKey": "recovery-fact",
+                "kind": "fact",
+                "severity": "medium",
+                "title": "午前10時5分に有線LAN・無線LAN・ファイルサーバー接続が正常化",
+                "body": "午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になりました",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になりました"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": [],
+            "resolvedIds": [],
+            "resolutionUpdates": [
+              {
+                "itemId": "historical-connectivity",
+                "status": "resolved",
+                "evidenceSequenceNos": [2],
+                "reason": "接続が正常になった"
+              }
+            ],
+            "utteranceRoles": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "historical-connectivity",
+          "text": "障害時に接続できる端末と接続できない端末が混在していた",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [1],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open"
+        },
+        {
+          "id": "recovery-fact",
+          "text": "午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になった",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [2],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open"
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "current-issue-resolution-lifecycle",
+      "description": "明示的にcurrentかつunresolvedな接続issueだけを後続復旧でresolvedにする",
+      "transcriptSegments": [
+        {
+          "sequenceNo": 1,
+          "speaker": "田中",
+          "text": "現在も一部端末で接続できません。原因はまだ分かっておらず、調査が必要です。"
+        },
+        {
+          "sequenceNo": 2,
+          "speaker": "佐藤",
+          "text": "設定を修正し、すべての端末で接続を確認しました。"
+        }
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "一部端末の接続問題を調査中",
+            "currentTopic": "接続問題",
+            "items": [
+              {
+                "clientKey": "current-connectivity",
+                "kind": "issue",
+                "subtype": "investigation",
+                "severity": "high",
+                "title": "現在も一部端末で接続できない",
+                "body": "現在も一部端末で接続できず、原因はまだ分かっていないため調査が必要",
+                "status": "open",
+                "evidenceSequenceNos": [1],
+                "evidenceSnippets": ["現在も一部端末で接続できません。原因はまだ分かっておらず、調査が必要です"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": [],
+            "resolvedIds": [],
+            "resolutionUpdates": [],
+            "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [2],
+          "fixedAIResponse": {
+            "summary": "一部端末の接続問題を設定修正で解消",
+            "currentTopic": "接続問題",
+            "items": [],
+            "newTopics": [],
+            "assignments": [],
+            "resolvedIds": [],
+            "resolutionUpdates": [
+              {
+                "itemId": "item-issue-investigation-6be3d76c146b",
+                "status": "resolved",
+                "evidenceSequenceNos": [2],
+                "reason": "設定修正後にすべての端末で接続を確認した"
+              }
+            ],
+            "utteranceRoles": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "current-connectivity",
+          "text": "現在も一部端末で接続できず原因不明で調査が必要",
+          "requiredKind": "issue",
+          "evidenceSequenceNos": [1],
+          "requiredTemporalScope": "current",
+          "requiredEpistemicStatus": "unresolved",
+          "requiredStatus": "resolved"
+        }
+      ],
+      "finalCoverage": 2,
+      "applyFinalRepair": true
     }
   ]
 }

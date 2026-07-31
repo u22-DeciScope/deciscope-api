@@ -123,6 +123,15 @@ func ValidateMeetingQualitySuite(suite MeetingQualitySuite) error {
 				return fmt.Errorf("quality scenario %q has duplicate proposition id %q", id, proposition.ID)
 			}
 			propIDs[proposition.ID] = struct{}{}
+			if value := strings.TrimSpace(proposition.RequiredTemporalScope); value != "" && !qualityValidTemporalScope(value) {
+				return fmt.Errorf("quality scenario %q proposition %q has invalid temporal scope %q", id, proposition.ID, value)
+			}
+			if value := strings.TrimSpace(proposition.RequiredEpistemicStatus); value != "" && !qualityValidEpistemicStatus(value) {
+				return fmt.Errorf("quality scenario %q proposition %q has invalid epistemic status %q", id, proposition.ID, value)
+			}
+			if value := strings.TrimSpace(proposition.RequiredStatus); value != "" && value != "open" && value != "resolved" {
+				return fmt.Errorf("quality scenario %q proposition %q has invalid status %q", id, proposition.ID, value)
+			}
 		}
 		for _, relation := range scenario.RequiredRelations {
 			if _, valid := supportedMeetingQualityRelations[strings.TrimSpace(relation.Kind)]; !valid {
@@ -137,6 +146,24 @@ func ValidateMeetingQualitySuite(suite MeetingQualitySuite) error {
 		}
 	}
 	return nil
+}
+
+func qualityValidTemporalScope(value string) bool {
+	switch value {
+	case "past", "current", "ongoing", "future", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func qualityValidEpistemicStatus(value string) bool {
+	switch value {
+	case "confirmed", "committed", "hypothesis", "unresolved", "proposed", "uncertain", "reported":
+		return true
+	default:
+		return false
+	}
 }
 
 func runMeetingQualityScenario(scenario MeetingQualityScenario) MeetingQualityScenarioResult {
@@ -351,13 +378,16 @@ func evaluateMeetingQualityResult(
 	for _, expectation := range scenario.RequiredPropositions {
 		match := matches[expectation.ID]
 		detail := MeetingQualityPropositionMatch{
-			PropositionID:    expectation.ID,
-			ExpectedText:     expectation.Text,
-			RequiredKind:     expectation.RequiredKind,
-			AllowedKinds:     append([]string(nil), expectation.AllowedKinds...),
-			ExpectedEvidence: append([]int64(nil), expectation.EvidenceSequenceNos...),
-			Matched:          match.Found,
-			Similarity:       match.Score,
+			PropositionID:           expectation.ID,
+			ExpectedText:            expectation.Text,
+			RequiredKind:            expectation.RequiredKind,
+			AllowedKinds:            append([]string(nil), expectation.AllowedKinds...),
+			ExpectedEvidence:        append([]int64(nil), expectation.EvidenceSequenceNos...),
+			RequiredTemporalScope:   expectation.RequiredTemporalScope,
+			RequiredEpistemicStatus: expectation.RequiredEpistemicStatus,
+			RequiredStatus:          expectation.RequiredStatus,
+			Matched:                 match.Found,
+			Similarity:              match.Score,
 		}
 		if strings.TrimSpace(match.Item.ID) != "" {
 			actual := qualityActualItem(match.Item)
@@ -377,6 +407,30 @@ func evaluateMeetingQualityResult(
 				ActualItemID:  match.Item.ID,
 				ActualKind:    match.Item.Kind,
 			})
+		}
+		features := inferItemSemanticFeatures(match.Item, liveEvidenceScope{})
+		for _, expected := range []struct {
+			field  string
+			value  string
+			actual string
+		}{
+			{field: "temporalScope", value: expectation.RequiredTemporalScope, actual: features.TemporalScope},
+			{field: "epistemicStatus", value: expectation.RequiredEpistemicStatus, actual: features.EpistemicStatus},
+			{field: "status", value: expectation.RequiredStatus, actual: qualityItemStatus(match.Item)},
+		} {
+			if strings.TrimSpace(expected.value) == "" || strings.EqualFold(strings.TrimSpace(expected.value), strings.TrimSpace(expected.actual)) {
+				continue
+			}
+			result.SemanticStateMismatches = append(result.SemanticStateMismatches, MeetingQualitySemanticStateMismatch{
+				PropositionID: expectation.ID,
+				ActualItemID:  match.Item.ID,
+				Field:         expected.field,
+				Expected:      strings.TrimSpace(expected.value),
+				Actual:        strings.TrimSpace(expected.actual),
+			})
+			result.HardInvariantViolations = append(result.HardInvariantViolations,
+				fmt.Sprintf("semantic_state_mismatch:%s:%s:%s!=%s", expectation.ID, expected.field,
+					strings.TrimSpace(expected.actual), strings.TrimSpace(expected.value)))
 		}
 		for _, sequenceNo := range expectation.EvidenceSequenceNos {
 			if !containsInt64(match.Item.EvidenceSequenceNos, sequenceNo) {
@@ -669,6 +723,7 @@ func qualityMetrics(
 	var metricEvidence []MeetingQualityMetricEvidence
 	found := 0
 	classificationTotal, classificationCorrect := 0, 0
+	temporalTotal, temporalCorrect := 0, 0
 	kindExpected := map[string]int{"risk": 0, "todo": 0, "decision": 0}
 	kindFound := map[string]int{"risk": 0, "todo": 0, "decision": 0}
 	for _, expectation := range scenario.RequiredPropositions {
@@ -691,6 +746,23 @@ func qualityMetrics(
 				})
 			}
 		}
+		if expectedTemporal := strings.TrimSpace(expectation.RequiredTemporalScope); expectedTemporal != "" {
+			temporalTotal++
+			if match.Found {
+				actualTemporal := inferItemSemanticFeatures(match.Item, liveEvidenceScope{}).TemporalScope
+				if strings.EqualFold(expectedTemporal, actualTemporal) {
+					temporalCorrect++
+				} else {
+					metricEvidence = append(metricEvidence, MeetingQualityMetricEvidence{
+						Metric:         "temporalScopeAccuracy",
+						ExpectationIDs: []string{expectation.ID},
+						ActualItemIDs:  []string{match.Item.ID},
+						ActualLabels:   []string{match.Item.Title},
+						Reason:         fmt.Sprintf("expected temporal scope %s, actual %s", expectedTemporal, actualTemporal),
+					})
+				}
+			}
+		}
 		for kind := range allowed {
 			if _, tracked := kindExpected[kind]; tracked {
 				kindExpected[kind]++
@@ -702,6 +774,9 @@ func qualityMetrics(
 	}
 	metrics.RequiredPropositionRecall = qualityRatio(found, len(scenario.RequiredPropositions))
 	metrics.ClassificationAccuracy = qualityRatio(classificationCorrect, classificationTotal)
+	if temporalTotal > 0 {
+		metrics.TemporalScopeAccuracy = qualityRatio(temporalCorrect, temporalTotal)
+	}
 	metrics.RiskRecall = qualityRatio(kindFound["risk"], kindExpected["risk"])
 	metrics.TodoRecall = qualityRatio(kindFound["todo"], kindExpected["todo"])
 	metrics.DecisionRecall = qualityRatio(kindFound["decision"], kindExpected["decision"])
@@ -728,6 +803,21 @@ func qualityMetrics(
 		}
 	}
 	for _, item := range activeItems {
+		features := inferItemSemanticFeatures(item, liveEvidenceScope{})
+		if item.Kind == "fact" && features.TemporalScope == "past" {
+			metrics.PastFactCount++
+		}
+		if item.Kind == "issue" {
+			metrics.IssueCount++
+			if qualityItemStatus(item) == "resolved" {
+				metrics.ResolvedIssueCount++
+				text := item.Title + " " + item.Body
+				if features.TemporalScope == "past" && kindPastObservationPattern.MatchString(text) &&
+					!kindExplicitCurrentIssuePattern.MatchString(text) {
+					metrics.IncorrectResolvedIssueCount++
+				}
+			}
+		}
 		if finalItemIsLowInformation(item) {
 			metrics.LowInformationLabelCount++
 		}
@@ -804,8 +894,16 @@ func qualityActualItem(item liveAnalysisItem) MeetingQualityActualItem {
 		Kind:                item.Kind,
 		Title:               item.Title,
 		Body:                item.Body,
+		Status:              qualityItemStatus(item),
 		EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...),
 	}
+}
+
+func qualityItemStatus(item liveAnalysisItem) string {
+	if status := strings.TrimSpace(item.Status); status != "" {
+		return status
+	}
+	return "open"
 }
 
 func qualityExpectationIDsForItems(matches map[string]meetingQualityMatch, itemIDs []string) []string {

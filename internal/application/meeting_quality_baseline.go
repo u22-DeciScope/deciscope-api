@@ -9,13 +9,14 @@ import (
 
 const (
 	meetingQualityMetricEpsilon         = 1e-9
-	meetingQualityBaselineSchemaVersion = 2
+	meetingQualityBaselineSchemaVersion = 3
 )
 
 type meetingQualityMetricValue struct {
 	Name         string
 	Value        float64
 	HigherIsGood bool
+	Exact        bool
 }
 
 func NewMeetingQualityBaseline(report MeetingQualitySuiteReport) MeetingQualityBaseline {
@@ -95,7 +96,8 @@ func CompareMeetingQualityBaseline(
 	for id, after := range afterByID {
 		before, exists := beforeByID[id]
 		if !exists {
-			comparison.NewFailures = append(comparison.NewFailures, "missing_baseline_scenario:"+id)
+			comparison.NewScenarios = append(comparison.NewScenarios, id)
+			comparison.BaselineUpdateRequired = true
 			comparison.Passed = false
 			continue
 		}
@@ -140,6 +142,8 @@ func CompareMeetingQualityBaseline(
 			qualityKindMismatchKeys(before.KindMismatches), qualityKindMismatchKeys(after.KindMismatches), &comparison.Passed)
 		appendNewResultFailures(&comparison.NewEvidenceMismatches, id,
 			qualityEvidenceMismatchKeys(before.EvidenceMismatches), qualityEvidenceMismatchKeys(after.EvidenceMismatches), &comparison.Passed)
+		appendNewResultFailures(&comparison.NewSemanticStateMismatches, id,
+			qualitySemanticStateMismatchKeys(before.SemanticStateMismatches), qualitySemanticStateMismatchKeys(after.SemanticStateMismatches), &comparison.Passed)
 		if !reflect.DeepEqual(before.ParentAssignments, after.ParentAssignments) {
 			comparison.ParentRelationDiffs = append(comparison.ParentRelationDiffs, MeetingQualityParentDiff{
 				Scenario: id, Before: before.ParentAssignments, After: after.ParentAssignments,
@@ -152,6 +156,7 @@ func CompareMeetingQualityBaseline(
 		}
 	}
 	sort.Strings(comparison.NewFailures)
+	sort.Strings(comparison.NewScenarios)
 	sort.Strings(comparison.RepairedScenarios)
 	sort.Slice(comparison.ImprovedMetrics, func(i, j int) bool {
 		if comparison.ImprovedMetrics[i].Scenario == comparison.ImprovedMetrics[j].Scenario {
@@ -171,13 +176,14 @@ func CompareMeetingQualityBaseline(
 	sortMeetingQualityTextDiffs(comparison.NewRelationFailures)
 	sortMeetingQualityTextDiffs(comparison.NewKindMismatches)
 	sortMeetingQualityTextDiffs(comparison.NewEvidenceMismatches)
+	sortMeetingQualityTextDiffs(comparison.NewSemanticStateMismatches)
 	sort.Slice(comparison.ParentRelationDiffs, func(i, j int) bool {
 		return comparison.ParentRelationDiffs[i].Scenario < comparison.ParentRelationDiffs[j].Scenario
 	})
 	sort.Slice(comparison.KindDistributionDiffs, func(i, j int) bool {
 		return comparison.KindDistributionDiffs[i].Scenario < comparison.KindDistributionDiffs[j].Scenario
 	})
-	if len(comparison.ImprovedMetrics) > 0 || len(comparison.RepairedScenarios) > 0 {
+	if len(comparison.ImprovedMetrics) > 0 || len(comparison.RepairedScenarios) > 0 || len(comparison.NewScenarios) > 0 {
 		comparison.BaselineUpdateRequired = true
 		comparison.Passed = false
 	}
@@ -218,6 +224,7 @@ func AcceptMeetingQualityImprovements(
 	update := MeetingQualityBaselineUpdateReport{
 		AppliedMetrics: append([]MeetingQualityMetricChange(nil), comparison.ImprovedMetrics...),
 		AppliedRepairs: append([]string(nil), comparison.RepairedScenarios...),
+		AddedScenarios: append([]string(nil), comparison.NewScenarios...),
 	}
 	for _, change := range comparison.ImprovedMetrics {
 		index := indexByID[change.Scenario]
@@ -230,6 +237,9 @@ func AcceptMeetingQualityImprovements(
 		// prevents it from being repeatedly proposed as an improvement.
 		updated.Scenarios[index] = currentByID[id]
 	}
+	for _, id := range comparison.NewScenarios {
+		updated.Scenarios = append(updated.Scenarios, currentByID[id])
+	}
 	return updated, update, nil
 }
 
@@ -241,7 +251,8 @@ func hasMeetingQualityRegression(comparison MeetingQualityComparisonReport) bool
 		len(comparison.NewHardInvariantViolations) > 0 ||
 		len(comparison.NewRelationFailures) > 0 ||
 		len(comparison.NewKindMismatches) > 0 ||
-		len(comparison.NewEvidenceMismatches) > 0
+		len(comparison.NewEvidenceMismatches) > 0 ||
+		len(comparison.NewSemanticStateMismatches) > 0
 }
 
 func appendNewResultFailures(
@@ -275,11 +286,25 @@ func qualityEvidenceMismatchKeys(values []MeetingQualityEvidenceMismatch) []stri
 	return result
 }
 
+func qualitySemanticStateMismatchKeys(values []MeetingQualitySemanticStateMismatch) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, fmt.Sprintf("%s:%s:%s:%s:%s",
+			value.PropositionID, value.ActualItemID, value.Field, value.Expected, value.Actual))
+	}
+	return result
+}
+
 func qualityMetricValues(metrics MeetingQualityMetrics) []meetingQualityMetricValue {
 	return []meetingQualityMetricValue{
 		{Name: "requiredPropositionRecall", Value: metrics.RequiredPropositionRecall, HigherIsGood: true},
 		{Name: "unsupportedPropositionCount", Value: float64(metrics.UnsupportedPropositionCount)},
 		{Name: "classificationAccuracy", Value: metrics.ClassificationAccuracy, HigherIsGood: true},
+		{Name: "temporalScopeAccuracy", Value: metrics.TemporalScopeAccuracy, HigherIsGood: true},
+		{Name: "pastFactCount", Value: float64(metrics.PastFactCount), Exact: true},
+		{Name: "issueCount", Value: float64(metrics.IssueCount), Exact: true},
+		{Name: "resolvedIssueCount", Value: float64(metrics.ResolvedIssueCount), Exact: true},
+		{Name: "incorrectResolvedIssueCount", Value: float64(metrics.IncorrectResolvedIssueCount)},
 		{Name: "riskRecall", Value: metrics.RiskRecall, HigherIsGood: true},
 		{Name: "todoRecall", Value: metrics.TodoRecall, HigherIsGood: true},
 		{Name: "decisionRecall", Value: metrics.DecisionRecall, HigherIsGood: true},
@@ -313,6 +338,16 @@ func setMeetingQualityMetric(metrics *MeetingQualityMetrics, name string, value 
 		metrics.UnsupportedPropositionCount = int(value)
 	case "classificationAccuracy":
 		metrics.ClassificationAccuracy = value
+	case "temporalScopeAccuracy":
+		metrics.TemporalScopeAccuracy = value
+	case "pastFactCount":
+		metrics.PastFactCount = int(value)
+	case "issueCount":
+		metrics.IssueCount = int(value)
+	case "resolvedIssueCount":
+		metrics.ResolvedIssueCount = int(value)
+	case "incorrectResolvedIssueCount":
+		metrics.IncorrectResolvedIssueCount = int(value)
 	case "riskRecall":
 		metrics.RiskRecall = value
 	case "todoRecall":
@@ -337,6 +372,9 @@ func setMeetingQualityMetric(metrics *MeetingQualityMetrics, name string, value 
 }
 
 func qualityMetricImproved(before, after meetingQualityMetricValue) bool {
+	if before.Exact {
+		return false
+	}
 	if before.HigherIsGood {
 		return after.Value > before.Value+meetingQualityMetricEpsilon
 	}
@@ -344,6 +382,10 @@ func qualityMetricImproved(before, after meetingQualityMetricValue) bool {
 }
 
 func qualityMetricWorsened(before, after meetingQualityMetricValue) bool {
+	if before.Exact {
+		return after.Value < before.Value-meetingQualityMetricEpsilon ||
+			after.Value > before.Value+meetingQualityMetricEpsilon
+	}
 	if before.HigherIsGood {
 		return after.Value < before.Value-meetingQualityMetricEpsilon
 	}
