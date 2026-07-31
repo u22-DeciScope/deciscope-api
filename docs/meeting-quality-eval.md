@@ -85,17 +85,43 @@ epistemic status`を決定論的に抽出します。数値・階・曜日・期
 15. VPN証明書更新のカード／tree整合
 
 finalizationの実際のgoroutine待機境界は、固定round replayに加えて
-`TestMeetingFinalizationWaitsForInFlightLiveAnalysis`が開始／releaseチャネルで
-同期して検証します。どちらにもsleepやtimeout延長による順序固定はありません。
+`TestMeetingFinalizationWaitsForInFlightLiveAnalysis`とservice integration harnessが
+開始／releaseチャネルで同期して検証します。どちらにもsleepやtimeout延長による
+順序固定はありません。テスト内のtimeoutはdeadlock時に終了させる安全弁だけで、
+順序の成立判定には使用しません。
 
 15 scenarioはすべてtranscript、meeting context、fixed AI responseを入力として
 productionのmerge関数群を呼びます。12件は空状態から、3件はdurable seedへ
 新しいroundを適用します。完成済みsnapshotだけを評価するdeterministic scenarioは
-ありません。一方、このrunnerはrepository、scheduler、MeetingAnalysisServiceの
-finalization orchestration、`persistFinalTreeSnapshot`を通しません。したがって
-「service orchestrationと永続化まで含むfull production pipeline」のscenario数は
-0です。この境界は、評価専用にservice処理を模倣せず明示的な監査上の未対応事項と
-します。
+ありません。
+
+加えて`TestMeetingQualityServiceIntegration`の6 scenarioは、port fakeへ保存した
+transcriptとtask別fixed AI responseから、実際の`TranscriptIngestService`／durable
+recovery、scheduler trigger、`MeetingAnalysisService`、live extraction result適用、
+semantic grounding、kind validation、evidence normalization、candidate lifecycle、
+dynamic topic promotion、grouping、finalization repair、final projection、
+`persistFinalTreeSnapshot`、repository reloadを通します。reloadしたLIVE payloadを既存の
+semantic evaluatorで検査し、TREE／finalization rowの永続化invariantも別に検査します。
+評価専用コードはこれらのproduction処理を再実装しません。
+
+```powershell
+go test ./internal/application -run MeetingQualityServiceIntegration -count=1
+```
+
+full production pipelineを通るscenarioは6件、完成済み出力だけを入力にする
+deterministic scenarioは0件です。6件が検証する境界は次の通りです。
+
+1. in-flight live extraction待機とfinal tail flush
+2. durable pending recoveryのgap／重複防止
+3. 同一batchでの予定外topic昇格とfact／risk／decision／todo保持
+4. 複数roundでの予定外topic昇格
+5. final LIVE／TREE／agenda metadataのfresh reader reload
+6. stale LIVE CASとfinal projectionの優先順位
+
+専用fake completerは`context_planner`、`live_extraction`、`tree_reorganizer`、
+`final_summary`をdeployment別にroutingするため、live call回数が変わっても別taskの
+responseはずれません。repository fakeはmutex、payload copy、write event、production
+同等のversion CASを備えます。
 
 ## Hard invariant
 

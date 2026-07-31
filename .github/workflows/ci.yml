@@ -30,6 +30,8 @@ jobs:
           cache: true
       - name: Evaluator unit and mutation tests
         run: go test ./internal/application/... ./cmd/meeting-quality-eval -run MeetingQuality -count=1
+      - name: MeetingAnalysisService quality integration
+        run: go test ./internal/application -run MeetingQualityServiceIntegration -count=1
       - name: Architecture dependency tests
         run: go test ./internal/architecture -count=1
       - name: Go tests
