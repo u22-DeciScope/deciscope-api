@@ -116,7 +116,18 @@ var (
 	discourseConcretePattern            = regexp.MustCompile(`(?i)(?:[0-9Ａ-Ｚａ-ｚA-Za-z]|まで|期限|担当|さん|氏|影響|不能|停止|遅延|漏れ|期限切れ|承認|決定|実施|作成|更新|修正|調査|確認して|依頼|対応する|リスク|可能性)`)
 )
 
-var discourseCorrectionPattern = regexp.MustCompile(`(?:訂正|修正|変更|撤回|取り消|追加事項|新たな(?:決定|論点|課題)|まとめに追加|先ほどの.+(?:ではなく|を改め))`)
+// discourseCorrectionPattern is intentionally limited to explicit
+// self-correction language. Generic business actions such as
+// 「設定を修正しました」 are substantive facts, not corrections.
+var discourseCorrectionPattern = regexp.MustCompile(
+	`(?:訂正(?:します|すると|です)?|撤回(?:します|する)?|取り消(?:します|す)?|正確には|厳密には|言い直すと|(?:先ほど|先程|さっき)(?:の(?:説明|発言|内容))?.{0,40}(?:ではなく|じゃなく|違|誤|改め)|いえ[、,]?(?:正確には|厳密には|そうではなく))`,
+)
+
+// A recap may quote a past corrective action ("設定を修正しました") without
+// introducing a new correction now. The legacy broad marker is retained only
+// as a recap-boundary escape hatch so such substantive recovery text is not
+// downgraded to reference-only evidence.
+var discourseRecapCorrectionPattern = regexp.MustCompile(`(?:訂正|修正|変更|撤回|取り消|追加事項|新たな(?:決定|論点|課題)|まとめに追加|先ほどの.+(?:ではなく|を改め))`)
 
 // 議論再開の判定は、前置きマーカー(これから何をするかの宣言)と審議述語
 // (決める・検討する・議論する等、これから行う行為)の共起で行う。単独の語句
@@ -389,7 +400,7 @@ func classifyDiscourseTimelineWithModel(scope liveEvidenceScope, modelRoles []li
 						mode = "content"
 						continue
 					}
-					if discourseCorrectionPattern.MatchString(text) {
+					if discourseRecapCorrectionPattern.MatchString(text) {
 						timeline.Roles[sequenceNo] = liveEvidenceCorrection
 						timeline.DetectedRoles[sequenceNo] = liveUtteranceCorrection
 					} else {

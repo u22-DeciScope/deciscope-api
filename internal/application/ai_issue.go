@@ -479,7 +479,7 @@ func issueCandidateTitle(candidate issueCandidate) string {
 	if candidate.Subtype != issueSubtypeQuestion && !strings.Contains(title, "未確定") && openIssueMarkerPattern.MatchString(title) {
 		title = openIssueMarkerPattern.ReplaceAllString(title, "未確定")
 	}
-	return truncateRunes(title, 40)
+	return semanticallyCompleteItemLabelOrOriginal(title, "issue")
 }
 
 func splitCollapsedOpenIssueStatement(statement string) []string {

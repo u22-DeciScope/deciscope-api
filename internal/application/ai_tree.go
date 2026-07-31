@@ -481,7 +481,10 @@ func rebuildDiscussionTree(
 		}
 		node.Kind = liveAnalysisTreeNodeKindForItem(item.Kind)
 		node.Subtype = item.Subtype
-		node.Label = truncateRunes(item.Title, 40)
+		// The canonical title has already passed the incomplete-label gate.
+		// Preserve it verbatim in the UI tree instead of reintroducing a raw
+		// 40-rune predicate cut at projection time.
+		node.Label = strings.TrimSpace(item.Title)
 		node.UpdatedAtVersion = round
 		if body := truncateRunes(strings.TrimSpace(item.Body), liveAnalysisTreeDescriptionMaxRunes); body != "" {
 			node.Description = body

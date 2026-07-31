@@ -123,7 +123,13 @@ func TestSession5b7b78256ab026faSemanticReplay(t *testing.T) {
 		}
 	}
 	if node := treeNodeByID(state.Tree, treeUnclassifiedTopicID); node != nil {
-		t.Fatalf("empty generic unclassified topic survived: %+v", node)
+		var children []liveAnalysisTreeNode
+		for _, candidate := range state.Tree.Nodes {
+			if candidate.ParentID == treeUnclassifiedTopicID {
+				children = append(children, candidate)
+			}
+		}
+		t.Fatalf("empty generic unclassified topic survived: %+v children=%+v", node, children)
 	}
 	for _, finding := range deterministicTreeAuditPrecheck(state, mc, classifyTreeAuditEvidence(state, segments), TreeAuditConfig{}) {
 		if finding.Type == TreeAuditCrossAgendaContamination || finding.Type == TreeAuditRiskTodoSubjectFragmentation || finding.Type == TreeAuditLeadingParticleFragment || finding.Type == TreeAuditGenericTopicLabel {

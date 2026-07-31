@@ -47,6 +47,11 @@ POST /internal/client-diagnostics
   workspaceに属することの検査を行います。
 - `workspaceId`、`sessionId`、1件以上の`events`を含むJSONを受け取り、
   `accepted`、`rejected`、`suppressed`、`reasons`を`202 Accepted`で返します。
+- 議論ツリーの描画観測には`tree_render_state`、`tree_render_anomaly`、
+  `tree_render_recovery`を使用します。`details`にはcanonical/store/filter/layout/
+  React Flow/DOMのnode・edge件数、container/ResizeObserver寸法、viewport、
+  layout・commit状態、LKG復旧結果を含められます。異常と復旧イベントは
+  高頻度抑制の対象外で、JSONLとAPIの構造化標準出力の両方へ記録されます。
 - リクエスト上限、保存先、ローテーション、保持期間は
   [configuration.md](./configuration.md) のクライアント診断設定を参照してください。
 
@@ -271,11 +276,22 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
 - `items[].evidenceSequenceNos` は、そのitemを直接裏付けた発言のsequence番号をJSON整数で保持します。
   モデル互換のため受信時はnumeric stringも整数へ正規化しますが、不正文字列・小数・当該ラウンドに
   実在しないsequenceは値単位で除外し、保存・配信時は整数だけになります
-- live extraction v18では、モデル出力の各itemに`evidenceSnippets`を必須とし、引用した
+- live extraction v18以降では、モデル出力の各itemに`evidenceSnippets`を必須とし、引用した
   final transcript sequence内に正規化後も実在して中心命題を支持する短い抜粋だけを保存します。
   `evidenceSequenceNos`が構造上正しくても、subject / predicate / entity / qualifierが発言に
   groundingされなければ表示可能itemにはなりません。事前入力、agenda metadata、semantic hints、
   existing treeは分類・親候補には利用しますが、detail itemの一次証拠にはなりません
+- live extraction v19以降では、完了した作業を`fact`、担当・期限・commitmentのある将来行動を
+  `todo`として区別します。対象物の満了日・失効日は作業期限として扱わず、同じ発言に状態・
+  将来悪影響・対策が含まれる場合は、それぞれ`fact`・`risk`・`todo`へ分離します。
+  IssueとTodoは相互上書きせず、担当・期限・証拠sequenceは該当する行動節だけから引き継ぎます
+- 担当者（話者本人を含む）・具体的な将来行動・行動対象・commitmentが同一節に揃う場合は、
+  モデル結果とは独立した決定論的safety netでも`todo`を補完します。1 sequenceあたり3件を
+  上限とし、候補密度の異常は本文なしの構造化ログへ記録します。方針の採用・必須化・
+  適用開始は担当作業ではなく`decision`として分離します。低情報発話と同一batchにある後続Todoも
+  対象で、追加のAI呼び出しは行いません。明示訂正の置換Factが一時的にgroundingされない場合は
+  旧Itemをtentative/inactive候補として退避し、final repairで置換を再構築して旧Itemと
+  tombstoneを監査可能な形で保持します
 - `items[].groundingDecision`（`accepted | rewritten`）、
   `groundingConfidence`、`groundingSourceTypes`、`groundingUnsupportedAtoms`は任意の
   サーバー所有監査メタデータです。`groundingUnsupportedAtoms`には本文ではなくcategory付きhashを

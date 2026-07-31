@@ -22,18 +22,43 @@ func finalRepairStatsChanged(stats finalRepairStats) bool {
 		stats.KindValidationChanges > 0 ||
 		stats.KindSemanticSplits > 0 ||
 		stats.KindRelationsCreated > 0 ||
+		stats.CorrectionItemsSuperseded > 0 ||
+		stats.CorrectionItemsReconstructed > 0 ||
+		stats.CorrectionItemsPending > 0 ||
+		stats.StrongTodosSynthesized > 0 ||
+		stats.StrongDecisionsSynthesized > 0 ||
+		stats.EvidenceReferencesPruned > 0 ||
+		stats.IssuesRecoveredFromTodoEvidence > 0 ||
 		stats.DanglingCandidatesPruned > 0
 }
 
 func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.TranscriptSegment, mc *meetingContext, version int64, stats *finalRepairStats) {
-	if state == nil || state.Tree == nil || len(state.Items) == 0 || len(segments) == 0 || stats == nil {
+	if state == nil || state.Tree == nil || len(segments) == 0 || stats == nil {
 		return
 	}
-	scope, _ := agendaTimelineFromSegments(segments)
+	scope, timeline := agendaTimelineFromSegments(segments)
 	kindStats := &liveAnalysisTreeMergeStats{}
+	splitPersistedMultiAssignmentTodos(state, scope, kindStats)
+	synthesized := synthesizeStrongTodoItems(state.Items, nil, scope, timeline, kindStats)
+	synthesized = append(synthesized, synthesizeCorrectionFactItems(
+		state.Items, synthesized, scope, timeline, kindStats,
+	)...)
+	synthesized = append(synthesized, synthesizeExplicitDecisionItems(
+		append(append([]liveAnalysisItem(nil), state.Items...), synthesized...),
+		segments, kindStats,
+	)...)
+	addOrUpdateFinalSynthesizedItems(state, synthesized, version)
 	splitPersistedItemKinds(state, scope, itemKindValidationFinal, "final_semantic_split", kindStats)
+	// Kind repair can turn a legacy compound Issue into a Todo. Split its
+	// owner-local assignments before semantic dedup; otherwise the combined
+	// body becomes a bridge that collapses different owners back together.
+	splitPersistedMultiAssignmentTodos(state, scope, kindStats)
+	restoreIssuesFromPollutedTodoEvidence(state, scope, version, kindStats)
 	repairFinalItemGrounding(state, scope, mc, version, kindStats)
 	repairPersistedItemKinds(state, scope, itemKindValidationFinal, "final_deterministic_repair", kindStats)
+	splitPersistedMultiAssignmentTodos(state, scope, kindStats)
+	localizePersistedItemEvidence(state.Items, scope, kindStats)
+	repairCorrectionSupersessions(state, scope, timeline, version, kindStats)
 	recordItemKindDistribution(state, scope, kindStats)
 	stats.KindValidationChanges += kindStats.KindValidationChanges
 	stats.KindValidationAmbiguous += kindStats.KindValidationAmbiguous
@@ -44,6 +69,23 @@ func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.Transcri
 	stats.KindSplitDecisions = append(stats.KindSplitDecisions, kindStats.KindSplitDecisions...)
 	stats.KindRelationsCreated += appendSemanticKindRelations(state.Tree, state.Items)
 	stats.KindDistributionWarnings = append(stats.KindDistributionWarnings, kindStats.KindDistributionWarnings...)
+	stats.CorrectionItemsSuperseded += kindStats.CorrectionItemsSuperseded
+	stats.CorrectionItemsReconstructed += kindStats.CorrectionItemsReconstructed
+	stats.CorrectionItemsPending += kindStats.CorrectionItemsPending
+	stats.CorrectionDecisions = append(stats.CorrectionDecisions, kindStats.CorrectionDecisions...)
+	stats.StrongTodoCandidates += kindStats.StrongTodoCandidates
+	stats.StrongTodosSynthesized += kindStats.StrongTodosSynthesized
+	stats.StrongTodoDuplicatesSuppressed += kindStats.StrongTodoDuplicatesSuppressed
+	stats.StrongDecisionCandidates += kindStats.StrongDecisionCandidates
+	stats.StrongDecisionsSynthesized += kindStats.StrongDecisionsSynthesized
+	stats.DeterministicSynthesisDecisions = append(
+		stats.DeterministicSynthesisDecisions,
+		kindStats.DeterministicSynthesisDecisions...,
+	)
+	stats.EvidenceReferencesPruned += kindStats.EvidenceReferencesPruned
+	stats.EvidenceLocalizationDecisions = append(stats.EvidenceLocalizationDecisions, kindStats.EvidenceLocalizationDecisions...)
+	stats.IssuesRecoveredFromTodoEvidence += kindStats.IssuesRecoveredFromTodoEvidence
+	stats.IssueRecoveryDecisions = append(stats.IssueRecoveryDecisions, kindStats.IssueRecoveryDecisions...)
 	stats.GroundingAccepted += kindStats.GroundingAccepted
 	stats.GroundingRewritten += kindStats.GroundingRewritten
 	stats.GroundingTentative += kindStats.GroundingTentative
@@ -96,10 +138,23 @@ func repairFinalItemGrounding(state *liveAnalysisPayload, scope liveEvidenceScop
 		}
 		switch decision.Decision {
 		case "accepted", "rewritten":
-			safe.GroundingDecision = decision.Decision
-			safe.GroundingConfidence = decision.Confidence
+			if item.GroundingDecision == "rewritten" && decision.Decision == "accepted" {
+				// "rewritten" is durable provenance: a later validation of
+				// the already-sanitized proposition must not make it appear
+				// as though the original model wording was accepted.
+				safe.GroundingDecision = item.GroundingDecision
+				safe.GroundingConfidence = item.GroundingConfidence
+				safe.GroundingUnsupportedAtomHashes = append(
+					[]string(nil), item.GroundingUnsupportedAtomHashes...,
+				)
+			} else {
+				safe.GroundingDecision = decision.Decision
+				safe.GroundingConfidence = decision.Confidence
+				safe.GroundingUnsupportedAtomHashes = append(
+					[]string(nil), decision.UnsupportedAtomHashes...,
+				)
+			}
 			safe.GroundingSourceTypes = append([]groundingSourceType(nil), decision.SourceTypes...)
-			safe.GroundingUnsupportedAtomHashes = append([]string(nil), decision.UnsupportedAtomHashes...)
 			updateFinalItemAndNode(state, safe)
 		default:
 			rejectFinalItem(state, item.ID, "final_semantic_grounding_rejected", version)
@@ -156,10 +211,26 @@ func repairFinalReferenceAndLowInformationItems(state *liveAnalysisPayload, segm
 		if !ok || !finalItemIsLowInformation(item) {
 			continue
 		}
+		var incompleteDecision *incompleteItemLabelDecision
+		if incompleteItemLabelEnding(item) != "" {
+			repaired, decision, changed := repairIncompleteItemLabel(item, scope, timeline)
+			incompleteDecision = &decision
+			if changed {
+				updateFinalItemAndNode(state, repaired)
+				stats.LowInformationItemsRewritten++
+				stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, decision)
+				continue
+			}
+		}
 		targets := finalLowInformationMergeTargets(state.Items, item)
 		if len(targets) == 1 {
 			if mergeFinalItemInto(state, item.ID, targets[0], "final_low_information_merge", version) {
 				stats.LowInformationItemsMerged++
+				if incompleteDecision != nil {
+					incompleteDecision.RewriteResult = "merged"
+					incompleteDecision.FinalDecision = "merged"
+					stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
+				}
 			}
 			continue
 		}
@@ -167,20 +238,42 @@ func repairFinalReferenceAndLowInformationItems(state *liveAnalysisPayload, segm
 			repaired := item
 			if concrete := uniqueFinalIssueRepairText(item, scope, timeline); concrete != "" {
 				concrete = normalizeIssueStatementForSubtype(concrete, item.Subtype)
-				repaired.Title = truncateRunes(concrete, 40)
-				repaired.Body = truncateRunes(concrete, liveAnalysisTreeDescriptionMaxRunes)
-				repaired.Subtype = inferIssueSubtype(concrete, item.Subtype)
-				repaired.InformationStatus = informationStatusGrounded
-				if reason, _ := validateLiveItemInformation(repaired, true, timeline, scope); reason == "" &&
-					splitIssueFragmentGrounded(repaired, scope) {
-					updateFinalItemAndNode(state, repaired)
-					stats.LowInformationItemsRewritten++
-					continue
+				if title := semanticallyCompleteItemLabel(concrete, item.Kind); title != "" {
+					repaired.Title = title
+					repaired.Body = truncateRunes(concrete, liveAnalysisTreeDescriptionMaxRunes)
+					repaired.Subtype = inferIssueSubtype(concrete, item.Subtype)
+					repaired.InformationStatus = informationStatusGrounded
+					if reason, _ := validateLiveItemInformation(repaired, true, timeline, scope); reason == "" &&
+						splitIssueFragmentGrounded(repaired, scope) {
+						updateFinalItemAndNode(state, repaired)
+						stats.LowInformationItemsRewritten++
+						if incompleteDecision != nil {
+							incompleteDecision.RewriteResult = "success"
+							incompleteDecision.FinalDecision = "rewritten"
+							stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
+						}
+						continue
+					}
 				}
+			}
+		}
+		if item.Kind == "fact" {
+			if repaired, ok := reconstructFinalFactFragment(item, scope, timeline); ok {
+				updateFinalItemAndNode(state, repaired)
+				stats.LowInformationItemsRewritten++
+				if incompleteDecision != nil {
+					incompleteDecision.RewriteResult = "success"
+					incompleteDecision.FinalDecision = "rewritten"
+					stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
+				}
+				continue
 			}
 		}
 		if rejectFinalItem(state, item.ID, "final_low_information_rejected", version) {
 			stats.LowInformationItemsRejected++
+		}
+		if incompleteDecision != nil {
+			stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
 		}
 	}
 	pruneEmptyDynamicTopics(state.Tree)
@@ -208,10 +301,51 @@ func finalItemByID(items []liveAnalysisItem, id string) (liveAnalysisItem, bool)
 
 func finalItemIsLowInformation(item liveAnalysisItem) bool {
 	return liveItemTextNeedsReferent(item) ||
+		incompleteItemLabelEnding(item) != "" ||
 		metaOnlyLiveItemText(strings.TrimSpace(item.Title+" "+item.Body)) ||
 		isDiscourseOnlyItem(item.Title, item.Body) ||
 		isMeetingEndOnlyItem(item.Title, item.Body) ||
 		recapArtifactOnlyItem(item.Title, item.Body)
+}
+
+func reconstructFinalFactFragment(
+	item liveAnalysisItem,
+	scope liveEvidenceScope,
+	timeline discourseTimeline,
+) (liveAnalysisItem, bool) {
+	primary := make([]string, 0, 1)
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		switch timeline.Roles[sequenceNo] {
+		case liveEvidenceReferenceRecap, liveEvidenceDiscourseOnly:
+			continue
+		}
+		text := strings.Trim(strings.TrimSpace(scope.TranscriptText[sequenceNo]), "。.!！ ")
+		if text == "" || isDiscourseOnlyItem(text, "") {
+			continue
+		}
+		if !containsExactString(primary, text) {
+			primary = append(primary, text)
+		}
+	}
+	if len(primary) != 1 {
+		return item, false
+	}
+	repaired := item
+	repaired.Title = semanticallyCompleteItemLabel(primary[0], item.Kind)
+	if repaired.Title == "" {
+		return item, false
+	}
+	repaired.Body = truncateRunes(primary[0], liveAnalysisTreeDescriptionMaxRunes)
+	repaired.EvidenceSnippets = []string{primary[0]}
+	repaired.InformationStatus = informationStatusGrounded
+	repaired.GroundingDecision = "rewritten"
+	repaired.GroundingConfidence = 0.91
+	repaired.GroundingSourceTypes = []groundingSourceType{groundingSourceFinalTranscript}
+	decision := evaluateLiveItemKind(repaired, scope, "final_low_information_fact_repair")
+	if decision.CanonicalKind != "fact" || decision.Decision == "tentative" {
+		return item, false
+	}
+	return repaired, true
 }
 
 func finalLowInformationMergeTargets(items []liveAnalysisItem, item liveAnalysisItem) []string {

@@ -23,6 +23,9 @@ const (
 	ClientDiagnosticSnapshotRejected       ClientDiagnosticEventName = "snapshot_rejected"
 	ClientDiagnosticTreeStateChanged       ClientDiagnosticEventName = "tree_state_changed"
 	ClientDiagnosticTreeBecameEmpty        ClientDiagnosticEventName = "tree_became_empty"
+	ClientDiagnosticTreeRenderState        ClientDiagnosticEventName = "tree_render_state"
+	ClientDiagnosticTreeRenderAnomaly      ClientDiagnosticEventName = "tree_render_anomaly"
+	ClientDiagnosticTreeRenderRecovery     ClientDiagnosticEventName = "tree_render_recovery"
 	ClientDiagnosticStoreResetRequested    ClientDiagnosticEventName = "store_reset_requested"
 	ClientDiagnosticStoreResetExecuted     ClientDiagnosticEventName = "store_reset_executed"
 	ClientDiagnosticRouteChanged           ClientDiagnosticEventName = "route_changed"
@@ -45,6 +48,9 @@ var clientDiagnosticEventNames = map[ClientDiagnosticEventName]struct{}{
 	ClientDiagnosticSnapshotRejected:       {},
 	ClientDiagnosticTreeStateChanged:       {},
 	ClientDiagnosticTreeBecameEmpty:        {},
+	ClientDiagnosticTreeRenderState:        {},
+	ClientDiagnosticTreeRenderAnomaly:      {},
+	ClientDiagnosticTreeRenderRecovery:     {},
 	ClientDiagnosticStoreResetRequested:    {},
 	ClientDiagnosticStoreResetExecuted:     {},
 	ClientDiagnosticRouteChanged:           {},
@@ -74,6 +80,8 @@ func ClientDiagnosticEventNames() []string {
 func IsCriticalClientDiagnosticEvent(name string) bool {
 	switch ClientDiagnosticEventName(name) {
 	case ClientDiagnosticTreeBecameEmpty,
+		ClientDiagnosticTreeRenderAnomaly,
+		ClientDiagnosticTreeRenderRecovery,
 		ClientDiagnosticReactErrorCaptured,
 		ClientDiagnosticTreeStoreInitialized,
 		ClientDiagnosticTreeComponentMounted,

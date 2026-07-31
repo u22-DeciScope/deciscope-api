@@ -18,6 +18,11 @@ const (
 
 	agendaReconciliationMinScore  = 0.62
 	agendaReconciliationMinMargin = 0.10
+	// A unique but not-yet-strong planned-agenda match is retained as a
+	// tentative candidate. applyAssignments keeps it out of the visible
+	// unclassified bucket and requires a repeated/later stronger observation
+	// before materializing the planned topic.
+	agendaReconciliationPendingMinScore = 0.40
 )
 
 // agendaReconciliationDecision is bounded, text-free observability for every
@@ -54,8 +59,14 @@ type agendaMatchCandidate struct {
 }
 
 var (
-	agendaPreviewOnlyPattern  = regexp.MustCompile(`(?i)(?:あとで|後で|のちほど|次に|今度|次回).{0,20}(?:話|確認|検討|議論|取り上げ|扱)|(?:話|確認|検討|議論|取り上げ|扱).{0,16}(?:予定|つもり|あとで|後で|次回)`)
-	agendaNegativeOnlyPattern = regexp.MustCompile(`(?i)(?:未実施|未確認|未対応|まだ.{0,12}(?:していない|できていない|決まっていない)|(?:話|確認|検討|議論|実施|対応).{0,8}(?:していない|しなかった|できていない))`)
+	agendaPreviewOnlyPattern       = regexp.MustCompile(`(?i)(?:あとで|後で|のちほど|次に|今度|次回).{0,20}(?:話|確認|検討|議論|取り上げ|扱)|(?:話|確認|検討|議論|取り上げ|扱).{0,16}(?:予定|つもり|あとで|後で|次回)`)
+	agendaNegativeOnlyPattern      = regexp.MustCompile(`(?i)(?:未実施|未確認|未対応|まだ.{0,12}(?:していない|できていない|決まっていない)|(?:話|確認|検討|議論|実施|対応).{0,8}(?:していない|しなかった|できていない))`)
+	agendaInvestigationRolePattern = regexp.MustCompile(`(?:原因調査|直接原因|障害診断)`)
+	agendaRecoveryRolePattern      = regexp.MustCompile(`(?:復旧対応|復旧作業)`)
+	agendaPreventionRolePattern    = regexp.MustCompile(`(?:再発防止|予防|今後の対策|改善策)`)
+	evidenceDiagnosticRolePattern  = regexp.MustCompile(`(?:原因|異常|設定|構成|漏れ|不整合)`)
+	evidenceRecoveryRolePattern    = regexp.MustCompile(`(?:切り戻|復旧|修正|正常化)`)
+	evidencePreventionRolePattern  = regexp.MustCompile(`(?:再発防止|必須|運用|適用|導入|予防|対策|改善|提案|案がある)`)
 )
 
 func normalizedAgendaSemanticHints(values []string) []string {
@@ -133,10 +144,24 @@ func agendaCandidateTextForItem(item liveAnalysisItem, newTopics []liveAnalysisT
 
 func evidenceTextForAgendaMatch(item liveAnalysisItem, candidateText string, scope liveEvidenceScope) string {
 	parts := []string{item.Title, item.Body, candidateText}
+	primary := make([]string, 0, len(item.EvidenceSequenceNos))
+	fallback := make([]string, 0, len(item.EvidenceSequenceNos))
 	for _, sequenceNo := range item.EvidenceSequenceNos {
 		if text := strings.TrimSpace(scope.TranscriptText[sequenceNo]); text != "" {
-			parts = append(parts, text)
+			switch scope.EvidenceRoles[sequenceNo] {
+			case liveEvidenceReferenceRecap, liveEvidenceDiscourseOnly:
+				fallback = append(fallback, text)
+			default:
+				primary = append(primary, text)
+			}
 		}
+	}
+	// Primary/source evidence determines identity and agenda. A recap is only a
+	// fallback when the snapshot genuinely has no substantive source text.
+	if len(primary) > 0 {
+		parts = append(parts, primary...)
+	} else {
+		parts = append(parts, fallback...)
 	}
 	return strings.TrimSpace(strings.Join(parts, " "))
 }
@@ -209,7 +234,9 @@ func agendaEvidenceScore(agenda agendaItem, item liveAnalysisItem, candidateText
 	evidenceKey := semanticItemKey(evidenceText)
 	for _, hint := range agenda.SemanticHints {
 		hintKey := semanticItemKey(hint)
-		if len([]rune(hintKey)) >= 2 && strings.Contains(evidenceKey, hintKey) {
+		if len([]rune(hintKey)) >= 2 &&
+			(strings.Contains(evidenceKey, hintKey) ||
+				semanticHintComponentMatch(hint, evidenceKey)) {
 			hintHits++
 		}
 	}
@@ -219,7 +246,49 @@ func agendaEvidenceScore(agenda agendaItem, item liveAnalysisItem, candidateText
 	case hintHits == 1 && score < 0.68:
 		score = 0.68
 	}
+	// Shared object hints (for example the same configuration name) do not
+	// distinguish a diagnostic finding from a later prevention policy.
+	// Compare the agenda's semantic role with the evidence predicate/causal
+	// role so an earlier cause finding can beat an active prevention span.
+	propositionText := item.Title + " " + item.Body
+	switch {
+	case agendaInvestigationRolePattern.MatchString(agendaText) &&
+		evidenceDiagnosticRolePattern.MatchString(propositionText) &&
+		!evidencePreventionRolePattern.MatchString(propositionText):
+		if score < 0.82 {
+			score = 0.82
+		}
+	case agendaRecoveryRolePattern.MatchString(agendaText) &&
+		evidenceRecoveryRolePattern.MatchString(propositionText) &&
+		!evidencePreventionRolePattern.MatchString(propositionText):
+		if score < 0.82 {
+			score = 0.82
+		}
+	case agendaPreventionRolePattern.MatchString(agendaText) &&
+		evidencePreventionRolePattern.MatchString(propositionText):
+		if score < 0.82 {
+			score = 0.82
+		}
+	}
 	return score
+}
+
+var agendaSemanticHintComponentPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_-]*|[\p{Katakana}ー]{2,}|[\p{Han}々]{2,}`)
+
+func semanticHintComponentMatch(hint, evidenceKey string) bool {
+	components := agendaSemanticHintComponentPattern.FindAllString(hint, -1)
+	matched := 0
+	for _, component := range components {
+		key := semanticItemKey(component)
+		if len([]rune(key)) < 2 {
+			continue
+		}
+		if !strings.Contains(evidenceKey, key) {
+			return false
+		}
+		matched++
+	}
+	return matched >= 2
 }
 
 func bestAgendaEvidenceMatch(item liveAnalysisItem, candidateText string, agendas []agendaItem, scope liveEvidenceScope, timeline discourseTimeline) (agendaItem, float64, []string, []string, string) {
@@ -464,8 +533,13 @@ func reconcileDynamicCandidateAssignments(
 				}
 			}
 		}
+		// A model omission is still an unclassified proposal for every
+		// transcript-grounded canonical item, not only high-severity/action
+		// kinds. Otherwise an ordinary Fact such as an initial investigation
+		// result bypasses planned-agenda matching and becomes a permanent
+		// "追加論点".
 		if !assignmentSeen && currentRoundEvidence &&
-			(item.Severity == "high" || item.Kind == "decision" || item.Kind == "risk" || item.Kind == "todo") {
+			!item.Inactive && item.MergedIntoID == "" && len(item.EvidenceSequenceNos) > 0 {
 			unclassifiedSignal = true
 		}
 		if !dynamicSignal && !unclassifiedSignal {
@@ -508,6 +582,28 @@ func reconcileDynamicCandidateAssignments(
 			DynamicCandidateChecked: true,
 		}
 		if selected.ID == "" {
+			if !dynamicSignal && rejected == "score_below_threshold" &&
+				score >= agendaReconciliationPendingMinScore &&
+				len(candidateIDs) > 0 &&
+				agendaCandidateScoreMargin(candidateScores) >= agendaReconciliationMinMargin {
+				pendingAgendaID := candidateIDs[0]
+				for _, agenda := range mc.Agenda {
+					if agenda.ID != pendingAgendaID ||
+						effectiveAgendaRole(agenda.Role, agenda.Title, agenda.Description) != agendaRolePrimary {
+						continue
+					}
+					assignments = replaceItemAssignments(assignments, item.ID, treeAssignment{
+						NodeID: item.ID, ParentTopicID: pendingAgendaID, Confidence: score,
+						Reason: "planned_agenda_match_pending", ServerSource: assignmentSourceRule,
+						ModelParentTopicID:  candidateParentID,
+						EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...),
+					})
+					decision.SelectedAgendaID = pendingAgendaID
+					decision.RejectedReason = "score_below_threshold_pending"
+					decision.ItemMoved = true
+					break
+				}
+			}
 			if rejected == "ambiguous_agenda_match" {
 				fallbackAgendaID := activeAgendaFallbackForEvidence(item, spans, previous.AgendaProgress, mc)
 				fallbackParentID := fallbackAgendaID
@@ -552,6 +648,21 @@ func reconcileDynamicCandidateAssignments(
 		}
 	}
 	return assignments
+}
+
+func agendaCandidateScoreMargin(scores []string) float64 {
+	if len(scores) < 2 {
+		return 1
+	}
+	parse := func(value string) float64 {
+		at := strings.LastIndex(value, ":")
+		if at < 0 || at+1 >= len(value) {
+			return 0
+		}
+		score, _ := strconv.ParseFloat(value[at+1:], 64)
+		return score
+	}
+	return parse(scores[0]) - parse(scores[1])
 }
 
 func maxEvidenceSequence(item liveAnalysisItem) int64 {
@@ -803,8 +914,7 @@ func reconcileFinalAgendaEvidence(state *liveAnalysisPayload, mc *meetingContext
 	}
 	eligible := make([]agendaItem, 0)
 	for _, agenda := range mc.Agenda {
-		status := anchorByID[agenda.ID].Status
-		if status == agendaStatusPlanned || status == agendaStatusNotDiscussed || status == "" {
+		if effectiveAgendaRole(agenda.Role, agenda.Title, agenda.Description) == agendaRolePrimary {
 			eligible = append(eligible, agenda)
 		}
 	}
@@ -829,15 +939,23 @@ func reconcileFinalAgendaEvidence(state *liveAnalysisPayload, mc *meetingContext
 			continue
 		}
 		topic, hasTopic := topicNodeForItem(state.Tree, item.ID)
-		if hasTopic && len(topicAgendaRefs(topic, records)) > 0 {
-			continue
-		}
 		if node := nodes[item.ID]; treeAuditIsManualChangeSource(node.LastParentChangeSource) {
 			continue
 		}
+		currentAgendaIDs := topicAgendaRefs(topic, records)
+		currentAgendaID := ""
+		if hasTopic && len(currentAgendaIDs) == 1 {
+			currentAgendaID = currentAgendaIDs[0]
+		}
 		candidateText := agendaCandidateTextForItem(item, nil, state.EmergingTopics, state.Tree)
 		selected, score, candidateIDs, candidateScores, _ := bestAgendaEvidenceMatch(item, candidateText, eligible, scope, timeline)
-		if selected.ID == "" {
+		if selected.ID == "" || selected.ID == currentAgendaID {
+			continue
+		}
+		// Moving an already classified item is deliberately stricter than
+		// filling an unclassified one. This repairs recap contamination without
+		// turning weak topical similarity into churn.
+		if currentAgendaID != "" && score < 0.68 {
 			continue
 		}
 		repairs = append(repairs, repair{itemAt: itemAt, agenda: selected, score: score, ids: candidateIDs, scores: candidateScores})
@@ -923,6 +1041,10 @@ func reconcileFinalAgendaEvidence(state *liveAnalysisPayload, mc *meetingContext
 		if _, repaired := repairedAgenda[agenda.ID]; repaired {
 			continue
 		}
+		status := anchorByID[agenda.ID].Status
+		if status != "" && status != agendaStatusPlanned && status != agendaStatusNotDiscussed {
+			continue
+		}
 		reason := "no_strong_unique_match"
 		if agendaSemanticIdentityIsBroad(agenda) {
 			reason = "broad_agenda_without_metadata"
@@ -983,7 +1105,7 @@ func logAgendaReconciliations(sessionID string, treeVersion int64, decisions []a
 		if decision.ManualOverride {
 			manualProtected++
 		}
-		log.Printf("Agenda reconciliation evaluated. sessionId=%s treeVersion=%d trigger=%s transcriptSequenceNos=%v itemId=%s currentActiveAgendaId=%s transitionNextAgendaId=%s skippedAgendaIds=%v transitionDirect=%t backfillPerformed=%t candidateAgendaIds=%v candidateScores=%v selectedAgendaId=%s score=%.2f previousStatus=%s newStatus=%s manualOverride=%t agendaRefsRepaired=%t itemMoved=%t previousParentId=%s materializedTopicId=%s dynamicCandidateChecked=%t rejectedReason=%s",
+		log.Printf("Agenda reconciliation evaluated. event=agenda_assignment_decision sessionId=%s treeVersion=%d trigger=%s transcriptSequenceNos=%v itemId=%s currentActiveAgendaId=%s transitionNextAgendaId=%s skippedAgendaIds=%v transitionDirect=%t backfillPerformed=%t candidateAgendaIds=%v candidateScores=%v selectedAgendaId=%s score=%.2f previousStatus=%s newStatus=%s manualOverride=%t agendaRefsRepaired=%t itemMoved=%t previousParentId=%s materializedTopicId=%s dynamicCandidateChecked=%t rejectedReason=%s",
 			sessionID, treeVersion, decision.Trigger, decision.EvidenceSequenceNos, decision.ItemID,
 			decision.CurrentActiveAgendaID, decision.TransitionNextAgendaID, decision.SkippedAgendaIDs,
 			decision.TransitionDirect, decision.BackfillPerformed, decision.CandidateAgendaIDs, decision.CandidateScores,

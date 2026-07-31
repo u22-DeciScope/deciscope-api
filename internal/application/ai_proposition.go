@@ -111,7 +111,7 @@ func repairHistoricalDecisionFragments(state *liveAnalysisPayload, scope liveEvi
 		if !ok {
 			continue
 		}
-		item.Title = truncateRunes(decisionCandidateTitle(repaired), 40)
+		item.Title = semanticallyCompleteItemLabelOrOriginal(decisionCandidateTitle(repaired), item.Kind)
 		item.Body = truncateRunes(strings.TrimSpace(repaired), liveAnalysisTreeDescriptionMaxRunes)
 		item.EvidenceSequenceNos = appendUniqueSequences([]int64{previous.SequenceNo}, item.EvidenceSequenceNos)
 		item.InformationStatus = informationStatusGrounded
@@ -886,6 +886,9 @@ func crossKindPropositionCompatible(a, b string) bool {
 
 func sameKindSequentialProposition(a, b liveAnalysisItem) (bool, float64) {
 	if !sameSemanticClassification(a, b) || (a.Kind != "issue" && a.Kind != "todo") {
+		return false, 0
+	}
+	if distinctTodoAssignments(a, b) {
 		return false, 0
 	}
 	leftNumbers, rightNumbers := numericSignature(a.Title+" "+a.Body), numericSignature(b.Title+" "+b.Body)

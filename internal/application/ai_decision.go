@@ -36,17 +36,18 @@ type decisionExtractionAudit struct {
 }
 
 var (
-	decisionClauseSplitPattern  = regexp.MustCompile(`[。！？!?\n]+`)
-	decisionPositivePattern     = regexp.MustCompile(`(?:決定(?:事項)?(?:と)?します|決定事項とします|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします|を必須にします|を必須とします|必須化します|を導入します|を義務付けます|を義務化します|(?:から|を)適用します$)`)
-	decisionRecapPattern        = regexp.MustCompile(`決定事項(?:は|として)`)
-	decisionNegativePattern     = regexp.MustCompile(`(?:未決定|決まってい(?:ない|ません)|決定してい(?:ない|ません)|決定せず|まだ決定|次回.{0,12}決定|決定.{0,12}(?:検討|候補)|採用.{0,12}(?:検討|候補)|候補にすぎ|したい|予定です)`)
-	decisionSuffixPattern       = regexp.MustCompile(`(?:する)?ことを決定(?:事項)?と?します|決定(?:事項)?と?します|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします`)
-	leadingParticlePattern      = regexp.MustCompile(`^(?:の|を|が|は|に|で|と)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
-	leadingAnaphoraPattern      = regexp.MustCompile(`^(?:この|その)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
-	decisionReferentPattern     = regexp.MustCompile(`(?:^|[、,。！？!?])([^、,。！？!?]{2,80}?)を(?:作成|策定|準備|定義|設定|整備|手順化)(?:します|する|しました|した)?$`)
-	checklistReferentPattern    = regexp.MustCompile(`^(.{2,24})で(.{2,32})を実施するチェックリスト$`)
-	todoCreationVerbPattern     = regexp.MustCompile(`作成|策定|準備|起票|ドラフト`)
-	decisionAdoptionVerbPattern = regexp.MustCompile(`適用|運用|導入|施行`)
+	decisionClauseSplitPattern   = regexp.MustCompile(`[。！？!?\n]+`)
+	decisionPositivePattern      = regexp.MustCompile(`(?:決定(?:事項)?(?:と)?します|決定事項とします|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします|を必須にします|を必須とします|を必然にします|必須化します|を導入します|を義務付けます|を義務化します|(?:から|を)適用します$)`)
+	decisionRecapPattern         = regexp.MustCompile(`決定事項(?:は|として)`)
+	decisionNegativePattern      = regexp.MustCompile(`(?:未決定|決まってい(?:ない|ません)|決定してい(?:ない|ません)|決定せず|まだ決定|次回.{0,12}決定|決定.{0,12}(?:検討|候補)|採用.{0,12}(?:検討|候補)|候補にすぎ|したい|予定です)`)
+	decisionSuffixPattern        = regexp.MustCompile(`(?:する)?ことを決定(?:事項)?と?します|決定(?:事項)?と?します|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします`)
+	leadingParticlePattern       = regexp.MustCompile(`^(?:の|を|が|は|に|で|と)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
+	leadingAnaphoraPattern       = regexp.MustCompile(`^(?:この|その)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
+	decisionReferentPattern      = regexp.MustCompile(`(?:^|[、,。！？!?])([^、,。！？!?]{2,80}?)を(?:作成|策定|準備|定義|設定|整備|手順化|作(?:ります|る|りました))(?:します|する|しました|した)?$`)
+	checklistReferentPattern     = regexp.MustCompile(`^(.{2,24})で(.{2,32})を実施するチェックリスト$`)
+	todoCreationVerbPattern      = regexp.MustCompile(`作成|策定|準備|起票|ドラフト`)
+	decisionAdoptionVerbPattern  = regexp.MustCompile(`適用|運用|導入|施行`)
+	explicitMandateSuffixPattern = regexp.MustCompile(`^(.{4,128})を(必須|必然)(に|と)します$`)
 	// deliberativeTodoPattern matches a TODO whose own subject is still an
 	// open deliberation ("何をするか決める" 系: 検討/選定/判断/決める/どうするか)
 	// as opposed to an execution task (作成/実施/確認 等)。 Only a deliberative
@@ -73,9 +74,10 @@ func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCan
 			continue
 		}
 		rawClauses := decisionClauseSplitPattern.Split(segment.Text, -1)
-		clauses := make([]string, len(rawClauses))
-		for i, rawClause := range rawClauses {
-			clauses[i] = strings.TrimSpace(rawClause)
+		clauses := make([]string, 0, len(rawClauses)+1)
+		for _, rawClause := range rawClauses {
+			clause := strings.TrimSpace(rawClause)
+			clauses = append(clauses, splitExplicitMandateClause(clause)...)
 		}
 		for clauseIndex, clause := range clauses {
 			if clause == "" || decisionNegativePattern.MatchString(clause) {
@@ -142,6 +144,34 @@ func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCan
 	return candidates
 }
 
+func splitExplicitMandateClause(clause string) []string {
+	match := explicitMandateSuffixPattern.FindStringSubmatch(strings.TrimSpace(clause))
+	if len(match) != 4 {
+		return []string{clause}
+	}
+	subjects := match[1]
+	suffix := "を" + match[2] + match[3] + "します"
+	for searchEnd := len(subjects); searchEnd > 0; {
+		at := strings.LastIndex(subjects[:searchEnd], "と")
+		if at < 0 {
+			break
+		}
+		if strings.HasPrefix(subjects[at:], "として") ||
+			strings.HasPrefix(subjects[at:], "とは") {
+			searchEnd = at
+			continue
+		}
+		left := strings.Trim(strings.TrimSpace(subjects[:at]), "、, ")
+		right := strings.Trim(strings.TrimSpace(subjects[at+len("と"):]), "、, ")
+		if len([]rune(semanticItemKey(left))) >= 3 &&
+			len([]rune(semanticItemKey(right))) >= 3 {
+			return []string{left + suffix, right + suffix}
+		}
+		searchEnd = at
+	}
+	return []string{clause}
+}
+
 func extendDecisionSegmentsWithPriorFragment(round []domain.TranscriptSegment, scope liveEvidenceScope) []domain.TranscriptSegment {
 	if len(round) == 0 {
 		return round
@@ -157,7 +187,9 @@ func extendDecisionSegmentsWithPriorFragment(round []domain.TranscriptSegment, s
 		return round
 	}
 	previous := segmentFromEvidenceScope(scope, first.SequenceNo-1)
-	if !logicalUtteranceContinuation(previous, first) {
+	if !logicalUtteranceContinuation(previous, first) &&
+		!(adjacentSameSpeakerSegments(previous, first) &&
+			decisionStatementNeedsReferent(first.Text)) {
 		return round
 	}
 	extended := make([]domain.TranscriptSegment, 0, len(round)+1)
@@ -581,7 +613,7 @@ func decisionCandidateTitle(statement string) string {
 	if title == "" {
 		title = strings.TrimSpace(statement)
 	}
-	return truncateRunes(title, 40)
+	return semanticallyCompleteItemLabelOrOriginal(title, "decision")
 }
 
 func stableDecisionID(statement string) string {

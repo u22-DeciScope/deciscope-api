@@ -251,7 +251,11 @@ func TestDynamicCandidateReconciliationPreservesIndependentAndAmbiguousTopics(t 
 					}
 					return "fact-switch"
 				}() + `","parentTopicId":"topic-unknown-4","confidence":0.9}]}`
-			scope := agendaReconciliationScope(map[int64]string{4: "スイッチ設定の確認と、懇親会会場の予約について話しました。"}, 4)
+			transcript := "スイッチ設定の確認と、懇親会会場の予約について話しました。"
+			if tt.name == "ambiguous planned agendas" {
+				transcript = "スイッチ設定を修正して通信の正常化を確認しました。"
+			}
+			scope := agendaReconciliationScope(map[int64]string{4: transcript}, 4)
 			raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(
 				content, nil, tt.mc, 1, []int64{4}, scope,
 				TreeClassificationConfig{PromotionMinItems: 2, PromotionMinRounds: 2},
@@ -261,7 +265,11 @@ func TestDynamicCandidateReconciliationPreservesIndependentAndAmbiguousTopics(t 
 			}
 			state := previousLiveAnalysisState(raw)
 			if len(state.EmergingTopics) != 1 {
-				t.Fatalf("candidate was forced into a planned agenda: tree=%+v candidates=%+v", state.Tree.Nodes, state.EmergingTopics)
+				var nodes []liveAnalysisTreeNode
+				if state.Tree != nil {
+					nodes = state.Tree.Nodes
+				}
+				t.Fatalf("candidate was forced into a planned agenda: items=%+v tree=%+v candidates=%+v", state.Items, nodes, state.EmergingTopics)
 			}
 		})
 	}

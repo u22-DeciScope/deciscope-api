@@ -9,6 +9,11 @@ import (
 var (
 	issueAnaphoraPattern              = regexp.MustCompile(`(?:(?:この|その)(?:点|問題|件|条件|事項)|本件|それ|上記|前述|当該(?:事項|条件|問題|件)|引き続き)`)
 	issueReferentFreePredicatePattern = regexp.MustCompile(`^(?:[[:space:]、。,.!！?？]|は|が|を|の|に|へ|と|も|では|について|として|引き続き|継続|確認|検討|対応|調査|点|問題|件|条件|事項|必要|未確認|未確定|未解決|不明|できていない|です|ます|する|します|したい|行う|行います|残す|残し|残して|残しています|残る|残ります)+$`)
+	// A meeting-management act is not itself the subject of an Issue. When it
+	// is headed by an anaphor, the concrete proposition must be reconstructed
+	// from the same utterance or a bounded adjacent utterance before grounding.
+	issueMetaActPattern              = regexp.MustCompile(`(?:(?:この|その|本)(?:点|件|事項|問題)?|それ|上記|前述|当該事項)?(?:は|を)?(?:未解決の)?(?:論点|調査事項|確認事項|対応事項|課題)(?:として|に)?(?:起こ|挙げ|残|扱|登録|記録|保持|持ち越|管理)(?:します|する|しておきます|しておく|とします|ます)?`)
+	issueBareTemporalFragmentPattern = regexp.MustCompile(`^(?:午前|午後)?[0-9０-９]{1,2}時(?:[0-9０-９]{1,2}分)?(?:ごろ|頃)?(?:に|です|でした)?[。.!！]?$`)
 	// Capture the grammatical subject immediately before an unresolved-state
 	// predicate. Starting at the nearest clause boundary avoids treating a
 	// sentence such as "この点は…ため、現時点では未確定です" as a list of
@@ -44,7 +49,7 @@ func repairLowInformationIssueItems(previous, diff []liveAnalysisItem, assignmen
 			refs := make([]string, 0, len(statements))
 			for index, statement := range statements {
 				split := item
-				split.Title = truncateRunes(statement, 40)
+				split.Title = semanticallyCompleteItemLabelOrOriginal(statement, split.Kind)
 				split.Body = statement
 				split.Subtype = inferIssueSubtype(statement, item.Subtype)
 				split.InformationStatus = informationStatusGrounded
@@ -93,8 +98,15 @@ func repairLowInformationIssueItems(previous, diff []liveAnalysisItem, assignmen
 
 		if issueTextNeedsReferent(item.Title) {
 			if concrete := concreteIssueRepairText(item, scope, timeline); concrete != "" {
+				if sourceSequenceNo := concreteIssueRepairEvidenceSequence(
+					item, concrete, scope, timeline,
+				); sourceSequenceNo > 0 {
+					item.EvidenceSequenceNos = appendUniqueSequence(
+						item.EvidenceSequenceNos, sourceSequenceNo,
+					)
+				}
 				concrete = normalizeIssueStatementForSubtype(concrete, item.Subtype)
-				item.Title = truncateRunes(concrete, 40)
+				item.Title = semanticallyCompleteItemLabelOrOriginal(concrete, item.Kind)
 				item.Body = concrete
 				if !validIssueSubtype(item.Subtype) {
 					item.Subtype = inferIssueSubtype(concrete, item.Subtype)
@@ -129,7 +141,7 @@ func repairLowInformationIssueItems(previous, diff []liveAnalysisItem, assignmen
 			continue
 		}
 		update := prior
-		update.Title = truncateRunes(concrete, 40)
+		update.Title = semanticallyCompleteItemLabelOrOriginal(concrete, update.Kind)
 		update.Body = concrete
 		update.Subtype = inferIssueSubtype(concrete, prior.Subtype)
 		update.Status = "updated"
@@ -224,6 +236,14 @@ func issueTextNeedsReferent(text string) bool {
 	if text == "" || metaOnlyLiveItemText(text) {
 		return true
 	}
+	if issueBareTemporalFragmentPattern.MatchString(text) {
+		return true
+	}
+	if issueMetaActPattern.MatchString(text) &&
+		(issueAnaphoraPattern.MatchString(text) ||
+			len([]rune(semanticItemKey(issueMetaActPattern.ReplaceAllString(text, "")))) < 6) {
+		return true
+	}
 	if genericQuestionWithoutSubjectPattern.MatchString(normalizeDiscourseText(text)) {
 		return true
 	}
@@ -244,6 +264,11 @@ func concreteIssueRepairText(item liveAnalysisItem, scope liveEvidenceScope, tim
 }
 
 func nearestConcreteIssueEvidence(item liveAnalysisItem, scope liveEvidenceScope, timelines ...discourseTimeline) string {
+	text, _ := nearestConcreteIssueEvidenceWithSequence(item, scope, timelines...)
+	return text
+}
+
+func nearestConcreteIssueEvidenceWithSequence(item liveAnalysisItem, scope liveEvidenceScope, timelines ...discourseTimeline) (string, int64) {
 	var timeline discourseTimeline
 	if len(timelines) > 0 {
 		timeline = timelines[0]
@@ -265,12 +290,52 @@ func nearestConcreteIssueEvidence(item liveAnalysisItem, scope liveEvidenceScope
 			}
 			text := strings.Trim(strings.TrimSpace(scope.TranscriptText[sequenceNo]), "。.!！ ")
 			if text == "" || issueTextNeedsReferent(text) || isDiscourseOnlyItem(text, "") {
+				if concrete := concreteIssueClause(text); concrete != "" {
+					return normalizeConcreteIssueStatement(concrete), sequenceNo
+				}
 				continue
 			}
 			if len([]rune(semanticItemKey(text))) < 4 {
 				continue
 			}
-			return normalizeConcreteIssueStatement(text)
+			return normalizeConcreteIssueStatement(text), sequenceNo
+		}
+	}
+	return "", 0
+}
+
+func concreteIssueRepairEvidenceSequence(
+	item liveAnalysisItem,
+	concrete string,
+	scope liveEvidenceScope,
+	timeline discourseTimeline,
+) int64 {
+	_, sequenceNo := nearestConcreteIssueEvidenceWithSequence(item, scope, timeline)
+	if sequenceNo <= 0 {
+		return 0
+	}
+	evidence := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+	if strings.Contains(evidence, concrete) ||
+		semanticItemSimilarity(evidence, concrete) >= 0.10 {
+		return sequenceNo
+	}
+	return 0
+}
+
+func concreteIssueClause(text string) string {
+	clauses := decisionClauseSplitPattern.Split(strings.TrimSpace(text), -1)
+	for _, clause := range clauses {
+		clause = strings.Trim(strings.TrimSpace(clause), "、。.!！ ")
+		if clause == "" || issueMetaActPattern.MatchString(clause) ||
+			issueTextNeedsReferent(clause) || isDiscourseOnlyItem(clause, "") {
+			continue
+		}
+		probe := liveAnalysisItem{Kind: "issue", Title: clause, Body: clause}
+		features := inferItemSemanticFeatures(probe, liveEvidenceScope{})
+		if features.CurrentProblemPresent || features.CausalHypothesisPresent ||
+			kindOpenQuestionPattern.MatchString(clause) ||
+			confirmationStatementPattern.MatchString(clause) {
+			return clause
 		}
 	}
 	return ""

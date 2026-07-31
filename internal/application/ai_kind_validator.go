@@ -24,11 +24,14 @@ type itemSemanticFeatures struct {
 	NegativeImpactPresent      bool
 	UncertaintyPresent         bool
 	FutureEventPresent         bool
+	ScheduledEventPresent      bool
 	CurrentProblemPresent      bool
 	ConfirmedEvidencePresent   bool
 	ActionVerbPresent          bool
+	CompletedActionPresent     bool
 	OwnerPresent               bool
 	DeadlinePresent            bool
+	EventDatePresent           bool
 	DecisionOrCommitment       bool
 	InvestigationIntentPresent bool
 	MitigationIntentPresent    bool
@@ -78,31 +81,61 @@ var (
 		`(?i)(?:現在|現時点|発生中|発生している|継続している|できていな(?:い|く|かった)|できていません|接続できない|未解決|未確認|未確定|未決定|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|unknown|unresolved|currently)`,
 	)
 	kindConfirmedPattern = regexp.MustCompile(
-		`(?i)(?:確認した|確認しました|確認済み|判明した|判明しました|観測した|報告された|報告されました|報告がありました|報告があった|漏れてい(?:た|ました)|異常はなかった|正常になった|復旧した|切り戻した|修正した後|であることが分かった|confirmed|observed|verified|reported)`,
+		`(?i)(?:確認した|確認しました|確認済み|判明した|判明しました|分かりました|わかりました|明らかになった|観測した|報告された|報告されました|報告がありました|報告があった|漏れてい(?:た|ました)|異常はなかった|正常になった|復旧した|切り戻した|修正した後|であることが分かった|confirmed|observed|verified|reported)`,
 	)
 	kindPastEventPattern = regexp.MustCompile(
 		`(?i)(?:発生した|発生しました|していた|だった|でした|行った|実施した|完了した|occurred|was |were |completed)`,
 	)
+	kindCompletedActionPattern = regexp.MustCompile(
+		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続|切り戻|復旧)(?:しました|した|済み|を完了(?:しました|した))|(?:行|おこな)(?:いました|った)|完了(?:しました|した|済み)|completed|was (?:updated|created|checked|reviewed|implemented))`,
+	)
 	kindOpenQuestionPattern = regexp.MustCompile(
-		`(?i)(?:[?？]|(?:何|いつ|どこ|誰|どれ|どの|どちら|どう).{0,24}か|を行うか|か未確認|説明できるか|何を|どのように|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|確認が必要|調査が必要|検討が必要|未解決|未確定|未決定|open question|needs investigation)`,
+		`(?i)(?:[?？]|(?:何|いつ|どこ|誰|どれ|どの|どちら|どう).{0,24}か|を行うか|か未確認|説明できるか|何を|どのように|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|(?:確認|調査|検討|対応|修正|更新|作業)(?:する)?(?:が)?必要|未解決|未確定|未決定|open question|needs investigation)`,
 	)
 	kindActionVerbPattern = regexp.MustCompile(
-		`(?i)(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続|切り戻|assign|update|create|check|review|investigate|implement)`,
+		`(?i)(?:追加|作成|作(?:る|り|っ)|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続|切り戻|assign|update|create|check|review|investigate|implement)`,
 	)
 	kindActionIntentPattern = regexp.MustCompile(
-		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続)(?:する|します|してもら|を行う|予定|ことにする)|(?:will|shall|must|to )(?:update|create|check|review|investigate|implement))`,
+		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続)(?:する|します|してください|して下さい|してもら(?:う|います)|を行(?:う|います)|をお願い(?:します|する)|予定(?:です)?|ことに(?:する|します|なりました))|作(?:る|ります)|(?:will|shall|must|to )(?:update|create|check|review|investigate|implement))`,
 	)
 	kindCommitmentPattern = regexp.MustCompile(
-		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視)します|行います|確認してもら|ことにします|完了条件|合意|決定した|担当する|依頼する|予定です|will|shall|committed)`,
+		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視)します|作ります|行います|してください|して下さい|(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|設定|適用|連絡|共有|提出|準備|送付|レビュー|監視)してもら|(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|設定|適用|連絡|共有|提出|準備|送付|レビュー|監視)をお願いします|ことに(?:します|なりました)|完了条件|合意|決定した|担当する|依頼する|予定です|will|shall|committed)`,
 	)
 	kindProposalPattern = regexp.MustCompile(
-		`(?i)(?:案|候補|提案|してはどう|検討したい|検討中|選択肢|proposal|option|considering)`,
+		`(?i)(?:案|候補|提案|してはどう|した方が(?:よ|良)|する方が(?:よ|良)|よさそう|良さそう|すべき|検討したい|検討中|選択肢|proposal|option|considering)`,
+	)
+	kindRecommendationPattern = regexp.MustCompile(
+		`(?i)(?:した方が(?:よ|良)|する方が(?:よ|良)|してはどう|よさそう|良さそう|すべき|would be better|should consider)`,
+	)
+	kindIncompletePurposePattern = regexp.MustCompile(
+		`(?i)(?:できる|する|なる)ように[。.!！]?$`,
+	)
+	kindUnassignedNecessityPattern = regexp.MustCompile(
+		`(?i)(?:(?:確認|調査|検討|対応|修正|更新|作業|調整|判断|決定)(?:する)?(?:こと)?(?:が|は)?必要|要検討|要確認|needs? (?:review|investigation|consideration))`,
+	)
+	kindUnassignedManagementPattern = regexp.MustCompile(
+		`(?i)(?:別(?:の|件|枠).{0,20}(?:対応事項|管理)|対応事項として(?:管理|扱)|管理(?:する|します|方針)|(?:計画|方針)を確定|追加する案)`,
 	)
 	kindOwnerPattern = regexp.MustCompile(
-		`(?i)(?:[一-龠々ぁ-んァ-ヶーA-Za-z]{1,24}(?:さん|氏)(?:が|は|に)|(?:私|わたし|自分)(?:が|は)|担当者|責任者|owner|assignee)`,
+		`(?i)(?:[一-龠々ぁ-んァ-ヶーA-Za-z]{1,24}(?:さん|氏)(?:が|は|に|へ)|(?:私|わたし|自分)(?:が|は)|担当者|責任者|owner|assignee)`,
 	)
-	kindDeadlinePattern = regexp.MustCompile(
+	kindDeadlineMarkerPattern = regexp.MustCompile(
+		`(?i)(?:までに|まで|今週中|来週中|本日中|明日中|月末まで|週末まで|次回(?:会議)?まで|[月火水木金土日]曜(?:日)?まで|due|deadline|by next)`,
+	)
+	// kindDateMentionPattern is used only by the grounding atom checker. Kind
+	// classification must use actionDeadlinePresent so an object's event date
+	// cannot become a TODO deadline.
+	kindDateMentionPattern = regexp.MustCompile(
 		`(?i)(?:までに|今週|来週|本日|明日|月末|週末|次回(?:会議)?まで|[月火水木金土日]曜(?:日)?|期限|due|deadline|by next)`,
+	)
+	kindRelativeWorkDatePattern = regexp.MustCompile(
+		`(?i)(?:今週|来週|本日|明日|今月|来月|月末|週末|[月火水木金土日]曜(?:日)?)`,
+	)
+	kindEventDatePattern = regexp.MustCompile(
+		`(?i)(?:今週|来週|今月|来月|本日|明日|月末|週末|午前|午後|\d{1,2}月\d{1,2}日|\d{1,2}時\d{0,2}分?|[月火水木金土日]曜(?:日)?|\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?)`,
+	)
+	kindScheduledEventPattern = regexp.MustCompile(
+		`(?i)(?:(?:期限切れ|失効|満了|終了|開始|開催|到来)(?:に)?(?:なる|なります|する|します|予定)|(?:有効期限|契約期限|終了日|開催日)(?:は|が)|will (?:expire|end|start))`,
 	)
 	kindInvestigationPattern = regexp.MustCompile(
 		`(?i)(?:原因|要因|因果|調査|検証|確認が必要|特定|説明できるか|切り分け|investigat|verify|root cause)`,
@@ -111,7 +144,102 @@ var (
 		`(?i)(?:防止|予防|対策|回避|抑制|監視|更新|チェックリスト|見直し|再発防止|mitigat|prevent|remediat)`,
 	)
 	kindSentenceBoundaryPattern = regexp.MustCompile(`[。！？\r\n]+`)
+	// ASR often removes punctuation between two commitments. Split only after
+	// a completed commitment form and only when the following text begins with
+	// an explicit new owner, so ordinary compound predicates stay intact.
+	kindClauseCommitmentEndPattern = regexp.MustCompile(
+		`(?:してもらいます|をお願いします|いたします|行います|作ります|します)`,
+	)
+	kindClauseOwnerLeadPattern = regexp.MustCompile(
+		`^(?:(?:私|わたし|自分)(?:が|は)|[一-龠々ぁ-んァ-ヶーA-Za-z]{1,24}(?:さん|氏)(?:に(?:は)?|が|は|へ))`,
+	)
 )
+
+func semanticKindClauses(text string) []string {
+	raw := kindSentenceBoundaryPattern.Split(text, -1)
+	clauses := make([]string, 0, len(raw))
+	for _, clause := range raw {
+		for _, split := range splitImplicitTodoOwnerTransitions(clause) {
+			if trimmed := strings.TrimSpace(split); trimmed != "" {
+				clauses = append(clauses, trimmed)
+			}
+		}
+	}
+	return clauses
+}
+
+func splitImplicitTodoOwnerTransitions(text string) []string {
+	remaining := strings.TrimSpace(text)
+	if remaining == "" {
+		return nil
+	}
+	var result []string
+	for {
+		splitAt := -1
+		for _, location := range kindClauseCommitmentEndPattern.FindAllStringIndex(remaining, -1) {
+			suffix := remaining[location[1]:]
+			trimmed := strings.TrimLeft(suffix, " \t　、,")
+			if trimmed == "" || !kindClauseOwnerLeadPattern.MatchString(trimmed) {
+				continue
+			}
+			splitAt = location[1]
+			break
+		}
+		if splitAt <= 0 || splitAt >= len(remaining) {
+			result = append(result, remaining)
+			break
+		}
+		result = append(result, strings.TrimSpace(remaining[:splitAt]))
+		remaining = strings.TrimLeft(remaining[splitAt:], " \t　、,")
+	}
+	return result
+}
+
+// futureActionIntent requires a future/imperative action form in the same
+// sentence. A completed form such as 「修正しました」 contains the byte
+// sequence 「修正します」, so a whole-text regexp alone would incorrectly
+// classify it as a TODO.
+func futureActionIntent(text string) bool {
+	for _, clause := range semanticKindClauses(text) {
+		remaining := kindCompletedActionPattern.ReplaceAllString(clause, "")
+		if kindActionIntentPattern.MatchString(remaining) {
+			return true
+		}
+	}
+	return false
+}
+
+func futureActionCommitment(text string) bool {
+	for _, clause := range semanticKindClauses(text) {
+		remaining := kindCompletedActionPattern.ReplaceAllString(clause, "")
+		if kindCommitmentPattern.MatchString(remaining) {
+			return true
+		}
+	}
+	return false
+}
+
+// actionDeadlinePresent accepts a date as a deadline only when that date and
+// a future action belong to the same sentence. Object/event dates such as
+// 「証明書が来月末に失効する」 and past timestamps therefore remain event
+// metadata, not TODO deadlines.
+func actionDeadlinePresent(text string) bool {
+	for _, clause := range semanticKindClauses(text) {
+		action := futureActionIntent(clause)
+		if !action && kindOpenQuestionPattern.MatchString(clause) {
+			action = kindActionVerbPattern.MatchString(clause)
+		}
+		if !action {
+			continue
+		}
+		if kindDeadlineMarkerPattern.MatchString(clause) ||
+			(kindRelativeWorkDatePattern.MatchString(clause) &&
+				!kindScheduledEventPattern.MatchString(clause)) {
+			return true
+		}
+	}
+	return false
+}
 
 func itemKindValidationThreshold(mode itemKindValidationMode) float64 {
 	switch mode {
@@ -125,18 +253,97 @@ func itemKindValidationThreshold(mode itemKindValidationMode) float64 {
 }
 
 func itemSemanticEvidenceText(item liveAnalysisItem, scope liveEvidenceScope) string {
-	var values []string
+	return strings.Join(itemSemanticEvidenceClauses(item, scope), "。")
+}
+
+// itemSemanticEvidenceClauses returns only the evidence clauses that belong to
+// this proposition. One transcript segment can contain several independent
+// actions/issues; carrying the full segment into every sibling item leaks an
+// assignee or deadline from one clause into another.
+func itemSemanticEvidenceClauses(item liveAnalysisItem, scope liveEvidenceScope) []string {
+	var localized []string
+	add := func(value string) {
+		for _, clause := range semanticKindClauses(value) {
+			clause = strings.TrimSpace(clause)
+			if clause != "" && !containsExactString(localized, clause) {
+				localized = append(localized, clause)
+			}
+		}
+	}
+
+	// A grounding-verified snippet is the strongest proposition-local signal.
+	// Select the best matching snippet clause per cited sequence; split
+	// fragments intentionally retain the original snippet list for audit.
+	proposition := strings.TrimSpace(item.Title + " " + item.Body)
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		transcript := normalizeGroundingText(scope.TranscriptText[sequenceNo])
+		bestClause, bestScore := "", -1.0
+		for _, snippet := range item.EvidenceSnippets {
+			if normalized := normalizeGroundingText(snippet); normalized == "" ||
+				!strings.Contains(transcript, normalized) {
+				continue
+			}
+			for _, clause := range semanticKindClauses(snippet) {
+				score := semanticItemSimilarity(proposition, clause)
+				if sharedTreeAuditSubjectTerm(proposition, clause) {
+					score += 0.15
+				}
+				if score > bestScore {
+					bestClause, bestScore = clause, score
+				}
+			}
+		}
+		if bestClause != "" {
+			add(bestClause)
+		}
+	}
+	if len(localized) > 0 {
+		return localized
+	}
+
 	seen := make(map[int64]struct{}, len(item.EvidenceSequenceNos))
 	for _, sequenceNo := range item.EvidenceSequenceNos {
 		if _, duplicate := seen[sequenceNo]; duplicate {
 			continue
 		}
 		seen[sequenceNo] = struct{}{}
-		if text := strings.TrimSpace(scope.TranscriptText[sequenceNo]); text != "" {
-			values = append(values, text)
+		clauses := semanticKindClauses(scope.TranscriptText[sequenceNo])
+		if len(clauses) == 1 {
+			add(clauses[0])
+			continue
+		}
+		bestClause := ""
+		bestScore := -1.0
+		for _, clause := range clauses {
+			score := semanticItemSimilarity(proposition, clause)
+			if sharedTreeAuditSubjectTerm(proposition, clause) {
+				score += 0.15
+			}
+			if score > bestScore {
+				bestClause, bestScore = clause, score
+			}
+		}
+		if bestClause != "" && bestScore >= 0.08 {
+			add(bestClause)
 		}
 	}
-	return strings.Join(values, "。")
+	return localized
+}
+
+func itemKindSemanticText(item liveAnalysisItem, scope liveEvidenceScope) string {
+	proposition := strings.TrimSpace(item.Title + "。" + item.Body)
+	if len(item.EvidenceSnippets) == 0 &&
+		utf8.RuneCountInString(proposition) >= 12 {
+		return proposition
+	}
+	evidence := itemSemanticEvidenceText(item, scope)
+	if evidence == "" {
+		return proposition
+	}
+	// The title provides the model's intended subject while the localized,
+	// transcript-grounded clause supplies authoritative owner/deadline/action
+	// attributes. A composite body is deliberately omitted here.
+	return strings.TrimSpace(item.Title + "。" + evidence)
 }
 
 func latestItemSemanticEvidence(item liveAnalysisItem, scope liveEvidenceScope) (int64, string) {
@@ -173,22 +380,31 @@ func semanticEvidenceRole(roles []liveEvidenceRoleRef, sequenceNo int64) liveEvi
 
 func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) itemSemanticFeatures {
 	proposition := strings.TrimSpace(item.Title + "。" + item.Body)
-	evidence := itemSemanticEvidenceText(item, scope)
-	text := proposition
-	if utf8.RuneCountInString(strings.TrimSpace(proposition)) < 12 {
-		text = strings.TrimSpace(proposition + "。" + evidence)
+	text := itemKindSemanticText(item, scope)
+	if utf8.RuneCountInString(strings.TrimSpace(text)) < 12 {
+		text = proposition
 	}
 
+	confirmedEvidence := kindConfirmedPattern.MatchString(text) &&
+		!kindRecommendationPattern.MatchString(text)
+	completedAction := kindCompletedActionPattern.MatchString(text) &&
+		!kindProposalPattern.MatchString(text)
+	actionIntent := futureActionIntent(text)
+	commitment := futureActionCommitment(text)
+	scheduledEvent := kindScheduledEventPattern.MatchString(text)
 	features := itemSemanticFeatures{
 		NegativeImpactPresent:      kindNegativeImpactPattern.MatchString(text),
 		UncertaintyPresent:         kindUncertaintyPattern.MatchString(text),
-		FutureEventPresent:         kindFutureEventPattern.MatchString(text),
+		FutureEventPresent:         kindFutureEventPattern.MatchString(text) || scheduledEvent,
+		ScheduledEventPresent:      scheduledEvent,
 		CurrentProblemPresent:      kindCurrentProblemPattern.MatchString(text),
-		ConfirmedEvidencePresent:   kindConfirmedPattern.MatchString(text),
+		ConfirmedEvidencePresent:   confirmedEvidence,
 		ActionVerbPresent:          kindActionVerbPattern.MatchString(text),
+		CompletedActionPresent:     completedAction,
 		OwnerPresent:               kindOwnerPattern.MatchString(text),
-		DeadlinePresent:            kindDeadlinePattern.MatchString(text),
-		DecisionOrCommitment:       kindCommitmentPattern.MatchString(text),
+		DeadlinePresent:            actionDeadlinePresent(text),
+		EventDatePresent:           kindEventDatePattern.MatchString(text),
+		DecisionOrCommitment:       commitment,
 		InvestigationIntentPresent: kindInvestigationPattern.MatchString(text),
 		MitigationIntentPresent:    kindMitigationPattern.MatchString(text),
 		CausalHypothesisPresent:    kindCausalHypothesisPattern.MatchString(text),
@@ -203,6 +419,7 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 	if latestEvidence != "" &&
 		semanticItemSimilarity(proposition, latestEvidence) >= 0.12 &&
 		kindConfirmedPattern.MatchString(latestEvidence) &&
+		!kindRecommendationPattern.MatchString(latestEvidence) &&
 		!kindUncertaintyPattern.MatchString(latestEvidence) &&
 		!kindOpenQuestionPattern.MatchString(latestEvidence) {
 		features.ConfirmedEvidencePresent = true
@@ -233,6 +450,8 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		features.EpistemicStatus = "confirmed"
 	case features.DecisionOrCommitment:
 		features.EpistemicStatus = "committed"
+	case features.CompletedActionPresent:
+		features.EpistemicStatus = "confirmed"
 	case features.CausalHypothesisPresent:
 		features.EpistemicStatus = "hypothesis"
 	case features.CurrentProblemPresent || kindOpenQuestionPattern.MatchString(text):
@@ -247,13 +466,16 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		features.EpistemicStatus = "reported"
 	}
 	openQuestion := kindOpenQuestionPattern.MatchString(text)
-	actionIntent := kindActionIntentPattern.MatchString(text) ||
+	actionIntent = actionIntent ||
 		(features.ActionVerbPresent && !openQuestion &&
-			(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment))
+			(features.DeadlinePresent || features.DecisionOrCommitment))
 	switch {
 	case features.ConfirmationSupersedesOpen:
 		features.SemanticRole = "state"
-	case actionIntent && features.ProposalPresent:
+	case features.CompletedActionPresent && !actionIntent:
+		features.SemanticRole = "state"
+	case actionIntent && features.ProposalPresent &&
+		!features.OwnerPresent && !features.DeadlinePresent && !features.DecisionOrCommitment:
 		features.SemanticRole = "proposal"
 	case actionIntent:
 		features.SemanticRole = "action"
@@ -287,19 +509,46 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		return decision
 	}
 
-	text := strings.TrimSpace(item.Title + " " + item.Body)
+	text := itemKindSemanticText(item, scope)
 	openQuestion := kindOpenQuestionPattern.MatchString(text)
-	actionIntent := kindActionIntentPattern.MatchString(text) ||
+	actionIntent := futureActionIntent(text) ||
 		(features.ActionVerbPresent && !openQuestion &&
-			(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment))
-	strongAction := actionIntent &&
-		((!features.ProposalPresent &&
-			(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment)) ||
-			features.DecisionOrCommitment || (features.OwnerPresent && features.DeadlinePresent))
+			(features.DeadlinePresent || features.DecisionOrCommitment))
+	unassignedNecessity := kindUnassignedNecessityPattern.MatchString(text) &&
+		!features.OwnerPresent && !features.DecisionOrCommitment
+	uncommittedProposal := features.ProposalPresent &&
+		!features.OwnerPresent && !features.DeadlinePresent && !features.DecisionOrCommitment
+	strongAction := actionIntent && !uncommittedProposal &&
+		(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment)
 	preserveExplicitQuestion := originalKind == "issue" && originalSubtype == issueSubtypeQuestion && openQuestion
+	preserveOpenIssue := originalKind == "issue" && validIssueSubtype(originalSubtype) &&
+		!features.ConfirmationSupersedesOpen &&
+		(kindOpenQuestionPattern.MatchString(item.Title+" "+item.Body) ||
+			kindCurrentProblemPattern.MatchString(item.Title+" "+item.Body))
 
 	switch {
-	case strongAction && !preserveExplicitQuestion:
+	case features.CompletedActionPresent && !actionIntent &&
+		!openQuestion && !features.ProposalPresent && !features.UncertaintyPresent:
+		decision.CanonicalKind = "fact"
+		decision.CanonicalSubtype = ""
+		decision.Reason = "completed_action_is_historical_fact"
+		decision.Confidence = 0.98
+	case preserveExplicitQuestion:
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = issueSubtypeQuestion
+		decision.Reason = "explicit_question_preserved"
+		decision.Confidence = 0.98
+	case preserveOpenIssue:
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = originalSubtype
+		decision.Reason = "explicit_open_issue_preserved_from_companion_action"
+		decision.Confidence = 0.96
+	case unassignedNecessity:
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = issueSubtypeDiscussion
+		decision.Reason = "unassigned_action_necessity_remains_open"
+		decision.Confidence = 0.97
+	case strongAction && !features.ConfirmationSupersedesOpen:
 		decision.CanonicalKind = "todo"
 		decision.CanonicalSubtype = ""
 		decision.Reason = "committed_action"
@@ -310,7 +559,8 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		}
 	case features.ConfirmedEvidencePresent &&
 		(!features.UncertaintyPresent || features.ConfirmationSupersedesOpen) &&
-		(!openQuestion || features.ConfirmationSupersedesOpen) && !strongAction:
+		(!openQuestion || features.ConfirmationSupersedesOpen) &&
+		(!strongAction || features.ConfirmationSupersedesOpen):
 		decision.CanonicalKind = "fact"
 		decision.CanonicalSubtype = ""
 		decision.Reason = "confirmed_observed_or_reported_state"
@@ -324,7 +574,14 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		decision.CanonicalSubtype = issueSubtypeInvestigation
 		decision.Reason = "causal_hypothesis_requires_verification"
 		decision.Confidence = 0.97
-	case originalKind == "todo" && actionIntent && (features.CurrentProblemPresent || openQuestion):
+	case kindIncompletePurposePattern.MatchString(text) && !actionIntent:
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = issueSubtypeDiscussion
+		decision.Reason = "uncommitted_purpose_or_incomplete_action"
+		decision.Confidence = 0.92
+	case originalKind == "todo" && actionIntent &&
+		(features.CurrentProblemPresent || openQuestion) &&
+		(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment):
 		decision.Decision = "tentative"
 		decision.Reason = "composite_issue_action_requires_split_or_more_evidence"
 		decision.Confidence = 0.70
@@ -344,13 +601,19 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		decision.CanonicalSubtype = ""
 		decision.Reason = "future_uncertain_adverse_outcome"
 		decision.Confidence = 0.97
-	case actionIntent && features.ProposalPresent:
-		if originalKind == "todo" {
-			decision.Decision = "tentative"
-			decision.Reason = "uncommitted_action_proposal"
-			decision.Confidence = 0.86
-			break
+	case features.ScheduledEventPresent && !actionIntent && !openQuestion:
+		decision.CanonicalKind = "fact"
+		decision.CanonicalSubtype = ""
+		decision.Reason = "scheduled_object_or_event_state"
+		decision.Confidence = 0.95
+	case actionIntent && uncommittedProposal:
+		decision.CanonicalKind = "issue"
+		if originalKind != "issue" || !validIssueSubtype(originalSubtype) {
+			decision.CanonicalSubtype = issueSubtypeDiscussion
 		}
+		decision.Reason = "uncommitted_action_proposal"
+		decision.Confidence = 0.94
+	case kindRecommendationPattern.MatchString(text) && features.ActionVerbPresent:
 		decision.CanonicalKind = "issue"
 		if originalKind != "issue" || !validIssueSubtype(originalSubtype) {
 			decision.CanonicalSubtype = issueSubtypeDiscussion
@@ -361,6 +624,13 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		decision.CanonicalKind = "todo"
 		decision.CanonicalSubtype = ""
 		decision.Reason = "explicit_next_action"
+		decision.Confidence = 0.91
+	case originalKind == "todo" && !features.OwnerPresent &&
+		!features.DeadlinePresent && !features.DecisionOrCommitment &&
+		kindUnassignedManagementPattern.MatchString(text):
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = issueSubtypeDiscussion
+		decision.Reason = "unassigned_management_or_followup_is_not_todo"
 		decision.Confidence = 0.91
 	default:
 		decision.Decision = "tentative"
@@ -386,6 +656,17 @@ func validateLiveItemKinds(items []liveAnalysisItem, scope liveEvidenceScope, mo
 	for index := range validated {
 		decision := evaluateLiveItemKind(validated[index], scope, stage)
 		if decision.Decision == "rewrite_candidate" && decision.Confidence >= threshold {
+			if decision.CanonicalKind == "todo" &&
+				decision.OriginalKind != "todo" &&
+				validated[index].Status == "resolved" {
+				// Resolution belonged to the old Issue/Risk classification.
+				// A newly recognized future commitment must be tracked as an
+				// open Todo unless separate completion evidence resolves it.
+				validated[index].Status = "open"
+				validated[index].ResolvedAtVersion = 0
+				validated[index].ResolutionEvidenceSequenceNos = nil
+				validated[index].ResolutionReason = ""
+			}
 			validated[index].Kind = decision.CanonicalKind
 			validated[index].Subtype = decision.CanonicalSubtype
 			repairNonResolvableStatus(&validated[index])
@@ -454,7 +735,7 @@ func splitLiveItemKinds(previous, items []liveAnalysisItem, assignments []treeAs
 			candidate := item
 			candidate.Kind = fragment.Kind
 			candidate.Subtype = fragment.Subtype
-			candidate.Title = truncateRunes(fragment.Text, 40)
+			candidate.Title = semanticallyCompleteItemLabelOrOriginal(fragment.Text, fragment.Kind)
 			candidate.Body = truncateRunes(fragment.Text, liveAnalysisTreeDescriptionMaxRunes)
 			candidate.EvidenceSequenceNos = []int64{fragment.SequenceNo}
 			candidate.EvidenceSnippets = groundingSnippetsForFragment(item.EvidenceSnippets, fragment.Text, fragment.SequenceNo, scope)
@@ -688,7 +969,7 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 			candidate := item
 			candidate.Kind = fragment.Kind
 			candidate.Subtype = fragment.Subtype
-			candidate.Title = truncateRunes(fragment.Text, 40)
+			candidate.Title = semanticallyCompleteItemLabelOrOriginal(fragment.Text, fragment.Kind)
 			candidate.Body = truncateRunes(fragment.Text, liveAnalysisTreeDescriptionMaxRunes)
 			candidate.EvidenceSequenceNos = []int64{fragment.SequenceNo}
 			candidate.EvidenceSnippets = groundingSnippetsForFragment(item.EvidenceSnippets, fragment.Text, fragment.SequenceNo, scope)
