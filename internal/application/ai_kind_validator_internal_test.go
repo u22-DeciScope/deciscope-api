@@ -340,31 +340,83 @@ func TestCommonItemKindValidatorSplitsCompositeSemanticRoles(t *testing.T) {
 
 func TestCommonItemKindRelationsPreserveDistinctPropositions(t *testing.T) {
 	items := []liveAnalysisItem{
-		{ID: "risk-vpn", Kind: "risk", Title: "VPN証明書期限切れによる接続不能", EvidenceSequenceNos: []int64{6}},
-		{ID: "todo-vpn", Kind: "todo", Title: "VPN証明書の更新手順を確認", EvidenceSequenceNos: []int64{6}},
-		{ID: "issue-vlan", Kind: "issue", Title: "VLAN30が障害原因か未確認", EvidenceSequenceNos: []int64{1, 2}},
-		{ID: "fact-vlan", Kind: "fact", Title: "VLAN30が許可一覧から漏れていた", EvidenceSequenceNos: []int64{1}},
-		{ID: "todo-vlan", Kind: "todo", Title: "VLAN30の監視を追加", EvidenceSequenceNos: []int64{2}},
+		{ID: "fact-vlan", Kind: "fact", Title: "交換後スイッチの許可VLAN一覧からVLAN30が漏れていた", EvidenceSequenceNos: []int64{1}},
+		{ID: "cause-hypothesis", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "VLAN30設定漏れが3階障害の直接原因である可能性が高い", EvidenceSequenceNos: []int64{2}},
+		{ID: "scope-limit", Kind: "issue", Subtype: issueSubtypeConfirmation, Title: "2階の通信遅延までこの設定漏れで説明できるかは未確認", EvidenceSequenceNos: []int64{3}},
 	}
 	tree := &liveAnalysisTree{}
-	if created := appendSemanticKindRelations(tree, items); created != 3 {
+	if created := appendSemanticKindRelations(tree, items); created != 2 {
 		t.Fatalf("created=%d relations=%+v", created, tree.Relations)
 	}
-	got := map[string]string{}
+	got := map[string]liveAnalysisTreeRelation{}
 	for _, relation := range tree.Relations {
-		got[relation.Source+"->"+relation.Target] = relation.Kind
+		got[relation.Source+"->"+relation.Target] = relation
 	}
 	for pair, kind := range map[string]string{
-		"todo-vpn->risk-vpn":    "mitigates",
-		"fact-vlan->issue-vlan": "supports",
-		"todo-vlan->issue-vlan": "addresses",
+		"cause-hypothesis->fact-vlan":   "supported_by",
+		"scope-limit->cause-hypothesis": "limits",
 	} {
-		if got[pair] != kind {
-			t.Fatalf("relation %s=%q, want=%q all=%+v", pair, got[pair], kind, tree.Relations)
+		relation, ok := got[pair]
+		if !ok || relation.Kind != kind {
+			t.Fatalf("relation %s=%+v, want kind=%q all=%+v", pair, relation, kind, tree.Relations)
 		}
 	}
 	if created := appendSemanticKindRelations(tree, items); created != 0 {
 		t.Fatalf("relations duplicated: created=%d relations=%+v", created, tree.Relations)
+	}
+}
+
+func TestSemanticRelationsRejectFalseLinksAndDanglingEndpoints(t *testing.T) {
+	tests := []struct {
+		name  string
+		items []liveAnalysisItem
+	}{
+		{
+			name: "different subjects",
+			items: []liveAnalysisItem{
+				{ID: "fact-db", Kind: "fact", Title: "DB容量不足を確認した", EvidenceSequenceNos: []int64{1}},
+				{ID: "hypothesis-vlan", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "VLAN30設定漏れが障害原因である可能性が高い", EvidenceSequenceNos: []int64{2}},
+			},
+		},
+		{
+			name: "same subject but distant evidence",
+			items: []liveAnalysisItem{
+				{ID: "fact-vlan", Kind: "fact", Title: "VLAN30設定漏れを確認した", EvidenceSequenceNos: []int64{1}},
+				{ID: "hypothesis-vlan", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "VLAN30設定漏れが障害原因である可能性が高い", EvidenceSequenceNos: []int64{10}},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tree := &liveAnalysisTree{}
+			if created := appendSemanticKindRelations(tree, test.items); created != 0 || len(tree.Relations) != 0 {
+				t.Fatalf("false relation created: created=%d relations=%+v", created, tree.Relations)
+			}
+		})
+	}
+
+	items := []liveAnalysisItem{
+		{ID: "fact-vlan", Kind: "fact", Title: "VLAN30設定漏れを確認した", EvidenceSequenceNos: []int64{1}},
+		{ID: "hypothesis-vlan", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "VLAN30設定漏れが障害原因である可能性が高い", EvidenceSequenceNos: []int64{2}},
+	}
+	tree := &liveAnalysisTree{Relations: []liveAnalysisTreeRelation{
+		{Source: "hypothesis-vlan", Target: "fact-vlan", Kind: itemRelationSupportedBy},
+		{Source: "hypothesis-vlan", Target: "fact-vlan", Kind: itemRelationSupportedBy},
+		{Source: "missing", Target: "fact-vlan", Kind: itemRelationSupportedBy},
+		{Source: "fact-vlan", Target: "hypothesis-vlan", Kind: itemRelationCausedBy},
+	}}
+	reconcileSemanticKindRelations(tree, items, liveEvidenceScope{}, 4, "final_repair")
+	if len(tree.Relations) != 2 {
+		t.Fatalf("dedup/dangling validation failed: %+v", tree.Relations)
+	}
+	for _, relation := range tree.Relations {
+		if relation.Source == "missing" || relation.Source == relation.Target {
+			t.Fatalf("invalid relation retained: %+v", relation)
+		}
+		if relation.Kind == itemRelationSupportedBy &&
+			(relation.Source != "hypothesis-vlan" || relation.Target != "fact-vlan") {
+			t.Fatalf("supported_by direction reversed: %+v", relation)
+		}
 	}
 }
 
@@ -585,9 +637,9 @@ func TestSession2345b804296ee2a1EquivalentFinalKindRepair(t *testing.T) {
 		relationKinds[relation.Source+"->"+relation.Target] = relation.Kind
 	}
 	for pair, wantKind := range map[string]string{
-		"todo-alert-condition->risk-alert-overload":   "mitigates",
-		"risk-vpn-owner->risk-vpn-expiry":             "mitigates",
-		"todo-alert-condition->issue-alert-condition": "addresses",
+		"todo-alert-condition->risk-alert-overload":   "action_for",
+		"risk-vpn-owner->risk-vpn-expiry":             "action_for",
+		"todo-alert-condition->issue-alert-condition": "action_for",
 	} {
 		if relationKinds[pair] != wantKind {
 			t.Fatalf("relation %s=%q, want=%q all=%+v", pair, relationKinds[pair], wantKind, repaired.Tree.Relations)
@@ -614,5 +666,22 @@ func TestCommonItemKindValidatorPureFutureRiskIsStrong(t *testing.T) {
 	}
 	if !sameSentenceDiscussionIssueEvidence(item, text, 18) {
 		t.Fatalf("sameSentenceDiscussionIssueEvidence=false")
+	}
+}
+
+func TestCommonItemKindValidatorKeepsScheduledAdverseOutcomeAsRisk(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		1: "VPN証明書は来週失効するため接続不能のリスクがあります。",
+	}, 1)
+	item := liveAnalysisItem{
+		ID: "tail-risk", Kind: "risk",
+		Title:               "VPN証明書失効による接続不能リスク",
+		Body:                "来週の失効により接続できなくなる可能性がある",
+		EvidenceSequenceNos: []int64{1},
+		EvidenceSnippets:    []string{"VPN証明書は来週失効するため接続不能のリスクがあります"},
+	}
+	decision := evaluateLiveItemKind(item, scope, "test")
+	if decision.CanonicalKind != "risk" {
+		t.Fatalf("decision=%+v", decision)
 	}
 }

@@ -292,7 +292,8 @@ func localizeUpdatedItemEvidence(
 				retained = append(retained, sequenceNo)
 			} else if referenceEvidenceSupportsItem(
 				merged[index], evidence, scope.EvidenceRoles[sequenceNo],
-			) || sequenceSupportsItemSemantics(merged[index], evidence) {
+			) || sequenceSupportsItemSemantics(merged[index], evidence) ||
+				sequenceSuppliesItemReferent(merged[index], sequenceNo, scope) {
 				retained = append(retained, sequenceNo)
 			} else {
 				removed = append(removed, sequenceNo)
@@ -353,7 +354,8 @@ func localizePersistedItemEvidence(
 				retained = append(retained, sequenceNo)
 			} else if referenceEvidenceSupportsItem(
 				items[index], evidence, scope.EvidenceRoles[sequenceNo],
-			) || sequenceSupportsItemSemantics(items[index], evidence) {
+			) || sequenceSupportsItemSemantics(items[index], evidence) ||
+				sequenceSuppliesItemReferent(items[index], sequenceNo, scope) {
 				retained = append(retained, sequenceNo)
 			} else {
 				removed = append(removed, sequenceNo)
@@ -377,6 +379,28 @@ func localizePersistedItemEvidence(
 			})
 		}
 	}
+}
+
+func sequenceSuppliesItemReferent(item liveAnalysisItem, sequenceNo int64, scope liveEvidenceScope) bool {
+	if !containsInt64(item.EvidenceSequenceNos, sequenceNo+1) {
+		return false
+	}
+	antecedent := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+	dependent := strings.TrimSpace(scope.TranscriptText[sequenceNo+1])
+	if antecedent == "" || dependent == "" {
+		return false
+	}
+	itemText := strings.TrimSpace(item.Title + " " + item.Body)
+	if item.Kind == "risk" && itemLabelConditionalWithoutSubjectPattern.MatchString(dependent) &&
+		(kindScheduledEventPattern.MatchString(antecedent) || kindFutureEventPattern.MatchString(antecedent)) {
+		return sharedTreeAuditSubjectTerm(itemText, antecedent)
+	}
+	if item.Kind == "issue" && itemLabelDeicticSettingPattern.MatchString(dependent) &&
+		itemLabelSettingLeakPattern.MatchString(antecedent) {
+		qualifier := itemLabelConcreteQualifierPattern.FindString(antecedent)
+		return qualifier != "" && strings.Contains(strings.ToLower(itemText), strings.ToLower(qualifier))
+	}
+	return false
 }
 
 func sortedSequenceNos(values []int64) []int64 {

@@ -4733,6 +4733,10 @@ type liveAnalysisItem struct {
 	// meaningful issue still needs a later utterance/audit to resolve an
 	// anaphoric subject. It is independent from open/resolved lifecycle.
 	InformationStatus string `json:"informationStatus,omitempty"`
+	// LabelResolution is additive server-owned provenance for deterministic
+	// label repair. It does not extend the lifecycle, classification, or
+	// grounding enums consumed by existing clients.
+	LabelResolution *labelResolutionMetadata `json:"labelResolution,omitempty"`
 
 	// 以下はサーバーが決める分類メタデータ(ai_tree_classification.go)。モデル
 	// 出力に同名フィールドがあっても normalizeLiveAnalysisItems が消去する。
@@ -4969,6 +4973,9 @@ type liveAnalysisTreeNode struct {
 	Status         string   `json:"status,omitempty"`
 	Description    string   `json:"description,omitempty"`
 	RelatedItemIDs []string `json:"relatedItemIds,omitempty"`
+	// Detail nodes mirror the canonical item's label-resolution provenance so
+	// the final tree-only snapshot remains auditable after meeting completion.
+	LabelResolution *labelResolutionMetadata `json:"labelResolution,omitempty"`
 	// ModelTopicIDs are compatibility aliases for a server-canonical dynamic
 	// topic ID. They are never used as node IDs.
 	ModelTopicIDs []string `json:"modelTopicIds,omitempty"`
@@ -5005,15 +5012,28 @@ type liveAnalysisTreeNode struct {
 	ParentConfidence        float64 `json:"parentConfidence,omitempty"`
 }
 
+type labelResolutionMetadata struct {
+	Status                    string  `json:"status"`
+	Reason                    string  `json:"reason,omitempty"`
+	SourceEvidenceSequenceNos []int64 `json:"sourceEvidenceSequenceNos,omitempty"`
+}
+
 type liveAnalysisTreeEdge struct {
 	Source string `json:"source"`
 	Target string `json:"target"`
 }
 
 type liveAnalysisTreeRelation struct {
-	Source string `json:"source"`
-	Target string `json:"target"`
-	Kind   string `json:"kind,omitempty"`
+	ID                  string  `json:"id,omitempty"`
+	Source              string  `json:"source"`
+	Target              string  `json:"target"`
+	Kind                string  `json:"kind,omitempty"`
+	Confidence          float64 `json:"confidence,omitempty"`
+	EvidenceSequenceNos []int64 `json:"evidenceSequenceNos,omitempty"`
+	Origin              string  `json:"origin,omitempty"`
+	Status              string  `json:"status,omitempty"`
+	CreatedAtVersion    int64   `json:"createdAtVersion,omitempty"`
+	UpdatedAtVersion    int64   `json:"updatedAtVersion,omitempty"`
 }
 
 func (p liveAnalysisPayload) isEmpty() bool {
@@ -5100,6 +5120,7 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, stats ...*liveAnalysis
 		item.AssignmentSource = ""
 		item.AssignmentReason = ""
 		item.RelatedAgendaIDs = nil
+		item.LabelResolution = nil
 		item.EvidenceSnippets = uniqueSortedStrings(item.EvidenceSnippets)
 		item.GroundingDecision = ""
 		item.GroundingConfidence = 0
@@ -5188,6 +5209,7 @@ func mergeLiveAnalysisItems(previous, diff []liveAnalysisItem, updates map[strin
 				item.AssignmentConfidence = previousItem.AssignmentConfidence
 				item.AssignmentSource = previousItem.AssignmentSource
 				item.AssignmentReason = previousItem.AssignmentReason
+				item.LabelResolution = cloneLabelResolution(previousItem.LabelResolution)
 				item.EvidenceSequenceNos = previousItem.EvidenceSequenceNos
 				item.RelatedAgendaIDs = previousItem.RelatedAgendaIDs
 				item.ResolvedAtVersion = previousItem.ResolvedAtVersion
@@ -6088,7 +6110,9 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	repairIncompletePersistedItemLabels(
 		&merged, evidenceScope, timeline, treeVersion, treeStats,
 	)
-	kindRelationsCreated := appendSemanticKindRelations(merged.Tree, merged.Items)
+	kindRelationsCreated := reconcileSemanticKindRelations(
+		merged.Tree, merged.Items, evidenceScope, treeVersion, "deterministic_inference",
+	)
 	if treeStats != nil {
 		treeStats.KindRelationsCreated += kindRelationsCreated
 	}

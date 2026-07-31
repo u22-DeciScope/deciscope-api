@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -536,6 +537,7 @@ func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *
 }
 
 func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
+	relationSentinelPayload := json.RawMessage(`{"summary":"進行中です","items":[{"id":"item-source","kind":"issue","title":"原因仮説","labelResolution":{"status":"fallback_applied","reason":"context_dependent","sourceEvidenceSequenceNos":[16,17]}}],"tree":{"nodes":[{"id":"item-source","kind":"issue","label":"原因仮説","labelResolution":{"status":"fallback_applied","reason":"context_dependent","sourceEvidenceSequenceNos":[16,17]}}],"edges":[],"relations":[{"id":"relation-sentinel-rest-v1","source":"item-source","target":"item-target","kind":"refines","confidence":0.73125,"evidenceSequenceNos":[17,29],"origin":"transport_sentinel","status":"active","createdAtVersion":41,"updatedAtVersion":43}]}}`)
 	service := &fakeMeetingSessionUseCases{
 		session: domain.MeetingSession{
 			ID:          "session_1",
@@ -554,7 +556,7 @@ func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
 				Type:      domain.MeetingAIAnalysisLive,
 				Status:    domain.MeetingAIAnalysisCompleted,
 				Version:   4,
-				Payload:   json.RawMessage(`{"summary":"進行中です"}`),
+				Payload:   relationSentinelPayload,
 				Model:     "gpt-4o-mini",
 				UpdatedAt: mustTime(t, "2026-06-27T00:00:02Z"),
 			},
@@ -594,6 +596,13 @@ func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(string(body.Live.Payload), "進行中です") {
 		t.Fatalf("body.Live.Payload = %s", string(body.Live.Payload))
+	}
+	var wantPayload, gotPayload any
+	if err := json.Unmarshal(relationSentinelPayload, &wantPayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body.Live.Payload, &gotPayload); err != nil || !reflect.DeepEqual(gotPayload, wantPayload) {
+		t.Fatalf("REST relation sentinel changed: got=%s want=%s err=%v", body.Live.Payload, relationSentinelPayload, err)
 	}
 	if body.LiveIntervalSeconds != 10 {
 		t.Fatalf("body.LiveIntervalSeconds = %d, want 10", body.LiveIntervalSeconds)

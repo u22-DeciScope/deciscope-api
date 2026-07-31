@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -284,12 +285,13 @@ func TestTranscriptHubAIAnalysisWriteFailureIsolatedToSubscriber(t *testing.T) {
 }
 
 func TestMeetingAIAnalysisProtocolMessage(t *testing.T) {
+	relationSentinelPayload := json.RawMessage(`{"summary":"進行中です","items":[{"id":"item-source","kind":"issue","title":"原因仮説","labelResolution":{"status":"fallback_applied","reason":"context_dependent","sourceEvidenceSequenceNos":[16,17]}}],"tree":{"nodes":[{"id":"item-source","kind":"issue","label":"原因仮説","labelResolution":{"status":"fallback_applied","reason":"context_dependent","sourceEvidenceSequenceNos":[16,17]}}],"edges":[],"relations":[{"id":"relation-sentinel-websocket-v1","source":"item-source","target":"item-target","kind":"refines","confidence":0.73125,"evidenceSequenceNos":[17,29],"origin":"transport_sentinel","status":"active","createdAtVersion":41,"updatedAtVersion":43}]}}`)
 	analysis := domain.MeetingAIAnalysis{
 		SessionID:       "session_1",
 		Type:            domain.MeetingAIAnalysisLive,
 		Status:          domain.MeetingAIAnalysisCompleted,
 		Version:         4,
-		Payload:         json.RawMessage(`{"summary":"進行中です"}`),
+		Payload:         relationSentinelPayload,
 		Model:           "gpt-4o-mini",
 		UpdatedAt:       time.Date(2026, 6, 27, 0, 0, 3, 0, time.UTC),
 		IntervalSeconds: 10,
@@ -314,6 +316,17 @@ func TestMeetingAIAnalysisProtocolMessage(t *testing.T) {
 	}
 	if !strings.Contains(string(message.Data.Payload), "進行中です") {
 		t.Fatalf("payload = %s", string(message.Data.Payload))
+	}
+	var decoded meetingAIAnalysisMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode protocol message: %v", err)
+	}
+	var wantPayload, gotPayload any
+	if err := json.Unmarshal(relationSentinelPayload, &wantPayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(decoded.Data.Payload, &gotPayload); err != nil || !reflect.DeepEqual(gotPayload, wantPayload) {
+		t.Fatalf("WebSocket relation sentinel changed: got=%s want=%s err=%v", decoded.Data.Payload, relationSentinelPayload, err)
 	}
 }
 

@@ -1024,91 +1024,85 @@
         {
           "sequenceNo": 1,
           "speaker": "佐藤",
-          "text": "VPN証明書が来週失効し、更新しなければ全社員が接続できなくなるリスクがあります。"
+		  "text": "VPN証明書は来週失効します。"
+		},
+		{
+		  "sequenceNo": 2,
+		  "speaker": "佐藤",
+		  "text": "放置すると全社員がリモート接続できなくなる可能性があります。"
         }
       ],
       "meetingContext": {},
-      "seedPayload": {
-        "summary": "証明書失効",
-        "currentTopic": "VPN証明書",
-        "items": [
-          {
-            "id": "important-vpn-risk",
-            "kind": "issue",
-            "subtype": "discussion",
-            "severity": "high",
-            "title": "VPN証明書失効により全社員が接続不能になるリスク",
-            "body": "来週までに更新しなければ接続できなくなる",
-            "status": "open",
-            "evidenceSequenceNos": [1],
-            "createdThroughSequenceNo": 1,
-            "groundingDecision": "accepted"
-          }
-        ],
-        "tree": {
-          "nodes": [
-            {
-              "id": "root",
-              "kind": "topic",
-              "label": "会議全体"
-            },
-            {
-              "id": "topic-vpn-risk",
-              "kind": "topic",
-              "parentId": "root",
-              "label": "VPN証明書失効",
-              "origin": "dynamic",
-              "materialized": true
-            },
-            {
-              "id": "important-vpn-risk",
-              "kind": "issue",
-              "parentId": "topic-vpn-risk",
-              "label": "VPN証明書失効により全社員が接続不能になるリスク"
-            }
-          ],
-          "edges": [
-            {
-              "source": "root",
-              "target": "topic-vpn-risk"
-            },
-            {
-              "source": "topic-vpn-risk",
-              "target": "important-vpn-risk"
-            }
-          ]
-        },
-        "treeVersion": 1
-      },
+	  "seedPayload": {
+		"summary": "証明書失効",
+		"currentTopic": "VPN証明書",
+		"items": [
+		  {
+			"id": "important-vpn-risk",
+			"kind": "issue",
+			"subtype": "discussion",
+			"severity": "high",
+			"title": "VPN証明書失効により全社員がリモート接続不能になるリスク",
+			"body": "来週までに更新しなければ全社員がリモート接続できなくなる",
+			"status": "open",
+			"evidenceSequenceNos": [1],
+			"createdThroughSequenceNo": 1,
+			"groundingDecision": "accepted"
+		  }
+		],
+		"tree": {
+		  "nodes": [
+			{"id": "root", "kind": "topic", "label": "会議全体"},
+			{"id": "topic-vpn-risk", "kind": "topic", "parentId": "root", "label": "VPN証明書失効", "origin": "dynamic", "materialized": true},
+			{"id": "important-vpn-risk", "kind": "issue", "parentId": "topic-vpn-risk", "label": "VPN証明書失効により全社員がリモート接続不能になるリスク"}
+		  ],
+		  "edges": [
+			{"source": "root", "target": "topic-vpn-risk"},
+			{"source": "topic-vpn-risk", "target": "important-vpn-risk"}
+		  ]
+		},
+		"treeVersion": 1
+	  },
       "rounds": [
         {
-          "sequenceNos": [1],
+		  "sequenceNos": [1, 2],
           "fixedAIResponse": {
-            "summary": "既存の安全なラベルを保持",
+			"summary": "証明書失効リスク",
             "currentTopic": "VPN証明書",
             "items": [
               {
-                "id": "important-vpn-risk",
+				"clientKey": "important-vpn-risk",
                 "kind": "risk",
                 "severity": "high",
-                "title": "VPN証明書失効により全社員が接続不能になるリスク",
-                "body": "来週までに更新しなければ接続できなくなる",
+				"title": "VPN証明書を放置すると全社員がリモート接続できてい",
+				"body": "VPN証明書を放置すると全社員がリモート接続できてい",
                 "status": "open",
-                "evidenceSequenceNos": [1],
-                "evidenceSnippets": ["VPN証明書が来週失効し、更新しなければ全社員が接続できなくなるリスクがあります"]
+				"evidenceSequenceNos": [1, 2]
               }
             ],
-            "newTopics": [],
-            "assignments": []
+			"newTopics": [
+			  {
+				"id": "topic-vpn-risk",
+				"label": "VPN証明書失効",
+				"description": "証明書失効による接続リスク"
+			  }
+			],
+			"assignments": [
+			  {
+				"nodeId": "important-vpn-risk",
+				"parentTopicId": "topic-vpn-risk",
+				"confidence": 0.96
+			  }
+			]
           }
         }
       ],
       "requiredPropositions": [
         {
           "id": "important-risk",
-          "text": "VPN証明書失効により全社員が接続できなくなるリスク",
+		  "text": "VPN証明書失効により全社員がリモート接続できなくなるリスク",
           "requiredKind": "risk",
-          "evidenceSequenceNos": [1]
+		  "evidenceSequenceNos": [1, 2]
         }
       ],
       "safetyExpectations": [
@@ -1133,7 +1127,7 @@
           "propositionId": "important-risk"
         }
       ],
-      "finalCoverage": 1,
+	  "finalCoverage": 2,
       "applyFinalRepair": true
     },
     {
@@ -1143,166 +1137,79 @@
         {
           "sequenceNo": 1,
           "speaker": "田中",
-          "text": "VLAN30が許可一覧から漏れていました。"
+		  "text": "完全なアクセスポート設定ではありません。"
         },
         {
           "sequenceNo": 2,
+		  "speaker": "田中",
+		  "text": "トランク設定は入っていました。"
+		},
+		{
+		  "sequenceNo": 3,
+		  "speaker": "田中",
+		  "text": "交換後スイッチの許可VLAN一覧からVLAN30が漏れていました。"
+		},
+		{
+		  "sequenceNo": 4,
           "speaker": "佐藤",
-          "text": "この設定漏れが3階障害の直接原因である可能性が高いです。"
+		  "text": "現時点では、この設定漏れが3階障害の直接原因である可能性が最も高いと考えています。"
         },
         {
-          "sequenceNo": 3,
+		  "sequenceNo": 5,
           "speaker": "鈴木",
-          "text": "ただし2階の通信遅延まで説明できるかは未確認です。"
-        },
-        {
-          "sequenceNo": 4,
-          "speaker": "司会",
-          "text": "原因と未確認範囲を整理しました。"
+		  "text": "ただし2階の通信遅延までこの設定漏れで説明できるかは未確認です。"
         }
       ],
       "meetingContext": {},
-      "seedPayload": {
-        "summary": "ネットワーク障害原因",
-        "currentTopic": "障害原因と適用範囲",
-        "items": [
-          {
-            "id": "vlan-fact",
-            "kind": "fact",
-            "severity": "high",
-            "title": "VLAN30が許可一覧から漏れていた",
-            "body": "許可VLAN設定の漏れを確認した",
-            "status": "open",
-            "evidenceSequenceNos": [1],
-            "createdThroughSequenceNo": 1,
-            "groundingDecision": "accepted"
-          },
-          {
-            "id": "cause-hypothesis",
-            "kind": "issue",
-            "subtype": "investigation",
-            "severity": "high",
-            "title": "設定漏れが3階障害の直接原因である可能性が高い",
-            "body": "VLAN30設定漏れを原因仮説とする",
-            "status": "open",
-            "evidenceSequenceNos": [2],
-            "createdThroughSequenceNo": 2,
-            "groundingDecision": "accepted"
-          },
-          {
-            "id": "scope-limit",
-            "kind": "issue",
-            "subtype": "confirmation",
-            "severity": "high",
-            "title": "2階の通信遅延まで説明できるかは未確認",
-            "body": "原因仮説の適用範囲が未確認",
-            "status": "open",
-            "evidenceSequenceNos": [3],
-            "createdThroughSequenceNo": 3,
-            "groundingDecision": "accepted"
-          }
-        ],
-        "tree": {
-          "nodes": [
-            {
-              "id": "root",
-              "kind": "topic",
-              "label": "会議全体"
-            },
-            {
-              "id": "topic-network",
-              "kind": "topic",
-              "parentId": "root",
-              "label": "ネットワーク障害",
-              "origin": "dynamic",
-              "materialized": true
-            },
-            {
-              "id": "group-cause-scope",
-              "kind": "group",
-              "parentId": "topic-network",
-              "label": "障害原因と適用範囲"
-            },
-            {
-              "id": "vlan-fact",
-              "kind": "fact",
-              "parentId": "group-cause-scope",
-              "label": "VLAN30が許可一覧から漏れていた"
-            },
-            {
-              "id": "cause-hypothesis",
-              "kind": "issue",
-              "parentId": "group-cause-scope",
-              "label": "設定漏れが3階障害の直接原因である可能性が高い"
-            },
-            {
-              "id": "scope-limit",
-              "kind": "issue",
-              "parentId": "group-cause-scope",
-              "label": "2階の通信遅延まで説明できるかは未確認"
-            }
-          ],
-          "edges": [
-            {
-              "source": "root",
-              "target": "topic-network"
-            },
-            {
-              "source": "topic-network",
-              "target": "group-cause-scope"
-            },
-            {
-              "source": "group-cause-scope",
-              "target": "vlan-fact"
-            },
-            {
-              "source": "group-cause-scope",
-              "target": "cause-hypothesis"
-            },
-            {
-              "source": "group-cause-scope",
-              "target": "scope-limit"
-            }
-          ],
-          "relations": [
-            {
-              "source": "cause-hypothesis",
-              "target": "vlan-fact",
-              "kind": "supported_by"
-            },
-            {
-              "source": "scope-limit",
-              "target": "cause-hypothesis",
-              "kind": "limits"
-            }
-          ]
-        },
-        "analyzedFinalSegments": [
-          {
-            "callId": "quality-call",
-            "sequenceNo": 1
-          },
-          {
-            "callId": "quality-call",
-            "sequenceNo": 2
-          },
-          {
-            "callId": "quality-call",
-            "sequenceNo": 3
-          }
-        ],
-        "coveredThroughSequenceNo": 3,
-        "treeVersion": 3
-      },
       "rounds": [
         {
-          "sequenceNos": [4],
+		  "sequenceNos": [1, 2, 3, 4, 5],
           "fixedAIResponse": {
-            "summary": "原因と適用範囲のrecap",
+			"summary": "VLAN設定漏れ、原因仮説、未確認範囲",
             "currentTopic": "障害原因と適用範囲",
-            "items": [],
-            "newTopics": [],
-            "assignments": []
+			"items": [
+			  {
+				"clientKey": "vlan-fact",
+				"kind": "fact",
+				"severity": "high",
+				"title": "完全なアクセスポート設定ではありません",
+				"body": "完全なアクセスポート設定ではありません",
+				"status": "open",
+				"evidenceSequenceNos": [1, 2, 3]
+			  },
+			  {
+				"clientKey": "cause-hypothesis",
+				"kind": "issue",
+				"subtype": "investigation",
+				"severity": "high",
+				"title": "現時点では、この設定漏れが3階障害の",
+				"body": "現時点では、この設定漏れが3階障害の",
+				"status": "open",
+				"evidenceSequenceNos": [3, 4]
+			  },
+			  {
+				"clientKey": "scope-limit",
+				"kind": "issue",
+				"subtype": "confirmation",
+				"severity": "high",
+				"title": "2階の通信遅延までこの設定漏れで説明できるかは未確認",
+				"body": "2階の通信遅延までこの設定漏れで説明できるかは未確認",
+				"status": "open",
+				"evidenceSequenceNos": [4, 5]
+			  }
+			],
+			"newTopics": [
+			  {
+				"id": "topic-network",
+				"label": "障害原因と適用範囲",
+				"description": "VLAN設定漏れの原因仮説と未確認範囲"
+			  }
+			],
+			"assignments": [
+			  {"nodeId": "vlan-fact", "parentTopicId": "topic-network", "confidence": 0.96},
+			  {"nodeId": "cause-hypothesis", "parentTopicId": "topic-network", "confidence": 0.96},
+			  {"nodeId": "scope-limit", "parentTopicId": "topic-network", "confidence": 0.96}
+			]
           }
         }
       ],
@@ -1311,19 +1218,19 @@
           "id": "vlan-fact",
           "text": "VLAN30が許可一覧から漏れていた",
           "requiredKind": "fact",
-          "evidenceSequenceNos": [1]
+		  "evidenceSequenceNos": [3]
         },
         {
           "id": "cause-hypothesis",
           "text": "設定漏れが3階障害の直接原因である可能性が高い",
           "allowedKinds": ["issue", "fact"],
-          "evidenceSequenceNos": [2]
+		  "evidenceSequenceNos": [4]
         },
         {
           "id": "scope-limit",
           "text": "2階の通信遅延まで説明できるかは未確認",
           "requiredKind": "issue",
-          "evidenceSequenceNos": [3]
+		  "evidenceSequenceNos": [5]
         }
       ],
       "requiredRelations": [
@@ -1342,7 +1249,7 @@
           "requiredAncestor": "障害原因と適用範囲"
         }
       ],
-      "finalCoverage": 4,
+	  "finalCoverage": 5,
       "applyFinalRepair": true
     },
     {

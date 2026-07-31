@@ -117,7 +117,9 @@ func lowInformationExistingItemMatch(previous []liveAnalysisItem, item liveAnaly
 func validateLiveItemInformation(item liveAnalysisItem, updatesExisting bool, timeline discourseTimeline, scope liveEvidenceScope) (string, liveUtteranceRole) {
 	role := dominantLiveItemRole(item.EvidenceSequenceNos, timeline)
 	if endingType := incompleteItemLabelEnding(item); endingType != "" {
-		return "incomplete_label_" + endingType, role
+		if !labelFailureRetentionEligible(item, scope, timeline) {
+			return "incomplete_label_" + endingType, role
+		}
 	}
 	if item.Kind == "decision" && isMeetingEndOnlyItem(item.Title, item.Body) {
 		return "meeting_end_discourse", firstNonEmptyUtteranceRole(role, liveUtteranceDiscourseTransition)

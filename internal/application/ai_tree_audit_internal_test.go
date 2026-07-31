@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -121,6 +122,21 @@ func TestClassifyTreeAuditEvidenceKeepsPersistedPrimaryUtterance(t *testing.T) {
 func TestTreeAuditPatchValidatorAllowsOnlySafeSemanticImprovement(t *testing.T) {
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
+	wantRelation := relationTransportSentinel("item-risk-rare-plants", "item-decision-public-web")
+	duplicateRelation := wantRelation
+	selfRelation := wantRelation
+	selfRelation.ID = "relation-self-invalid"
+	selfRelation.Target = selfRelation.Source
+	danglingRelation := wantRelation
+	danglingRelation.ID = "relation-dangling-invalid"
+	danglingRelation.Target = "item-does-not-exist"
+	state.Tree.Relations = append(state.Tree.Relations, wantRelation, duplicateRelation, selfRelation, danglingRelation)
+	wantResolution := &labelResolutionMetadata{
+		Status: "retained_degraded", Reason: "context_dependent_repair_failed",
+		SourceEvidenceSequenceNos: []int64{22},
+	}
+	findItemByID(state.Items, "item-risk-rare-plants").LabelResolution = cloneLabelResolution(wantResolution)
+	treeNodeByID(state.Tree, "item-risk-rare-plants").LabelResolution = cloneLabelResolution(wantResolution)
 	roles := classifyTreeAuditEvidence(state, segments)
 	operation := treeAuditOperation{
 		OperationID: "op-move-plant", Type: TreeAuditMoveItem,
@@ -137,6 +153,29 @@ func TestTreeAuditPatchValidatorAllowsOnlySafeSemanticImprovement(t *testing.T) 
 	}
 	if dry.ChangeSource != "tree_auditor" || dry.TreeChanges == nil || dry.TreeChanges.Source != "tree_auditor" {
 		t.Fatalf("audit provenance missing: %+v %+v", dry.ChangeSource, dry.TreeChanges)
+	}
+	gotRelation, found := findRelationSentinel(dry.Tree.Relations, wantRelation.ID)
+	if !found {
+		t.Fatalf("audit move lost relation sentinel: %+v", dry.Tree.Relations)
+	}
+	assertRelationSentinelEqual(t, gotRelation, wantRelation)
+	count := 0
+	for _, relation := range dry.Tree.Relations {
+		if relation.ID == wantRelation.ID {
+			count++
+		}
+		if relation.ID == selfRelation.ID || relation.ID == danglingRelation.ID {
+			t.Fatalf("audit normalization retained invalid relation: %+v", relation)
+		}
+	}
+	if count != 1 {
+		t.Fatalf("audit normalization retained %d relation sentinel copies", count)
+	}
+	movedItem := findItemByID(dry.Items, operation.TargetCanonicalItemID)
+	movedNode := treeNodeByID(dry.Tree, operation.TargetCanonicalItemID)
+	if movedItem == nil || movedNode == nil || !reflect.DeepEqual(movedItem.LabelResolution, wantResolution) ||
+		!reflect.DeepEqual(movedNode.LabelResolution, wantResolution) {
+		t.Fatalf("audit move changed label resolution: item=%+v node=%+v", movedItem, movedNode)
 	}
 }
 
@@ -1563,6 +1602,8 @@ func TestTreeAuditMergeItemsAppliesEvidenceUnionAndSurvivor(t *testing.T) {
 		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-a", Kind: "todo", ParentID: "candidate-info-public", Label: "希少植物の予備調査", Status: "open"},
 		liveAnalysisTreeNode{ID: "item-todo-vpn-cert-b", Kind: "todo", ParentID: "candidate-info-public", Label: "希少植物の予備調査", Status: "open"},
 	)
+	removedEndpointRelation := relationTransportSentinel("item-todo-vpn-cert-b", "item-decision-public-web")
+	state.Tree.Relations = append(state.Tree.Relations, removedEndpointRelation)
 	rebuildTreeAuditEdges(state.Tree)
 	roles := classifyTreeAuditEvidence(state, segments)
 	operation := treeAuditOperation{
@@ -1576,6 +1617,9 @@ func TestTreeAuditMergeItemsAppliesEvidenceUnionAndSurvivor(t *testing.T) {
 	}
 	if node := treeNodeByID(dry.Tree, "item-todo-vpn-cert-b"); node != nil {
 		t.Fatalf("merged-away node must be removed from tree: %+v", node)
+	}
+	if relation, found := findRelationSentinel(dry.Tree.Relations, removedEndpointRelation.ID); found {
+		t.Fatalf("relation with removed endpoint must be removed: %+v", relation)
 	}
 	survivor := findItemByID(dry.Items, "item-todo-vpn-cert-a")
 	companion := findItemByID(dry.Items, "item-todo-vpn-cert-b")
@@ -1631,6 +1675,14 @@ func TestTreeAuditMergeItemsRejectsDecisionAndUndecidedMismatch(t *testing.T) {
 func TestTreeAuditRewriteItemTitleAppliesWhenSubjectPreserved(t *testing.T) {
 	payload, segments, mc := targetTreeAuditFixture(t)
 	state := previousLiveAnalysisState(payload)
+	wantRelation := relationTransportSentinel("item-risk-rare-plants", "item-decision-public-web")
+	state.Tree.Relations = append(state.Tree.Relations, wantRelation)
+	wantResolution := &labelResolutionMetadata{
+		Status: "fallback_applied", Reason: "max_length_truncation",
+		SourceEvidenceSequenceNos: []int64{22},
+	}
+	findItemByID(state.Items, "item-risk-rare-plants").LabelResolution = cloneLabelResolution(wantResolution)
+	treeNodeByID(state.Tree, "item-risk-rare-plants").LabelResolution = cloneLabelResolution(wantResolution)
 	roles := classifyTreeAuditEvidence(state, segments)
 	operation := treeAuditOperation{
 		OperationID: "op-rewrite-title", Type: TreeAuditRewriteItemTitle,
@@ -1646,6 +1698,14 @@ func TestTreeAuditRewriteItemTitleAppliesWhenSubjectPreserved(t *testing.T) {
 	if item == nil || item.Title != "希少植物の生態調査" || node == nil || node.Label != "希少植物の生態調査" {
 		t.Fatalf("rewritten item/node = %+v %+v", item, node)
 	}
+	if !reflect.DeepEqual(item.LabelResolution, wantResolution) || !reflect.DeepEqual(node.LabelResolution, wantResolution) {
+		t.Fatalf("audit rewrite changed label resolution: item=%+v node=%+v", item.LabelResolution, node.LabelResolution)
+	}
+	gotRelation, found := findRelationSentinel(dry.Tree.Relations, wantRelation.ID)
+	if !found {
+		t.Fatalf("audit rewrite lost relation sentinel: %+v", dry.Tree.Relations)
+	}
+	assertRelationSentinelEqual(t, gotRelation, wantRelation)
 }
 
 // TestTreeAuditRewriteItemTitleRejectsSubjectChange covers the rewrite_item*

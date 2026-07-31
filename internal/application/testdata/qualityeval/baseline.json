@@ -39,10 +39,19 @@
         {
           "propositionId": "vpn-auth-risk",
           "kind": "risk",
-          "parentPath": ["VPN多要素認証未設定による不正接続リス"]
+          "parentPath": [
+            "VPN多要素認証未設定による不正接続リス"
+          ]
         }
       ],
-      "kindDistribution": [{"kind": "risk", "count": 1}]
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "unexpected-candidate-promotion",
@@ -63,13 +72,33 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "wetland-risk", "kind": "risk", "parentPath": ["湿地・希少植物調査"]},
-        {"propositionId": "wetland-survey", "kind": "todo", "parentPath": ["湿地・希少植物調査"]}
+        {
+          "propositionId": "wetland-risk",
+          "kind": "risk",
+          "parentPath": [
+            "湿地・希少植物調査"
+          ]
+        },
+        {
+          "propositionId": "wetland-survey",
+          "kind": "todo",
+          "parentPath": [
+            "湿地・希少植物調査"
+          ]
+        }
       ],
       "kindDistribution": [
-        {"kind": "risk", "count": 1},
-        {"kind": "todo", "count": 1}
-      ]
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "same-batch-candidate-promotion",
@@ -90,13 +119,33 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "certificate-risk", "kind": "risk", "parentPath": ["外部接続証明書更新の別管理"]},
-        {"propositionId": "certificate-todo", "kind": "todo", "parentPath": ["外部接続証明書更新の別管理"]}
+        {
+          "propositionId": "certificate-risk",
+          "kind": "risk",
+          "parentPath": [
+            "外部接続証明書更新の別管理"
+          ]
+        },
+        {
+          "propositionId": "certificate-todo",
+          "kind": "todo",
+          "parentPath": [
+            "外部接続証明書更新の別管理"
+          ]
+        }
       ],
       "kindDistribution": [
-        {"kind": "risk", "count": 1},
-        {"kind": "todo", "count": 1}
-      ]
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "recap-preserves-tree",
@@ -117,9 +166,22 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "recovery", "kind": "fact", "parentPath": ["ネットワーク復旧"]}
+        {
+          "propositionId": "recovery",
+          "kind": "fact",
+          "parentPath": [
+            "ネットワーク復旧"
+          ]
+        }
       ],
-      "kindDistribution": [{"kind": "fact", "count": 1}]
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "unspoken-information-contamination",
@@ -140,12 +202,26 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "procedure-todo", "kind": "todo", "parentPath": ["追加論点"]}
+        {
+          "propositionId": "procedure-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
       ],
       "kindDistribution": [
-        {"kind": "decision", "count": 1},
-        {"kind": "todo", "count": 1}
-      ]
+        {
+          "kind": "decision",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "semantic-kind-classification",
@@ -166,19 +242,66 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "cause-issue", "kind": "issue", "parentPath": ["通信障害の根本原因が未特定"]},
-        {"propositionId": "log-todo", "kind": "todo", "parentPath": ["追加論点"]},
-        {"propositionId": "outage-fact", "kind": "fact", "parentPath": ["通信障害の根本原因が未特定"]},
-        {"propositionId": "rollback-decision", "kind": "decision", "parentPath": ["追加論点"]},
-        {"propositionId": "service-risk", "kind": "risk", "parentPath": ["追加論点"]}
+        {
+          "propositionId": "cause-issue",
+          "kind": "issue",
+          "parentPath": [
+            "通信障害の根本原因が未特定"
+          ]
+        },
+        {
+          "propositionId": "log-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "outage-fact",
+          "kind": "fact",
+          "parentPath": [
+            "通信障害の根本原因が未特定"
+          ]
+        },
+        {
+          "propositionId": "rollback-decision",
+          "kind": "decision",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "service-risk",
+          "kind": "risk",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
       ],
       "kindDistribution": [
-        {"kind": "decision", "count": 1},
-        {"kind": "fact", "count": 1},
-        {"kind": "issue", "count": 1},
-        {"kind": "risk", "count": 1},
-        {"kind": "todo", "count": 1}
-      ]
+        {
+          "kind": "decision",
+          "count": 1
+        },
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "low-information-node-repair",
@@ -199,9 +322,22 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "certificate-expiry-check", "kind": "todo", "parentPath": ["追加論点"]}
+        {
+          "propositionId": "certificate-expiry-check",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
       ],
-      "kindDistribution": [{"kind": "todo", "count": 1}]
+      "kindDistribution": [
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "correction-removes-stale-proposition",
@@ -222,9 +358,22 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "corrected-deadline", "kind": "fact", "parentPath": ["追加論点"]}
+        {
+          "propositionId": "corrected-deadline",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
       ],
-      "kindDistribution": [{"kind": "fact", "count": 1}]
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "semantic-evidence-mismatch",
@@ -245,9 +394,22 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "valid-estimate", "kind": "fact", "parentPath": ["追加論点"]}
+        {
+          "propositionId": "valid-estimate",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
       ],
-      "kindDistribution": [{"kind": "fact", "count": 1}]
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "split-fragment-future-evidence",
@@ -268,13 +430,33 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "outage", "kind": "issue", "parentPath": ["追加論点"]},
-        {"propositionId": "vlan", "kind": "fact", "parentPath": ["追加論点"]}
+        {
+          "propositionId": "outage",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "vlan",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
       ],
       "kindDistribution": [
-        {"kind": "fact", "count": 1},
-        {"kind": "issue", "count": 1}
-      ]
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "finalization-inflight-tail-flush",
@@ -282,8 +464,8 @@
       "metrics": {
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
-        "classificationAccuracy": 0.5,
-        "riskRecall": 0,
+        "classificationAccuracy": 1,
+        "riskRecall": 1,
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
@@ -294,22 +476,34 @@
         "candidateFragmentationCount": 0,
         "crossAgendaContaminationCount": 0
       },
-      "kindMismatches": [
+      "parentAssignments": [
         {
           "propositionId": "tail-risk",
-          "expectedKinds": ["risk"],
-          "actualItemId": "item-fact-4ced709daffb",
-          "actualKind": "fact"
+		  "kind": "risk",
+          "parentPath": [
+            "VPN証明書更新"
+          ]
+        },
+        {
+          "propositionId": "tail-todo",
+          "kind": "todo",
+          "parentPath": [
+            "VPN証明書更新"
+          ]
         }
       ],
-      "parentAssignments": [
-        {"propositionId": "tail-risk", "kind": "fact", "parentPath": ["VPN証明書更新"]},
-        {"propositionId": "tail-todo", "kind": "todo", "parentPath": ["VPN証明書更新"]}
-      ],
       "kindDistribution": [
-        {"kind": "fact", "count": 1},
-        {"kind": "todo", "count": 1}
-      ]
+        {
+		  "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "label-rewrite-failure-preserves-risk",
@@ -330,9 +524,22 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "important-risk", "kind": "risk", "parentPath": ["VPN証明書失効"]}
+        {
+          "propositionId": "important-risk",
+          "kind": "risk",
+          "parentPath": [
+            "VPN証明書失効"
+          ]
+        }
       ],
-      "kindDistribution": [{"kind": "risk", "count": 1}]
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "network-logical-hierarchy",
@@ -353,14 +560,40 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "cause-hypothesis", "kind": "issue", "parentPath": ["ネットワーク障害", "障害原因と適用範囲"]},
-        {"propositionId": "scope-limit", "kind": "issue", "parentPath": ["ネットワーク障害", "障害原因と適用範囲"]},
-        {"propositionId": "vlan-fact", "kind": "fact", "parentPath": ["ネットワーク障害", "障害原因と適用範囲"]}
+        {
+          "propositionId": "cause-hypothesis",
+          "kind": "issue",
+          "parentPath": [
+			"障害原因と適用範囲"
+          ]
+        },
+        {
+          "propositionId": "scope-limit",
+          "kind": "issue",
+          "parentPath": [
+			"障害原因と適用範囲"
+          ]
+        },
+        {
+          "propositionId": "vlan-fact",
+          "kind": "fact",
+          "parentPath": [
+			"障害原因と適用範囲"
+          ]
+        }
       ],
       "kindDistribution": [
-        {"kind": "fact", "count": 1},
-        {"kind": "issue", "count": 2}
-      ]
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "semantic-duplicate-proposition",
@@ -381,9 +614,22 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "recovery", "kind": "fact", "parentPath": ["追加論点"]}
+        {
+          "propositionId": "recovery",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
       ],
-      "kindDistribution": [{"kind": "fact", "count": 2}]
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     },
     {
       "id": "vpn-certificate-card-tree-consistency",
@@ -404,13 +650,33 @@
         "crossAgendaContaminationCount": 0
       },
       "parentAssignments": [
-        {"propositionId": "vpn-cert-risk", "kind": "risk", "parentPath": ["VPN証明書更新の別管理"]},
-        {"propositionId": "vpn-cert-todo", "kind": "todo", "parentPath": ["VPN証明書更新の別管理"]}
+        {
+          "propositionId": "vpn-cert-risk",
+          "kind": "risk",
+          "parentPath": [
+            "VPN証明書更新の別管理"
+          ]
+        },
+        {
+          "propositionId": "vpn-cert-todo",
+          "kind": "todo",
+          "parentPath": [
+            "VPN証明書更新の別管理"
+          ]
+        }
       ],
       "kindDistribution": [
-        {"kind": "risk", "count": 1},
-        {"kind": "todo", "count": 1}
-      ]
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
     }
   ]
 }

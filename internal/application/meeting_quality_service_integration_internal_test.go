@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -460,6 +461,59 @@ func qualityServiceSameBatchKindScenario() MeetingQualityScenario {
 	}
 }
 
+func qualityServiceFallbackRelationScenario() MeetingQualityScenario {
+	return MeetingQualityScenario{
+		ID:          "service-label-fallback-and-logical-relations",
+		Description: "fallback labels and logical relations survive final persistence",
+		TranscriptSegments: []MeetingQualityTranscriptSegment{
+			{SequenceNo: 1, Speaker: "佐藤", Text: "VPN証明書は来週失効します。"},
+			{SequenceNo: 2, Speaker: "佐藤", Text: "放置すると全社員がリモート接続できなくなる可能性があります。"},
+			{SequenceNo: 3, Speaker: "高橋", Text: "高橋が金曜日までにVPN証明書の更新手順を確認します。"},
+			{SequenceNo: 4, Speaker: "田中", Text: "交換後スイッチの許可VLAN一覧からVLAN30が漏れていました。"},
+			{SequenceNo: 5, Speaker: "佐藤", Text: "現時点では、この設定漏れが3階障害の直接原因である可能性が最も高いと考えています。"},
+			{SequenceNo: 6, Speaker: "鈴木", Text: "ただし2階の通信遅延までこの設定漏れで説明できるかは未確認です。"},
+		},
+		Rounds: []MeetingQualityRound{{
+			SequenceNos: []int64{1, 2, 3, 4, 5, 6},
+			FixedAIResponse: json.RawMessage(`{
+				"summary":"VPN証明書リスクとネットワーク障害原因",
+				"currentTopic":"障害原因と適用範囲",
+				"items":[
+					{"clientKey":"vpn-risk","kind":"risk","severity":"high","title":"VPN証明書を放置すると全社員がリモート接続できてい","body":"VPN証明書を放置すると全社員がリモート接続できてい","status":"open","evidenceSequenceNos":[1,2]},
+					{"clientKey":"vpn-todo","kind":"todo","severity":"high","title":"高橋が金曜日までにVPN証明書の更新手順を確認する","body":"高橋が金曜日までにVPN証明書の更新手順を確認する","status":"open","evidenceSequenceNos":[3]},
+					{"clientKey":"vlan-fact","kind":"fact","severity":"high","title":"交換後スイッチの許可VLAN一覧からVLAN30が漏れていた","body":"交換後スイッチの許可VLAN一覧からVLAN30が漏れていた","status":"open","evidenceSequenceNos":[4]},
+					{"clientKey":"cause-hypothesis","kind":"issue","subtype":"investigation","severity":"high","title":"現時点では、この設定漏れが3階障害の","body":"現時点では、この設定漏れが3階障害の","status":"open","evidenceSequenceNos":[4,5]},
+					{"clientKey":"scope-limit","kind":"issue","subtype":"confirmation","severity":"high","title":"2階の通信遅延までこの設定漏れで説明できるかは未確認","body":"2階の通信遅延までこの設定漏れで説明できるかは未確認","status":"open","evidenceSequenceNos":[5,6]}
+				],
+				"newTopics":[
+					{"id":"topic-vpn-fallback","label":"VPN証明書失効","description":"失効リスクと更新確認"},
+					{"id":"topic-network-relations","label":"障害原因と適用範囲","description":"VLAN設定漏れの原因仮説と未確認範囲"}
+				],
+				"assignments":[
+					{"nodeId":"vpn-risk","parentTopicId":"topic-vpn-fallback","confidence":0.96},
+					{"nodeId":"vpn-todo","parentTopicId":"topic-vpn-fallback","confidence":0.96},
+					{"nodeId":"vlan-fact","parentTopicId":"topic-network-relations","confidence":0.96},
+					{"nodeId":"cause-hypothesis","parentTopicId":"topic-network-relations","confidence":0.96},
+					{"nodeId":"scope-limit","parentTopicId":"topic-network-relations","confidence":0.96}
+				]
+			}`),
+		}},
+		RequiredPropositions: []MeetingQualityProposition{
+			{ID: "vpn-risk", Text: "VPN証明書失効により全社員がリモート接続できなくなるリスク", RequiredKind: "risk", EvidenceSequenceNos: []int64{1, 2}},
+			{ID: "vpn-todo", Text: "高橋が金曜日までにVPN証明書の更新手順を確認する", RequiredKind: "todo", EvidenceSequenceNos: []int64{3}},
+			{ID: "vlan-fact", Text: "交換後スイッチの許可VLAN一覧からVLAN30が漏れていた", RequiredKind: "fact", EvidenceSequenceNos: []int64{4}},
+			{ID: "cause-hypothesis", Text: "VLAN30設定漏れが3階障害の直接原因である可能性が高い", RequiredKind: "issue", EvidenceSequenceNos: []int64{5}},
+			{ID: "scope-limit", Text: "2階の通信遅延までこの設定漏れで説明できるかは未確認", RequiredKind: "issue", EvidenceSequenceNos: []int64{6}},
+		},
+		RequiredRelations: []MeetingQualityRelation{
+			{From: "cause-hypothesis", To: "vlan-fact", Kind: itemRelationSupportedBy, RequireSameBranch: true},
+			{From: "scope-limit", To: "cause-hypothesis", Kind: itemRelationLimits, RequireSameBranch: true},
+		},
+		FinalCoverage:    6,
+		ApplyFinalRepair: true,
+	}
+}
+
 func qualityServiceDomainSegments(sessionID string, scenario MeetingQualityScenario) []domain.TranscriptSegment {
 	segments := make([]domain.TranscriptSegment, 0, len(scenario.TranscriptSegments))
 	for _, fixture := range scenario.TranscriptSegments {
@@ -618,6 +672,143 @@ func TestMeetingQualityServiceIntegration(t *testing.T) {
 	t.Run("D_multiple_rounds_promote_one_dynamic_topic", testMeetingQualityServiceIntegrationMultipleRoundPromotion)
 	t.Run("E_final_artifacts_reload_with_agenda_metadata", testMeetingQualityServiceIntegrationReload)
 	t.Run("F_stale_live_CAS_cannot_overwrite_final_projection", testMeetingQualityServiceIntegrationStaleCAS)
+	t.Run("G_label_fallback_and_relations_survive_fresh_reader", testMeetingQualityServiceIntegrationFallbackRelations)
+}
+
+func testMeetingQualityServiceIntegrationFallbackRelations(t *testing.T) {
+	scenario := qualityServiceFallbackRelationScenario()
+	h := newQualityServiceHarness(t, qualityServiceRoundResponses(scenario))
+	segments := qualityServiceDomainSegments("quality-fallback-relations", scenario)
+	qualityServiceSaveDurable(t, h.transcript, segments)
+	h.start()
+	h.service.PrepareMeetingSession(domain.MeetingSession{ID: segments[0].SessionID})
+	qualityServiceWaitWrite(t, h.repo, domain.MeetingAIAnalysisLive, domain.MeetingAIAnalysisCompleted, 1)
+	if got := h.completer.callCount(qualityServiceLiveDeployment); got != 1 {
+		t.Fatalf("live_extraction calls=%d, want one fixed task-routed batch", got)
+	}
+	qualityServiceFinalize(t, h.service, segments[0].SessionID, 6)
+	snapshot := qualityServiceReload(t, h, segments[0].SessionID)
+	live, tree := qualityServiceAssertPersistence(t, snapshot, 6)
+	result := qualityServiceAssertEvaluation(t, scenario, snapshot.Live.Payload)
+
+	active := make(map[string]liveAnalysisItem)
+	var risk *liveAnalysisItem
+	for index := range live.Items {
+		item := live.Items[index]
+		if item.Inactive || item.MergedIntoID != "" {
+			continue
+		}
+		active[item.ID] = item
+		if item.Kind == "risk" && strings.Contains(item.Title, "VPN証明書") {
+			copy := item
+			risk = &copy
+		}
+	}
+	if risk == nil || !strings.Contains(risk.Title, "リモート接続") ||
+		!strings.Contains(risk.Title, "可能性") ||
+		!equalInt64s(risk.EvidenceSequenceNos, []int64{1, 2}) {
+		t.Fatalf("fallback risk did not survive final reload: %+v", risk)
+	}
+	if risk.LabelResolution == nil || risk.LabelResolution.Status != "fallback_applied" ||
+		!equalInt64s(risk.LabelResolution.SourceEvidenceSequenceNos, []int64{1, 2}) {
+		t.Fatalf("fallback risk label resolution did not survive final reload: %+v", risk.LabelResolution)
+	}
+	riskTopic := itemTopicID(live.Tree, risk.ID)
+	if riskTopic == "" || treeNodeByID(live.Tree, riskTopic) == nil ||
+		treeNodeByID(live.Tree, riskTopic).Origin != topicOriginDynamic {
+		t.Fatalf("fallback risk lost dynamic topic: risk=%+v topic=%+v", risk, treeNodeByID(live.Tree, riskTopic))
+	}
+	if got, want := qualityServiceActiveItemIDs(live.Items), qualityServiceTreeDetailIDs(tree.Tree); strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("assistant/card and final tree item ids differ: live=%v tree=%v", got, want)
+	}
+	liveRiskNode := treeNodeByID(live.Tree, risk.ID)
+	finalRiskNode := treeNodeByID(tree.Tree, risk.ID)
+	if liveRiskNode == nil || finalRiskNode == nil ||
+		!reflect.DeepEqual(liveRiskNode.LabelResolution, risk.LabelResolution) ||
+		!reflect.DeepEqual(finalRiskNode.LabelResolution, risk.LabelResolution) {
+		t.Fatalf("tree projections lost label resolution: item=%+v live=%+v final=%+v",
+			risk.LabelResolution, liveRiskNode, finalRiskNode)
+	}
+
+	relationKeys := make(map[string]liveAnalysisTreeRelation)
+	for _, relation := range live.Tree.Relations {
+		relationKeys[relationKey(relation)] = relation
+		if _, ok := active[relation.Source]; !ok {
+			t.Fatalf("relation source is not active: %+v", relation)
+		}
+		if _, ok := active[relation.Target]; !ok {
+			t.Fatalf("relation target is not active: %+v", relation)
+		}
+		if relation.ID == "" || relation.Confidence <= 0 || relation.Status != "active" ||
+			len(relation.EvidenceSequenceNos) == 0 || relation.Origin == "" {
+			t.Fatalf("relation metadata missing after reload: %+v", relation)
+		}
+	}
+	matchedIDs := make(map[string]string, len(result.PropositionMatches))
+	for _, match := range result.PropositionMatches {
+		if match.Matched && match.BestActualCandidate != nil {
+			matchedIDs[match.PropositionID] = match.BestActualCandidate.ID
+		}
+	}
+	hypothesisID := matchedIDs["cause-hypothesis"]
+	factID := matchedIDs["vlan-fact"]
+	limitID := matchedIDs["scope-limit"]
+	for _, key := range []string{
+		hypothesisID + "\x00" + itemRelationSupportedBy + "\x00" + factID,
+		limitID + "\x00" + itemRelationLimits + "\x00" + hypothesisID,
+	} {
+		if _, ok := relationKeys[key]; !ok {
+			t.Fatalf("required persisted relation %q missing: %+v", key, live.Tree.Relations)
+		}
+	}
+	if !reflect.DeepEqual(tree.Tree.Relations, live.Tree.Relations) {
+		t.Fatalf("live/final relation metadata differs: live=%+v final=%+v", live.Tree.Relations, tree.Tree.Relations)
+	}
+
+	// Persist a relation whose every optional field is non-default, then prove
+	// both repository rows survive a fresh reader and a rejected stale CAS.
+	sentinel := relationTransportSentinel(hypothesisID, factID)
+	sentinel.ID = "relation-sentinel-service-v1"
+	live.Tree.Relations = append(live.Tree.Relations, sentinel)
+	tree.Tree.Relations = append(tree.Tree.Relations, sentinel)
+	livePayload, err := json.Marshal(live)
+	if err != nil {
+		t.Fatalf("marshal live sentinel payload: %v", err)
+	}
+	treePayload, err := json.Marshal(tree)
+	if err != nil {
+		t.Fatalf("marshal tree sentinel payload: %v", err)
+	}
+	liveRow := cloneQualityServiceAnalysis(*snapshot.Live)
+	treeRow := cloneQualityServiceAnalysis(*snapshot.Tree)
+	liveRow.Payload = livePayload
+	treeRow.Payload = treePayload
+	if _, err := h.repo.UpsertMeetingAIAnalysis(context.Background(), liveRow); err != nil {
+		t.Fatalf("persist live sentinel: %v", err)
+	}
+	if _, err := h.repo.UpsertMeetingAIAnalysis(context.Background(), treeRow); err != nil {
+		t.Fatalf("persist final-tree sentinel: %v", err)
+	}
+	stale := liveRow
+	stale.Payload = json.RawMessage(`{"summary":"stale","items":[],"tree":{"nodes":[],"edges":[],"relations":[]}}`)
+	current, applied, err := h.repo.CompareAndSwapMeetingAIAnalysis(context.Background(), liveRow.Version-1, stale)
+	if err != nil || applied || current == nil || current.Version != liveRow.Version {
+		t.Fatalf("stale sentinel CAS err=%v applied=%t current=%+v", err, applied, current)
+	}
+	fresh := qualityServiceReload(t, h, segments[0].SessionID)
+	freshLive, freshTree := qualityServiceAssertPersistence(t, fresh, 6)
+	gotLiveSentinel, liveFound := findRelationSentinel(freshLive.Tree.Relations, sentinel.ID)
+	gotTreeSentinel, treeFound := findRelationSentinel(freshTree.Tree.Relations, sentinel.ID)
+	if !liveFound || !treeFound {
+		t.Fatalf("fresh reader lost persisted sentinel: live=%+v final=%+v", freshLive.Tree.Relations, freshTree.Tree.Relations)
+	}
+	assertRelationSentinelEqual(t, gotLiveSentinel, sentinel)
+	assertRelationSentinelEqual(t, gotTreeSentinel, sentinel)
+	if !reflect.DeepEqual(freshLive.Tree.Relations, freshTree.Tree.Relations) {
+		t.Fatalf("fresh live/final relation metadata differs: live=%+v final=%+v", freshLive.Tree.Relations, freshTree.Tree.Relations)
+	}
+	t.Logf("orchestration=durable batch+finalize persistence=fresh-reader fallbackRisk=%s relations=%d semanticPassed=%t",
+		risk.ID, len(freshLive.Tree.Relations), result.Passed)
 }
 
 func testMeetingQualityServiceIntegrationFinalizationWait(t *testing.T) {

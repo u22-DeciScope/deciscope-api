@@ -1,6 +1,7 @@
 package application
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"sort"
@@ -64,7 +65,7 @@ type itemKindSplitDecision struct {
 }
 
 var (
-	kindUncertaintyPattern      = regexp.MustCompile(`(?i)(?:可能性|おそれ|恐れ|懸念|かもしれ|なりかね|risk|may|might|could)`)
+	kindUncertaintyPattern      = regexp.MustCompile(`(?i)(?:可能性|おそれ|恐れ|懸念|リスク|かもしれ|なりかね|risk|may|might|could)`)
 	kindCausalHypothesisPattern = regexp.MustCompile(
 		`(?i)(?:(?:原因|要因|理由|因果).{0,24}(?:可能性|候補|仮説|推定|考え)|(?:可能性|候補|仮説|推定).{0,24}(?:原因|要因|理由|因果)|root cause.{0,24}(?:may|might|likely))`,
 	)
@@ -780,9 +781,7 @@ func expectedSemanticKindRelations(items []liveAnalysisItem) int {
 	count := 0
 	for left := 0; left < len(items); left++ {
 		for right := left + 1; right < len(items); right++ {
-			if _, _, kind := semanticKindRelation(items[left], items[right]); kind != "" {
-				count++
-			}
+			count += len(semanticKindRelations(items[left], items[right], liveEvidenceScope{}))
 		}
 	}
 	return count
@@ -815,7 +814,12 @@ func strongKindFragments(item liveAnalysisItem, scope liveEvidenceScope) []stron
 		probe := item
 		probe.Title, probe.Body = sentence, sentence
 		probe.EvidenceSequenceNos = []int64{sequenceNo}
-		if finalItemIsLowInformation(probe) || liveItemTextNeedsReferent(probe) {
+		conditionalReferent := index > 0 &&
+			itemLabelConditionalWithoutSubjectPattern.MatchString(sentence) &&
+			(kindScheduledEventPattern.MatchString(sentences[index-1]) ||
+				kindFutureEventPattern.MatchString(sentences[index-1]))
+		if (finalItemIsLowInformation(probe) || liveItemTextNeedsReferent(probe)) &&
+			!conditionalReferent {
 			continue
 		}
 		decision := evaluateLiveItemKind(probe, liveEvidenceScope{}, "semantic_split")
@@ -1030,70 +1034,242 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 }
 
 func appendSemanticKindRelations(tree *liveAnalysisTree, items []liveAnalysisItem) int {
+	return reconcileSemanticKindRelations(
+		tree, items, liveEvidenceScope{}, 0, "deterministic_inference",
+	)
+}
+
+const (
+	itemRelationSupportedBy = "supported_by"
+	itemRelationCausedBy    = "caused_by"
+	itemRelationLimits      = "limits"
+	itemRelationResolves    = "resolves"
+	itemRelationActionFor   = "action_for"
+	itemRelationContradicts = "contradicts"
+	itemRelationRefines     = "refines"
+)
+
+var itemRelationLimitPattern = regexp.MustCompile(
+	`(?:ただし|一方で|まで.{0,24}説明できるか|適用範囲|限定|限界|未確認)`,
+)
+
+func validItemRelationKind(kind string) bool {
+	switch kind {
+	case itemRelationSupportedBy, itemRelationCausedBy, itemRelationLimits,
+		itemRelationResolves, itemRelationActionFor, itemRelationContradicts,
+		itemRelationRefines:
+		return true
+	default:
+		return false
+	}
+}
+
+func relationKey(relation liveAnalysisTreeRelation) string {
+	return relation.Source + "\x00" + relation.Kind + "\x00" + relation.Target
+}
+
+func deterministicRelationID(source, kind, target string) string {
+	sum := sha256.Sum256([]byte(source + "\x00" + kind + "\x00" + target))
+	return fmt.Sprintf("relation-%x", sum[:8])
+}
+
+func reconcileSemanticKindRelations(
+	tree *liveAnalysisTree,
+	items []liveAnalysisItem,
+	scope liveEvidenceScope,
+	version int64,
+	origin string,
+) int {
 	if tree == nil {
 		return 0
 	}
 	active := make([]liveAnalysisItem, 0, len(items))
+	activeByID := make(map[string]liveAnalysisItem, len(items))
 	for _, item := range items {
-		if !item.Inactive && item.MergedIntoID == "" {
+		if !item.Inactive && item.MergedIntoID == "" && strings.TrimSpace(item.ID) != "" {
 			active = append(active, item)
+			activeByID[item.ID] = item
 		}
 	}
-	existing := make(map[string]struct{}, len(tree.Relations))
-	for _, relation := range tree.Relations {
-		existing[relation.Source+"\x00"+relation.Target] = struct{}{}
-	}
-	created := 0
+	desired := make(map[string]liveAnalysisTreeRelation)
 	for left := 0; left < len(active); left++ {
 		for right := left + 1; right < len(active); right++ {
-			source, target, kind := semanticKindRelation(active[left], active[right])
-			if kind == "" {
-				continue
+			for _, relation := range semanticKindRelations(active[left], active[right], scope) {
+				if !semanticRelationItemsRelated(tree, activeByID[relation.Source], activeByID[relation.Target], relation.Kind) {
+					continue
+				}
+				relation.ID = deterministicRelationID(relation.Source, relation.Kind, relation.Target)
+				relation.EvidenceSequenceNos = relationEvidenceSequenceNos(
+					activeByID[relation.Source], activeByID[relation.Target],
+				)
+				relation.Origin = origin
+				relation.Status = "active"
+				relation.CreatedAtVersion = version
+				relation.UpdatedAtVersion = version
+				desired[relationKey(relation)] = relation
 			}
-			leftText := active[left].Title + " " + active[left].Body
-			rightText := active[right].Title + " " + active[right].Body
-			related := itemEvidenceOverlaps(active[left], active[right]) ||
-				(itemEvidenceWithin(active[left], active[right], 2) &&
-					sharedTreeAuditSubjectTerm(leftText, rightText) &&
-					semanticItemSimilarity(leftText, rightText) >= 0.20)
-			if !related {
-				continue
-			}
-			key := source + "\x00" + target
-			if _, duplicate := existing[key]; duplicate {
-				continue
-			}
-			tree.Relations = append(tree.Relations, liveAnalysisTreeRelation{Source: source, Target: target, Kind: kind})
-			existing[key] = struct{}{}
-			created++
 		}
 	}
-	sort.SliceStable(tree.Relations, func(i, j int) bool {
-		if tree.Relations[i].Source != tree.Relations[j].Source {
-			return tree.Relations[i].Source < tree.Relations[j].Source
+
+	kept := make([]liveAnalysisTreeRelation, 0, len(tree.Relations)+len(desired))
+	existing := make(map[string]struct{}, len(tree.Relations))
+	for _, relation := range tree.Relations {
+		relation = canonicalizeLegacyItemRelation(relation, activeByID)
+		if !validSemanticTreeRelation(relation, activeByID) {
+			continue
 		}
-		return tree.Relations[i].Target < tree.Relations[j].Target
+		key := relationKey(relation)
+		if _, duplicate := existing[key]; duplicate {
+			continue
+		}
+		if replacement, ok := desired[key]; ok {
+			if relation.CreatedAtVersion > 0 {
+				replacement.CreatedAtVersion = relation.CreatedAtVersion
+			}
+			if strings.TrimSpace(relation.Origin) != "" {
+				replacement.Origin = relation.Origin
+			}
+			relation = replacement
+			delete(desired, key)
+		} else if relation.Origin == "deterministic_inference" || relation.Origin == "final_repair" {
+			// Canonical items are the source of truth. A deterministic relation
+			// whose evidence no longer satisfies the rule is retired here.
+			continue
+		}
+		if relation.ID == "" {
+			relation.ID = deterministicRelationID(relation.Source, relation.Kind, relation.Target)
+		}
+		if relation.Status == "" {
+			relation.Status = "active"
+		}
+		kept = append(kept, relation)
+		existing[key] = struct{}{}
+	}
+
+	created := 0
+	for key, relation := range desired {
+		if _, duplicate := existing[key]; duplicate {
+			continue
+		}
+		kept = append(kept, relation)
+		existing[key] = struct{}{}
+		created++
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		if kept[i].Source != kept[j].Source {
+			return kept[i].Source < kept[j].Source
+		}
+		if kept[i].Kind != kept[j].Kind {
+			return kept[i].Kind < kept[j].Kind
+		}
+		return kept[i].Target < kept[j].Target
 	})
+	tree.Relations = kept
 	return created
 }
 
-func semanticKindRelation(left, right liveAnalysisItem) (source, target, kind string) {
-	switch {
-	case left.Kind == "todo" && right.Kind == "risk":
-		return left.ID, right.ID, "mitigates"
-	case right.Kind == "todo" && left.Kind == "risk":
-		return right.ID, left.ID, "mitigates"
-	case left.Kind == "todo" && right.Kind == "issue":
-		return left.ID, right.ID, "addresses"
-	case right.Kind == "todo" && left.Kind == "issue":
-		return right.ID, left.ID, "addresses"
-	case left.Kind == "fact" && right.Kind == "issue":
-		return left.ID, right.ID, "supports"
-	case right.Kind == "fact" && left.Kind == "issue":
-		return right.ID, left.ID, "supports"
-	default:
-		return "", "", ""
+func semanticKindRelations(left, right liveAnalysisItem, scope liveEvidenceScope) []liveAnalysisTreeRelation {
+	result := make([]liveAnalysisTreeRelation, 0, 2)
+	for _, pair := range [][2]liveAnalysisItem{{left, right}, {right, left}} {
+		source, target := pair[0], pair[1]
+		sourceFeatures := inferItemSemanticFeatures(source, scope)
+		targetFeatures := inferItemSemanticFeatures(target, scope)
+		switch {
+		case source.Kind == "issue" && sourceFeatures.CausalHypothesisPresent &&
+			target.Kind == "fact" && targetFeatures.ConfirmedEvidencePresent:
+			result = append(result, liveAnalysisTreeRelation{
+				Source: source.ID, Target: target.ID, Kind: itemRelationSupportedBy, Confidence: 0.94,
+			})
+		case source.Kind == "issue" && target.Kind == "issue" &&
+			itemRelationLimitPattern.MatchString(source.Title+" "+source.Body) &&
+			kindOpenQuestionPattern.MatchString(source.Title+" "+source.Body) &&
+			targetFeatures.CausalHypothesisPresent &&
+			evidenceFollowsWithin(source, target, 2):
+			result = append(result, liveAnalysisTreeRelation{
+				Source: source.ID, Target: target.ID, Kind: itemRelationLimits, Confidence: 0.91,
+			})
+		case source.Kind == "todo" && (target.Kind == "issue" || target.Kind == "risk" || target.Kind == "decision") &&
+			sourceFeatures.ActionVerbPresent:
+			result = append(result, liveAnalysisTreeRelation{
+				Source: source.ID, Target: target.ID, Kind: itemRelationActionFor, Confidence: 0.88,
+			})
+		}
 	}
+	return result
+}
+
+func semanticRelationItemsRelated(tree *liveAnalysisTree, source, target liveAnalysisItem, kind string) bool {
+	sourceText := source.Title + " " + source.Body
+	targetText := target.Title + " " + target.Body
+	sourceTopic, targetTopic := treeItemTopic(tree, source.ID), treeItemTopic(tree, target.ID)
+	if sourceTopic != "" && targetTopic != "" && sourceTopic != targetTopic {
+		return false
+	}
+	sharedSubject := sharedTreeAuditSubjectTerm(sourceText, targetText)
+	switch kind {
+	case itemRelationLimits:
+		return evidenceFollowsWithin(source, target, 2) &&
+			(sharedSubject || itemLabelContextDependentPattern.MatchString(source.Title) ||
+				itemLabelDeicticSettingPattern.MatchString(sourceText))
+	default:
+		return itemEvidenceOverlaps(source, target) ||
+			(itemEvidenceWithin(source, target, 2) && sharedSubject &&
+				semanticItemSimilarity(sourceText, targetText) >= 0.10)
+	}
+}
+
+func evidenceFollowsWithin(source, target liveAnalysisItem, maxDistance int64) bool {
+	for _, sourceSequence := range source.EvidenceSequenceNos {
+		for _, targetSequence := range target.EvidenceSequenceNos {
+			if sourceSequence > targetSequence && sourceSequence-targetSequence <= maxDistance {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func relationEvidenceSequenceNos(source, target liveAnalysisItem) []int64 {
+	sequenceNos := append([]int64(nil), source.EvidenceSequenceNos...)
+	sequenceNos = append(sequenceNos, target.EvidenceSequenceNos...)
+	sort.Slice(sequenceNos, func(i, j int) bool { return sequenceNos[i] < sequenceNos[j] })
+	kept := sequenceNos[:0]
+	for _, sequenceNo := range sequenceNos {
+		if sequenceNo <= 0 || (len(kept) > 0 && kept[len(kept)-1] == sequenceNo) {
+			continue
+		}
+		kept = append(kept, sequenceNo)
+	}
+	return kept
+}
+
+func canonicalizeLegacyItemRelation(
+	relation liveAnalysisTreeRelation,
+	active map[string]liveAnalysisItem,
+) liveAnalysisTreeRelation {
+	relation.Source = strings.TrimSpace(relation.Source)
+	relation.Target = strings.TrimSpace(relation.Target)
+	relation.Kind = strings.TrimSpace(relation.Kind)
+	switch relation.Kind {
+	case "supports":
+		// Legacy payloads used evidence -> proposition. The canonical relation
+		// vocabulary uses proposition --supported_by--> evidence.
+		relation.Source, relation.Target = relation.Target, relation.Source
+		relation.Kind = itemRelationSupportedBy
+	case "mitigates", "addresses":
+		relation.Kind = itemRelationActionFor
+	}
+	return relation
+}
+
+func validSemanticTreeRelation(relation liveAnalysisTreeRelation, active map[string]liveAnalysisItem) bool {
+	if relation.Source == "" || relation.Target == "" || relation.Source == relation.Target ||
+		!validItemRelationKind(relation.Kind) || relation.Status == "inactive" {
+		return false
+	}
+	_, sourceOK := active[relation.Source]
+	_, targetOK := active[relation.Target]
+	return sourceOK && targetOK
 }
 
 func recordItemKindDistribution(state *liveAnalysisPayload, scope liveEvidenceScope, stats *liveAnalysisTreeMergeStats) {

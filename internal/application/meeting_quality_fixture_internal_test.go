@@ -136,8 +136,8 @@ func TestDeterministicMeetingQualitySuiteUsesProductionStages(t *testing.T) {
 			}
 		}
 	}
-	if direct != 12 || seeded != 3 || completedOnly != 0 {
-		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 12/3/0",
+	if direct != 13 || seeded != 2 || completedOnly != 0 {
+		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 13/2/0",
 			direct, seeded, completedOnly)
 	}
 }
@@ -155,8 +155,6 @@ func TestDeterministicMeetingQualityKnownProblemsHaveMetricProvenance(t *testing
 	}{
 		{"unspoken-information-contamination", "semanticDuplicateCount", 1},
 		{"semantic-kind-classification", "candidateFragmentationCount", 2},
-		{"finalization-inflight-tail-flush", "classificationAccuracy", 1},
-		{"finalization-inflight-tail-flush", "riskRecall", 1},
 		{"semantic-duplicate-proposition", "semanticDuplicateCount", 1},
 	}
 	for _, test := range tests {
@@ -179,9 +177,9 @@ func TestDeterministicMeetingQualityKnownProblemsHaveMetricProvenance(t *testing
 		})
 	}
 	finalization := byID["finalization-inflight-tail-flush"]
-	if finalization.Metrics.ClassificationAccuracy != 0.5 ||
-		finalization.Metrics.RiskRecall != 0 {
-		t.Fatalf("known finalization values changed unexpectedly: %+v", finalization.Metrics)
+	if finalization.Metrics.ClassificationAccuracy != 1 ||
+		finalization.Metrics.RiskRecall != 1 || len(finalization.KindMismatches) != 0 {
+		t.Fatalf("finalization risk regression was not repaired: %+v", finalization)
 	}
 }
 

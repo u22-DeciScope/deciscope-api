@@ -485,6 +485,7 @@ func rebuildDiscussionTree(
 		// Preserve it verbatim in the UI tree instead of reintroducing a raw
 		// 40-rune predicate cut at projection time.
 		node.Label = strings.TrimSpace(item.Title)
+		node.LabelResolution = cloneLabelResolution(item.LabelResolution)
 		node.UpdatedAtVersion = round
 		if body := truncateRunes(strings.TrimSpace(item.Body), liveAnalysisTreeDescriptionMaxRunes); body != "" {
 			node.Description = body
@@ -3100,9 +3101,11 @@ func assembleTree(
 	seenRelations := make(map[string]struct{}, len(relations))
 	keptRelations := make([]liveAnalysisTreeRelation, 0, len(relations))
 	for _, relation := range relations {
+		relation = canonicalizeLegacyItemRelation(relation, nil)
 		relation.Source = strings.TrimSpace(relation.Source)
 		relation.Target = strings.TrimSpace(relation.Target)
-		if relation.Source == "" || relation.Target == "" || relation.Source == relation.Target {
+		if relation.Source == "" || relation.Target == "" || relation.Source == relation.Target ||
+			!validItemRelationKind(relation.Kind) || relation.Status == "inactive" {
 			continue
 		}
 		if _, ok := nodeIDs[relation.Source]; !ok {
@@ -3114,7 +3117,7 @@ func assembleTree(
 		if _, dup := parentKey[relation.Source+"\x00"+relation.Target]; dup {
 			continue
 		}
-		key := relation.Source + "\x00" + relation.Target
+		key := relationKey(relation)
 		if _, dup := seenRelations[key]; dup {
 			continue
 		}

@@ -67,7 +67,9 @@ func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.Transcri
 	stats.KindSplitFragments += kindStats.KindSplitFragments
 	stats.KindSplitRejected += kindStats.KindSplitRejected
 	stats.KindSplitDecisions = append(stats.KindSplitDecisions, kindStats.KindSplitDecisions...)
-	stats.KindRelationsCreated += appendSemanticKindRelations(state.Tree, state.Items)
+	stats.KindRelationsCreated += reconcileSemanticKindRelations(
+		state.Tree, state.Items, scope, version, "final_repair",
+	)
 	stats.KindDistributionWarnings = append(stats.KindDistributionWarnings, kindStats.KindDistributionWarnings...)
 	stats.CorrectionItemsSuperseded += kindStats.CorrectionItemsSuperseded
 	stats.CorrectionItemsReconstructed += kindStats.CorrectionItemsReconstructed
@@ -136,6 +138,14 @@ func repairFinalItemGrounding(state *liveAnalysisPayload, scope liveEvidenceScop
 			// successful full live-round grounding decision.
 			continue
 		}
+		if previouslyGrounded && decision.Decision == "rewritten" &&
+			finalGroundingRewriteDegradesLabel(item, safe, scope) {
+			// The canonical label may combine an antecedent with the immediately
+			// following conditional/deictic clause. A per-sentence grounding
+			// rewrite must not regress that independently readable label back to
+			// the contextual transcript fragment when both cited sequences remain.
+			continue
+		}
 		switch decision.Decision {
 		case "accepted", "rewritten":
 			if item.GroundingDecision == "rewritten" && decision.Decision == "accepted" {
@@ -162,6 +172,23 @@ func repairFinalItemGrounding(state *liveAnalysisPayload, scope liveEvidenceScop
 	}
 	pruneEmptyDynamicTopics(state.Tree)
 	rebuildTreeAuditEdges(state.Tree)
+}
+
+func finalGroundingRewriteDegradesLabel(item, rewritten liveAnalysisItem, scope liveEvidenceScope) bool {
+	if incompleteItemLabelEnding(item) != "" || incompleteItemLabelEnding(rewritten) == "" ||
+		len(item.GroundingUnsupportedAtomHashes) > 0 {
+		return false
+	}
+	timeline := classifyDiscourseTimeline(scope)
+	if !labelFailureRetentionEligible(item, scope, timeline) {
+		return false
+	}
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		if sequenceSuppliesItemReferent(item, sequenceNo, scope) {
+			return true
+		}
+	}
+	return false
 }
 
 // repairFinalReferenceAndLowInformationItems is the deterministic final-review
@@ -268,6 +295,12 @@ func repairFinalReferenceAndLowInformationItems(state *liveAnalysisPayload, segm
 				}
 				continue
 			}
+		}
+		if incompleteDecision != nil &&
+			labelFailureRetentionEligible(item, scope, timeline) {
+			incompleteDecision.FinalDecision = "retained_degraded"
+			stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
+			continue
 		}
 		if rejectFinalItem(state, item.ID, "final_low_information_rejected", version) {
 			stats.LowInformationItemsRejected++
@@ -424,6 +457,7 @@ func updateFinalItemAndNode(state *liveAnalysisPayload, repaired liveAnalysisIte
 		node.Label = repaired.Title
 		node.Description = repaired.Body
 		node.Subtype = repaired.Subtype
+		node.LabelResolution = cloneLabelResolution(repaired.LabelResolution)
 	}
 }
 
