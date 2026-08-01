@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"deciscope-core-api/internal/application"
 	"deciscope-core-api/internal/domain"
 )
 
@@ -483,6 +484,63 @@ func TestTranscriptHubPublishMeetingSessionTranscriptHealthFiltersBySessionID(t 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("matching client did not receive transcript health event")
+	}
+	select {
+	case got := <-other.send:
+		t.Fatalf("other session unexpectedly received %+v", got)
+	default:
+	}
+}
+
+func TestMeetingSessionMediaHealthProtocolMessage(t *testing.T) {
+	health := application.BotMediaHealthState{
+		SessionID: "session_1", EventID: "stall-1:recovered", BotCallID: "call-1",
+		State: application.BotMediaHealthOK, Event: application.BotMediaHealthEventRecovered,
+		OccurredAt:           time.Date(2026, 8, 1, 0, 51, 3, 0, time.UTC),
+		StartedAt:            time.Date(2026, 8, 1, 0, 50, 20, 0, time.UTC),
+		DurationMilliseconds: 43000,
+	}
+	message := meetingSessionMediaHealthProtocolMessage(
+		health,
+		time.Date(2026, 8, 1, 0, 51, 3, 0, time.UTC),
+	)
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if message.Type != meetingSessionMediaHealthType ||
+		!strings.Contains(string(encoded), `"type":"meeting_session.media_health_changed"`) ||
+		!strings.Contains(string(encoded), `"eventId":"stall-1:recovered"`) ||
+		!strings.Contains(string(encoded), `"durationMs":43000`) {
+		t.Fatalf("message=%+v encoded=%s", message, string(encoded))
+	}
+}
+
+func TestTranscriptHubPublishMeetingSessionMediaHealthFiltersBySessionID(t *testing.T) {
+	hub := NewTranscriptHub()
+	matching := &transcriptClient{sessionID: "session_1", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	other := &transcriptClient{sessionID: "session_2", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	hub.subscribe(matching)
+	hub.subscribe(other)
+	t.Cleanup(func() {
+		hub.unsubscribe(matching)
+		hub.unsubscribe(other)
+	})
+	health := application.BotMediaHealthState{
+		SessionID: "session_1", State: application.BotMediaHealthAudioReceiveStalled,
+		Event: application.BotMediaHealthEventStarted,
+	}
+
+	hub.PublishMeetingSessionMediaHealth(domain.MeetingSession{ID: "session_1"}, health)
+
+	select {
+	case got := <-matching.send:
+		if got.mediaHealth == nil || got.mediaHealth.SessionID != "session_1" ||
+			got.mediaHealth.State != application.BotMediaHealthAudioReceiveStalled {
+			t.Fatalf("matching got = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("matching client did not receive media health event")
 	}
 	select {
 	case got := <-other.send:

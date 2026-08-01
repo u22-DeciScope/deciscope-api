@@ -3,6 +3,8 @@ package application
 import (
 	"strings"
 	"testing"
+
+	"deciscope-core-api/internal/domain"
 )
 
 func TestSelfContainedCorrectionWithoutTargetReconstructsFact(t *testing.T) {
@@ -22,6 +24,25 @@ func TestSelfContainedCorrectionWithoutTargetReconstructsFact(t *testing.T) {
 		!equalInt64s(item.EvidenceSequenceNos, []int64{1}) ||
 		stats.CorrectionItemsReconstructed != 1 {
 		t.Fatalf("reconstructed item=%+v stats=%+v", item, stats)
+	}
+}
+
+func TestSplitCorrectionContinuationReconstructsDistinctTrunkAndVLANFacts(t *testing.T) {
+	segments := []domain.TranscriptSegment{
+		{SequenceNo: 1, IsFinal: true, SpeakerName: "田中", Text: "交換後スイッチはアクセスポート設定でした。"},
+		{SequenceNo: 2, IsFinal: true, SpeakerName: "田中", Text: "いえ、正確には完全なアクセスポート設定ではありません。"},
+		{SequenceNo: 3, IsFinal: true, SpeakerName: "田中", Text: "トランク設定自体は入っていましたが、許可VLAN一覧からVLAN30が漏れていました。"},
+	}
+	scope, timeline := agendaTimelineFromSegments(segments)
+	items := synthesizeCorrectionFactItems(nil, nil, scope, timeline, &liveAnalysisTreeMergeStats{})
+	if len(items) != 2 {
+		t.Fatalf("split correction replacements=%+v clauses=%+v items=%+v",
+			correctionReplacementStatements(2, scope, timeline),
+			splitCorrectionContinuationFacts(scope.TranscriptText[3]), items)
+	}
+	joined := items[0].Title + " " + items[1].Title
+	if !strings.Contains(joined, "トランク") || !strings.Contains(joined, "VLAN30") {
+		t.Fatalf("split correction facts lost an atomic proposition: %+v", items)
 	}
 }
 
@@ -233,5 +254,92 @@ func TestSemanticRelationsSurviveDifferentAgendaBranchesWhenEvidenceIsAdjacent(t
 		if !relations[key] {
 			t.Fatalf("cross-agenda semantic relation %q missing: %+v", key, tree.Relations)
 		}
+	}
+}
+
+func TestSafeAdjacentSettingReferentRejectsAmbiguousVLANs(t *testing.T) {
+	tests := []struct {
+		name     string
+		segments []domain.TranscriptSegment
+		item     liveAnalysisItem
+		want     bool
+	}{
+		{
+			name: "unique VLAN30",
+			segments: []domain.TranscriptSegment{
+				{SequenceNo: 1, IsFinal: true, SpeakerName: "田中", Text: "許可VLAN一覧からVLAN30が漏れていました。"},
+				{SequenceNo: 2, IsFinal: true, SpeakerName: "佐藤", Text: "現時点では、この設定漏れが3階障害の直接原因である可能性が高いです。"},
+			},
+			item: liveAnalysisItem{Kind: "issue", Title: "この設定漏れが3階障害の直接原因である可能性が高い", EvidenceSequenceNos: []int64{2}},
+			want: true,
+		},
+		{
+			name: "two qualifiers in antecedent",
+			segments: []domain.TranscriptSegment{
+				{SequenceNo: 1, IsFinal: true, SpeakerName: "田中", Text: "VLAN20とVLAN30の設定漏れを確認しました。"},
+				{SequenceNo: 2, IsFinal: true, SpeakerName: "佐藤", Text: "この設定漏れが直接原因かは未確認です。"},
+			},
+			item: liveAnalysisItem{Kind: "issue", Title: "この設定漏れが直接原因かは未確認", EvidenceSequenceNos: []int64{2}},
+		},
+		{
+			name: "competing adjacent antecedents",
+			segments: []domain.TranscriptSegment{
+				{SequenceNo: 1, IsFinal: true, SpeakerName: "田中", Text: "許可VLAN一覧からVLAN20が漏れていました。"},
+				{SequenceNo: 2, IsFinal: true, SpeakerName: "田中", Text: "許可VLAN一覧からVLAN30が漏れていました。"},
+				{SequenceNo: 3, IsFinal: true, SpeakerName: "佐藤", Text: "この設定漏れが直接原因かは未確認です。"},
+			},
+			item: liveAnalysisItem{Kind: "issue", Title: "この設定漏れが直接原因かは未確認", EvidenceSequenceNos: []int64{3}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			scope, timeline := agendaTimelineFromSegments(test.segments)
+			sequenceNo := test.segments[len(test.segments)-1].SequenceNo
+			qualifier, got := safeAdjacentSettingReferent(test.item, sequenceNo, scope, timeline)
+			if got != test.want {
+				t.Fatalf("safe=%t qualifier=%q want safe=%t", got, qualifier, test.want)
+			}
+			if got && qualifier != "VLAN30" {
+				t.Fatalf("qualifier=%q, want VLAN30", qualifier)
+			}
+		})
+	}
+}
+
+func TestManualCorrectionRelationIsNotRevalidated(t *testing.T) {
+	state := correctionRelationTestState("manual_user_edit")
+	scope := evidenceScopeFromTexts(map[int64]string{
+		1: "交換後スイッチはアクセスポート設定でした。",
+		2: "交換後スイッチの許可VLAN一覧にはVLAN30も含まれていました。",
+		3: "正確には、交換後スイッチの許可VLAN一覧からVLAN30が漏れていました。",
+	}, 3)
+
+	repairCorrectionSupersessions(&state, scope, classifyDiscourseTimeline(scope), 4, &liveAnalysisTreeMergeStats{})
+
+	if relation := state.CorrectionRelations[0]; relation.TargetItemID != "manual-target" ||
+		relation.TargetSequenceNo != 1 || relation.Origin != "manual_user_edit" {
+		t.Fatalf("manual correction relation was overwritten: %+v", relation)
+	}
+}
+
+func correctionRelationTestState(origin string) liveAnalysisPayload {
+	items := []liveAnalysisItem{
+		{ID: "manual-target", Kind: "fact", Title: "交換後スイッチはアクセスポート設定だった", EvidenceSequenceNos: []int64{1}},
+		{ID: "semantic-target", Kind: "fact", Title: "許可VLAN一覧にはVLAN30も含まれていた", EvidenceSequenceNos: []int64{2}},
+		{ID: "replacement", Kind: "fact", Title: "許可VLAN一覧からVLAN30が漏れていた", EvidenceSequenceNos: []int64{3}},
+	}
+	return liveAnalysisPayload{
+		Items: items,
+		Tree: &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+			{ID: "root", Kind: "root", Label: "議論ツリー"},
+			{ID: "manual-target", Kind: "fact", ParentID: "root", Label: items[0].Title},
+			{ID: "semantic-target", Kind: "fact", ParentID: "root", Label: items[1].Title},
+			{ID: "replacement", Kind: "fact", ParentID: "root", Label: items[2].Title},
+		}},
+		CorrectionRelations: []correctionRelation{{
+			SourceSequenceNo: 3, TargetSequenceNo: 1, TargetItemID: "manual-target",
+			ReplacementItemID: "replacement", Status: "superseded", Confidence: 0.99,
+			Locked: true, Origin: origin, EstablishedAtVersion: 2,
+		}},
 	}
 }

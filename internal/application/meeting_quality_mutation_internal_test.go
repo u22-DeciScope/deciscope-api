@@ -138,6 +138,90 @@ func TestMeetingQualityEvaluatorMutationMatrix(t *testing.T) {
 			},
 		},
 		{
+			name: "label and description made identical",
+			mutate: func(state *liveAnalysisPayload, _ *MeetingQualityScenario, _ *[]domain.TranscriptSegment) {
+				for index := range state.Items {
+					if state.Items[index].ID == "risk" {
+						state.Items[index].Body = state.Items[index].Title
+					}
+				}
+				for index := range state.Tree.Nodes {
+					if state.Tree.Nodes[index].ID == "risk" {
+						state.Tree.Nodes[index].Description = state.Tree.Nodes[index].Label
+					}
+				}
+			},
+			assert: func(t *testing.T, result MeetingQualityScenarioResult, comparison MeetingQualityComparisonReport) {
+				if result.Metrics.LabelDescriptionExactDuplicateCount <= base.Metrics.LabelDescriptionExactDuplicateCount ||
+					len(comparison.WorsenedMetrics) == 0 {
+					t.Fatalf("label/description duplicate mutation result=%+v comparison=%+v", result, comparison)
+				}
+			},
+		},
+		{
+			name: "unsupported description deadline added",
+			mutate: func(state *liveAnalysisPayload, _ *MeetingQualityScenario, _ *[]domain.TranscriptSegment) {
+				for index := range state.Items {
+					if state.Items[index].ID == "fact" {
+						state.Items[index].Body += "。対応期限は8月31日です"
+					}
+				}
+			},
+			assert: func(t *testing.T, result MeetingQualityScenarioResult, comparison MeetingQualityComparisonReport) {
+				if result.Metrics.DescriptionUnsupportedAtomCount <= base.Metrics.DescriptionUnsupportedAtomCount ||
+					len(comparison.WorsenedMetrics) == 0 {
+					t.Fatalf("unsupported description mutation result=%+v comparison=%+v", result, comparison)
+				}
+			},
+		},
+		{
+			name: "decision duplicated as issue",
+			mutate: func(state *liveAnalysisPayload, scenario *MeetingQualityScenario, _ *[]domain.TranscriptSegment) {
+				decision := liveAnalysisItem{
+					ID: "decision", Kind: "decision", Title: "証明書更新手順を確認することを決定",
+					Body:                "田中が明日までに証明書更新手順を確認することを決定した",
+					EvidenceSequenceNos: []int64{2}, CreatedThroughSequenceNo: 2,
+				}
+				issue := decision
+				issue.ID = "decision-as-issue"
+				issue.Kind = "issue"
+				issue.Title = "証明書更新手順を確認するか"
+				issue.Body = "田中が明日までに証明書更新手順を確認するか確認が必要"
+				state.Items = append(state.Items, decision, issue)
+				state.Tree.Nodes = append(state.Tree.Nodes,
+					liveAnalysisTreeNode{ID: decision.ID, Kind: decision.Kind, ParentID: "group", Label: decision.Title},
+					liveAnalysisTreeNode{ID: issue.ID, Kind: issue.Kind, ParentID: "group", Label: issue.Title},
+				)
+				scenario.ForbiddenResults = append(scenario.ForbiddenResults,
+					MeetingQualityForbiddenResult{Type: "decision_issue_same_proposition"})
+			},
+			assert: func(t *testing.T, result MeetingQualityScenarioResult, _ MeetingQualityComparisonReport) {
+				if !containsStringPrefix(result.ForbiddenResultsFound, "decision_issue_same_proposition:") {
+					t.Fatalf("decision/issue exclusivity mutation escaped: %+v", result)
+				}
+			},
+		},
+		{
+			name: "corrected stale proposition reactivated",
+			mutate: func(state *liveAnalysisPayload, scenario *MeetingQualityScenario, _ *[]domain.TranscriptSegment) {
+				stale := liveAnalysisItem{
+					ID: "stale-access", Kind: "fact", Title: "交換後スイッチはアクセスポート設定だった",
+					Body: "交換後スイッチはアクセスポート設定だった", EvidenceSequenceNos: []int64{3},
+				}
+				state.Items = append(state.Items, stale)
+				state.Tree.Nodes = append(state.Tree.Nodes, liveAnalysisTreeNode{
+					ID: stale.ID, Kind: stale.Kind, ParentID: "group", Label: stale.Title,
+				})
+				scenario.ForbiddenResults = append(scenario.ForbiddenResults,
+					MeetingQualityForbiddenResult{Type: "proposition", Text: stale.Title})
+			},
+			assert: func(t *testing.T, result MeetingQualityScenarioResult, _ MeetingQualityComparisonReport) {
+				if !containsExactString(result.ForbiddenResultsFound, "proposition:交換後スイッチはアクセスポート設定だった") {
+					t.Fatalf("stale correction mutation escaped: %+v", result)
+				}
+			},
+		},
+		{
 			name: "truncated label added",
 			mutate: func(state *liveAnalysisPayload, _ *MeetingQualityScenario, segments *[]domain.TranscriptSegment) {
 				full := strings.Repeat("証明書更新手順の詳細を関係者へ共有するため確認する", 3)
@@ -212,6 +296,25 @@ func TestMeetingQualityEvaluatorMutationMatrix(t *testing.T) {
 				if result.Metrics.HierarchyRelationAccuracy >= base.Metrics.HierarchyRelationAccuracy ||
 					len(result.RelationFailures) != 2 {
 					t.Fatalf("logical sibling mutation result=%+v", result)
+				}
+			},
+		},
+		{
+			name: "supported by relation removed",
+			mutate: func(state *liveAnalysisPayload, _ *MeetingQualityScenario, _ *[]domain.TranscriptSegment) {
+				kept := state.Tree.Relations[:0]
+				for _, relation := range state.Tree.Relations {
+					if relation.Kind != itemRelationSupportedBy {
+						kept = append(kept, relation)
+					}
+				}
+				state.Tree.Relations = kept
+			},
+			assert: func(t *testing.T, result MeetingQualityScenarioResult, _ MeetingQualityComparisonReport) {
+				if result.Metrics.HierarchyRelationAccuracy >= base.Metrics.HierarchyRelationAccuracy ||
+					len(result.RelationFailures) != 1 ||
+					!strings.Contains(result.RelationFailures[0], "supported_by") {
+					t.Fatalf("supported_by deletion mutation result=%+v", result)
 				}
 			},
 		},

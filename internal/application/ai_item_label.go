@@ -61,6 +61,7 @@ var (
 	)
 	itemLabelDeicticSettingPattern = regexp.MustCompile(`(?:この|その)設定漏れ`)
 	itemLabelSettingLeakPattern    = regexp.MustCompile(`(?:設定|VLAN|許可)[^。]{0,60}漏れ`)
+	itemLabelVLANQualifierPattern  = regexp.MustCompile(`(?i)VLAN[[:space:]]*[0-9０-９]+`)
 )
 
 // incompleteItemLabelEnding validates the user-visible title independently
@@ -72,6 +73,9 @@ func incompleteItemLabelEnding(item liveAnalysisItem) string {
 		return "missing_label"
 	}
 	body := strings.TrimSpace(item.Body)
+	if unclosedItemLabelDelimiter(label) {
+		return "unclosed_delimiter"
+	}
 	if len([]rune(label)) >= liveAnalysisItemLabelPreferredMaxRunes &&
 		len([]rune(body)) > len([]rune(label)) &&
 		strings.HasPrefix(body, label) {
@@ -91,6 +95,15 @@ func incompleteItemLabelEnding(item liveAnalysisItem) string {
 	default:
 		return ""
 	}
+}
+
+func unclosedItemLabelDelimiter(label string) bool {
+	for _, pair := range [][2]string{{"（", "）"}, {"(", ")"}, {"「", "」"}, {"[", "]"}, {"［", "］"}} {
+		if strings.Count(label, pair[0]) > strings.Count(label, pair[1]) {
+			return true
+		}
+	}
+	return false
 }
 
 func itemLabelMissingPredicate(kind, label string) bool {
@@ -380,7 +393,6 @@ func restoreLabelReferentEvidence(
 ) (liveAnalysisItem, bool) {
 	restored := append([]int64(nil), item.EvidenceSequenceNos...)
 	changed := false
-	itemText := strings.TrimSpace(item.Title + " " + item.Body)
 	for _, sequenceNo := range item.EvidenceSequenceNos {
 		current := strings.TrimSpace(scope.TranscriptText[sequenceNo])
 		previousSequence := sequenceNo - 1
@@ -399,10 +411,8 @@ func restoreLabelReferentEvidence(
 				restore = true
 			}
 		}
-		if itemLabelDeicticSettingPattern.MatchString(current) &&
-			itemLabelSettingLeakPattern.MatchString(previous) {
-			qualifier := itemLabelConcreteQualifierPattern.FindString(previous)
-			restore = qualifier != "" && strings.Contains(strings.ToLower(itemText), strings.ToLower(qualifier))
+		if itemLabelDeicticSettingPattern.MatchString(current) {
+			_, restore = safeAdjacentSettingReferent(item, sequenceNo, scope, timeline)
 		}
 		if restore {
 			restored = append(restored, previousSequence)
@@ -413,6 +423,54 @@ func restoreLabelReferentEvidence(
 		item.EvidenceSequenceNos = uniqueSortedSequenceNos(sortedSequenceNos(restored))
 	}
 	return item, changed
+}
+
+func safeAdjacentSettingReferent(
+	item liveAnalysisItem,
+	currentSequence int64,
+	scope liveEvidenceScope,
+	timeline discourseTimeline,
+) (string, bool) {
+	current := strings.TrimSpace(scope.TranscriptText[currentSequence])
+	previousSequence := currentSequence - 1
+	previous := strings.TrimSpace(scope.TranscriptText[previousSequence])
+	if !itemLabelDeicticSettingPattern.MatchString(current) ||
+		!itemLabelSettingLeakPattern.MatchString(previous) {
+		return "", false
+	}
+	previousSegment, previousOK := scope.Segments[previousSequence]
+	currentSegment, currentOK := scope.Segments[currentSequence]
+	if !previousOK || !currentOK || !previousSegment.IsFinal || !currentSegment.IsFinal ||
+		previousSegment.SequenceNo <= 0 || currentSegment.SequenceNo != previousSegment.SequenceNo+1 {
+		return "", false
+	}
+	for _, sequenceNo := range []int64{previousSequence, currentSequence} {
+		switch timeline.Roles[sequenceNo] {
+		case liveEvidenceReferenceRecap, liveEvidenceDiscourseOnly:
+			return "", false
+		}
+	}
+	qualifiers := uniqueSortedStrings(itemLabelVLANQualifierPattern.FindAllString(previous, -1))
+	if len(qualifiers) != 1 || itemLabelParallelSubjectPattern.MatchString(previous) {
+		return "", false
+	}
+	qualifier := qualifiers[0]
+	itemText := strings.TrimSpace(item.Title + " " + item.Body)
+	for _, currentQualifier := range itemLabelVLANQualifierPattern.FindAllString(itemText, -1) {
+		if !strings.EqualFold(strings.TrimSpace(currentQualifier), strings.TrimSpace(qualifier)) {
+			return "", false
+		}
+	}
+	if earlierSegment, exists := scope.Segments[previousSequence-1]; exists && earlierSegment.IsFinal &&
+		earlierSegment.SequenceNo+1 == previousSegment.SequenceNo {
+		earlier := strings.TrimSpace(scope.TranscriptText[previousSequence-1])
+		earlierQualifiers := uniqueSortedStrings(itemLabelVLANQualifierPattern.FindAllString(earlier, -1))
+		if itemLabelSettingLeakPattern.MatchString(earlier) && len(earlierQualifiers) > 0 &&
+			!containsFoldedString(earlierQualifiers, qualifier) {
+			return "", false
+		}
+	}
+	return qualifier, true
 }
 
 func safeAdjacentConditionalLabel(
@@ -729,8 +787,9 @@ func deterministicFallbackItemLabel(
 				!itemLabelSettingLeakPattern.MatchString(texts[index-1]) {
 				continue
 			}
-			qualifier := itemLabelConcreteQualifierPattern.FindString(texts[index-1])
-			if qualifier == "" {
+			sequenceNo := itemLabelEvidenceSequenceForText(item, scope, texts[index])
+			qualifier, safe := safeAdjacentSettingReferent(item, sequenceNo, scope, timeline)
+			if !safe {
 				continue
 			}
 			candidate := itemLabelDeicticSettingPattern.ReplaceAllString(

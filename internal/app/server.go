@@ -86,6 +86,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 	analysisService := buildMeetingAnalysisService(config.AI, postgresDB, meetingSessionRepository, transcriptHub)
 	transcriptActivityTracker := application.NewTranscriptActivityTracker()
 	botMediaMetricsStore := application.NewBotMediaMetricsStore()
+	botMediaHealthService := application.NewBotMediaHealthService(transcriptHub)
 	transcriptPublisher := compositeTranscriptSegmentPublisher{publishers: []application.TranscriptSegmentPublisher{transcriptHub, analysisService, transcriptActivityTracker}}
 	transcriptRuntime, err := buildTranscriptIngest(ctx, config.Database, postgresDB, transcriptPublisher)
 	if err != nil {
@@ -186,6 +187,7 @@ func NewServerRuntime() (*ServerRuntime, error) {
 			httpadapter.WithMeetingSessionTranscriptRealtime(transcriptHub.ServeTranscriptSegments(workspaceTranscriptConfig)),
 			httpadapter.WithMeetingSessionAIAnalysisService(analysisService),
 			httpadapter.WithMeetingSessionBotMetricsStore(botMediaMetricsStore),
+			httpadapter.WithMeetingSessionBotMediaHealth(botMediaHealthService),
 		),
 		ClientDiagnosticsAPI: clientDiagnosticsAPI,
 		AuthService:          authService,

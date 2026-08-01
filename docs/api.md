@@ -454,6 +454,56 @@ X-DeciScope-Api-Key: <shared secret>
   （終了済みセッションを誤って復活させないため）。存在しないセッションは404です。
 - Bot接続の生死判定・自動終了は次項の常駐watchdogが行います。
 
+Botからの音声受信transport状態（APIキー必須）:
+
+```http
+POST /api/v1/bot/meeting-sessions/{sessionId}/media-health
+Content-Type: application/json
+X-DeciScope-Api-Key: <shared secret>
+```
+
+```json
+{
+  "eventId": "audio-receive-stall:call-id:1:started",
+  "botCallId": "09005080-cce6-4132-9404-1e823df47ff9",
+  "state": "audio_receive_stalled",
+  "event": "started",
+  "occurredAtUtc": "2026-08-01T00:50:25Z",
+  "startedAtUtc": "2026-08-01T00:50:20Z",
+  "lastAudioFrameAtUtc": "2026-08-01T00:50:20Z",
+  "durationMs": 5000,
+  "source": "audio_frame_watchdog"
+}
+```
+
+- 無音を含む最後のAudioSocket受信フレームから5秒間フレームが届かないと、Botは
+  `audio_receive_stalled` / `started` を一度だけ送ります。次の最初のフレームで
+  `ok` / `recovered` と実停止時間を送ります。
+- transport監視なので通常の会議中の無音は停止扱いになりません。通知は通話終了、再参加、
+  recognizer再作成、meeting status変更を行いません。
+- 状態はAPIメモリ内だけに保持され、DBへ保存されません。古い`botCallId`は409、同一
+  `eventId`と時刻逆行イベントは冪等に無視されます。
+- WebSocketでは対象sessionだけへ次を配信します。
+
+```json
+{
+  "type": "meeting_session.media_health_changed",
+  "sentAtUtc": "2026-08-01T00:51:03Z",
+  "data": {
+    "sessionId": "session_...",
+    "eventId": "audio-receive-stall:call-id:1:recovered",
+    "botCallId": "09005080-cce6-4132-9404-1e823df47ff9",
+    "state": "ok",
+    "event": "recovered",
+    "occurredAtUtc": "2026-08-01T00:51:03Z",
+    "startedAtUtc": "2026-08-01T00:50:20Z",
+    "lastAudioFrameAtUtc": "2026-08-01T00:51:03Z",
+    "durationMs": 42917,
+    "source": "audio_frame_watchdog"
+  }
+}
+```
+
 Bot接続死活監視（常駐watchdog）:
 
 - Go APIは常駐goroutineで、status が `joined` / `active` / `recording` / `speech_error` /
@@ -534,6 +584,7 @@ POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/end
 DELETE /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream
+GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/media-health
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
 PATCH /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/agenda-progress
 ```
@@ -552,6 +603,8 @@ PATCH /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/agenda-progr
   transcriptとAI分析を含めて完全削除し、`204 No Content`を返します。進行中は`400`です。
 - `transcript-segments` は保存済みSegmentの取得、`transcript-stream` はWebSocketでの
   リアルタイム配信です。どちらもSession Cookie認証とworkspace所属検査を通ります。
+- `media-health` はリロード・WebSocket再接続時に現在の一時transport状態を復元します。
+  未検知またはAPI再起動後は`state: "ok", event: "snapshot"`です。
 - `ai-analyses` は最新のライブ分析・最終要約・durable tree・finalization進行状態を返します。
   存在しない分析は `null` で、`404` にはなりません。`finalization.payload` にはtarget sequence、
   tree/summaryのcoverage、timeout、retry回数、不完全終了の有無が入ります。

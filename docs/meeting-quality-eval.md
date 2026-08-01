@@ -38,8 +38,10 @@ go run ./cmd/meeting-quality-eval -suite deterministic -accept-improvements
 ```
 
 `-update-baseline`による全置換は拒否されます。`-accept-improvements`も、
-失敗中のsuite、悪化軸、scenario削除、metric schema削除、schema version不一致を
-拒否します。出力される`baselineUpdate.appliedMetrics`をPRでレビューします。
+失敗中のsuite、悪化軸、scenario削除、metric schema削除・並べ替え、未知のschema
+versionを拒否します。既知のv3→v4移行だけは既存18軸を独立比較した上で、新規7軸を
+初期登録し、`baselineUpdate.addedMetricSchema`へ明示します。出力される
+`baselineUpdate.appliedMetrics`と合わせてPRでレビューします。
 fixtureも現在の出力へ自動追従させず、期待する会議上の事実・行動・関係を先に
 レビューします。
 
@@ -66,7 +68,7 @@ epistemic status`を決定論的に抽出します。数値・階・曜日・期
 日本語bigramを使います。自然な言い換えは許容しますが、単純な部分文字列包含を
 即一致にはしません。
 
-初期suiteには次の15件があります。
+deterministic suiteには次の22件があります。
 
 1. 予定アジェンダへの誤割り当て
 2. 予定外candidateの複数round昇格
@@ -83,6 +85,13 @@ epistemic status`を決定論的に抽出します。数値・階・曜日・期
 13. fact／原因仮説／適用範囲の論理階層
 14. 同一命題のsemantic duplicate
 15. VPN証明書更新のカード／tree整合
+16. 過去観測をfactとして保持
+17. 現在issueの解決ライフサイクル
+18. labelとdescriptionが同文になるdecision
+19. VPN riskのheadline／grounded detail分離
+20. 明確なdecisionと同一命題issueの排他
+21. 明示訂正によるAI relation lock再検証
+22. VLAN30指示語、原因仮説、適用範囲relationの保持
 
 finalizationの実際のgoroutine待機境界は、固定round replayに加えて
 `TestMeetingFinalizationWaitsForInFlightLiveAnalysis`とservice integration harnessが
@@ -90,8 +99,8 @@ finalizationの実際のgoroutine待機境界は、固定round replayに加え�
 順序固定はありません。テスト内のtimeoutはdeadlock時に終了させる安全弁だけで、
 順序の成立判定には使用しません。
 
-15 scenarioはすべてtranscript、meeting context、fixed AI responseを入力として
-productionのmerge関数群を呼びます。12件は空状態から、3件はdurable seedへ
+22 scenarioはすべてtranscript、meeting context、fixed AI responseを入力として
+productionのmerge関数群を呼びます。19件は空状態から、3件はdurable seedへ
 新しいroundを適用します。完成済みsnapshotだけを評価するdeterministic scenarioは
 ありません。
 
@@ -143,7 +152,7 @@ responseはずれません。repository fakeはmutex、payload copy、write even
 - final coverage不足
 
 `TestMeetingQualityHardInvariantsFailIndependently`に加え、
-`TestMeetingQualityEvaluatorMutationMatrix`は正常snapshotへ次の13破損を
+`TestMeetingQualityEvaluatorMutationMatrix`は正常snapshotへ次の18破損を
 一件ずつ加え、対応する評価軸の悪化とsuite/baseline比較の失敗を確認します。
 
 - 必須risk削除
@@ -159,6 +168,11 @@ responseはずれません。repository fakeはmutex、payload copy、write even
 - fact／原因仮説／未解決事項の兄弟分断
 - dynamic topic itemのtree外移動
 - final coverage低下
+- label/description完全重複
+- descriptionへの未根拠期限追加
+- 同一命題のdecision/issue重複
+- 訂正済み旧命題の復活
+- `supported_by` relation削除
 
 `cmd/meeting-quality-eval`のテストは同じ13分類について終了判定がerror、すなわち
 process exit code非0へ伝播することを確認します。
@@ -178,6 +192,13 @@ process exit code非0へ伝播することを確認します。
 - hierarchy relation accuracy
 - candidate fragmentation count
 - cross-agenda contamination count
+- label/description exact duplicate count
+- label/description high similarity count
+- description unsupported atom count
+- description added grounded detail count
+- label transcript copy ratio
+- label compression ratio
+- description redundant count
 
 論理関係は評価器内部で`supported_by`、`caused_by`、`limits`、`resolves`、
 `action_for`、`contradicts`、`refines`を表現できます。persisted

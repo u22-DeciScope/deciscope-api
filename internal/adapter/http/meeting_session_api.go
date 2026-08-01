@@ -48,7 +48,14 @@ type MeetingSessionAPI struct {
 	transcriptRealtime http.HandlerFunc
 	aiAnalysis         MeetingAIAnalysisUseCases
 	metricsStore       *application.BotMediaMetricsStore
+	mediaHealth        *application.BotMediaHealthService
 	apiKey             string
+}
+
+func WithMeetingSessionBotMediaHealth(service *application.BotMediaHealthService) MeetingSessionAPIOption {
+	return func(api *MeetingSessionAPI) {
+		api.mediaHealth = service
+	}
 }
 
 type MeetingSessionAPIOption func(*MeetingSessionAPI)
@@ -677,6 +684,76 @@ func (api *MeetingSessionAPI) RecordBotHeartbeat(w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
+}
+
+func (api *MeetingSessionAPI) RecordBotMediaHealth(w http.ResponseWriter, r *http.Request) {
+	if !authorizedSecret(r.Header.Get("X-DeciScope-Api-Key"), api.apiKey) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
+		return
+	}
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+	var request meetingSessionMediaHealthRequest
+	if !decodeLimitedJSONAllowUnknown(w, r, meetingSessionBodyLimitBytes, &request) {
+		return
+	}
+	if api.mediaHealth == nil {
+		writeError(w, http.StatusServiceUnavailable, "media_health_unavailable", "media health service is unavailable")
+		return
+	}
+	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
+	session, err := api.service.GetMeetingSession(r.Context(), sessionID)
+	if err != nil {
+		writeMeetingSessionError(w, err)
+		return
+	}
+	if callID := strings.TrimSpace(request.BotCallID); callID != "" && session.BotCallID != "" && callID != session.BotCallID {
+		writeError(w, http.StatusConflict, "bot_call_mismatch", "bot call id does not match the meeting session")
+		return
+	}
+	state, _, err := api.mediaHealth.Record(*session, application.BotMediaHealthUpdate{
+		EventID: request.EventID, BotCallID: request.BotCallID, State: request.State,
+		Event: request.Event, Source: request.Source,
+		OccurredAt:           parseOptionalRFC3339(request.OccurredAtUTC),
+		StartedAt:            parseOptionalRFC3339(request.StartedAtUTC),
+		LastAudioFrameAt:     parseOptionalRFC3339(request.LastAudioFrameAtUTC),
+		DurationMilliseconds: request.DurationMilliseconds,
+	})
+	if err != nil {
+		writeMeetingSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (api *MeetingSessionAPI) GetWorkspaceBotMediaHealth(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	if api.mediaHealth == nil {
+		now := time.Now().UTC()
+		writeJSON(w, http.StatusOK, application.BotMediaHealthState{
+			SessionID: session.ID, State: application.BotMediaHealthOK, Event: "snapshot",
+			OccurredAt: now, UpdatedAt: now,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, api.mediaHealth.Get(session.ID))
+}
+
+type meetingSessionMediaHealthRequest struct {
+	EventID              string `json:"eventId"`
+	BotCallID            string `json:"botCallId"`
+	State                string `json:"state"`
+	Event                string `json:"event"`
+	Source               string `json:"source"`
+	OccurredAtUTC        string `json:"occurredAtUtc"`
+	StartedAtUTC         string `json:"startedAtUtc"`
+	LastAudioFrameAtUTC  string `json:"lastAudioFrameAtUtc"`
+	DurationMilliseconds int64  `json:"durationMs"`
 }
 
 type meetingSessionHeartbeatRequest struct {

@@ -374,6 +374,7 @@ func evaluateMeetingQualityResult(
 	result.HardInvariantViolations = append(result.HardInvariantViolations, qualityActiveItemsOutsideTree(state)...)
 
 	activeItems, nodes := qualityActiveItems(state)
+	evidenceScope := qualityFullEvidenceScope(segments)
 	matches := qualityMatchRequiredPropositions(scenario.RequiredPropositions, activeItems, nodes)
 	for _, expectation := range scenario.RequiredPropositions {
 		match := matches[expectation.ID]
@@ -408,7 +409,7 @@ func evaluateMeetingQualityResult(
 				ActualKind:    match.Item.Kind,
 			})
 		}
-		features := inferItemSemanticFeatures(match.Item, liveEvidenceScope{})
+		features := inferItemSemanticFeatures(match.Item, evidenceScope)
 		for _, expected := range []struct {
 			field  string
 			value  string
@@ -721,6 +722,11 @@ func qualityMetrics(
 ) (MeetingQualityMetrics, []MeetingQualityMetricEvidence) {
 	metrics := MeetingQualityMetrics{}
 	var metricEvidence []MeetingQualityMetricEvidence
+	segmentBySequence := make(map[int64]domain.TranscriptSegment, len(segments))
+	for _, segment := range segments {
+		segmentBySequence[segment.SequenceNo] = segment
+	}
+	evidenceScope := qualityFullEvidenceScope(segments)
 	found := 0
 	classificationTotal, classificationCorrect := 0, 0
 	temporalTotal, temporalCorrect := 0, 0
@@ -749,7 +755,7 @@ func qualityMetrics(
 		if expectedTemporal := strings.TrimSpace(expectation.RequiredTemporalScope); expectedTemporal != "" {
 			temporalTotal++
 			if match.Found {
-				actualTemporal := inferItemSemanticFeatures(match.Item, liveEvidenceScope{}).TemporalScope
+				actualTemporal := inferItemSemanticFeatures(match.Item, evidenceScope).TemporalScope
 				if strings.EqualFold(expectedTemporal, actualTemporal) {
 					temporalCorrect++
 				} else {
@@ -803,7 +809,7 @@ func qualityMetrics(
 		}
 	}
 	for _, item := range activeItems {
-		features := inferItemSemanticFeatures(item, liveEvidenceScope{})
+		features := inferItemSemanticFeatures(item, evidenceScope)
 		if item.Kind == "fact" && features.TemporalScope == "past" {
 			metrics.PastFactCount++
 		}
@@ -827,6 +833,46 @@ func qualityMetrics(
 		if len([]rune(item.Title)) >= liveAnalysisItemLabelPreferredMaxRunes && incompleteItemLabelEnding(item) != "" {
 			metrics.TruncatedLabelCount++
 		}
+		if labelDescriptionExactDuplicate(item) {
+			metrics.LabelDescriptionExactDuplicateCount++
+			metricEvidence = append(metricEvidence, MeetingQualityMetricEvidence{
+				Metric: "label_description_exact_duplicate_count", ActualItemIDs: []string{item.ID},
+				ActualLabels: []string{item.Title}, Reason: "normalized label and description are identical",
+			})
+		}
+		if labelDescriptionHighSimilarity(item) {
+			metrics.LabelDescriptionHighSimilarityCount++
+		}
+		unsupportedDescriptionAtoms := descriptionUnsupportedAtomCount(item, segmentBySequence)
+		metrics.DescriptionUnsupportedAtomCount += unsupportedDescriptionAtoms
+		if unsupportedDescriptionAtoms > 0 {
+			metricEvidence = append(metricEvidence, MeetingQualityMetricEvidence{
+				Metric: "description_unsupported_atom_count", ActualItemIDs: []string{item.ID},
+				ActualLabels: []string{item.Title}, Reason: fmt.Sprintf("unsupported description atoms=%d", unsupportedDescriptionAtoms),
+			})
+		}
+		if descriptionAddsGroundedDetail(item, segmentBySequence) {
+			metrics.DescriptionAddedGroundedDetailCount++
+		}
+		if descriptionRedundant(item) {
+			metrics.DescriptionRedundantCount++
+		}
+	}
+	copyCount := 0
+	compressionTotal := 0.0
+	compressionCount := 0
+	for _, item := range activeItems {
+		if labelCopiesTranscript(item, segmentBySequence) {
+			copyCount++
+		}
+		if ratio, ok := labelCompressionForItem(item, segmentBySequence); ok {
+			compressionTotal += ratio
+			compressionCount++
+		}
+	}
+	metrics.LabelTranscriptCopyRatio = qualityRatio(copyCount, len(activeItems))
+	if compressionCount > 0 {
+		metrics.LabelCompressionRatio = compressionTotal / float64(compressionCount)
 	}
 	roles := make(map[int64]treeAuditEvidenceRole, len(segments))
 	for _, segment := range segments {
@@ -1219,6 +1265,32 @@ func qualityForbiddenResults(
 			for _, item := range items {
 				if finalItemIsLowInformation(item) {
 					found = append(found, "low_information:"+item.ID)
+				}
+			}
+		case "label_description_duplicate":
+			for _, item := range items {
+				if descriptionRedundant(item) {
+					found = append(found, "label_description_duplicate:"+item.ID)
+				}
+			}
+		case "context_dependent_label":
+			for _, item := range items {
+				if liveItemTextNeedsReferent(item) {
+					found = append(found, "context_dependent_label:"+item.ID)
+				}
+			}
+		case "decision_issue_same_proposition":
+			for _, decision := range items {
+				if decision.Kind != "decision" {
+					continue
+				}
+				for _, issue := range items {
+					if issue.Kind != "issue" || !itemEvidenceOverlaps(decision, issue) {
+						continue
+					}
+					if qualityPropositionSimilarity(decision.Title+" "+decision.Body, issue.Title+" "+issue.Body) >= 0.40 {
+						found = append(found, "decision_issue_same_proposition:"+decision.ID+":"+issue.ID)
+					}
 				}
 			}
 		}

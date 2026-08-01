@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"deciscope-core-api/internal/application"
 	"deciscope-core-api/internal/domain"
 )
 
@@ -17,6 +18,7 @@ const (
 	meetingAIAnalysisUpdatedType       = "ai_analysis.updated"
 	meetingSessionBotHealthType        = "meeting_session.bot_health_changed"
 	meetingSessionTranscriptHealthType = "meeting_session.transcript_health_changed"
+	meetingSessionMediaHealthType      = "meeting_session.media_health_changed"
 )
 
 var defaultTranscriptAllowedOrigins = []string{
@@ -141,6 +143,22 @@ func (h *TranscriptHub) PublishMeetingSessionTranscriptHealth(session domain.Mee
 	log.Printf("Meeting session transcript health broadcast. sessionId=%s transcriptHealth=%s secondsSinceLastTranscript=%d subscriberCount=%d totalSubscriberCount=%d", session.ID, transcriptHealth, secondsSinceLastTranscript, len(clients), totalSubscriberCount)
 	for _, c := range clients {
 		c.enqueueTranscriptHealth(session, transcriptHealth, secondsSinceLastTranscript)
+	}
+}
+
+func (h *TranscriptHub) PublishMeetingSessionMediaHealth(session domain.MeetingSession, health application.BotMediaHealthState) {
+	h.mu.RLock()
+	clients := make([]*transcriptClient, 0, len(h.clients))
+	for c := range h.clients {
+		if c.matchesSession(session) {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+	log.Printf("Meeting session media health broadcast. sessionId=%s state=%s event=%s eventId=%s subscriberCount=%d",
+		session.ID, health.State, health.Event, health.EventID, len(clients))
+	for _, c := range clients {
+		c.enqueueMediaHealth(health)
 	}
 }
 
@@ -289,6 +307,10 @@ func (c *transcriptClient) enqueueTranscriptHealth(session domain.MeetingSession
 	c.enqueue(transcriptOutboundEvent{transcriptHealth: &meetingSessionTranscriptHealthEvent{session: session, transcriptHealth: transcriptHealth, seconds: seconds}})
 }
 
+func (c *transcriptClient) enqueueMediaHealth(health application.BotMediaHealthState) {
+	c.enqueue(transcriptOutboundEvent{mediaHealth: &health})
+}
+
 func (c *transcriptClient) enqueue(event transcriptOutboundEvent) {
 	select {
 	case c.send <- event:
@@ -398,6 +420,8 @@ func (c *transcriptClient) writeEvent(h *TranscriptHub, event transcriptOutbound
 		return writeJSON(c.conn, meetingSessionBotHealthProtocolMessage(event.botHealth.session, event.botHealth.healthy, h.now()))
 	case event.transcriptHealth != nil:
 		return writeJSON(c.conn, meetingSessionTranscriptHealthProtocolMessage(event.transcriptHealth.session, event.transcriptHealth.transcriptHealth, event.transcriptHealth.seconds, h.now()))
+	case event.mediaHealth != nil:
+		return writeJSON(c.conn, meetingSessionMediaHealthProtocolMessage(*event.mediaHealth, h.now()))
 	default:
 		return nil
 	}
@@ -409,6 +433,7 @@ type transcriptOutboundEvent struct {
 	aiAnalysis       *domain.MeetingAIAnalysis
 	botHealth        *meetingSessionBotHealthEvent
 	transcriptHealth *meetingSessionTranscriptHealthEvent
+	mediaHealth      *application.BotMediaHealthState
 }
 
 type meetingSessionBotHealthEvent struct {
@@ -575,6 +600,18 @@ func meetingSessionTranscriptHealthProtocolMessage(session domain.MeetingSession
 			TranscriptHealth:           transcriptHealth,
 			SecondsSinceLastTranscript: secondsSinceLastTranscript,
 		},
+	}
+}
+
+type meetingSessionMediaHealthMessage struct {
+	Type      string                          `json:"type"`
+	SentAtUTC string                          `json:"sentAtUtc"`
+	Data      application.BotMediaHealthState `json:"data"`
+}
+
+func meetingSessionMediaHealthProtocolMessage(health application.BotMediaHealthState, sentAt time.Time) meetingSessionMediaHealthMessage {
+	return meetingSessionMediaHealthMessage{
+		Type: meetingSessionMediaHealthType, SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano), Data: health,
 	}
 }
 

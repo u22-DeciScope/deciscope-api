@@ -8,10 +8,17 @@ import (
 )
 
 func evidenceScopeFromTexts(texts map[int64]string, current ...int64) liveEvidenceScope {
-	scope := liveEvidenceScope{Allowed: map[int64]struct{}{}, CurrentRound: map[int64]struct{}{}, TranscriptText: map[int64]string{}}
+	scope := liveEvidenceScope{
+		Allowed: map[int64]struct{}{}, CurrentRound: map[int64]struct{}{},
+		TranscriptText: map[int64]string{}, Segments: map[int64]domain.TranscriptSegment{},
+	}
 	for sequenceNo, text := range texts {
 		scope.Allowed[sequenceNo] = struct{}{}
 		scope.TranscriptText[sequenceNo] = text
+		scope.Segments[sequenceNo] = domain.TranscriptSegment{
+			CallID: "fixture-call", SequenceNo: sequenceNo, SpeakerID: "fixture-speaker",
+			Text: text, IsFinal: true,
+		}
 		if sequenceNo > scope.CoveredThrough {
 			scope.CoveredThrough = sequenceNo
 		}

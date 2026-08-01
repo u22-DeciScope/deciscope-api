@@ -4737,6 +4737,10 @@ type liveAnalysisItem struct {
 	// label repair. It does not extend the lifecycle, classification, or
 	// grounding enums consumed by existing clients.
 	LabelResolution *labelResolutionMetadata `json:"labelResolution,omitempty"`
+	// DescriptionResolution records why the server retained or omitted the
+	// optional explanatory text. It keeps the user-visible title/description
+	// contract auditable without trusting model-supplied provenance.
+	DescriptionResolution *descriptionResolutionMetadata `json:"descriptionResolution,omitempty"`
 
 	// 以下はサーバーが決める分類メタデータ(ai_tree_classification.go)。モデル
 	// 出力に同名フィールドがあっても normalizeLiveAnalysisItems が消去する。
@@ -4975,7 +4979,8 @@ type liveAnalysisTreeNode struct {
 	RelatedItemIDs []string `json:"relatedItemIds,omitempty"`
 	// Detail nodes mirror the canonical item's label-resolution provenance so
 	// the final tree-only snapshot remains auditable after meeting completion.
-	LabelResolution *labelResolutionMetadata `json:"labelResolution,omitempty"`
+	LabelResolution       *labelResolutionMetadata       `json:"labelResolution,omitempty"`
+	DescriptionResolution *descriptionResolutionMetadata `json:"descriptionResolution,omitempty"`
 	// ModelTopicIDs are compatibility aliases for a server-canonical dynamic
 	// topic ID. They are never used as node IDs.
 	ModelTopicIDs []string `json:"modelTopicIds,omitempty"`
@@ -5013,6 +5018,12 @@ type liveAnalysisTreeNode struct {
 }
 
 type labelResolutionMetadata struct {
+	Status                    string  `json:"status"`
+	Reason                    string  `json:"reason,omitempty"`
+	SourceEvidenceSequenceNos []int64 `json:"sourceEvidenceSequenceNos,omitempty"`
+}
+
+type descriptionResolutionMetadata struct {
 	Status                    string  `json:"status"`
 	Reason                    string  `json:"reason,omitempty"`
 	SourceEvidenceSequenceNos []int64 `json:"sourceEvidenceSequenceNos,omitempty"`
@@ -5121,6 +5132,7 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, stats ...*liveAnalysis
 		item.AssignmentReason = ""
 		item.RelatedAgendaIDs = nil
 		item.LabelResolution = nil
+		item.DescriptionResolution = nil
 		item.EvidenceSnippets = uniqueSortedStrings(item.EvidenceSnippets)
 		item.GroundingDecision = ""
 		item.GroundingConfidence = 0
@@ -5998,6 +6010,11 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 		"deterministic_correction_validation", treeStats,
 	)
 	diffItems = append(diffItems, synthesizedCorrections...)
+	synthesizedLimits := synthesizeExplicitScopeLimitIssues(
+		append(append([]liveAnalysisItem(nil), previous.Items...), diffItems...),
+		evidenceScope, timeline,
+	)
+	diffItems = append(diffItems, synthesizedLimits...)
 	assignments = append(assignments, deterministicSynthesizedAssignments(
 		previous, append(append([]liveAnalysisItem(nil), synthesizedTodos...),
 			synthesizedCorrections...),
@@ -6110,6 +6127,8 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	repairIncompletePersistedItemLabels(
 		&merged, evidenceScope, timeline, treeVersion, treeStats,
 	)
+	repairPersistedItemDescriptions(&merged, evidenceScope)
+	suppressIssuesDuplicatingClearDecisions(&merged, evidenceScope, treeVersion)
 	kindRelationsCreated := reconcileSemanticKindRelations(
 		merged.Tree, merged.Items, evidenceScope, treeVersion, "deterministic_inference",
 	)
@@ -6588,6 +6607,9 @@ func deduplicateExistingLiveState(state *liveAnalysisPayload, stats *liveAnalysi
 			if !sameSemanticClassification(kept[at], item) {
 				continue
 			}
+			if distinctCorrectionFactClauses(kept[at], item) {
+				continue
+			}
 			if recap {
 				score := semanticItemSimilarity(kept[at].Title+" "+kept[at].Body, item.Title+" "+item.Body)
 				if score >= 0.08 && score > bestScore {
@@ -6854,6 +6876,9 @@ func sameKindSemanticDuplicate(a, b liveAnalysisItem) (bool, float64) {
 	if !sameSemanticClassification(a, b) {
 		return false, 0
 	}
+	if distinctCorrectionFactClauses(a, b) {
+		return false, 0
+	}
 	if distinctTodoAssignments(a, b) {
 		return false, 0
 	}
@@ -6874,6 +6899,20 @@ func sameKindSemanticDuplicate(a, b liveAnalysisItem) (bool, float64) {
 	// "公開方法" and "公開方針" without merging unrelated same-kind items.
 	nearEvidence := itemEvidenceWithin(a, b, 2)
 	return score >= 0.90 || (nearEvidence && titleScore >= 0.70), score
+}
+
+func distinctCorrectionFactClauses(a, b liveAnalysisItem) bool {
+	if a.Kind != "fact" || b.Kind != "fact" ||
+		a.AssignmentReason != deterministicCorrectionAssignmentReason ||
+		b.AssignmentReason != deterministicCorrectionAssignmentReason ||
+		!itemEvidenceOverlaps(a, b) {
+		return false
+	}
+	left := a.Title + " " + a.Body
+	right := b.Title + " " + b.Body
+	leftTrunk, rightTrunk := strings.Contains(left, "トランク"), strings.Contains(right, "トランク")
+	leftVLAN, rightVLAN := itemLabelVLANQualifierPattern.MatchString(left), itemLabelVLANQualifierPattern.MatchString(right)
+	return leftTrunk != rightTrunk || leftVLAN != rightVLAN
 }
 
 func distinctTodoAssignments(a, b liveAnalysisItem) bool {

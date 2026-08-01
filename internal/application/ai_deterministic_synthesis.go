@@ -11,7 +11,67 @@ import (
 const (
 	deterministicTodoAssignmentReason       = "explicit_owner_action_commitment"
 	deterministicCorrectionAssignmentReason = "explicit_correction_reconstruction"
+	deterministicLimitAssignmentReason      = "explicit_scope_limit_reconstruction"
 )
+
+func synthesizeExplicitScopeLimitIssues(
+	existing []liveAnalysisItem,
+	scope liveEvidenceScope,
+	timeline discourseTimeline,
+) []liveAnalysisItem {
+	known := append([]liveAnalysisItem(nil), existing...)
+	var result []liveAnalysisItem
+	for _, sequenceNo := range correctionEvidenceSequenceNos(scope) {
+		switch timeline.Roles[sequenceNo] {
+		case liveEvidenceReferenceRecap, liveEvidenceDiscourseOnly:
+			continue
+		}
+		for _, clause := range semanticKindClauses(scope.TranscriptText[sequenceNo]) {
+			clause = strings.Trim(strings.TrimSpace(clause), "、。.!！?？ ")
+			if clause == "" || !itemRelationLimitPattern.MatchString(clause) ||
+				!kindOpenQuestionPattern.MatchString(clause) {
+				continue
+			}
+			label := itemLabelLeadingConnectorPattern.ReplaceAllString(clause, "")
+			label = semanticallyCompleteItemLabelOrOriginal(label, "issue")
+			probe := liveAnalysisItem{
+				Kind: "issue", Subtype: issueSubtypeInvestigation, Severity: "medium",
+				Title: label, Body: clause, Status: "open",
+				EvidenceSequenceNos: []int64{sequenceNo}, EvidenceSnippets: []string{clause},
+				InformationStatus: informationStatusGrounded, evidenceSpecified: true,
+				AssignmentSource: "rule", AssignmentReason: deterministicLimitAssignmentReason,
+				CreatedThroughSequenceNo: scope.CoveredThrough, InitialEvidenceMaxSequenceNo: sequenceNo,
+			}
+			if scopeLimitIssueRepresented(known, probe) {
+				continue
+			}
+			decision := evaluateLiveItemKind(probe, liveEvidenceScope{}, "scope_limit_reconstruction")
+			if decision.CanonicalKind != "issue" ||
+				decision.Confidence < itemKindValidationThreshold(itemKindValidationLive) {
+				continue
+			}
+			probe.Subtype = decision.CanonicalSubtype
+			probe.ID = serverGeneratedItemID(probe)
+			result = append(result, probe)
+			known = append(known, probe)
+		}
+	}
+	return result
+}
+
+func scopeLimitIssueRepresented(items []liveAnalysisItem, probe liveAnalysisItem) bool {
+	for _, item := range items {
+		if item.Inactive || item.MergedIntoID != "" || item.Kind != "issue" ||
+			!itemEvidenceOverlaps(item, probe) {
+			continue
+		}
+		if semanticItemSimilarity(item.Title+" "+item.Body, probe.Title+" "+probe.Body) >= 0.30 ||
+			sharedTreeAuditSubjectTerm(item.Title+" "+item.Body, probe.Title+" "+probe.Body) {
+			return true
+		}
+	}
+	return false
+}
 
 var (
 	deterministicTodoObjectPattern      = regexp.MustCompile(`(?:を|について|に対して|の(?:確認|更新|作成|策定|調査|対応|実施|適用|管理|監視))`)
@@ -579,52 +639,134 @@ func synthesizeCorrectionFactItems(
 		if text == "" || !discourseCorrectionPattern.MatchString(text) {
 			continue
 		}
-		statement := correctionReplacementStatement(text)
-		if statement == "" {
-			continue
-		}
-		if correctionSequenceRepresented(known, sequenceNo, statement, scope) {
-			continue
-		}
-		// A reference-dependent correction still requires a tracked target.
-		// A self-contained replacement can stand on its own, so target absence
-		// must not discard the grounded corrected proposition.
-		selfContained := selfContainedCorrectionFact(statement, text)
-		if targetAt, _ := bestSupersededCorrectionItem(
-			known, text, sequenceNo, "", scope,
-		); targetAt < 0 && !selfContained {
-			continue
-		}
-		probe := liveAnalysisItem{
-			Kind: "fact", Severity: "medium",
-			Title: semanticallyCompleteItemLabelOrOriginal(statement, "fact"), Body: statement, Status: "open",
-			EvidenceSequenceNos:          []int64{sequenceNo},
-			EvidenceSnippets:             []string{statement},
-			evidenceSpecified:            true,
-			AssignmentSource:             "rule",
-			AssignmentReason:             deterministicCorrectionAssignmentReason,
-			CreatedThroughSequenceNo:     scope.CoveredThrough,
-			InitialEvidenceMaxSequenceNo: sequenceNo,
-		}
-		decision := evaluateLiveItemKind(probe, liveEvidenceScope{}, "correction_reconstruction")
-		historicalFact := kindPastEventPattern.MatchString(statement) &&
-			!futureActionIntent(statement) &&
-			!kindOpenQuestionPattern.MatchString(statement) &&
-			!kindUncertaintyPattern.MatchString(statement) &&
-			!kindProposalPattern.MatchString(statement)
-		if (decision.CanonicalKind != "fact" ||
-			decision.Confidence < itemKindValidationThreshold(itemKindValidationLive)) &&
-			!historicalFact {
-			continue
-		}
-		probe.ID = serverGeneratedItemID(probe)
-		synthesized = append(synthesized, probe)
-		known = append(known, probe)
-		if stats != nil {
-			stats.CorrectionItemsReconstructed++
+		for _, replacement := range correctionReplacementStatements(sequenceNo, scope, timeline) {
+			statement := replacement.Text
+			if correctionSequenceRepresented(known, replacement.SequenceNo, statement, scope) {
+				continue
+			}
+			// A reference-dependent correction still requires a tracked target.
+			// A self-contained replacement can stand on its own, so target absence
+			// must not discard the grounded corrected proposition.
+			selfContained := selfContainedCorrectionFact(statement, scope.TranscriptText[replacement.SequenceNo]) ||
+				highConfidenceCorrectionContinuationFact(statement, scope.TranscriptText[replacement.SequenceNo])
+			if targetAt, _ := bestSupersededCorrectionItem(
+				known, text, sequenceNo, "", scope,
+			); targetAt < 0 && !selfContained {
+				continue
+			}
+			probe := liveAnalysisItem{
+				Kind: "fact", Severity: "medium",
+				Title: semanticallyCompleteItemLabelOrOriginal(statement, "fact"), Body: statement, Status: "open",
+				EvidenceSequenceNos:          []int64{replacement.SequenceNo},
+				EvidenceSnippets:             []string{statement},
+				evidenceSpecified:            true,
+				AssignmentSource:             "rule",
+				AssignmentReason:             deterministicCorrectionAssignmentReason,
+				CreatedThroughSequenceNo:     scope.CoveredThrough,
+				InitialEvidenceMaxSequenceNo: replacement.SequenceNo,
+			}
+			decision := evaluateLiveItemKind(probe, liveEvidenceScope{}, "correction_reconstruction")
+			historicalFact := highConfidenceCorrectionContinuationFact(
+				statement, scope.TranscriptText[replacement.SequenceNo],
+			) || (kindPastEventPattern.MatchString(statement) &&
+				!futureActionIntent(statement) &&
+				!kindOpenQuestionPattern.MatchString(statement) &&
+				!kindUncertaintyPattern.MatchString(statement) &&
+				!kindProposalPattern.MatchString(statement))
+			if (decision.CanonicalKind != "fact" ||
+				decision.Confidence < itemKindValidationThreshold(itemKindValidationLive)) &&
+				!historicalFact {
+				continue
+			}
+			probe.ID = serverGeneratedItemID(probe)
+			synthesized = append(synthesized, probe)
+			known = append(known, probe)
+			if stats != nil {
+				stats.CorrectionItemsReconstructed++
+			}
 		}
 	}
 	return synthesized
+}
+
+type correctionReplacement struct {
+	SequenceNo int64
+	Text       string
+}
+
+func correctionReplacementStatements(
+	sequenceNo int64,
+	scope liveEvidenceScope,
+	timeline discourseTimeline,
+) []correctionReplacement {
+	text := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+	result := make([]correctionReplacement, 0, 3)
+	if statement := correctionReplacementStatement(text); statement != "" {
+		result = append(result, correctionReplacement{SequenceNo: sequenceNo, Text: statement})
+	}
+	nextSequenceNo := sequenceNo + 1
+	currentSegment, currentOK := scope.Segments[sequenceNo]
+	nextSegment, nextOK := scope.Segments[nextSequenceNo]
+	if !currentOK || !nextOK || !explicitAdjacentSameSpeaker(currentSegment, nextSegment) ||
+		timeline.Roles[nextSequenceNo] == liveEvidenceReferenceRecap ||
+		timeline.Roles[nextSequenceNo] == liveEvidenceDiscourseOnly {
+		return result
+	}
+	// A purely negative correction is allowed to continue in the immediately
+	// following same-speaker final segment. This is the common recognizer split
+	// shape: "not a complete access port" followed by the positive facts.
+	if correctionReplacementStatement(text) != "" &&
+		!correctionNegativeLeadClausePattern.MatchString(strings.Trim(strings.TrimSpace(text), "、。.!！ ")) {
+		return result
+	}
+	nextText := strings.TrimSpace(scope.TranscriptText[nextSequenceNo])
+	for _, statement := range splitCorrectionContinuationFacts(nextText) {
+		if !selfContainedCorrectionFact(statement, nextText) &&
+			!highConfidenceCorrectionContinuationFact(statement, nextText) {
+			continue
+		}
+		duplicate := false
+		for _, existing := range result {
+			if semanticItemSimilarity(existing.Text, statement) >= 0.82 {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			result = append(result, correctionReplacement{SequenceNo: nextSequenceNo, Text: statement})
+		}
+	}
+	return result
+}
+
+func highConfidenceCorrectionContinuationFact(statement, evidence string) bool {
+	statement = strings.Trim(strings.TrimSpace(statement), "、。.!！ ")
+	historical := kindPastEventPattern.MatchString(statement) ||
+		strings.HasSuffix(statement, "いました") || strings.HasSuffix(statement, "いましたが")
+	if statement == "" || !historical ||
+		kindOpenQuestionPattern.MatchString(statement) || kindUncertaintyPattern.MatchString(statement) ||
+		kindProposalPattern.MatchString(statement) || futureActionIntent(statement) {
+		return false
+	}
+	if !strings.Contains(normalizeGroundingText(evidence), normalizeGroundingText(statement)) {
+		return false
+	}
+	return strings.Contains(statement, "トランク設定") ||
+		strings.Contains(statement, "アクセスポート設定") ||
+		itemLabelVLANQualifierPattern.MatchString(statement)
+}
+
+func splitCorrectionContinuationFacts(text string) []string {
+	text = strings.ReplaceAll(text, "が、", "。")
+	text = strings.ReplaceAll(text, "が,", "。")
+	var result []string
+	for _, clause := range semanticKindClauses(text) {
+		clause = strings.Trim(strings.TrimSpace(clause), "、。.!！ ")
+		if clause != "" && !containsExactString(result, clause) {
+			result = append(result, clause)
+		}
+	}
+	return result
 }
 
 // deterministicSynthesizedAssignments inherits the durable topic of the
@@ -743,12 +885,29 @@ func correctionSequenceRepresented(
 			continue
 		}
 		itemText := itemKindSemanticText(item, scope)
+		statementVLANs := uniqueSortedStrings(itemLabelVLANQualifierPattern.FindAllString(statement, -1))
+		itemVLANs := uniqueSortedStrings(itemLabelVLANQualifierPattern.FindAllString(itemText, -1))
+		if len(statementVLANs) > 0 && !allFoldedStringsPresent(statementVLANs, itemVLANs) {
+			continue
+		}
+		if strings.Contains(statement, "トランク") && !strings.Contains(itemText, "トランク") {
+			continue
+		}
 		if sharedTreeAuditSubjectTerm(itemText, statement) ||
 			semanticItemSimilarity(itemText, statement) >= 0.18 {
 			return true
 		}
 	}
 	return false
+}
+
+func allFoldedStringsPresent(want, values []string) bool {
+	for _, value := range want {
+		if !containsFoldedString(values, value) {
+			return false
+		}
+	}
+	return true
 }
 
 func correctionReplacementStatement(text string) string {

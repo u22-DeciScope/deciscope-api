@@ -2,6 +2,7 @@ package application
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -124,6 +125,48 @@ func TestMeetingQualityBaselineRejectsSchemaAndScenarioDeletion(t *testing.T) {
 	}
 	if _, _, err := AcceptMeetingQualityImprovements(baseline, current); err == nil {
 		t.Fatal("scenario deletion was accepted")
+	}
+}
+
+func TestMeetingQualityBaselineMigratesOnlyKnownAdditiveV3Metrics(t *testing.T) {
+	currentScenario := MeetingQualityScenarioResult{ID: "kept", Passed: true}
+	currentScenario.Metrics.DescriptionAddedGroundedDetailCount = 2
+	currentScenario.Metrics.LabelCompressionRatio = 0.5
+	current := MeetingQualitySuiteReport{
+		SchemaVersion: meetingQualitySchemaVersion, Suite: "deterministic", Passed: true,
+		Scenarios: []MeetingQualityScenarioResult{currentScenario},
+	}
+	current.Scenarios[0].PropositionMatches = []MeetingQualityPropositionMatch{{
+		PropositionID: "fact", RequiredTemporalScope: "unknown", Matched: true,
+	}}
+	legacy := MeetingQualityBaseline{
+		SchemaVersion: 3, Suite: "deterministic",
+		MetricSchema: append([]string(nil), meetingQualityMetricSchemaV3...),
+		Scenarios: []MeetingQualityScenarioResult{{
+			ID: "kept", Passed: true, Metrics: MeetingQualityMetrics{PastFactCount: 1},
+			PropositionMatches: []MeetingQualityPropositionMatch{{PropositionID: "fact"}},
+		}},
+	}
+
+	updated, report, err := AcceptMeetingQualityImprovements(legacy, current)
+	if err != nil {
+		t.Fatalf("migrate additive v3 baseline: %v", err)
+	}
+	if updated.SchemaVersion != meetingQualityBaselineSchemaVersion ||
+		!reflect.DeepEqual(updated.MetricSchema, qualityMetricNames()) ||
+		len(report.AddedMetricSchema) != len(qualityMetricNames())-len(meetingQualityMetricSchemaV3) ||
+		len(report.AppliedMetrics) != 1 || report.AppliedMetrics[0].Metric != "pastFactCount" {
+		t.Fatalf("updated=%+v report=%+v", updated, report)
+	}
+	if comparison := CompareMeetingQualityBaseline(updated, current); !comparison.Passed {
+		t.Fatalf("migrated baseline does not match current: %+v", comparison)
+	}
+
+	broken := legacy
+	broken.MetricSchema = append([]string(nil), legacy.MetricSchema...)
+	broken.MetricSchema[0], broken.MetricSchema[1] = broken.MetricSchema[1], broken.MetricSchema[0]
+	if _, _, err := AcceptMeetingQualityImprovements(broken, current); err == nil {
+		t.Fatal("reordered legacy metric schema was accepted")
 	}
 }
 

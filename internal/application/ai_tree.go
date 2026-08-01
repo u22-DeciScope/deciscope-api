@@ -486,10 +486,9 @@ func rebuildDiscussionTree(
 		// 40-rune predicate cut at projection time.
 		node.Label = strings.TrimSpace(item.Title)
 		node.LabelResolution = cloneLabelResolution(item.LabelResolution)
+		node.DescriptionResolution = cloneDescriptionResolution(item.DescriptionResolution)
 		node.UpdatedAtVersion = round
-		if body := truncateRunes(strings.TrimSpace(item.Body), liveAnalysisTreeDescriptionMaxRunes); body != "" {
-			node.Description = body
-		}
+		node.Description = truncateRunes(strings.TrimSpace(item.Body), liveAnalysisTreeDescriptionMaxRunes)
 		switch item.Status {
 		case "resolved":
 			if resolvableItemKind(item.Kind) {

@@ -88,7 +88,7 @@ var (
 		`(?i)(?:現在|現時点|発生中|発生している|継続している|できていな(?:い|く|かった)|できていません|接続できない|未解決|未確認|未確定|未決定|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|unknown|unresolved|currently)`,
 	)
 	kindConfirmedPattern = regexp.MustCompile(
-		`(?i)(?:確認した|確認しました|確認済み|判明した|判明しました|分かりました|わかりました|明らかになった|観測した|報告された|報告されました|報告がありました|報告があった|漏れてい(?:た|ました)|異常はなかった|正常になった|復旧した|解消した|解消しました|切り戻した|修正した後|であることが分かった|confirmed|observed|verified|reported)`,
+		`(?i)(?:確認した|確認しました|確認済み|判明した|判明しました|分かりました|わかりました|明らかになった|観測した|報告された|報告されました|報告がありました|報告があった|漏れてい(?:た|ました)|異常はなかった|正常になった|復旧した|復旧しました|解消した|解消しました|切り戻した|切り戻しました|修正した後|であることが分かった|confirmed|observed|verified|reported)`,
 	)
 	kindPastEventPattern = regexp.MustCompile(
 		`(?i)(?:発生した|発生しました|していた|していました|しておりました|できなかった|できませんでした|だった|でした|行った|実施した|完了した|解消した|解消しました|正常になった|正常になりました|occurred|was |were |completed)`,
@@ -1247,7 +1247,9 @@ func semanticRelationItemsRelated(tree *liveAnalysisTree, source, target liveAna
 		}
 		return evidenceFollowsWithin(source, target, 2) &&
 			(sharedSubject || itemLabelContextDependentPattern.MatchString(source.Title) ||
-				itemLabelDeicticSettingPattern.MatchString(sourceText))
+				itemLabelDeicticSettingPattern.MatchString(sourceText) ||
+				(itemRelationLimitPattern.MatchString(sourceText) &&
+					evidenceFollowsWithin(source, target, 1)))
 	default:
 		if crossTopic {
 			return itemEvidenceWithin(source, target, 2) && sharedSubject && similarity >= 0.10

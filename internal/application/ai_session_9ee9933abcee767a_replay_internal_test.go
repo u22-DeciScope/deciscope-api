@@ -69,7 +69,7 @@ func TestLowInformationAtomDoesNotHideFollowingStrongTodo(t *testing.T) {
 	active := activeItemsForReplay(state.Items)
 	if len(active) != 1 || active[0].Kind != "todo" ||
 		!equalInt64s(active[0].EvidenceSequenceNos, []int64{20}) ||
-		!strings.Contains(active[0].Body, "高橋さん") ||
+		!strings.Contains(active[0].Title, "高橋さん") ||
 		stats.GroundingRejected == 0 || stats.StrongTodosSynthesized != 1 ||
 		scope.CoveredThrough != 20 {
 		t.Fatalf("active=%+v stats=%+v covered=%d", active, stats, scope.CoveredThrough)
@@ -157,7 +157,9 @@ func TestCorrectionPendingThenFinalRepairReconstructsIdempotently(t *testing.T) 
 	active := activeItemsForReplay(repaired.Items)
 	if len(active) != 1 || active[0].Kind != "fact" ||
 		!equalInt64s(active[0].EvidenceSequenceNos, []int64{2}) ||
-		!strings.Contains(active[0].Body, "トランク設定") ||
+		!strings.Contains(active[0].Title, "トランク設定") ||
+		active[0].Body != "" || active[0].DescriptionResolution == nil ||
+		active[0].DescriptionResolution.Status != "omitted" ||
 		!replayItemInactive(repaired.Items, old.ID) ||
 		len(repaired.ItemTombstones) != 1 {
 		t.Fatalf("active=%+v all=%+v tombstones=%+v", active, repaired.Items, repaired.ItemTombstones)
@@ -309,8 +311,8 @@ func TestSession9EE9933ABCEE767AStoredV18DeterministicReplay(t *testing.T) {
 	}
 	corrected := replayActiveItemByEvidence(active, 8)
 	if corrected == nil || corrected.Kind != "fact" ||
-		(!strings.Contains(corrected.Body, "VLAN") &&
-			!strings.Contains(corrected.Body, "vラン")) {
+		(!strings.Contains(corrected.Title, "VLAN") &&
+			!strings.Contains(corrected.Title, "vラン")) {
 		t.Fatalf("sequence 8 corrected fact=%+v", corrected)
 	}
 	seq15 := replayActiveItemsByEvidence(active, 15)
@@ -339,8 +341,8 @@ func TestSession9EE9933ABCEE767AStoredV18DeterministicReplay(t *testing.T) {
 	}
 	seq20 := replayActiveItemByEvidenceKind(active, 20, "todo")
 	if seq20 == nil || seq20.Kind != "todo" ||
-		!strings.Contains(seq20.Body, "高橋さん") ||
-		!strings.Contains(seq20.Body, "今週中") {
+		!strings.Contains(seq20.Title, "高橋さん") ||
+		!strings.Contains(seq20.Title, "今週中") {
 		t.Fatalf("sequence 20=%+v", seq20)
 	}
 	recovery := findItemByID(repaired.Items, "item-fact-c86e74b667c5")

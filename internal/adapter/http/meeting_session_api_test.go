@@ -497,6 +497,76 @@ func TestMeetingSessionAPIRecordBotHeartbeatBareBodyDoesNotRecordMetrics(t *test
 	}
 }
 
+func TestMeetingSessionAPIRecordsAndReloadsTransientMediaHealth(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{session: domain.MeetingSession{
+		ID: "session_1", WorkspaceID: "workspace_1", Status: domain.MeetingSessionRecording,
+		BotCallID: "call-1",
+	}}
+	mediaHealth := application.NewBotMediaHealthService(nil)
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionBotMediaHealth(mediaHealth))
+	requestBody := `{
+		"eventId":"audio-stall:call-1:1:started",
+		"botCallId":"call-1",
+		"state":"audio_receive_stalled",
+		"event":"started",
+		"occurredAtUtc":"2026-08-01T00:50:25Z",
+		"startedAtUtc":"2026-08-01T00:50:20Z",
+		"lastAudioFrameAtUtc":"2026-08-01T00:50:20Z",
+		"durationMs":5000,
+		"source":"audio_frame_watchdog"
+	}`
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/media-health", requestBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotMediaHealth(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("record response = %d %s", resp.Code, resp.Body.String())
+	}
+
+	getReq := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/media-health", "")
+	getResp := httptest.NewRecorder()
+	api.GetWorkspaceBotMediaHealth(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("get response = %d %s", getResp.Code, getResp.Body.String())
+	}
+	var got application.BotMediaHealthState
+	if err := json.Unmarshal(getResp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode media health: %v", err)
+	}
+	if got.SessionID != "session_1" || got.State != application.BotMediaHealthAudioReceiveStalled ||
+		got.Event != application.BotMediaHealthEventStarted || got.DurationMilliseconds != 5000 {
+		t.Fatalf("media health = %+v", got)
+	}
+	if service.update.SessionID != "" || service.endInput.SessionID != "" {
+		t.Fatalf("media health must not change meeting lifecycle: update=%+v end=%+v", service.update, service.endInput)
+	}
+}
+
+func TestMeetingSessionAPIRejectsMediaHealthFromDifferentBotCall(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{session: domain.MeetingSession{
+		ID: "session_1", Status: domain.MeetingSessionRecording, BotCallID: "call-current",
+	}}
+	api := NewMeetingSessionAPI(
+		service,
+		testTranscriptAPIKey,
+		WithMeetingSessionBotMediaHealth(application.NewBotMediaHealthService(nil)),
+	)
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/media-health", `{
+		"botCallId":"call-stale","state":"audio_receive_stalled","event":"started"
+	}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotMediaHealth(resp, req)
+
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *testing.T) {
 	service := &fakeMeetingSessionUseCases{
 		session: domain.MeetingSession{

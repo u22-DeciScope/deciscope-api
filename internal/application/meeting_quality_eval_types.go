@@ -105,24 +105,31 @@ type MeetingQualitySafetyExpectation struct {
 }
 
 type MeetingQualityMetrics struct {
-	RequiredPropositionRecall     float64 `json:"requiredPropositionRecall"`
-	UnsupportedPropositionCount   int     `json:"unsupportedPropositionCount"`
-	ClassificationAccuracy        float64 `json:"classificationAccuracy"`
-	TemporalScopeAccuracy         float64 `json:"temporalScopeAccuracy"`
-	PastFactCount                 int     `json:"pastFactCount"`
-	IssueCount                    int     `json:"issueCount"`
-	ResolvedIssueCount            int     `json:"resolvedIssueCount"`
-	IncorrectResolvedIssueCount   int     `json:"incorrectResolvedIssueCount"`
-	RiskRecall                    float64 `json:"riskRecall"`
-	TodoRecall                    float64 `json:"todoRecall"`
-	DecisionRecall                float64 `json:"decisionRecall"`
-	SemanticDuplicateCount        int     `json:"semanticDuplicateCount"`
-	LowInformationLabelCount      int     `json:"lowInformationLabelCount"`
-	ContextDependentLabelCount    int     `json:"contextDependentLabelCount"`
-	TruncatedLabelCount           int     `json:"truncatedLabelCount"`
-	HierarchyRelationAccuracy     float64 `json:"hierarchyRelationAccuracy"`
-	CandidateFragmentationCount   int     `json:"candidateFragmentationCount"`
-	CrossAgendaContaminationCount int     `json:"crossAgendaContaminationCount"`
+	RequiredPropositionRecall           float64 `json:"requiredPropositionRecall"`
+	UnsupportedPropositionCount         int     `json:"unsupportedPropositionCount"`
+	ClassificationAccuracy              float64 `json:"classificationAccuracy"`
+	TemporalScopeAccuracy               float64 `json:"temporalScopeAccuracy"`
+	PastFactCount                       int     `json:"pastFactCount"`
+	IssueCount                          int     `json:"issueCount"`
+	ResolvedIssueCount                  int     `json:"resolvedIssueCount"`
+	IncorrectResolvedIssueCount         int     `json:"incorrectResolvedIssueCount"`
+	RiskRecall                          float64 `json:"riskRecall"`
+	TodoRecall                          float64 `json:"todoRecall"`
+	DecisionRecall                      float64 `json:"decisionRecall"`
+	SemanticDuplicateCount              int     `json:"semanticDuplicateCount"`
+	LowInformationLabelCount            int     `json:"lowInformationLabelCount"`
+	ContextDependentLabelCount          int     `json:"contextDependentLabelCount"`
+	TruncatedLabelCount                 int     `json:"truncatedLabelCount"`
+	HierarchyRelationAccuracy           float64 `json:"hierarchyRelationAccuracy"`
+	CandidateFragmentationCount         int     `json:"candidateFragmentationCount"`
+	CrossAgendaContaminationCount       int     `json:"crossAgendaContaminationCount"`
+	LabelDescriptionExactDuplicateCount int     `json:"label_description_exact_duplicate_count"`
+	LabelDescriptionHighSimilarityCount int     `json:"label_description_high_similarity_count"`
+	DescriptionUnsupportedAtomCount     int     `json:"description_unsupported_atom_count"`
+	DescriptionAddedGroundedDetailCount int     `json:"description_added_grounded_detail_count"`
+	LabelTranscriptCopyRatio            float64 `json:"label_transcript_copy_ratio"`
+	LabelCompressionRatio               float64 `json:"label_compression_ratio"`
+	DescriptionRedundantCount           int     `json:"description_redundant_count"`
 }
 
 type MeetingQualityParentAssignment struct {
@@ -275,5 +282,6 @@ type MeetingQualityBaselineUpdateReport struct {
 	AppliedMetrics    []MeetingQualityMetricChange `json:"appliedMetrics,omitempty"`
 	AppliedRepairs    []string                     `json:"appliedRepairs,omitempty"`
 	AddedScenarios    []string                     `json:"addedScenarios,omitempty"`
+	AddedMetricSchema []string                     `json:"addedMetricSchema,omitempty"`
 	UnchangedBaseline bool                         `json:"unchangedBaseline"`
 }

@@ -86,11 +86,21 @@ func TestCandidateCreationFoldsIntoExistingPromotedTopicBySubject(t *testing.T) 
 	diff := `{
 		"summary": "更新",
 		"currentTopic": "vpnと証明書の対応",
-		"items": [{"id": "item-todo-vpn-update", "kind": "todo", "severity": "medium", "title": "証明書更新手順の確認", "body": "高橋さんに今週中に証明書の更新手順と作業可能日を確認してもらう", "status": "open"}],
+		"items": [{"id": "item-todo-vpn-update", "kind": "todo", "severity": "medium", "title": "証明書更新手順の確認", "body": "高橋さんに今週中に証明書の更新手順と作業可能日を確認してもらう", "status": "open", "evidenceSequenceNos": [16]}],
 		"newTopics": [{"id": "topic-xxxxxx", "label": "vpnと証明書の対応"}],
 		"assignments": [{"nodeId": "item-todo-vpn-update", "parentTopicId": "topic-xxxxxx", "confidence": 0.8, "reason": "vpn証明書の対応"}]
 	}`
-	merged := mergeForTestAtRound(t, diff, previousJSON, nil, 2)
+	scope := evidenceScopeFromTexts(map[int64]string{
+		15: "VPN証明書が来月末に期限切れになる可能性があります。",
+		16: "高橋さんに今週中に証明書の更新手順と作業可能日を確認してもらいます。",
+	}, 16)
+	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(
+		diff, previousJSON, nil, 2, []int64{16}, scope, TreeClassificationConfig{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := previousLiveAnalysisState(raw)
 	assertTreeInvariants(t, merged.Tree)
 	if len(merged.EmergingTopics) != 0 {
 		t.Fatalf("emergingTopics = %+v, want none: proposal must fold into the existing VPN topic instead of creating a candidate", merged.EmergingTopics)

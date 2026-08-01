@@ -289,12 +289,26 @@ func bestExplicitClosureTarget(items []liveAnalysisItem, text string, sequenceNo
 	if allowTodo {
 		priority["todo"] = 1
 	}
+	matchingText := text
+	if subject := explicitClosureIssueTitle(text); subject != "" && len([]rune(subject)) < len([]rune(text)) {
+		// A recap can place the closure and several unrelated decisions in one
+		// transcript segment. Match the clause's named subject, not the entire
+		// recap, or unrelated issues can make the canonical target ambiguous.
+		matchingText = subject
+	}
 	for _, item := range items {
 		kindPriority, eligible := priority[item.Kind]
 		if !eligible || item.Status == "dismissed" {
 			continue
 		}
-		score := semanticItemSimilarity(item.Title+" "+item.Body, text)
+		score := semanticItemSimilarity(item.Title+" "+item.Body, matchingText)
+		// Body is intentionally optional: the presentation repair may omit a
+		// description that only restates the headline. Keep explicit-closure
+		// matching stable by rewarding a concrete shared headline subject, so a
+		// recap closes the canonical issue instead of synthesizing a duplicate.
+		if sharedTreeAuditSubjectTerm(item.Title, matchingText) {
+			score += 0.10
+		}
 		near := false
 		for _, evidenceSequence := range item.EvidenceSequenceNos {
 			delta := sequenceNo - evidenceSequence

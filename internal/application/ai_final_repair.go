@@ -1,6 +1,7 @@
 package application
 
 import (
+	"sort"
 	"strings"
 
 	"deciscope-core-api/internal/domain"
@@ -47,6 +48,10 @@ func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.Transcri
 		append(append([]liveAnalysisItem(nil), state.Items...), synthesized...),
 		segments, kindStats,
 	)...)
+	synthesized = append(synthesized, synthesizeExplicitScopeLimitIssues(
+		append(append([]liveAnalysisItem(nil), state.Items...), synthesized...),
+		scope, timeline,
+	)...)
 	addOrUpdateFinalSynthesizedItems(state, synthesized, version)
 	splitPersistedItemKinds(state, scope, itemKindValidationFinal, "final_semantic_split", kindStats)
 	// Kind repair can turn a legacy compound Issue into a Todo. Split its
@@ -59,6 +64,9 @@ func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.Transcri
 	splitPersistedMultiAssignmentTodos(state, scope, kindStats)
 	localizePersistedItemEvidence(state.Items, scope, kindStats)
 	repairCorrectionSupersessions(state, scope, timeline, version, kindStats)
+	repairIncompletePersistedItemLabels(state, scope, timeline, version, kindStats)
+	repairPersistedItemDescriptions(state, scope)
+	suppressIssuesDuplicatingClearDecisions(state, scope, version)
 	recordItemKindDistribution(state, scope, kindStats)
 	stats.KindValidationChanges += kindStats.KindValidationChanges
 	stats.KindValidationAmbiguous += kindStats.KindValidationAmbiguous
@@ -172,6 +180,82 @@ func repairFinalItemGrounding(state *liveAnalysisPayload, scope liveEvidenceScop
 	}
 	pruneEmptyDynamicTopics(state.Tree)
 	rebuildTreeAuditEdges(state.Tree)
+}
+
+// suppressIssuesDuplicatingClearDecisions removes only the artificial
+// question-shaped copy of an explicit decision. An independently unresolved
+// clause survives because its own evidence contains an open-question marker
+// or is not one of the detected decision source sequences.
+func suppressIssuesDuplicatingClearDecisions(
+	state *liveAnalysisPayload,
+	scope liveEvidenceScope,
+	version int64,
+) {
+	if state == nil || state.Tree == nil {
+		return
+	}
+	segments := make([]domain.TranscriptSegment, 0, len(scope.Segments))
+	for _, segment := range scope.Segments {
+		segments = append(segments, segment)
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].SequenceNo < segments[j].SequenceNo })
+	explicitDecisionSequences := make(map[int64]struct{})
+	for _, candidate := range detectDecisionCandidates(segments) {
+		if candidate.Recap {
+			continue
+		}
+		for _, sequenceNo := range candidate.SourceSequenceNos {
+			explicitDecisionSequences[sequenceNo] = struct{}{}
+		}
+	}
+	if len(explicitDecisionSequences) == 0 {
+		return
+	}
+	decisions := make([]liveAnalysisItem, 0)
+	for _, item := range state.Items {
+		if item.Kind == "decision" && !item.Inactive && item.MergedIntoID == "" {
+			decisions = append(decisions, item)
+		}
+	}
+	for _, issueID := range activeFinalItemIDs(state.Items) {
+		issue, ok := finalItemByID(state.Items, issueID)
+		if !ok || issue.Kind != "issue" || finalItemManualProtected(state, issue.ID) ||
+			issueHasIndependentOpenEvidence(issue, scope, explicitDecisionSequences) {
+			continue
+		}
+		for _, decision := range decisions {
+			if !itemEvidenceOverlaps(issue, decision) {
+				continue
+			}
+			if qualityPropositionSimilarity(
+				issue.Title+" "+issue.Body,
+				decision.Title+" "+decision.Body,
+			) < 0.40 {
+				continue
+			}
+			rejectFinalItem(state, issue.ID, "duplicate_of_explicit_decision", version)
+			break
+		}
+	}
+	pruneEmptyDynamicTopics(state.Tree)
+	rebuildTreeAuditEdges(state.Tree)
+}
+
+func issueHasIndependentOpenEvidence(
+	issue liveAnalysisItem,
+	scope liveEvidenceScope,
+	explicitDecisionSequences map[int64]struct{},
+) bool {
+	for _, sequenceNo := range issue.EvidenceSequenceNos {
+		text := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+		if _, decisionEvidence := explicitDecisionSequences[sequenceNo]; !decisionEvidence {
+			return true
+		}
+		if kindOpenQuestionPattern.MatchString(text) || kindUncertaintyPattern.MatchString(text) {
+			return true
+		}
+	}
+	return false
 }
 
 func finalGroundingRewriteDegradesLabel(item, rewritten liveAnalysisItem, scope liveEvidenceScope) bool {
@@ -458,6 +542,7 @@ func updateFinalItemAndNode(state *liveAnalysisPayload, repaired liveAnalysisIte
 		node.Description = repaired.Body
 		node.Subtype = repaired.Subtype
 		node.LabelResolution = cloneLabelResolution(repaired.LabelResolution)
+		node.DescriptionResolution = cloneDescriptionResolution(repaired.DescriptionResolution)
 	}
 }
 

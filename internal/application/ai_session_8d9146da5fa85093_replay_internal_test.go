@@ -252,7 +252,7 @@ func TestSession8DFinalReplayProducesThreeOwnedDeadlineTodos(t *testing.T) {
 	for _, item := range todos {
 		features := inferItemSemanticFeatures(item, liveEvidenceScope{})
 		if !features.OwnerPresent || !features.DeadlinePresent ||
-			!features.DecisionOrCommitment || !actionDeadlinePresent(item.Body) {
+			!features.DecisionOrCommitment || !actionDeadlinePresent(item.Title+" "+item.Body) {
 			t.Fatalf("Todo lost owner/action/deadline identity: item=%+v features=%+v", item, features)
 		}
 		for _, sequenceNo := range item.EvidenceSequenceNos {

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "suite": "deterministic",
   "metricSchema": [
     "requiredPropositionRecall",
@@ -19,7 +19,14 @@
     "truncatedLabelCount",
     "hierarchyRelationAccuracy",
     "candidateFragmentationCount",
-    "crossAgendaContaminationCount"
+    "crossAgendaContaminationCount",
+    "label_description_exact_duplicate_count",
+    "label_description_high_similarity_count",
+    "description_unsupported_atom_count",
+    "description_added_grounded_detail_count",
+    "label_transcript_copy_ratio",
+    "label_compression_ratio",
+    "description_redundant_count"
   ],
   "scenarios": [
     {
@@ -43,7 +50,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.75,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -84,7 +98,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 2,
+        "label_transcript_copy_ratio": 0.5,
+        "label_compression_ratio": 0.7903703703703704,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -136,7 +157,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.692970822281167,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -188,7 +216,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.8260869565217391,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -229,7 +264,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0.5,
+        "label_compression_ratio": 1,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -274,7 +316,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 2,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 4,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.7487102371312898,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -359,7 +408,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 1,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -400,7 +456,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.6666666666666666,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -427,8 +490,8 @@
         "requiredPropositionRecall": 1,
         "unsupportedPropositionCount": 0,
         "classificationAccuracy": 1,
-        "temporalScopeAccuracy": 0,
-        "pastFactCount": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 0,
         "issueCount": 0,
         "resolvedIssueCount": 0,
         "incorrectResolvedIssueCount": 0,
@@ -441,7 +504,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 1,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -482,7 +552,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0.5,
+        "label_compression_ratio": 0.8571428571428572,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -534,7 +611,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0.5,
+        "label_compression_ratio": 0.8333333333333333,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -586,7 +670,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 0.8536585365853658,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -627,7 +718,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0.6666666666666666,
+        "label_compression_ratio": 0.6685689201053556,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -686,7 +784,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 2,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.7954545454545454,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -727,7 +832,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 2,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.8529411764705883,
+        "description_redundant_count": 0
       },
       "parentAssignments": [
         {
@@ -779,7 +891,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.4375,
+        "description_redundant_count": 0
       },
       "inputMode": "transcript_context_fixed_ai",
       "productionStages": [
@@ -857,7 +976,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.6937960687960688,
+        "description_redundant_count": 0
       },
       "inputMode": "transcript_context_fixed_ai",
       "productionStages": [
@@ -965,7 +1091,14 @@
         "truncatedLabelCount": 0,
         "hierarchyRelationAccuracy": 1,
         "candidateFragmentationCount": 0,
-        "crossAgendaContaminationCount": 0
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0.3333333333333333,
+        "label_compression_ratio": 0.566166592028661,
+        "description_redundant_count": 0
       },
       "inputMode": "transcript_context_fixed_ai",
       "productionStages": [
@@ -1083,6 +1216,416 @@
         }
       ],
       "finalCoverage": 3,
+      "treeVersion": 1
+    },
+    {
+      "id": "decision-issue-exclusivity",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 0.75,
+        "description_redundant_count": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "decision",
+          "expectedText": "ダブルチェック運用を次回の機器交換から適用",
+          "requiredKind": "decision",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-decision-3518c1e2615e",
+            "kind": "decision",
+            "title": "ダブルチェック運用を次回の機器交換から適用",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "decision",
+          "kind": "decision",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 1,
+      "treeVersion": 1
+    },
+    {
+      "id": "explicit-correction-overrides-relation-lock",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 2,
+        "issueCount": 2,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0.25,
+        "label_compression_ratio": 0.5768369932432432,
+        "description_redundant_count": 0
+      },
+      "inputMode": "seeded_transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "trunk-fact",
+          "expectedText": "交換後スイッチにはトランク設定が入っていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 0.45714285714285713,
+          "bestActualCandidate": {
+            "id": "item-fact-8d08a3485149",
+            "kind": "fact",
+            "title": "トランク設定自体は入っていました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "vlan-fact",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 0.9090909090909091,
+          "bestActualCandidate": {
+            "id": "item-fact-a45546316d61",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "hypothesis",
+          "expectedText": "VLAN30設定漏れが3階障害の直接原因である可能性が高い",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 0.9,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-7c145379c7db",
+            "kind": "issue",
+            "title": "VLAN30設定漏れが3階障害の直接原因である可能性が最も高いです",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3,
+              4
+            ]
+          }
+        },
+        {
+          "propositionId": "limit",
+          "expectedText": "2階の遅延まで説明できるか未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            5
+          ],
+          "matched": true,
+          "similarity": 0.8484848484848485,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-623f575a1874",
+            "kind": "issue",
+            "title": "2階の遅延まで説明できるかは未確認です",
+            "status": "open",
+            "evidenceSequenceNos": [
+              5
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "hypothesis",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "limit",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "trunk-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "vlan-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "issue",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 5,
+      "treeVersion": 1
+    },
+    {
+      "id": "label-description-duplicate-decision",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 0.46153846153846156,
+        "description_redundant_count": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "decision",
+          "expectedText": "ダブルチェック運用を次回の機器交換から適用",
+          "requiredKind": "decision",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 0.9333333333333333,
+          "bestActualCandidate": {
+            "id": "item-decision-ff7e07e6d694",
+            "kind": "decision",
+            "title": "このダブルチェック運用を次回の機器交換から適用することにします",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "decision",
+          "kind": "decision",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 2,
+      "treeVersion": 1
+    },
+    {
+      "id": "vpn-risk-label-description-roles",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.9772727272727273,
+        "description_redundant_count": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "vpn-risk",
+          "expectedText": "VPN証明書失効によりリモート接続できなくなるリスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            1,
+            2
+          ],
+          "matched": true,
+          "similarity": 0.42424242424242425,
+          "bestActualCandidate": {
+            "id": "item-risk-fec5c705096e",
+            "kind": "risk",
+            "title": "VPN証明書は来月末に期限切れとなり、放置するとリモート接続ができなくなる可能性があります",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "vpn-risk",
+          "kind": "risk",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 2,
       "treeVersion": 1
     }
   ]

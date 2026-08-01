@@ -115,6 +115,10 @@ type MeetingSessionTranscriptHealthPublisher interface {
 	PublishMeetingSessionTranscriptHealth(session domain.MeetingSession, transcriptHealth string, secondsSinceLastTranscript int)
 }
 
+type MeetingSessionMediaHealthPublisher interface {
+	PublishMeetingSessionMediaHealth(session domain.MeetingSession, health BotMediaHealthState)
+}
+
 // BotMediaMetricsReader is the read side of BotMediaMetricsStore that the
 // watchdog depends on. It is defined narrowly here, alongside the other
 // small port interfaces, so the watchdog does not depend on the store's

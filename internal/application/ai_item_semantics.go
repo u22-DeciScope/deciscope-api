@@ -555,6 +555,7 @@ type correctionRelation struct {
 	Status               string  `json:"status"`
 	Confidence           float64 `json:"confidence"`
 	Locked               bool    `json:"locked"`
+	Origin               string  `json:"origin,omitempty"`
 	EstablishedAtVersion int64   `json:"establishedAtVersion,omitempty"`
 }
 
@@ -595,7 +596,7 @@ func repairCorrectionSupersessions(
 		if correctionText == "" || !discourseCorrectionPattern.MatchString(correctionText) {
 			continue
 		}
-		replacementAt := bestCorrectionReplacement(state.Items, correctionText, sequenceNo)
+		replacementAt := bestCorrectionReplacement(state.Items, correctionText, sequenceNo, scope)
 		replacementID := ""
 		if replacementAt >= 0 {
 			replacementID = state.Items[replacementAt].ID
@@ -615,7 +616,31 @@ func repairCorrectionSupersessions(
 					state.Items[candidateAt].EvidenceSequenceNos, sequenceNo,
 				)
 			}
-			if candidateSequenceNo > 0 && candidateSequenceNo != relation.TargetSequenceNo && stats != nil {
+			if candidateSequenceNo > 0 && candidateSequenceNo != relation.TargetSequenceNo &&
+				!manualCorrectionRelation(*relation) && candidateConfidence >= correctionRelationLockThreshold {
+				oldTargetSequenceNo := relation.TargetSequenceNo
+				relation.TargetSequenceNo = candidateSequenceNo
+				relation.TargetItemID = state.Items[candidateAt].ID
+				relation.Confidence = candidateConfidence
+				relation.Status = "pending"
+				if relation.ReplacementItemID != "" {
+					relation.Status = "superseded"
+				}
+				if stats != nil {
+					stats.CorrectionDecisions = append(stats.CorrectionDecisions, correctionSupersessionDecision{
+						CorrectionSequenceNo: sequenceNo, TargetSequenceNo: candidateSequenceNo,
+						SupersededItemID: relation.TargetItemID, ReplacementItemID: relation.ReplacementItemID,
+						Similarity: candidateConfidence, Decision: "relation_revalidated",
+						Reason:              "explicit_correction_overrode_ai_relation_lock",
+						OldTargetSequenceNo: oldTargetSequenceNo, NewTargetSequenceNo: candidateSequenceNo,
+						RelationChangeAllowed: true, RelationLocked: true,
+					})
+				}
+			} else if candidateSequenceNo > 0 && candidateSequenceNo != relation.TargetSequenceNo && stats != nil {
+				reason := "existing_high_confidence_relation_locked"
+				if manualCorrectionRelation(*relation) {
+					reason = "manual_correction_relation_protected"
+				}
 				stats.CorrectionDecisions = append(stats.CorrectionDecisions, correctionSupersessionDecision{
 					CorrectionSequenceNo:  sequenceNo,
 					TargetSequenceNo:      relation.TargetSequenceNo,
@@ -623,7 +648,7 @@ func repairCorrectionSupersessions(
 					ReplacementItemID:     relation.ReplacementItemID,
 					Similarity:            candidateConfidence,
 					Decision:              "relation_change_blocked",
-					Reason:                "existing_high_confidence_relation_locked",
+					Reason:                reason,
 					OldTargetSequenceNo:   relation.TargetSequenceNo,
 					NewTargetSequenceNo:   candidateSequenceNo,
 					RelationChangeAllowed: false,
@@ -714,6 +739,11 @@ func repairCorrectionSupersessions(
 	}
 	pruneEmptyDynamicTopics(state.Tree)
 	rebuildTreeAuditEdges(state.Tree)
+}
+
+func manualCorrectionRelation(relation correctionRelation) bool {
+	origin := strings.ToLower(strings.TrimSpace(relation.Origin))
+	return origin == "manual" || origin == "manual_user_edit" || origin == "user"
 }
 
 func correctionRelationIndex(relations []correctionRelation, sourceSequenceNo int64) int {
@@ -819,13 +849,26 @@ func applyLockedCorrectionRelation(
 	}
 }
 
-func bestCorrectionReplacement(items []liveAnalysisItem, correctionText string, sequenceNo int64) int {
+func bestCorrectionReplacement(
+	items []liveAnalysisItem,
+	correctionText string,
+	sequenceNo int64,
+	scope liveEvidenceScope,
+) int {
 	bestAt, bestScore := -1, -1.0
+	combinedText := strings.TrimSpace(correctionText)
+	if current, currentOK := scope.Segments[sequenceNo]; currentOK {
+		if next, nextOK := scope.Segments[sequenceNo+1]; nextOK && explicitAdjacentSameSpeaker(current, next) {
+			combinedText += " " + strings.TrimSpace(scope.TranscriptText[sequenceNo+1])
+		}
+	}
 	for index, item := range items {
-		if item.Inactive || item.MergedIntoID != "" || !containsInt64(item.EvidenceSequenceNos, sequenceNo) {
+		if item.Inactive || item.MergedIntoID != "" ||
+			(!containsInt64(item.EvidenceSequenceNos, sequenceNo) &&
+				!containsInt64(item.EvidenceSequenceNos, sequenceNo+1)) {
 			continue
 		}
-		score := semanticItemSimilarity(item.Title+" "+item.Body, correctionText)
+		score := semanticItemSimilarity(item.Title+" "+item.Body, combinedText)
 		if score > bestScore {
 			bestAt, bestScore = index, score
 		}
