@@ -819,6 +819,13 @@ func applyLockedCorrectionRelation(
 	state.Items[targetAt].MergedIntoID = replacement.ID
 	state.Items[targetAt].CandidateInactive = false
 	state.Items[targetAt].SuppressionReason = "superseded_by_explicit_correction"
+	// Superseded is a correction lifecycle, not a successful resolution. A
+	// recovery sentence can be processed before this relation is applied in the
+	// same merge, and legacy payloads may already contain that invalid state.
+	state.Items[targetAt].Status = "open"
+	state.Items[targetAt].ResolvedAtVersion = 0
+	state.Items[targetAt].ResolutionEvidenceSequenceNos = nil
+	state.Items[targetAt].ResolutionReason = ""
 	relation.Status = "superseded"
 	relation.ReplacementItemID = replacement.ID
 	addItemTombstone(

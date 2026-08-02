@@ -443,7 +443,17 @@ X-DeciScope-Api-Key: <shared secret>
 
 ```json
 {
-  "botCallId": "09005080-cce6-4132-9404-1e823df47ff9"
+  "botCallId": "09005080-cce6-4132-9404-1e823df47ff9",
+  "speechPipelineReady": true,
+  "speechStarted": true,
+  "speechAcceptingFrames": true,
+  "recognizerCreated": true,
+  "pushStreamOpen": true,
+  "pipelineGeneration": 2,
+  "recognizerInstanceIdHash": "2f41d34e34b75d7d",
+  "lastRecognizerStartedAtUtc": "2026-08-01T00:50:20Z",
+  "lastSpeechPartialAtUtc": "2026-08-01T00:50:24Z",
+  "lastSpeechFinalAtUtc": "2026-08-01T00:50:25Z"
 }
 ```
 
@@ -453,6 +463,10 @@ X-DeciScope-Api-Key: <shared secret>
 - terminal状態（`ended` / `failed` / `stale`）のセッションは更新されず、現在のセッションをそのまま200で返します
   （終了済みセッションを誤って復活させないため）。存在しないセッションは404です。
 - Bot接続の生死判定・自動終了は次項の常駐watchdogが行います。
+- 音声・文字起こし・認識器フィールドは任意です。認識器の状態は複数インスタンスのフラグを混ぜず、
+  実際に選択された1インスタンス・1世代のスナップショットです。`recognizerInstanceIdHash`は
+  Bot内の識別値を一方向ハッシュ化した値で、生値は送信しません。これらはwatchdog用の短命な
+  メモリ内状態であり、DBには保存しません。
 
 Botからの音声受信transport状態（APIキー必須）:
 

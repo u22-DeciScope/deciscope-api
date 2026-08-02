@@ -566,7 +566,14 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 		// low-confidence decisions remain fully auditable.
 		trustedAgendaReconciliation := item.AssignmentReason == agendaReconciliationDynamicCandidate &&
 			item.AssignmentConfidence >= agendaReconciliationMinScore+cfg.RequiredImprovementMargin
-		if bestID != "" && clearAlternative && !trustedAgendaReconciliation &&
+		// Final deterministic splitting can recover multiple atomic propositions
+		// from one utterance after candidate promotion has ended. When the parent
+		// was selected from an exact-evidence companion, a short alternative topic
+		// label is weaker than that transcript-local placement evidence (and often
+		// shares only generic words such as "risk"). Keep other deterministic
+		// fallbacks fully auditable.
+		trustedSameEvidenceSynthesis := node.LastParentChangeSource == deterministicSynthesisSameEvidenceParentSource
+		if bestID != "" && clearAlternative && !trustedAgendaReconciliation && !trustedSameEvidenceSynthesis &&
 			(currentScore < cfg.CohesionThreshold || bestScore-currentScore >= 0.08) {
 			typeName := TreeAuditSubjectMismatch
 			currentTop := byID[topContainer(node.ID)]
@@ -596,9 +603,14 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 		var evidenceTexts []string
 		for _, id := range candidate.EvidenceItemIDs {
 			if item, ok := items[id]; ok {
-				evidenceTexts = append(evidenceTexts, item.Title+" "+item.Body)
-				candidateScore := semanticItemSimilarity(candidate.Label+" "+candidate.Description, item.Title+" "+item.Body)
-				if candidateScore < cfg.CohesionThreshold || (candidateScore < 0.35 && !sharedTreeAuditSubjectTerm(candidate.Label+" "+candidate.Description, item.Title+" "+item.Body)) {
+				itemText := item.Title + " " + item.Body
+				candidateText := candidate.Label + " " + candidate.Description
+				evidenceTexts = append(evidenceTexts, itemText)
+				candidateScore := semanticItemSimilarity(candidateText, itemText)
+				concreteSubjectShared := specificSubjectOverlapLength(candidateText, itemText) >= 2 ||
+					sharesSemanticTopicBigram(candidateText, itemText)
+				if (candidateScore < cfg.CohesionThreshold && !concreteSubjectShared) ||
+					(candidateScore < 0.35 && !sharedTreeAuditSubjectTerm(candidateText, itemText) && !concreteSubjectShared) {
 					add(treeAuditPrecheckFinding{Type: TreeAuditCandidateMixedSubjects, NodeIDs: []string{id}, RelatedNodeIDs: []string{candidate.ID}, EvidenceSequenceNos: append([]int64(nil), item.EvidenceSequenceNos...), Reason: "candidate subject and evidence item subject have low cohesion", Score: 1 - candidateScore})
 					bestTopic, bestScore := "", candidateScore
 					for _, topic := range containers {
@@ -660,8 +672,15 @@ func deterministicTreeAuditPrecheck(state liveAnalysisPayload, mc *meetingContex
 				add(treeAuditPrecheckFinding{Type: TreeAuditRiskTodoSubjectFragmentation, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop, rightTop}, EvidenceSequenceNos: evidence, Reason: "nearby risk/issue and action evidence for one concrete business object is split across topics", Score: 1})
 				add(treeAuditPrecheckFinding{Type: TreeAuditRelatedActionOutsideRiskTopic, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop, rightTop}, EvidenceSequenceNos: evidence, Reason: "action for a nearby risk/issue is outside the risk subject topic", Score: 1})
 			}
-			score := semanticItemSimilarity(state.Items[i].Title+" "+state.Items[i].Body, state.Items[j].Title+" "+state.Items[j].Body)
-			if score >= 0.42 || sharedTreeAuditSubjectTerm(state.Items[i].Title+" "+state.Items[i].Body, state.Items[j].Title+" "+state.Items[j].Body) && score >= 0.12 {
+			leftText := state.Items[i].Title + " " + state.Items[i].Body
+			rightText := state.Items[j].Title + " " + state.Items[j].Body
+			score := semanticItemSimilarity(leftText, rightText)
+			// Generic risk/possibility wording cannot prove that two top-level
+			// subjects should be merged. Require a concrete shared business-object
+			// fragment in addition to the broad similarity signal.
+			concreteSubjectShared := specificSubjectOverlapLength(leftText, rightText) >= 2
+			if concreteSubjectShared &&
+				(score >= 0.42 || sharedTreeAuditSubjectTerm(leftText, rightText) && score >= 0.12) {
 				add(treeAuditPrecheckFinding{Type: TreeAuditCandidateFragmentation, NodeIDs: []string{state.Items[i].ID, state.Items[j].ID}, RelatedNodeIDs: []string{leftTop, rightTop}, EvidenceSequenceNos: append(append([]int64(nil), state.Items[i].EvidenceSequenceNos...), state.Items[j].EvidenceSequenceNos...), Reason: "semantically similar evidence is split across top-level subjects", Score: score})
 			}
 		}

@@ -485,25 +485,42 @@ func applyAgendaContextAssignments(assignments []treeAssignment, newTopics []liv
 		}
 		bestID, bestScore := "", 0.0
 		bestWasPrior := false
+		bestPriorID, bestPriorScore, bestPriorText := "", 0.0, ""
 		for _, candidate := range priorCandidates {
-			score := semanticItemSimilarity(candidate.Label+" "+candidate.Description, contextText)
-			if sharesSemanticTopicBigram(candidate.Label+" "+candidate.Description, contextText) && score < 0.75 {
+			candidateText := candidate.Label + " " + candidate.Description
+			score := semanticItemSimilarity(candidateText, contextText)
+			if sharesSemanticTopicBigram(candidateText, contextText) && score < 0.75 {
 				score = 0.75
+			}
+			if score > bestPriorScore {
+				bestPriorID, bestPriorScore, bestPriorText = candidate.ID, score, candidateText
 			}
 			if score > bestScore {
 				bestID, bestScore = candidate.ID, score
 				bestWasPrior = true
 			}
 		}
+		bestNewText := ""
 		for _, topic := range newTopics {
-			score := semanticItemSimilarity(topic.Label+" "+topic.Description, contextText)
-			if sharesSemanticTopicBigram(topic.Label+" "+topic.Description, contextText) && score < 0.35 {
+			topicText := topic.Label + " " + topic.Description
+			score := semanticItemSimilarity(topicText, contextText)
+			if sharesSemanticTopicBigram(topicText, contextText) && score < 0.35 {
 				score = 0.35
 			}
 			if score > bestScore {
 				bestID, bestScore = topic.ID, score
 				bestWasPrior = false
+				bestNewText = topicText
 			}
+		}
+		// An explicit no-agenda span owns one durable candidate anchor. A later
+		// proposal can be more lexically similar to the current action while still
+		// describing the same concrete subject as the prior candidate. Preserve
+		// the durable anchor only when the two candidate subjects themselves share
+		// a specific business-object fragment; generic risk wording is insufficient.
+		if !bestWasPrior && bestPriorID != "" && bestNewText != "" &&
+			specificSubjectOverlapLength(bestPriorText, bestNewText) >= 3 {
+			bestID, bestScore, bestWasPrior = bestPriorID, bestPriorScore, true
 		}
 		if bestScore < 0.08 {
 			bestID = ""

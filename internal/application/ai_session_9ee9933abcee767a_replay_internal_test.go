@@ -159,7 +159,7 @@ func TestCorrectionPendingThenFinalRepairReconstructsIdempotently(t *testing.T) 
 		!equalInt64s(active[0].EvidenceSequenceNos, []int64{2}) ||
 		!strings.Contains(active[0].Title, "トランク設定") ||
 		active[0].Body != "" || active[0].DescriptionResolution == nil ||
-		active[0].DescriptionResolution.Status != "omitted" ||
+		active[0].DescriptionResolution.Status != descriptionStatusIntentionallyOmitted ||
 		!replayItemInactive(repaired.Items, old.ID) ||
 		len(repaired.ItemTombstones) != 1 {
 		t.Fatalf("active=%+v all=%+v tombstones=%+v", active, repaired.Items, repaired.ItemTombstones)
@@ -309,11 +309,18 @@ func TestSession9EE9933ABCEE767AStoredV18DeterministicReplay(t *testing.T) {
 	if replayActiveItemByEvidence(active, 7) != nil {
 		t.Fatalf("sequence 7 old fact remained active: %+v", active)
 	}
-	corrected := replayActiveItemByEvidence(active, 8)
-	if corrected == nil || corrected.Kind != "fact" ||
-		(!strings.Contains(corrected.Title, "VLAN") &&
-			!strings.Contains(corrected.Title, "vラン")) {
-		t.Fatalf("sequence 8 corrected fact=%+v", corrected)
+	corrected := replayActiveItemsByEvidence(active, 8)
+	if len(corrected) != 2 || replayKindCount(corrected, "fact") != 2 {
+		t.Fatalf("sequence 8 corrected facts=%+v", corrected)
+	}
+	var trunkFact, vlanFact bool
+	for _, item := range corrected {
+		text := item.Title + " " + item.Body
+		trunkFact = trunkFact || strings.Contains(text, "トランク")
+		vlanFact = vlanFact || strings.Contains(text, "VLAN") || strings.Contains(text, "vラン")
+	}
+	if !trunkFact || !vlanFact {
+		t.Fatalf("sequence 8 atomic correction facts=%+v", corrected)
 	}
 	seq15 := replayActiveItemsByEvidence(active, 15)
 	if len(seq15) != 2 || replayKindCount(seq15, "todo") != 2 {
@@ -351,10 +358,13 @@ func TestSession9EE9933ABCEE767AStoredV18DeterministicReplay(t *testing.T) {
 	}
 	if !replayItemInactive(repaired.Items, "item-fact-7161d2ee8b5c") ||
 		stats.CorrectionItemsSuperseded != 1 ||
-		stats.CorrectionItemsReconstructed != 2 ||
+		stats.CorrectionItemsReconstructed != 3 ||
 		stats.StrongTodosSynthesized < 2 ||
 		stats.EvidenceReferencesPruned == 0 {
-		t.Fatalf("items=%+v stats=%+v", repaired.Items, stats)
+		t.Fatalf("inactive=%t correctionSuperseded=%d correctionReconstructed=%d strongTodos=%d evidencePruned=%d",
+			replayItemInactive(repaired.Items, "item-fact-7161d2ee8b5c"),
+			stats.CorrectionItemsSuperseded, stats.CorrectionItemsReconstructed,
+			stats.StrongTodosSynthesized, stats.EvidenceReferencesPruned)
 	}
 	if integrity := validateTreeIntegrity(repaired.Tree, repaired.Items, nil); !integrity.Valid {
 		t.Fatalf("integrity=%+v", integrity)

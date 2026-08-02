@@ -442,7 +442,17 @@ func TestMeetingSessionAPIRecordBotHeartbeatRecordsBotMediaMetrics(t *testing.T)
 		"lastNonZeroAudioAtUtc": "2026-06-27T00:04:50Z",
 		"lastNonEmptyTranscriptAtUtc": "2026-06-27T00:04:30Z",
 		"audioStalled": true,
-		"audioSocketReceiveStallCount": 3
+		"audioSocketReceiveStallCount": 3,
+		"speechPipelineReady": true,
+		"speechStarted": true,
+		"speechAcceptingFrames": true,
+		"recognizerCreated": true,
+		"pushStreamOpen": true,
+		"pipelineGeneration": 4,
+		"recognizerInstanceIdHash": "abc123",
+		"lastRecognizerStartedAtUtc": "2026-06-27T00:04:20Z",
+		"lastSpeechPartialAtUtc": "2026-06-27T00:04:29Z",
+		"lastSpeechFinalAtUtc": "2026-06-27T00:04:30Z"
 	}`
 	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", body)
 	req.Header.Set("Content-Type", "application/json")
@@ -464,8 +474,49 @@ func TestMeetingSessionAPIRecordBotHeartbeatRecordsBotMediaMetrics(t *testing.T)
 	if metrics.LastAudioFrameAt.IsZero() || metrics.LastNonZeroAudioAt.IsZero() || metrics.LastNonEmptyTranscriptAt.IsZero() {
 		t.Fatalf("recorded metrics timestamps not parsed: %+v", metrics)
 	}
+	if !metrics.HasSpeechPipelineMetrics || !metrics.SpeechPipelineReady || !metrics.SpeechStarted ||
+		!metrics.SpeechAcceptingFrames || !metrics.RecognizerCreated || !metrics.PushStreamOpen ||
+		metrics.PipelineGeneration != 4 || metrics.RecognizerInstanceIDHash != "abc123" {
+		t.Fatalf("recorded pipeline metrics = %+v", metrics)
+	}
+	if metrics.LastRecognizerStartedAt.IsZero() || metrics.LastSpeechPartialAt.IsZero() || metrics.LastSpeechFinalAt.IsZero() {
+		t.Fatalf("recorded pipeline timestamps not parsed: %+v", metrics)
+	}
 	if metrics.ReceivedAt.IsZero() {
 		t.Fatalf("recorded metrics ReceivedAt should be stamped by the store, got zero value")
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeatRecordsExplicitFalsePipelineFlags(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	metricsStore := application.NewBotMediaMetricsStore()
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionBotMetricsStore(metricsStore))
+	req := requestWithSessionParam(
+		http.MethodPost,
+		"/api/v1/bot/meeting-sessions/session_1/heartbeat",
+		`{"botCallId":"call-1","speechPipelineReady":false,"speechStarted":false,"recognizerCreated":false,"pushStreamOpen":false}`,
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	metrics, ok := metricsStore.Get("session_1")
+	if !ok || !metrics.HasMetrics || !metrics.HasSpeechPipelineMetrics {
+		t.Fatalf("explicit false pipeline metrics were not preserved: ok=%t metrics=%+v", ok, metrics)
 	}
 }
 

@@ -211,6 +211,54 @@ func TestMeetingQualityBaselineAddsPassingScenarioOnlyByExplicitAcceptance(t *te
 	}
 }
 
+func TestMeetingQualityBaselineAcceptsExactFactIncreaseOnlyWithNewMatchedExpectation(t *testing.T) {
+	before := MeetingQualityScenarioResult{
+		ID: "atomic-facts", Passed: true,
+		Metrics: MeetingQualityMetrics{PastFactCount: 1},
+		PropositionMatches: []MeetingQualityPropositionMatch{{
+			PropositionID: "vlan", RequiredKind: "fact", Matched: true,
+		}},
+		KindDistribution:  []MeetingQualityKindCount{{Kind: "fact", Count: 1}},
+		ParentAssignments: []MeetingQualityParentAssignment{{PropositionID: "vlan", Kind: "fact", ParentPath: []string{"設定"}}},
+	}
+	after := before
+	after.Metrics.PastFactCount = 2
+	after.PropositionMatches = append(after.PropositionMatches, MeetingQualityPropositionMatch{
+		PropositionID: "trunk", RequiredKind: "fact", Matched: true,
+	})
+	after.KindDistribution = []MeetingQualityKindCount{{Kind: "fact", Count: 2}}
+	after.ParentAssignments = append(after.ParentAssignments,
+		MeetingQualityParentAssignment{PropositionID: "trunk", Kind: "fact", ParentPath: []string{"設定"}})
+	baseline := NewMeetingQualityBaseline(MeetingQualitySuiteReport{
+		SchemaVersion: meetingQualitySchemaVersion, Suite: "deterministic", Passed: true,
+		Scenarios: []MeetingQualityScenarioResult{before},
+	})
+	current := MeetingQualitySuiteReport{
+		SchemaVersion: meetingQualitySchemaVersion, Suite: "deterministic", Passed: true,
+		Scenarios: []MeetingQualityScenarioResult{after},
+	}
+	updated, report, err := AcceptMeetingQualityImprovements(baseline, current)
+	if err != nil {
+		t.Fatalf("accept reviewed exact fact increase: %v", err)
+	}
+	if len(report.AppliedMetrics) != 1 || report.AppliedMetrics[0].Metric != "pastFactCount" ||
+		updated.Scenarios[0].Metrics.PastFactCount != 2 || len(updated.Scenarios[0].ParentAssignments) != 2 {
+		t.Fatalf("updated=%+v report=%+v", updated, report)
+	}
+	if comparison := CompareMeetingQualityBaseline(updated, current); !comparison.Passed {
+		t.Fatalf("reviewed exact fact baseline does not match: %+v", comparison)
+	}
+
+	unreviewed := after
+	unreviewed.PropositionMatches = append([]MeetingQualityPropositionMatch(nil), before.PropositionMatches...)
+	if _, _, err := AcceptMeetingQualityImprovements(baseline, MeetingQualitySuiteReport{
+		SchemaVersion: meetingQualitySchemaVersion, Suite: "deterministic", Passed: true,
+		Scenarios: []MeetingQualityScenarioResult{unreviewed},
+	}); err == nil {
+		t.Fatal("exact fact drift without a new matched expectation was accepted")
+	}
+}
+
 func TestMeetingQualityEvaluatorDetectsGroundedRiskLoss(t *testing.T) {
 	scenario := MeetingQualityScenario{
 		ID: "risk-loss",

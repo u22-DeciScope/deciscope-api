@@ -318,7 +318,7 @@ func specificSubjectText(text string) string {
 	key := semanticItemKey(text)
 	for _, generic := range []string{
 		"確認", "検討", "実施", "対応", "更新", "作成", "決定", "可能性", "リスク", "影響", "予定", "必要",
-		"する", "します", "した", "なる", "なります", "こと", "について", "今回", "次回", "今週", "来週",
+		"する", "します", "した", "なる", "なります", "ある", "こと", "について", "による", "により", "場合", "今回", "次回", "今週", "来週",
 	} {
 		key = strings.ReplaceAll(key, generic, "")
 	}

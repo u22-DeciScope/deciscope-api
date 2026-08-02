@@ -3,6 +3,7 @@ package application
 import (
 	"embed"
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -46,6 +47,14 @@ func TestDeterministicMeetingQualitySuiteRegistersInitialRegressions(t *testing.
 		"self-contained-correction-logical-relations",
 		"past-observation-remains-fact",
 		"current-issue-resolution-lifecycle",
+		"monitoring-risk-issue-description",
+		"intentionally-omitted-description",
+		"correction-superseded-resolution-guard",
+		"confirmed-todo-speaker-assignee",
+		"ambiguous-assignee-grounded-todo",
+		"recovery-atomic-fact-split",
+		"unrelated-monitoring-vpn-candidates",
+		"final-relation-metadata-persistence",
 	}
 	if len(suite.Scenarios) < len(required) {
 		t.Fatalf("scenario count=%d, want at least %d", len(suite.Scenarios), len(required))
@@ -139,8 +148,8 @@ func TestDeterministicMeetingQualitySuiteUsesProductionStages(t *testing.T) {
 			}
 		}
 	}
-	if direct != 19 || seeded != 3 || completedOnly != 0 {
-		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 19/3/0",
+	if direct != 26 || seeded != 4 || completedOnly != 0 {
+		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 26/4/0",
 			direct, seeded, completedOnly)
 	}
 }
@@ -156,7 +165,7 @@ func TestDeterministicMeetingQualityKnownProblemsHaveMetricProvenance(t *testing
 		metric   string
 		want     int
 	}{
-		{"unspoken-information-contamination", "semanticDuplicateCount", 1},
+		{"unspoken-information-contamination", "semanticDuplicateCount", 0},
 		{"semantic-kind-classification", "candidateFragmentationCount", 2},
 		{"semantic-duplicate-proposition", "semanticDuplicateCount", 1},
 	}
@@ -186,7 +195,7 @@ func TestDeterministicMeetingQualityKnownProblemsHaveMetricProvenance(t *testing
 	}
 	correction := byID["self-contained-correction-logical-relations"]
 	if correction.Metrics.RequiredPropositionRecall != 1 || correction.Metrics.HierarchyRelationAccuracy != 1 ||
-		correction.Metrics.PastFactCount != 1 || correction.Metrics.IssueCount != 2 {
+		correction.Metrics.PastFactCount != 2 || correction.Metrics.IssueCount != 2 {
 		t.Fatalf("self-contained correction metrics do not prove fact and relations: %+v", correction)
 	}
 	past := byID["past-observation-remains-fact"]
@@ -218,8 +227,61 @@ func TestDeterministicMeetingQualitySuiteMatchesApprovedBaseline(t *testing.T) {
 	if !comparison.Passed {
 		t.Fatalf("quality baseline regression: %+v", comparison)
 	}
-	if len(comparison.ParentRelationDiffs) != 0 || len(comparison.KindDistributionDiffs) != 0 {
-		t.Fatalf("unexpected structural baseline diff: parents=%+v kinds=%+v",
-			comparison.ParentRelationDiffs, comparison.KindDistributionDiffs)
+	currentByID := make(map[string]MeetingQualityScenarioResult, len(report.Scenarios))
+	for _, scenario := range report.Scenarios {
+		currentByID[scenario.ID] = scenario
 	}
+	var unexpectedParentDiffs []MeetingQualityParentDiff
+	for _, diff := range comparison.ParentRelationDiffs {
+		if !meetingQualityParentDiffSatisfiesRequiredSeparation(diff, currentByID[diff.Scenario]) {
+			unexpectedParentDiffs = append(unexpectedParentDiffs, diff)
+		}
+	}
+	if len(unexpectedParentDiffs) != 0 || len(comparison.KindDistributionDiffs) != 0 {
+		t.Fatalf("unexpected structural baseline diff: parents=%+v kinds=%+v",
+			unexpectedParentDiffs, comparison.KindDistributionDiffs)
+	}
+}
+
+func meetingQualityParentDiffSatisfiesRequiredSeparation(
+	diff MeetingQualityParentDiff,
+	current MeetingQualityScenarioResult,
+) bool {
+	if len(current.RequiredParentSeparations) == 0 || len(diff.Before) != len(diff.After) {
+		return false
+	}
+	beforeByID := make(map[string]MeetingQualityParentAssignment, len(diff.Before))
+	afterByID := make(map[string]MeetingQualityParentAssignment, len(diff.After))
+	for _, assignment := range diff.Before {
+		beforeByID[assignment.PropositionID] = assignment
+	}
+	for _, assignment := range diff.After {
+		afterByID[assignment.PropositionID] = assignment
+	}
+	allowedChanges := make(map[string]struct{}, len(current.RequiredParentSeparations)*2)
+	for _, separation := range current.RequiredParentSeparations {
+		left, leftOK := afterByID[separation.From]
+		right, rightOK := afterByID[separation.To]
+		if !leftOK || !rightOK || len(left.ParentPath) == 0 || len(right.ParentPath) == 0 ||
+			left.ParentPath[0] == right.ParentPath[0] {
+			return false
+		}
+		allowedChanges[separation.From] = struct{}{}
+		allowedChanges[separation.To] = struct{}{}
+	}
+	changed := 0
+	for propositionID, previous := range beforeByID {
+		actual, exists := afterByID[propositionID]
+		if !exists || actual.Kind != previous.Kind {
+			return false
+		}
+		if reflect.DeepEqual(previous, actual) {
+			continue
+		}
+		if _, allowed := allowedChanges[propositionID]; !allowed {
+			return false
+		}
+		changed++
+	}
+	return changed > 0
 }

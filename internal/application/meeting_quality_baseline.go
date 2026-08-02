@@ -217,6 +217,9 @@ func AcceptMeetingQualityImprovements(
 		return baseline, MeetingQualityBaselineUpdateReport{}, err
 	}
 	baseline = migrated
+	baseline.Scenarios = append([]MeetingQualityScenarioResult(nil), baseline.Scenarios...)
+	baseline, reviewedExactMetrics := acceptReviewedExactMetricChanges(baseline, current)
+	baseline, reviewedParentAssignments := acceptReviewedParentAssignmentAdditions(baseline, current)
 	comparison := CompareMeetingQualityBaseline(baseline, current)
 	if hasMeetingQualityRegression(comparison) || !current.Passed {
 		return baseline, MeetingQualityBaselineUpdateReport{},
@@ -229,7 +232,7 @@ func AcceptMeetingQualityImprovements(
 				comparison.NewSemanticStateMismatches,
 			)
 	}
-	if !comparison.BaselineUpdateRequired && len(addedMetricSchema) == 0 && len(migratedExactMetrics) == 0 {
+	if !comparison.BaselineUpdateRequired && len(addedMetricSchema) == 0 && len(migratedExactMetrics) == 0 && len(reviewedExactMetrics) == 0 && len(reviewedParentAssignments) == 0 {
 		return baseline, MeetingQualityBaselineUpdateReport{UnchangedBaseline: true}, nil
 	}
 	updated := baseline
@@ -243,8 +246,8 @@ func AcceptMeetingQualityImprovements(
 		currentByID[scenario.ID] = scenario
 	}
 	update := MeetingQualityBaselineUpdateReport{
-		AppliedMetrics:    append(append([]MeetingQualityMetricChange(nil), migratedExactMetrics...), comparison.ImprovedMetrics...),
-		AppliedRepairs:    append([]string(nil), comparison.RepairedScenarios...),
+		AppliedMetrics:    append(append(append([]MeetingQualityMetricChange(nil), migratedExactMetrics...), reviewedExactMetrics...), comparison.ImprovedMetrics...),
+		AppliedRepairs:    append(append([]string(nil), reviewedParentAssignments...), comparison.RepairedScenarios...),
 		AddedScenarios:    append([]string(nil), comparison.NewScenarios...),
 		AddedMetricSchema: append([]string(nil), addedMetricSchema...),
 	}
@@ -263,6 +266,102 @@ func AcceptMeetingQualityImprovements(
 		updated.Scenarios = append(updated.Scenarios, currentByID[id])
 	}
 	return updated, update, nil
+}
+
+// acceptReviewedExactMetricChanges permits one narrow exact-metric update:
+// a passing scenario added a new, matched required fact expectation and the
+// observed fact count increased with it. Arbitrary count drift, removals and
+// changes without a semantic expectation remain regressions.
+func acceptReviewedExactMetricChanges(
+	baseline MeetingQualityBaseline,
+	current MeetingQualitySuiteReport,
+) (MeetingQualityBaseline, []MeetingQualityMetricChange) {
+	currentByID := make(map[string]MeetingQualityScenarioResult, len(current.Scenarios))
+	for _, scenario := range current.Scenarios {
+		currentByID[scenario.ID] = scenario
+	}
+	var reviewed []MeetingQualityMetricChange
+	for index := range baseline.Scenarios {
+		before := baseline.Scenarios[index]
+		after, exists := currentByID[before.ID]
+		if !exists || !after.Passed || after.Metrics.PastFactCount <= before.Metrics.PastFactCount ||
+			!meetingQualityAddedMatchedKindExpectation(before, after, "fact") {
+			continue
+		}
+		reviewed = append(reviewed, MeetingQualityMetricChange{
+			Scenario: after.ID, Metric: "pastFactCount",
+			Before: float64(before.Metrics.PastFactCount), After: float64(after.Metrics.PastFactCount),
+		})
+		baseline.Scenarios[index].Metrics.PastFactCount = after.Metrics.PastFactCount
+		baseline.Scenarios[index].KindDistribution = append([]MeetingQualityKindCount(nil), after.KindDistribution...)
+		baseline.Scenarios[index].PropositionMatches = append([]MeetingQualityPropositionMatch(nil), after.PropositionMatches...)
+	}
+	return baseline, reviewed
+}
+
+func meetingQualityAddedMatchedKindExpectation(before, after MeetingQualityScenarioResult, kind string) bool {
+	known := make(map[string]struct{}, len(before.PropositionMatches))
+	for _, match := range before.PropositionMatches {
+		known[match.PropositionID] = struct{}{}
+	}
+	for _, match := range after.PropositionMatches {
+		if _, exists := known[match.PropositionID]; !exists && match.Matched &&
+			strings.EqualFold(strings.TrimSpace(match.RequiredKind), strings.TrimSpace(kind)) {
+			return true
+		}
+	}
+	return false
+}
+
+func acceptReviewedParentAssignmentAdditions(
+	baseline MeetingQualityBaseline,
+	current MeetingQualitySuiteReport,
+) (MeetingQualityBaseline, []string) {
+	currentByID := make(map[string]MeetingQualityScenarioResult, len(current.Scenarios))
+	for _, scenario := range current.Scenarios {
+		currentByID[scenario.ID] = scenario
+	}
+	var reviewed []string
+	for index := range baseline.Scenarios {
+		before := baseline.Scenarios[index]
+		after, exists := currentByID[before.ID]
+		if !exists || !after.Passed || len(after.ParentAssignments) <= len(before.ParentAssignments) {
+			continue
+		}
+		allowed := make(map[string]struct{}, len(before.PropositionMatches))
+		for _, match := range before.PropositionMatches {
+			if match.Matched {
+				allowed[match.PropositionID] = struct{}{}
+			}
+		}
+		beforeByID := make(map[string]MeetingQualityParentAssignment, len(before.ParentAssignments))
+		for _, assignment := range before.ParentAssignments {
+			beforeByID[assignment.PropositionID] = assignment
+		}
+		additions := 0
+		valid := true
+		for _, assignment := range after.ParentAssignments {
+			previous, known := beforeByID[assignment.PropositionID]
+			if known {
+				if !reflect.DeepEqual(previous, assignment) {
+					valid = false
+					break
+				}
+				continue
+			}
+			if _, expected := allowed[assignment.PropositionID]; !expected {
+				valid = false
+				break
+			}
+			additions++
+		}
+		if !valid || additions == 0 {
+			continue
+		}
+		baseline.Scenarios[index].ParentAssignments = append([]MeetingQualityParentAssignment(nil), after.ParentAssignments...)
+		reviewed = append(reviewed, after.ID)
+	}
+	return baseline, reviewed
 }
 
 // migrateMeetingQualityBaselineSchema permits exactly one audited, additive

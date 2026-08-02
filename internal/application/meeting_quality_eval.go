@@ -132,6 +132,9 @@ func ValidateMeetingQualitySuite(suite MeetingQualitySuite) error {
 			if value := strings.TrimSpace(proposition.RequiredStatus); value != "" && value != "open" && value != "resolved" {
 				return fmt.Errorf("quality scenario %q proposition %q has invalid status %q", id, proposition.ID, value)
 			}
+			if value := strings.TrimSpace(proposition.RequiredDescriptionStatus); value != "" && !qualityValidDescriptionStatus(value) {
+				return fmt.Errorf("quality scenario %q proposition %q has invalid description status %q", id, proposition.ID, value)
+			}
 		}
 		for _, relation := range scenario.RequiredRelations {
 			if _, valid := supportedMeetingQualityRelations[strings.TrimSpace(relation.Kind)]; !valid {
@@ -151,6 +154,17 @@ func ValidateMeetingQualitySuite(suite MeetingQualitySuite) error {
 func qualityValidTemporalScope(value string) bool {
 	switch value {
 	case "past", "current", "ongoing", "future", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func qualityValidDescriptionStatus(value string) bool {
+	switch value {
+	case descriptionStatusNormal, descriptionStatusGenerated, descriptionStatusRewritten,
+		descriptionStatusIntentionallyOmitted, descriptionStatusRejectedUnsupported,
+		descriptionStatusGenerationFailed, descriptionStatusTransportLost:
 		return true
 	default:
 		return false
@@ -379,16 +393,17 @@ func evaluateMeetingQualityResult(
 	for _, expectation := range scenario.RequiredPropositions {
 		match := matches[expectation.ID]
 		detail := MeetingQualityPropositionMatch{
-			PropositionID:           expectation.ID,
-			ExpectedText:            expectation.Text,
-			RequiredKind:            expectation.RequiredKind,
-			AllowedKinds:            append([]string(nil), expectation.AllowedKinds...),
-			ExpectedEvidence:        append([]int64(nil), expectation.EvidenceSequenceNos...),
-			RequiredTemporalScope:   expectation.RequiredTemporalScope,
-			RequiredEpistemicStatus: expectation.RequiredEpistemicStatus,
-			RequiredStatus:          expectation.RequiredStatus,
-			Matched:                 match.Found,
-			Similarity:              match.Score,
+			PropositionID:             expectation.ID,
+			ExpectedText:              expectation.Text,
+			RequiredKind:              expectation.RequiredKind,
+			AllowedKinds:              append([]string(nil), expectation.AllowedKinds...),
+			ExpectedEvidence:          append([]int64(nil), expectation.EvidenceSequenceNos...),
+			RequiredTemporalScope:     expectation.RequiredTemporalScope,
+			RequiredEpistemicStatus:   expectation.RequiredEpistemicStatus,
+			RequiredStatus:            expectation.RequiredStatus,
+			RequiredDescriptionStatus: expectation.RequiredDescriptionStatus,
+			Matched:                   match.Found,
+			Similarity:                match.Score,
 		}
 		if strings.TrimSpace(match.Item.ID) != "" {
 			actual := qualityActualItem(match.Item)
@@ -418,6 +433,7 @@ func evaluateMeetingQualityResult(
 			{field: "temporalScope", value: expectation.RequiredTemporalScope, actual: features.TemporalScope},
 			{field: "epistemicStatus", value: expectation.RequiredEpistemicStatus, actual: features.EpistemicStatus},
 			{field: "status", value: expectation.RequiredStatus, actual: qualityItemStatus(match.Item)},
+			{field: "descriptionStatus", value: expectation.RequiredDescriptionStatus, actual: qualityDescriptionStatus(match.Item)},
 		} {
 			if strings.TrimSpace(expected.value) == "" || strings.EqualFold(strings.TrimSpace(expected.value), strings.TrimSpace(expected.actual)) {
 				continue
@@ -449,6 +465,21 @@ func evaluateMeetingQualityResult(
 			!qualityNodeReferencesAgenda(state.Tree, match.Node, agendaID) {
 			result.HardInvariantViolations = append(result.HardInvariantViolations,
 				"required_agenda_mismatch:"+expectation.ID+":"+agendaID)
+		}
+	}
+	result.RequiredParentSeparations = append(
+		[]MeetingQualityParentSeparation(nil), scenario.RequiredParentSeparations...,
+	)
+	for _, separation := range scenario.RequiredParentSeparations {
+		from, to := matches[separation.From], matches[separation.To]
+		if !from.Found || !to.Found {
+			continue
+		}
+		_, fromTop := qualityParentPath(state.Tree, from.Item.ID)
+		_, toTop := qualityParentPath(state.Tree, to.Item.ID)
+		if fromTop == "" || toTop == "" || fromTop == toTop {
+			result.HardInvariantViolations = append(result.HardInvariantViolations,
+				fmt.Sprintf("required_parent_separation_mismatch:%s:%s", separation.From, separation.To))
 		}
 	}
 	result.Metrics, result.MetricEvidence = qualityMetrics(scenario, state, context, segments, activeItems, nodes, matches)
@@ -789,6 +820,11 @@ func qualityMetrics(
 
 	for left := 0; left < len(activeItems); left++ {
 		for right := left + 1; right < len(activeItems); right++ {
+			if distinctCorrectionFactClauses(activeItems[left], activeItems[right]) ||
+				distinctRecoveryFactClauses(activeItems[left], activeItems[right]) ||
+				len(semanticKindRelations(activeItems[left], activeItems[right], evidenceScope)) > 0 {
+				continue
+			}
 			duplicate, _ := sameKindSemanticDuplicate(activeItems[left], activeItems[right])
 			similarity := qualityPropositionSimilarity(
 				activeItems[left].Title+" "+activeItems[left].Body,
@@ -1093,6 +1129,11 @@ func qualityInactiveResurrections(state liveAnalysisPayload) []string {
 		itemByID[item.ID] = item
 	}
 	var violations []string
+	for _, item := range state.Items {
+		if (item.Inactive || item.MergedIntoID != "") && strings.EqualFold(strings.TrimSpace(item.Status), "resolved") {
+			violations = append(violations, "superseded_item_resolved:"+item.ID)
+		}
+	}
 	for _, node := range state.Tree.Nodes {
 		item, exists := itemByID[node.ID]
 		if exists && (item.Inactive || item.MergedIntoID != "") {
@@ -1100,6 +1141,13 @@ func qualityInactiveResurrections(state liveAnalysisPayload) []string {
 		}
 	}
 	return violations
+}
+
+func qualityDescriptionStatus(item liveAnalysisItem) string {
+	if item.DescriptionResolution == nil {
+		return ""
+	}
+	return strings.TrimSpace(item.DescriptionResolution.Status)
 }
 
 func qualityFutureEvidenceViolations(state liveAnalysisPayload, segments []domain.TranscriptSegment) []string {

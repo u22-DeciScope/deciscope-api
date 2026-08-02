@@ -773,6 +773,16 @@ type meetingSessionHeartbeatRequest struct {
 	LastAudioSocketReceiveStallAtUTC string  `json:"lastAudioSocketReceiveStallAtUtc"`
 	AudioSocketReceiveStallCount     int64   `json:"audioSocketReceiveStallCount"`
 	AudioStalled                     bool    `json:"audioStalled"`
+	SpeechPipelineReady              *bool   `json:"speechPipelineReady"`
+	SpeechStarted                    *bool   `json:"speechStarted"`
+	SpeechAcceptingFrames            *bool   `json:"speechAcceptingFrames"`
+	RecognizerCreated                *bool   `json:"recognizerCreated"`
+	PushStreamOpen                   *bool   `json:"pushStreamOpen"`
+	PipelineGeneration               *int64  `json:"pipelineGeneration"`
+	RecognizerInstanceIDHash         string  `json:"recognizerInstanceIdHash"`
+	LastRecognizerStartedAtUTC       string  `json:"lastRecognizerStartedAtUtc"`
+	LastSpeechPartialAtUTC           string  `json:"lastSpeechPartialAtUtc"`
+	LastSpeechFinalAtUTC             string  `json:"lastSpeechFinalAtUtc"`
 }
 
 // botMediaMetrics builds an application.BotMediaMetrics from the decoded
@@ -782,6 +792,16 @@ type meetingSessionHeartbeatRequest struct {
 // recorded, so it does not overwrite/refresh previously stored metrics with
 // an all-zero value.
 func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.BotMediaMetrics, bool) {
+	hasSpeechPipelineMetrics := request.SpeechPipelineReady != nil ||
+		request.SpeechStarted != nil ||
+		request.SpeechAcceptingFrames != nil ||
+		request.RecognizerCreated != nil ||
+		request.PushStreamOpen != nil ||
+		request.PipelineGeneration != nil ||
+		strings.TrimSpace(request.RecognizerInstanceIDHash) != "" ||
+		strings.TrimSpace(request.LastRecognizerStartedAtUTC) != "" ||
+		strings.TrimSpace(request.LastSpeechPartialAtUTC) != "" ||
+		strings.TrimSpace(request.LastSpeechFinalAtUTC) != ""
 	m := application.BotMediaMetrics{
 		LastAudioFrameAt:              parseOptionalRFC3339(request.LastAudioFrameAtUTC),
 		LastNonZeroAudioAt:            parseOptionalRFC3339(request.LastNonZeroAudioAtUTC),
@@ -798,6 +818,17 @@ func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.Bot
 		LastAudioSocketReceiveStallAt: parseOptionalRFC3339(request.LastAudioSocketReceiveStallAtUTC),
 		AudioSocketReceiveStallCount:  request.AudioSocketReceiveStallCount,
 		AudioStalled:                  request.AudioStalled,
+		SpeechPipelineReady:           boolValue(request.SpeechPipelineReady),
+		SpeechStarted:                 boolValue(request.SpeechStarted),
+		SpeechAcceptingFrames:         boolValue(request.SpeechAcceptingFrames),
+		RecognizerCreated:             boolValue(request.RecognizerCreated),
+		PushStreamOpen:                boolValue(request.PushStreamOpen),
+		PipelineGeneration:            int64Value(request.PipelineGeneration),
+		RecognizerInstanceIDHash:      strings.TrimSpace(request.RecognizerInstanceIDHash),
+		LastRecognizerStartedAt:       parseOptionalRFC3339(request.LastRecognizerStartedAtUTC),
+		LastSpeechPartialAt:           parseOptionalRFC3339(request.LastSpeechPartialAtUTC),
+		LastSpeechFinalAt:             parseOptionalRFC3339(request.LastSpeechFinalAtUTC),
+		HasSpeechPipelineMetrics:      hasSpeechPipelineMetrics,
 	}
 	m.HasMetrics = !m.LastAudioFrameAt.IsZero() ||
 		!m.LastNonZeroAudioAt.IsZero() ||
@@ -813,8 +844,20 @@ func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.Bot
 		m.UnmixedAudioSeen ||
 		!m.LastAudioSocketReceiveStallAt.IsZero() ||
 		m.AudioSocketReceiveStallCount != 0 ||
-		m.AudioStalled
+		m.AudioStalled ||
+		m.HasSpeechPipelineMetrics
 	return m, m.HasMetrics
+}
+
+func boolValue(value *bool) bool {
+	return value != nil && *value
+}
+
+func int64Value(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 // parseOptionalRFC3339 parses an optional RFC3339 timestamp string, treating

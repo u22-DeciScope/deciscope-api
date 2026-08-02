@@ -610,6 +610,15 @@ func applyRepairedItemLabel(item liveAnalysisItem, label, source string) liveAna
 }
 
 func itemLabelCandidatePreservesSemantics(item liveAnalysisItem, label string, scope liveEvidenceScope) bool {
+	return itemLabelCandidatePreservesSemanticsWithQualifierPolicy(item, label, scope, true)
+}
+
+func itemLabelCandidatePreservesSemanticsWithQualifierPolicy(
+	item liveAnalysisItem,
+	label string,
+	scope liveEvidenceScope,
+	requireConcreteQualifiers bool,
+) bool {
 	probe := liveAnalysisItem{Kind: item.Kind, Subtype: item.Subtype, Title: label, Body: label}
 	if incompleteItemLabelEnding(probe) != "" || liveItemTextNeedsReferent(probe) ||
 		itemLabelConditionalWithoutSubjectPattern.MatchString(label) ||
@@ -629,15 +638,19 @@ func itemLabelCandidatePreservesSemantics(item liveAnalysisItem, label string, s
 		semanticItemSimilarity(originalText, label) < 0.10 {
 		return false
 	}
-	for _, required := range itemLabelConcreteQualifierPattern.FindAllString(originalText, -1) {
-		if !strings.Contains(strings.ToLower(label), strings.ToLower(required)) {
-			return false
+	if requireConcreteQualifiers {
+		for _, required := range itemLabelConcreteQualifierPattern.FindAllString(originalText, -1) {
+			if !strings.Contains(strings.ToLower(label), strings.ToLower(required)) {
+				return false
+			}
 		}
 	}
 	switch item.Kind {
 	case "risk":
+		compressedFutureRisk := !requireConcreteQualifiers && desired.FutureEventPresent &&
+			strings.Contains(label, "リスク")
 		if !actual.NegativeImpactPresent || !actual.UncertaintyPresent ||
-			(!actual.FutureEventPresent && actual.TemporalScope != "ongoing") {
+			(!actual.FutureEventPresent && actual.TemporalScope != "ongoing" && !compressedFutureRisk) {
 			return false
 		}
 	case "issue":
@@ -661,7 +674,7 @@ func itemLabelCandidatePreservesSemantics(item liveAnalysisItem, label string, s
 			return false
 		}
 	}
-	return !itemLabelQualifierConflict(semanticSource, label)
+	return !requireConcreteQualifiers || !itemLabelQualifierConflict(semanticSource, label)
 }
 
 func itemLabelCandidateScore(item liveAnalysisItem, label string, scope liveEvidenceScope) int {
@@ -949,11 +962,13 @@ func repairIncompleteDiffItemLabels(
 ) []liveAnalysisItem {
 	for index := range items {
 		repaired, decision, changed := repairIncompleteItemLabel(items[index], scope, timeline)
+		if changed {
+			items[index] = repaired
+		}
 		if decision.EndingType == "" {
 			continue
 		}
 		if changed {
-			items[index] = repaired
 			if stats != nil {
 				stats.LowInformationItemsRewritten++
 			}

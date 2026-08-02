@@ -830,8 +830,8 @@ func testMeetingQualityServiceIntegrationCorrectionTemporal(t *testing.T) {
 	if got := h.completer.callCount(qualityServiceLiveDeployment); got != 2 {
 		t.Fatalf("live_extraction calls=%d, want 2 task-routed rounds", got)
 	}
-	if got := h.completer.callCount(qualityServiceTreeDeployment); got != 2 {
-		t.Fatalf("tree_reorganizer calls=%d, want one task-routed review per live version", got)
+	if got := h.completer.callCount(qualityServiceTreeDeployment); got != 3 {
+		t.Fatalf("tree_reorganizer calls=%d, want two live reviews plus one final review after atomic correction expansion", got)
 	}
 	if got := h.completer.callCount(qualityServiceFinalDeployment); got != 1 {
 		t.Fatalf("final_summary calls=%d, want 1", got)
@@ -868,7 +868,7 @@ func testMeetingQualityServiceIntegrationFallbackRelations(t *testing.T) {
 		}
 	}
 	if risk == nil || !strings.Contains(risk.Title, "リモート接続") ||
-		!strings.Contains(risk.Title, "可能性") ||
+		(!strings.Contains(risk.Title, "可能性") && !strings.Contains(risk.Title, "リスク")) ||
 		!equalInt64s(risk.EvidenceSequenceNos, []int64{1, 2}) {
 		t.Fatalf("fallback risk did not survive final reload: %+v", risk)
 	}

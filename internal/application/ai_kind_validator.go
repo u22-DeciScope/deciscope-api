@@ -82,7 +82,7 @@ var (
 		`(?i)(?:現在(?:も|は)|現時点(?:でも|では)|今も|引き続き|依然として|発生中|継続中|まだ.{0,24}(?:解決していな|分かっていな|わかっていな|特定できていな|接続できな)|原因.{0,16}(?:不明|分かっていな|わかっていな|特定できていな)|(?:調査|対応|判断|確認)(?:する)?(?:こと)?が必要|未解決|unresolved|currently)`,
 	)
 	kindNegativeImpactPattern = regexp.MustCompile(
-		`(?i)(?:障害|停止|切断|切れ|接続(?:が)?できな|利用(?:が)?できな|過多|多くなりすぎ|見落と|失敗|損失|漏えい|遅延|再発|不能|悪化|欠落|期限切れ|危険|adverse|outage|failure|loss|unavailable)`,
+		`(?i)(?:障害|停止|切断|切れ|接続(?:が)?できな|利用(?:が)?できな|過多|多くなりすぎ|増えすぎ|通知が多発|アラート疲れ|運用負荷が高く|監視ノイズが増え|見落と|失敗|損失|漏えい|遅延|再発|不能|悪化|欠落|期限切れ|危険|adverse|outage|failure|loss|unavailable)`,
 	)
 	kindCurrentProblemPattern = regexp.MustCompile(
 		`(?i)(?:現在|現時点|発生中|発生している|継続している|できていな(?:い|く|かった)|できていません|接続できない|未解決|未確認|未確定|未決定|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|unknown|unresolved|currently)`,
@@ -1243,13 +1243,21 @@ func semanticRelationItemsRelated(tree *liveAnalysisTree, source, target liveAna
 	switch kind {
 	case itemRelationLimits:
 		if crossTopic {
-			return evidenceFollowsWithin(source, target, 2) && sharedSubject && similarity >= 0.08
+			return evidenceFollowsWithin(source, target, 2) &&
+				((sharedSubject && similarity >= 0.08) ||
+					(itemRelationLimitPattern.MatchString(sourceText) &&
+						evidenceFollowsWithin(source, target, 1)))
 		}
 		return evidenceFollowsWithin(source, target, 2) &&
 			(sharedSubject || itemLabelContextDependentPattern.MatchString(source.Title) ||
 				itemLabelDeicticSettingPattern.MatchString(sourceText) ||
 				(itemRelationLimitPattern.MatchString(sourceText) &&
 					evidenceFollowsWithin(source, target, 1)))
+	case itemRelationActionFor:
+		if crossTopic {
+			return itemEvidenceWithin(source, target, 3) && sharedSubject && similarity >= 0.08
+		}
+		return itemEvidenceWithin(source, target, 3) && sharedSubject
 	default:
 		if crossTopic {
 			return itemEvidenceWithin(source, target, 2) && sharedSubject && similarity >= 0.10

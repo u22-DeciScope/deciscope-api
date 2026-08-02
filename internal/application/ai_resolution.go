@@ -252,6 +252,10 @@ func synthesizeExplicitClosureUpdates(previous, diff []liveAnalysisItem, scope l
 // root-cause investigation remains open. Items whose own title/body says the
 // subject is still under investigation are excluded regardless of subtype.
 func recoveryClosureEligibleItem(item liveAnalysisItem, text string) bool {
+	if item.Inactive || strings.TrimSpace(item.MergedIntoID) != "" ||
+		strings.HasPrefix(strings.TrimSpace(item.SuppressionReason), "superseded") {
+		return false
+	}
 	if item.Kind != "issue" && item.Kind != "risk" {
 		return false
 	}
@@ -298,7 +302,9 @@ func bestExplicitClosureTarget(items []liveAnalysisItem, text string, sequenceNo
 	}
 	for _, item := range items {
 		kindPriority, eligible := priority[item.Kind]
-		if !eligible || item.Status == "dismissed" {
+		if !eligible || item.Status == "dismissed" || item.Inactive ||
+			strings.TrimSpace(item.MergedIntoID) != "" ||
+			strings.HasPrefix(strings.TrimSpace(item.SuppressionReason), "superseded") {
 			continue
 		}
 		score := semanticItemSimilarity(item.Title+" "+item.Body, matchingText)
@@ -545,6 +551,12 @@ func validateResolutionUpdates(requested []resolutionUpdate, resolver *canonical
 			continue
 		}
 		evaluation.Kind, evaluation.OldStatus = item.Kind, item.Status
+		if item.Inactive || strings.TrimSpace(item.MergedIntoID) != "" ||
+			strings.HasPrefix(strings.TrimSpace(item.SuppressionReason), "superseded") {
+			evaluation.Result, evaluation.Reason = resolutionRejected, "inactive_or_superseded"
+			recordResolution(stats, evaluation)
+			continue
+		}
 		if status == "" {
 			evaluation.Result, evaluation.Reason = resolutionRejected, "invalid_status"
 			recordResolution(stats, evaluation)
@@ -635,7 +647,8 @@ func validateResolutionUpdates(requested []resolutionUpdate, resolver *canonical
 }
 
 func applyResolutionUpdate(item *liveAnalysisItem, update validatedResolutionUpdate) {
-	if item == nil {
+	if item == nil || item.Inactive || strings.TrimSpace(item.MergedIntoID) != "" ||
+		strings.HasPrefix(strings.TrimSpace(item.SuppressionReason), "superseded") {
 		return
 	}
 	if update.Status == "resolved" {

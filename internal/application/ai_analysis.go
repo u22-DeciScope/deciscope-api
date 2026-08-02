@@ -2260,7 +2260,7 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 		log.Printf("Deterministic final tree repair skipped. sessionId=%s treeVersion=%d integrityRejected=%t error=%s", sessionID, liveVersion, repairStats.IntegrityRejected, repairStats.Error)
 	} else {
 		livePayload = repaired
-		log.Printf("Deterministic final tree repair evaluated. sessionId=%s treeVersion=%d promotedTopicDuplicatesFolded=%d promotedTopicFoldsAborted=%d crossKindDuplicatesMerged=%d sameKindDuplicatesMerged=%d sameEvidenceSynthesisMerged=%d recapDuplicatesMerged=%d lowInformationItemsRewritten=%d lowInformationItemsMerged=%d lowInformationItemsRejected=%d groundingAccepted=%d groundingRewritten=%d groundingTentative=%d groundingCandidateOnly=%d groundingRejected=%d unsupportedAtoms=%d contextOnlyAtoms=%d futureInformationLeaksPrevented=%d kindValidationChanges=%d ambiguousKinds=%d kindSemanticSplits=%d kindSplitFragments=%d kindSplitRejected=%d kindRelationsCreated=%d strongTodoCandidates=%d strongTodosSynthesized=%d strongTodoDuplicatesSuppressed=%d strongDecisionCandidates=%d strongDecisionsSynthesized=%d correctionItemsReconstructed=%d correctionItemsPending=%d correctionItemsSuperseded=%d evidenceReferencesPruned=%d issuesRecoveredFromTodoEvidence=%d distributionWarnings=%v danglingCandidatesPruned=%d validatorsRerun=%t remainingLowInformation=%d remainingSemanticDuplicates=%d",
+		log.Printf("Deterministic final tree repair evaluated. sessionId=%s treeVersion=%d promotedTopicDuplicatesFolded=%d promotedTopicFoldsAborted=%d crossKindDuplicatesMerged=%d sameKindDuplicatesMerged=%d sameEvidenceSynthesisMerged=%d recapDuplicatesMerged=%d lowInformationItemsRewritten=%d lowInformationItemsMerged=%d lowInformationItemsRejected=%d groundingAccepted=%d groundingRewritten=%d groundingTentative=%d groundingCandidateOnly=%d groundingRejected=%d unsupportedAtoms=%d contextOnlyAtoms=%d futureInformationLeaksPrevented=%d kindValidationChanges=%d ambiguousKinds=%d kindSemanticSplits=%d kindSplitFragments=%d kindSplitRejected=%d kindRelationsCreated=%d strongTodoCandidates=%d strongTodosSynthesized=%d strongTodoDuplicatesSuppressed=%d strongDecisionCandidates=%d strongDecisionsSynthesized=%d correctionItemsReconstructed=%d correctionItemsPending=%d correctionItemsSuperseded=%d evidenceReferencesPruned=%d issuesRecoveredFromTodoEvidence=%d confirmedTodoCandidatesPromoted=%d confirmedTodoCandidatesFolded=%d distributionWarnings=%v danglingCandidatesPruned=%d validatorsRerun=%t remainingLowInformation=%d remainingSemanticDuplicates=%d",
 			sessionID, liveVersion, repairStats.PromotedTopicDuplicatesFolded, repairStats.PromotedTopicFoldsAborted,
 			repairStats.CrossKindDuplicatesMerged, repairStats.SameKindDuplicatesMerged,
 			repairStats.SameEvidenceSynthesisMerged, repairStats.RecapDuplicatesMerged,
@@ -2278,6 +2278,7 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 			repairStats.CorrectionItemsReconstructed, repairStats.CorrectionItemsPending,
 			repairStats.CorrectionItemsSuperseded, repairStats.EvidenceReferencesPruned,
 			repairStats.IssuesRecoveredFromTodoEvidence,
+			repairStats.ConfirmedTodoCandidatesPromoted, repairStats.ConfirmedTodoCandidatesFolded,
 			repairStats.KindDistributionWarnings, repairStats.DanglingCandidatesPruned,
 			repairStats.ValidatorsRerun, repairStats.RemainingLowInformation,
 			repairStats.RemainingSemanticDuplicates)
@@ -2373,6 +2374,27 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 			// validated result even when the optional current-live projection
 			// cannot be refreshed.
 			log.Printf("Final agenda projection persist failed; continuing finalization. sessionId=%s treeVersion=%d error=%v", sessionID, liveVersion, persistErr)
+		}
+	}
+	descriptionScope, _ := agendaTimelineFromSegments(finalSegments)
+	descriptionState := previousLiveAnalysisState(livePayload)
+	descriptionSummary := summarizeDescriptionResolutions(descriptionState, descriptionScope)
+	log.Printf("Final description resolution summary. event=final_description_resolution_summary sessionId=%s analysisVersion=%d itemCount=%d descriptionPresentCount=%d descriptionIntentionallyOmittedCount=%d descriptionGenerationFailedCount=%d descriptionRejectedUnsupportedCount=%d descriptionTransportLostCount=%d labelDescriptionExactDuplicateCount=%d labelDescriptionHighSimilarityCount=%d descriptionAddedGroundedDetailCount=%d",
+		sessionID, liveVersion, descriptionSummary.ItemCount,
+		descriptionSummary.DescriptionPresentCount, descriptionSummary.IntentionallyOmittedCount,
+		descriptionSummary.GenerationFailedCount, descriptionSummary.RejectedUnsupportedCount,
+		descriptionSummary.TransportLostCount, descriptionSummary.LabelDescriptionExactDuplicate,
+		descriptionSummary.LabelDescriptionHighSimilarity, descriptionSummary.DescriptionAddedGroundedDetail)
+	for _, item := range descriptionState.Items {
+		if item.Inactive || item.MergedIntoID != "" || item.DescriptionResolution == nil {
+			continue
+		}
+		status := item.DescriptionResolution.Status
+		if status == descriptionStatusGenerationFailed || status == descriptionStatusRejectedUnsupported ||
+			status == descriptionStatusTransportLost {
+			log.Printf("Final item description resolution. event=final_item_description_resolution sessionId=%s analysisVersion=%d itemId=%s status=%s reason=%s evidenceSequenceNos=%v",
+				sessionID, liveVersion, item.ID, status, item.DescriptionResolution.Reason,
+				item.DescriptionResolution.SourceEvidenceSequenceNos)
 		}
 	}
 	progress.Stage = "final_tree_review_completed"
@@ -2649,6 +2671,8 @@ type finalRepairStats struct {
 	EvidenceLocalizationDecisions   []evidenceLocalizationDecision
 	IssuesRecoveredFromTodoEvidence int
 	IssueRecoveryDecisions          []issueRecoveryDecision
+	ConfirmedTodoCandidatesPromoted int
+	ConfirmedTodoCandidatesFolded   int
 	IncompleteLabelDecisions        []incompleteItemLabelDecision
 	DanglingCandidatesPruned        int
 	ValidatorsRerun                 bool
@@ -2694,6 +2718,7 @@ func applyDeterministicFinalTreeRepairs(payload json.RawMessage, mc *meetingCont
 	// unrelated legacy-shape diagnostics.
 	normalizeLegacyAgendaTopicIDs(&state, mc, nil)
 	repairFinalItemKinds(&state, input.Segments, mc, version, &stats)
+	promoteConfirmedFinalTodoCandidates(&state, version, &stats)
 	repairFinalReferenceAndLowInformationItems(&state, input.Segments, version, &stats)
 	dedupStats := &liveAnalysisTreeMergeStats{}
 	if remap := deduplicateExistingLiveState(&state, dedupStats); len(remap) > 0 {
@@ -3104,7 +3129,7 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 		log.Printf("Final tree snapshot marshal failed. sessionId=%s error=%v", sessionID, err)
 		return false
 	}
-	if _, err := s.analysisRepo.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
+	savedSnapshot, err := s.analysisRepo.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
 		SessionID: sessionID,
 		Type:      domain.MeetingAIAnalysisTree,
 		Status:    domain.MeetingAIAnalysisCompleted,
@@ -3112,9 +3137,32 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 		Payload:   payload,
 		Model:     model,
 		UpdatedAt: projectionUpdatedAt,
-	}); err != nil {
+	})
+	if err != nil {
 		log.Printf("Final tree snapshot persist failed. sessionId=%s error=%v", sessionID, err)
 		return false
+	}
+	persistedTree := tree
+	if savedSnapshot != nil {
+		var persisted treeSnapshotPayload
+		if decodeErr := json.Unmarshal(savedSnapshot.Payload, &persisted); decodeErr != nil {
+			log.Printf("Final relation summary decode failed. sessionId=%s treeVersion=%d error=%v", sessionID, liveVersion, decodeErr)
+		} else if persisted.Tree != nil {
+			persistedTree = persisted.Tree
+		}
+	}
+	relationSummary := summarizeFinalRelations(persistedTree)
+	log.Printf("Final relation summary. event=final_relation_summary sessionId=%s treeVersion=%d relationCount=%d relationCountByType=%s activeRelationCount=%d inactiveRelationCount=%d danglingRelationCount=%d selfRelationCount=%d duplicateRelationCount=%d source=persisted_tree_payload",
+		sessionID, liveVersion, relationSummary.RelationCount,
+		formatRelationCountByType(relationSummary.RelationCountByType),
+		relationSummary.ActiveRelationCount, relationSummary.InactiveRelationCount,
+		relationSummary.DanglingRelationCount, relationSummary.SelfRelationCount,
+		relationSummary.DuplicateRelationCount)
+	for _, relation := range sortedRelationsForLog(persistedTree) {
+		log.Printf("Final relation detail. event=final_relation_detail sessionId=%s treeVersion=%d relationId=%s type=%s sourceItemId=%s targetItemId=%s status=%s origin=%s confidence=%.2f evidenceSequenceNos=%v createdTreeVersion=%d updatedTreeVersion=%d",
+			sessionID, liveVersion, relation.ID, relation.Kind, relation.Source,
+			relation.Target, relation.Status, relation.Origin, relation.Confidence,
+			relation.EvidenceSequenceNos, relation.CreatedAtVersion, relation.UpdatedAtVersion)
 	}
 	agendaCounts := summarizeAgendaAnchorStatuses(previous.AgendaAnchors)
 	finalHealth := computeTreeHealth(tree)
@@ -5971,6 +6019,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	diffItems = repairIncompleteDiffItemLabels(
 		diffItems, evidenceScope, timeline, treeStats,
 	)
+	diffItems, assignments = splitLiveRecoveryFacts(diffItems, assignments, evidenceScope, treeStats)
 	diffItems, assignments = splitLiveItemKinds(previous.Items, diffItems, assignments, evidenceScope, treeStats)
 	diffItems, assignments = validateLiveItemGrounding(
 		previous.Items, diffItems, assignments, evidenceScope, mc,
@@ -6047,6 +6096,12 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	}
 	var closureUpdates []resolutionUpdate
 	diffItems, closureUpdates = synthesizeExplicitClosureUpdates(previous.Items, diffItems, evidenceScope, treeStats)
+	synthesizedOpenIssues := synthesizeExplicitOpenIssueItems(previous.Items, diffItems, evidenceScope, timeline)
+	synthesizedOpenIssues, _ = validateLiveItemGrounding(
+		previous.Items, synthesizedOpenIssues, nil, evidenceScope, mc,
+		"deterministic_open_issue_synthesis", false, treeStats,
+	)
+	diffItems = append(diffItems, synthesizedOpenIssues...)
 	synthesizedRisks := synthesizeExplicitRiskItems(previous.Items, diffItems, evidenceScope, timeline, treeStats)
 	synthesizedRisks, _ = validateLiveItemGrounding(
 		previous.Items, synthesizedRisks, nil, evidenceScope, mc,
@@ -6607,7 +6662,8 @@ func deduplicateExistingLiveState(state *liveAnalysisPayload, stats *liveAnalysi
 			if !sameSemanticClassification(kept[at], item) {
 				continue
 			}
-			if distinctCorrectionFactClauses(kept[at], item) {
+			if distinctCorrectionFactClauses(kept[at], item) ||
+				distinctRecoveryFactClauses(kept[at], item) {
 				continue
 			}
 			if recap {
@@ -6879,6 +6935,9 @@ func sameKindSemanticDuplicate(a, b liveAnalysisItem) (bool, float64) {
 	if distinctCorrectionFactClauses(a, b) {
 		return false, 0
 	}
+	if distinctRecoveryFactClauses(a, b) {
+		return false, 0
+	}
 	if distinctTodoAssignments(a, b) {
 		return false, 0
 	}
@@ -6901,17 +6960,38 @@ func sameKindSemanticDuplicate(a, b liveAnalysisItem) (bool, float64) {
 	return score >= 0.90 || (nearEvidence && titleScore >= 0.70), score
 }
 
+func distinctRecoveryFactClauses(a, b liveAnalysisItem) bool {
+	if a.Kind != "fact" || b.Kind != "fact" || !itemEvidenceOverlaps(a, b) {
+		return false
+	}
+	category := func(item liveAnalysisItem) string {
+		text := item.Title + " " + item.Body
+		switch {
+		case recoveryRollbackFactPattern.MatchString(text):
+			return "rollback"
+		case recoveryRepairFactPattern.MatchString(text):
+			return "configuration_repair"
+		case recoveryNormalFactPattern.MatchString(text):
+			return "service_recovery"
+		default:
+			return ""
+		}
+	}
+	left, right := category(a), category(b)
+	return left != "" && right != "" && left != right
+}
+
 func distinctCorrectionFactClauses(a, b liveAnalysisItem) bool {
 	if a.Kind != "fact" || b.Kind != "fact" ||
-		a.AssignmentReason != deterministicCorrectionAssignmentReason ||
-		b.AssignmentReason != deterministicCorrectionAssignmentReason ||
+		(a.AssignmentReason != deterministicCorrectionAssignmentReason &&
+			b.AssignmentReason != deterministicCorrectionAssignmentReason) ||
 		!itemEvidenceOverlaps(a, b) {
 		return false
 	}
 	left := a.Title + " " + a.Body
 	right := b.Title + " " + b.Body
 	leftTrunk, rightTrunk := strings.Contains(left, "トランク"), strings.Contains(right, "トランク")
-	leftVLAN, rightVLAN := itemLabelVLANQualifierPattern.MatchString(left), itemLabelVLANQualifierPattern.MatchString(right)
+	leftVLAN, rightVLAN := correctionVLANQualifierPattern.MatchString(left), correctionVLANQualifierPattern.MatchString(right)
 	return leftTrunk != rightTrunk || leftVLAN != rightVLAN
 }
 

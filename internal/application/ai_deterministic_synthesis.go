@@ -84,6 +84,9 @@ var (
 	correctionGroundingQualifierPattern = regexp.MustCompile(
 		`(?i)(?:VLAN\s*\d+|\d+\s*階|月曜(?:日)?|火曜(?:日)?|水曜(?:日)?|木曜(?:日)?|金曜(?:日)?|土曜(?:日)?|日曜(?:日)?|旧スイッチ|交換後スイッチ)`,
 	)
+	correctionVLANQualifierPattern = regexp.MustCompile(
+		`(?i)(?:VLAN|Vラン|ブイラン|部位欄|V欄)[[:space:]]*[0-9０-９]+`,
+	)
 )
 
 type deterministicSynthesisDecision struct {
@@ -701,8 +704,40 @@ func correctionReplacementStatements(
 ) []correctionReplacement {
 	text := strings.TrimSpace(scope.TranscriptText[sequenceNo])
 	result := make([]correctionReplacement, 0, 3)
-	if statement := correctionReplacementStatement(text); statement != "" {
-		result = append(result, correctionReplacement{SequenceNo: sequenceNo, Text: statement})
+	atomic := splitCorrectionContinuationFacts(correctionReplacementTail(text))
+	if len(atomic) >= 2 {
+		for _, fragment := range atomic {
+			if selfContainedCorrectionFact(fragment, text) ||
+				highConfidenceCorrectionContinuationFact(fragment, text) {
+				result = append(result, correctionReplacement{SequenceNo: sequenceNo, Text: fragment})
+			}
+		}
+		// Keep the previous tail extractor as a bounded fallback for ASR forms
+		// whose first atomic clause is recognizable but whose second uses a
+		// phonetic spelling (for example 「許可部位欄」 for VLAN list).
+		if statement := correctionReplacementStatement(text); statement != "" {
+			duplicate := false
+			for _, replacement := range result {
+				if semanticItemSimilarity(replacement.Text, statement) >= 0.82 {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				result = append(result, correctionReplacement{SequenceNo: sequenceNo, Text: statement})
+			}
+		}
+	} else if statement := correctionReplacementStatement(text); statement != "" {
+		fragments := splitCorrectionContinuationFacts(statement)
+		if len(fragments) < 2 {
+			fragments = []string{statement}
+		}
+		for _, fragment := range fragments {
+			if selfContainedCorrectionFact(fragment, text) ||
+				highConfidenceCorrectionContinuationFact(fragment, text) {
+				result = append(result, correctionReplacement{SequenceNo: sequenceNo, Text: fragment})
+			}
+		}
 	}
 	nextSequenceNo := sequenceNo + 1
 	currentSegment, currentOK := scope.Segments[sequenceNo]
@@ -742,7 +777,8 @@ func correctionReplacementStatements(
 func highConfidenceCorrectionContinuationFact(statement, evidence string) bool {
 	statement = strings.Trim(strings.TrimSpace(statement), "、。.!！ ")
 	historical := kindPastEventPattern.MatchString(statement) ||
-		strings.HasSuffix(statement, "いました") || strings.HasSuffix(statement, "いましたが")
+		strings.HasSuffix(statement, "いました") || strings.HasSuffix(statement, "いましたが") ||
+		strings.HasSuffix(statement, "あり")
 	if statement == "" || !historical ||
 		kindOpenQuestionPattern.MatchString(statement) || kindUncertaintyPattern.MatchString(statement) ||
 		kindProposalPattern.MatchString(statement) || futureActionIntent(statement) {
@@ -753,10 +789,11 @@ func highConfidenceCorrectionContinuationFact(statement, evidence string) bool {
 	}
 	return strings.Contains(statement, "トランク設定") ||
 		strings.Contains(statement, "アクセスポート設定") ||
-		itemLabelVLANQualifierPattern.MatchString(statement)
+		correctionVLANQualifierPattern.MatchString(statement)
 }
 
 func splitCorrectionContinuationFacts(text string) []string {
+	text = strings.ReplaceAll(text, "設定はあり、", "設定はあり。")
 	text = strings.ReplaceAll(text, "が、", "。")
 	text = strings.ReplaceAll(text, "が,", "。")
 	var result []string
@@ -885,8 +922,14 @@ func correctionSequenceRepresented(
 			continue
 		}
 		itemText := itemKindSemanticText(item, scope)
-		statementVLANs := uniqueSortedStrings(itemLabelVLANQualifierPattern.FindAllString(statement, -1))
-		itemVLANs := uniqueSortedStrings(itemLabelVLANQualifierPattern.FindAllString(itemText, -1))
+		if item.AssignmentReason == deterministicCorrectionAssignmentReason {
+			// Sibling facts reconstructed from one compound correction share a
+			// transcript sequence. Their identity comes from each atomic
+			// proposition, not from the full evidence sentence.
+			itemText = strings.TrimSpace(item.Title + " " + item.Body)
+		}
+		statementVLANs := uniqueSortedStrings(correctionVLANQualifierPattern.FindAllString(statement, -1))
+		itemVLANs := uniqueSortedStrings(correctionVLANQualifierPattern.FindAllString(itemText, -1))
 		if len(statementVLANs) > 0 && !allFoldedStringsPresent(statementVLANs, itemVLANs) {
 			continue
 		}
@@ -911,17 +954,7 @@ func allFoldedStringsPresent(want, values []string) bool {
 }
 
 func correctionReplacementStatement(text string) string {
-	statement := strings.TrimSpace(text)
-	for _, marker := range []string{
-		"いえ、正確には", "いえ,正確には", "いえ正確には",
-		"正確には", "厳密には", "言い直すと", "訂正すると", "訂正します",
-	} {
-		if at := strings.Index(statement, marker); at >= 0 {
-			statement = strings.TrimSpace(statement[at+len(marker):])
-			break
-		}
-	}
-	statement = strings.Trim(strings.TrimSpace(statement), "、。.!！ ")
+	statement := correctionReplacementTail(text)
 	clauses := semanticKindClauses(statement)
 	for index := len(clauses) - 1; index >= 0; index-- {
 		candidate := strings.Trim(strings.TrimSpace(clauses[index]), "、。.!！ ")
@@ -942,6 +975,21 @@ func correctionReplacementStatement(text string) string {
 		}
 	}
 	return ""
+}
+
+func correctionReplacementTail(text string) string {
+	statement := strings.TrimSpace(text)
+	for _, marker := range []string{
+		"いえ、正確には", "いえ,正確には", "いえ正確には",
+		"正確には", "厳密には", "言い直すと", "訂正すると", "訂正します",
+	} {
+		if at := strings.Index(statement, marker); at >= 0 {
+			statement = strings.TrimSpace(statement[at+len(marker):])
+			break
+		}
+	}
+	statement = strings.Trim(strings.TrimSpace(statement), "、。.!！ ")
+	return statement
 }
 
 func selfContainedCorrectionFact(statement, evidenceText string) bool {
@@ -990,6 +1038,8 @@ func correctionQualifiersGrounded(statement, evidenceText string) bool {
 	return true
 }
 
+const deterministicSynthesisSameEvidenceParentSource = "deterministic_synthesis_same_evidence"
+
 func addOrUpdateFinalSynthesizedItems(
 	state *liveAnalysisPayload,
 	items []liveAnalysisItem,
@@ -1008,6 +1058,13 @@ func addOrUpdateFinalSynthesizedItems(
 		}
 		if existingAt >= 0 {
 			existing := state.Items[existingAt]
+			preserveCanonicalPresentation := existing.AssignmentSource == "rule" &&
+				existing.AssignmentReason == item.AssignmentReason &&
+				sameEvidenceSequenceSet(existing.EvidenceSequenceNos, item.EvidenceSequenceNos) &&
+				sameOwnerOrUnspecified(
+					existing.Title+" "+existing.Body,
+					item.Title+" "+item.Body,
+				)
 			item.ClassificationStatus = classificationAssigned
 			item.CandidateTopicID = ""
 			item.CandidateInactive = false
@@ -1020,6 +1077,12 @@ func addOrUpdateFinalSynthesizedItems(
 			item.EvidenceSequenceNos = appendUniqueSequences(existing.EvidenceSequenceNos, item.EvidenceSequenceNos)
 			item.EvidenceSnippets = uniqueSortedStrings(append(existing.EvidenceSnippets, item.EvidenceSnippets...))
 			item.GroundingDecision = ""
+			if preserveCanonicalPresentation {
+				item.Title = existing.Title
+				item.Body = existing.Body
+				item.DescriptionResolution = cloneDescriptionResolution(existing.DescriptionResolution)
+				item.EvidenceSnippets = append([]string(nil), existing.EvidenceSnippets...)
+			}
 			state.Items[existingAt] = item
 			if node := liveTreeNodeByID(state.Tree, item.ID); node != nil {
 				node.Kind, node.Subtype = item.Kind, item.Subtype
@@ -1029,7 +1092,11 @@ func addOrUpdateFinalSynthesizedItems(
 			continue
 		}
 
-		parentID := finalSynthesizedItemParent(state, item)
+		parentID, sharedEvidenceParent := finalSynthesizedItemParent(state, item)
+		parentChangeSource := "deterministic_synthesis"
+		if sharedEvidenceParent {
+			parentChangeSource = deterministicSynthesisSameEvidenceParentSource
+		}
 		item.ClassificationStatus = classificationAssigned
 		item.AssignmentConfidence = 0.95
 		if parentID == treeUnclassifiedTopicID {
@@ -1040,16 +1107,17 @@ func addOrUpdateFinalSynthesizedItems(
 			ID: item.ID, Kind: item.Kind, Subtype: item.Subtype,
 			ParentID: parentID, Label: item.Title, Description: item.Body,
 			Status: item.Status, CreatedAtVersion: version, UpdatedAtVersion: version,
-			LastParentChangeSource:  "deterministic_synthesis",
+			LastParentChangeSource:  parentChangeSource,
 			LastParentChangeVersion: version, ParentConfidence: 0.95,
 		})
 	}
 	rebuildTreeAuditEdges(state.Tree)
 }
 
-func finalSynthesizedItemParent(state *liveAnalysisPayload, item liveAnalysisItem) string {
+func finalSynthesizedItemParent(state *liveAnalysisPayload, item liveAnalysisItem) (string, bool) {
 	itemText := item.Title + " " + item.Body
 	bestParent, bestScore := "", 0.0
+	bestSharedEvidence := false
 	for _, candidate := range state.Items {
 		if candidate.ID == item.ID || candidate.Inactive || candidate.MergedIntoID != "" {
 			continue
@@ -1059,15 +1127,24 @@ func finalSynthesizedItemParent(state *liveAnalysisPayload, item liveAnalysisIte
 			continue
 		}
 		score := semanticItemSimilarity(itemText, candidate.Title+" "+candidate.Body)
+		// A deterministic fragment recovered from one transcript statement must
+		// stay with the other propositions extracted from that statement. Text
+		// similarity alone is too weak here: a monitoring-alert Risk can otherwise
+		// be pulled into a nearby VPN-risk topic merely because both mention risk.
+		sharedEvidence := itemEvidenceOverlaps(item, candidate)
+		if sharedEvidence {
+			score += 0.55
+		}
 		if sharedTreeAuditSubjectTerm(itemText, candidate.Title+" "+candidate.Body) {
 			score += 0.20
 		}
 		if score > bestScore {
 			bestParent, bestScore = node.ParentID, score
+			bestSharedEvidence = sharedEvidence
 		}
 	}
 	if bestParent != "" && bestScore >= 0.25 {
-		return bestParent
+		return bestParent, bestSharedEvidence
 	}
 	if liveTreeNodeByID(state.Tree, treeUnclassifiedTopicID) == nil {
 		state.Tree.Nodes = append(state.Tree.Nodes, liveAnalysisTreeNode{
@@ -1076,5 +1153,5 @@ func finalSynthesizedItemParent(state *liveAnalysisPayload, item liveAnalysisIte
 			CreatedAtVersion: 1, UpdatedAtVersion: 1,
 		})
 	}
-	return treeUnclassifiedTopicID
+	return treeUnclassifiedTopicID, false
 }

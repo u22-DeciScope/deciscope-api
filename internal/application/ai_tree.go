@@ -631,6 +631,20 @@ func rebuildDiscussionTree(
 		if proposedID == "" {
 			continue
 		}
+		// Keep the exact model-facing ID as an alias when the server adds the
+		// topic- namespace prefix. Assignments in the same response still refer
+		// to newTopics[].id verbatim; normalizing only the proposal would make a
+		// valid emerging-topic assignment look unknown and trigger an unrelated
+		// semantic fallback.
+		modelProposedID := strings.TrimSpace(proposed.ID)
+		// A server-owned candidate ID may be echoed through newTopics when an
+		// explicit no-agenda span keeps its durable anchor. It is already a valid
+		// candidate reference, so do not reinterpret it as topic-candidate-* or
+		// redirect assignments to a newly derived candidate.
+		if modelProposedID != "" && modelProposedID != proposedID && candidateIndexByID(modelProposedID) < 0 {
+			topicAlias[modelProposedID] = proposedID
+			candidateAlias[modelProposedID] = proposedID
+		}
 		// Model IDs are normalized into the topic namespace; logical agenda IDs
 		// can only reach a concrete node through AgendaRefs-derived resolution.
 		if _, isDetail := details[proposedID]; isDetail {
@@ -1187,7 +1201,16 @@ func applyAssignments(ac assignmentContext) {
 		return ""
 	}
 	candidateAt := func(id string) *emergingTopicCandidate {
-		if alias, ok := ac.candidateAlias[id]; ok {
+		seen := make(map[string]struct{})
+		for {
+			alias, ok := ac.candidateAlias[id]
+			if !ok || alias == id {
+				break
+			}
+			if _, loop := seen[id]; loop {
+				return nil
+			}
+			seen[id] = struct{}{}
 			id = alias
 		}
 		for i := range ac.candidates {
@@ -1242,7 +1265,17 @@ func applyAssignments(ac assignmentContext) {
 		}
 		requested := strings.TrimSpace(assignment.ParentTopicID)
 		originalRequested := requested
-		if alias, ok := ac.topicAlias[requested]; ok {
+		seenAliases := make(map[string]struct{})
+		for {
+			alias, ok := ac.topicAlias[requested]
+			if !ok || alias == requested {
+				break
+			}
+			if _, loop := seenAliases[requested]; loop {
+				requested = originalRequested
+				break
+			}
+			seenAliases[requested] = struct{}{}
 			requested = alias
 		}
 		if requested == "" {

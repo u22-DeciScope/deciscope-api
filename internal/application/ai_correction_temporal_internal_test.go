@@ -13,17 +13,18 @@ func TestSelfContainedCorrectionWithoutTargetReconstructsFact(t *testing.T) {
 	stats := &liveAnalysisTreeMergeStats{}
 
 	items := synthesizeCorrectionFactItems(nil, nil, scope, classifyDiscourseTimeline(scope), stats)
-	if len(items) != 1 {
-		t.Fatalf("reconstructed items=%d, want 1: correction=%t statement=%q selfContained=%t items=%+v stats=%+v",
+	if len(items) != 2 {
+		t.Fatalf("reconstructed items=%d, want 2 atomic facts: correction=%t statement=%q selfContained=%t items=%+v stats=%+v",
 			len(items), discourseCorrectionPattern.MatchString(text), correctionReplacementStatement(text),
 			selfContainedCorrectionFact(correctionReplacementStatement(text), text), items, stats)
 	}
-	item := items[0]
-	if item.Kind != "fact" || !strings.Contains(item.Title, "VLAN30") ||
-		!strings.Contains(item.Title, "漏れて") || strings.Contains(item.Title, "完全なアクセスポート") ||
-		!equalInt64s(item.EvidenceSequenceNos, []int64{1}) ||
-		stats.CorrectionItemsReconstructed != 1 {
-		t.Fatalf("reconstructed item=%+v stats=%+v", item, stats)
+	joined := items[0].Title + " " + items[1].Title
+	if !strings.Contains(joined, "トランク") || !strings.Contains(joined, "VLAN30") ||
+		strings.Contains(joined, "完全なアクセスポート") ||
+		!equalInt64s(items[0].EvidenceSequenceNos, []int64{1}) ||
+		!equalInt64s(items[1].EvidenceSequenceNos, []int64{1}) ||
+		stats.CorrectionItemsReconstructed != 2 {
+		t.Fatalf("reconstructed items=%+v stats=%+v", items, stats)
 	}
 }
 

@@ -270,7 +270,12 @@ func repairMixedEmergingCandidates(state *liveAnalysisPayload, mc *meetingContex
 	var repaired []emergingTopicCandidate
 	for _, candidate := range state.EmergingTopics {
 		initializeCandidateSubject(&candidate)
-		if len(candidate.EvidenceItemIDs) < 3 || candidateSubjectIncoherenceReason(candidate, func(id string) *liveAnalysisItem { return itemByID[id] }, TreeClassificationConfig{}) == "" {
+		// Two unrelated propositions are already enough to contaminate a
+		// candidate.  The old three-item gate missed the common shape where a
+		// monitoring risk and a later VPN risk were adjacent and the candidate
+		// label happened to describe one of them coherently.
+		initialClusters := clusterCandidateEvidence(candidate.EvidenceItemIDs, itemByID)
+		if len(candidate.EvidenceItemIDs) < 2 || (len(initialClusters) <= 1 && candidateSubjectIncoherenceReason(candidate, func(id string) *liveAnalysisItem { return itemByID[id] }, TreeClassificationConfig{}) == "") {
 			repaired = append(repaired, candidate)
 			continue
 		}
@@ -357,7 +362,7 @@ func clusterCandidateEvidence(ids []string, itemByID map[string]*liveAnalysisIte
 		for i := range clusters {
 			for _, memberID := range clusters[i] {
 				member := itemByID[memberID]
-				if member != nil && (sameCanonicalProposition(*member, *item) || sharedTreeAuditSubjectTerm(member.Title+" "+member.Body, item.Title+" "+item.Body)) {
+				if member != nil && candidateEvidenceSharesSubject(*member, *item) {
 					clusters[i] = append(clusters[i], id)
 					placed = true
 					break
@@ -372,6 +377,40 @@ func clusterCandidateEvidence(ids []string, itemByID map[string]*liveAnalysisIte
 		}
 	}
 	return clusters
+}
+
+// candidateEvidenceSharesSubject deliberately requires more than a generic
+// two-rune overlap.  Terms such as "可能性" and "対応" occur in unrelated
+// risks and were previously enough for the transitive cluster builder to join
+// monitoring operations and VPN certificates into one candidate.
+func candidateEvidenceSharesSubject(left, right liveAnalysisItem) bool {
+	if sameCanonicalProposition(left, right) {
+		return true
+	}
+	leftText := strings.TrimSpace(left.Title + " " + left.Body)
+	rightText := strings.TrimSpace(right.Title + " " + right.Body)
+	if leftText == "" || rightText == "" || latinTokenConflict(leftText, rightText) {
+		return false
+	}
+	leftCore := candidateClusteringCore(leftText)
+	rightCore := candidateClusteringCore(rightText)
+	if len([]rune(leftCore)) >= 3 && len([]rune(rightCore)) >= 3 &&
+		(strings.Contains(leftCore, rightCore) || strings.Contains(rightCore, leftCore)) {
+		return true
+	}
+	return sharedTreeAuditSubjectTerm(leftCore, rightCore) &&
+		semanticItemSimilarity(leftCore, rightCore) >= 0.18
+}
+
+func candidateClusteringCore(value string) string {
+	core := semanticTopicCore(value)
+	for _, generic := range []string{
+		"可能性があります", "可能性がある", "可能性", "リスク", "未確認",
+		"増えすぎる", "多くなりすぎる", "できなくなる", "なります", "なる",
+	} {
+		core = strings.ReplaceAll(core, generic, "")
+	}
+	return core
 }
 
 func mergeEquivalentCandidates(candidates []emergingTopicCandidate, stats *liveAnalysisTreeMergeStats) []emergingTopicCandidate {

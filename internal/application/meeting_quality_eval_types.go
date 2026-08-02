@@ -13,19 +13,20 @@ type MeetingQualitySuite struct {
 }
 
 type MeetingQualityScenario struct {
-	ID                   string                              `json:"id"`
-	Description          string                              `json:"description"`
-	TranscriptSegments   []MeetingQualityTranscriptSegment   `json:"transcriptSegments"`
-	MeetingContext       MeetingQualityMeetingContext        `json:"meetingContext"`
-	SeedPayload          json.RawMessage                     `json:"seedPayload,omitempty"`
-	Rounds               []MeetingQualityRound               `json:"rounds"`
-	RequiredPropositions []MeetingQualityProposition         `json:"requiredPropositions"`
-	RequiredRelations    []MeetingQualityRelation            `json:"requiredRelations,omitempty"`
-	ForbiddenResults     []MeetingQualityForbiddenResult     `json:"forbiddenResults,omitempty"`
-	SafetyExpectations   []MeetingQualitySafetyExpectation   `json:"safetyExpectations,omitempty"`
-	FinalCoverage        int64                               `json:"finalCoverage"`
-	ApplyFinalRepair     bool                                `json:"applyFinalRepair"`
-	Classification       MeetingQualityClassificationOptions `json:"classification,omitempty"`
+	ID                        string                              `json:"id"`
+	Description               string                              `json:"description"`
+	TranscriptSegments        []MeetingQualityTranscriptSegment   `json:"transcriptSegments"`
+	MeetingContext            MeetingQualityMeetingContext        `json:"meetingContext"`
+	SeedPayload               json.RawMessage                     `json:"seedPayload,omitempty"`
+	Rounds                    []MeetingQualityRound               `json:"rounds"`
+	RequiredPropositions      []MeetingQualityProposition         `json:"requiredPropositions"`
+	RequiredRelations         []MeetingQualityRelation            `json:"requiredRelations,omitempty"`
+	RequiredParentSeparations []MeetingQualityParentSeparation    `json:"requiredParentSeparations,omitempty"`
+	ForbiddenResults          []MeetingQualityForbiddenResult     `json:"forbiddenResults,omitempty"`
+	SafetyExpectations        []MeetingQualitySafetyExpectation   `json:"safetyExpectations,omitempty"`
+	FinalCoverage             int64                               `json:"finalCoverage"`
+	ApplyFinalRepair          bool                                `json:"applyFinalRepair"`
+	Classification            MeetingQualityClassificationOptions `json:"classification,omitempty"`
 }
 
 type MeetingQualityTranscriptSegment struct {
@@ -67,16 +68,17 @@ type MeetingQualityClassificationOptions struct {
 }
 
 type MeetingQualityProposition struct {
-	ID                      string   `json:"id"`
-	Text                    string   `json:"text"`
-	RequiredKind            string   `json:"requiredKind,omitempty"`
-	AllowedKinds            []string `json:"allowedKinds,omitempty"`
-	EvidenceSequenceNos     []int64  `json:"evidenceSequenceNos,omitempty"`
-	RequiredAgendaID        string   `json:"requiredAgendaId,omitempty"`
-	RequiredTemporalScope   string   `json:"requiredTemporalScope,omitempty"`
-	RequiredEpistemicStatus string   `json:"requiredEpistemicStatus,omitempty"`
-	RequiredStatus          string   `json:"requiredStatus,omitempty"`
-	MinimumSimilarity       float64  `json:"minimumSimilarity,omitempty"`
+	ID                        string   `json:"id"`
+	Text                      string   `json:"text"`
+	RequiredKind              string   `json:"requiredKind,omitempty"`
+	AllowedKinds              []string `json:"allowedKinds,omitempty"`
+	EvidenceSequenceNos       []int64  `json:"evidenceSequenceNos,omitempty"`
+	RequiredAgendaID          string   `json:"requiredAgendaId,omitempty"`
+	RequiredTemporalScope     string   `json:"requiredTemporalScope,omitempty"`
+	RequiredEpistemicStatus   string   `json:"requiredEpistemicStatus,omitempty"`
+	RequiredStatus            string   `json:"requiredStatus,omitempty"`
+	RequiredDescriptionStatus string   `json:"requiredDescriptionStatus,omitempty"`
+	MinimumSimilarity         float64  `json:"minimumSimilarity,omitempty"`
 }
 
 // Relation is evaluated against the semantic proposition matches. Explicit
@@ -90,6 +92,14 @@ type MeetingQualityRelation struct {
 	Kind              string `json:"kind"`
 	RequireSameBranch bool   `json:"requireSameBranch,omitempty"`
 	RequiredAncestor  string `json:"requiredAncestor,omitempty"`
+}
+
+// MeetingQualityParentSeparation requires two matched propositions to retain
+// different top-level discussion subjects. It expresses cases where lexical
+// proximity must not collapse distinct business objects into one candidate.
+type MeetingQualityParentSeparation struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 type MeetingQualityForbiddenResult struct {
@@ -153,17 +163,18 @@ type MeetingQualityActualItem struct {
 }
 
 type MeetingQualityPropositionMatch struct {
-	PropositionID           string                    `json:"propositionId"`
-	ExpectedText            string                    `json:"expectedText"`
-	RequiredKind            string                    `json:"requiredKind,omitempty"`
-	AllowedKinds            []string                  `json:"allowedKinds,omitempty"`
-	ExpectedEvidence        []int64                   `json:"expectedEvidence,omitempty"`
-	RequiredTemporalScope   string                    `json:"requiredTemporalScope,omitempty"`
-	RequiredEpistemicStatus string                    `json:"requiredEpistemicStatus,omitempty"`
-	RequiredStatus          string                    `json:"requiredStatus,omitempty"`
-	Matched                 bool                      `json:"matched"`
-	Similarity              float64                   `json:"similarity"`
-	BestActualCandidate     *MeetingQualityActualItem `json:"bestActualCandidate,omitempty"`
+	PropositionID             string                    `json:"propositionId"`
+	ExpectedText              string                    `json:"expectedText"`
+	RequiredKind              string                    `json:"requiredKind,omitempty"`
+	AllowedKinds              []string                  `json:"allowedKinds,omitempty"`
+	ExpectedEvidence          []int64                   `json:"expectedEvidence,omitempty"`
+	RequiredTemporalScope     string                    `json:"requiredTemporalScope,omitempty"`
+	RequiredEpistemicStatus   string                    `json:"requiredEpistemicStatus,omitempty"`
+	RequiredStatus            string                    `json:"requiredStatus,omitempty"`
+	RequiredDescriptionStatus string                    `json:"requiredDescriptionStatus,omitempty"`
+	Matched                   bool                      `json:"matched"`
+	Similarity                float64                   `json:"similarity"`
+	BestActualCandidate       *MeetingQualityActualItem `json:"bestActualCandidate,omitempty"`
 }
 
 type MeetingQualityKindMismatch struct {
@@ -215,6 +226,7 @@ type MeetingQualityScenarioResult struct {
 	ForbiddenResultsFound       []string                              `json:"forbiddenResultsFound,omitempty"`
 	SafetyFailures              []string                              `json:"safetyFailures,omitempty"`
 	ParentAssignments           []MeetingQualityParentAssignment      `json:"parentAssignments,omitempty"`
+	RequiredParentSeparations   []MeetingQualityParentSeparation      `json:"requiredParentSeparations,omitempty"`
 	KindDistribution            []MeetingQualityKindCount             `json:"kindDistribution,omitempty"`
 	FinalCoverage               int64                                 `json:"finalCoverage"`
 	TreeVersion                 int64                                 `json:"treeVersion"`

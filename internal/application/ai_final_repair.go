@@ -30,7 +30,108 @@ func finalRepairStatsChanged(stats finalRepairStats) bool {
 		stats.StrongDecisionsSynthesized > 0 ||
 		stats.EvidenceReferencesPruned > 0 ||
 		stats.IssuesRecoveredFromTodoEvidence > 0 ||
+		stats.ConfirmedTodoCandidatesPromoted > 0 ||
+		stats.ConfirmedTodoCandidatesFolded > 0 ||
 		stats.DanglingCandidatesPruned > 0
+}
+
+// promoteConfirmedFinalTodoCandidates is a finalization-only escape hatch for
+// a single, explicit action commitment that is still parked under the
+// unclassified staging topic. It does not alter the normal multi-round or
+// independent-evidence promotion thresholds: the candidate is consumed only
+// after final grounding proves owner, action, object, and commitment.
+func promoteConfirmedFinalTodoCandidates(state *liveAnalysisPayload, version int64, stats *finalRepairStats) {
+	if state == nil || state.Tree == nil || len(state.EmergingTopics) == 0 {
+		return
+	}
+	itemByID := make(map[string]*liveAnalysisItem, len(state.Items))
+	for index := range state.Items {
+		itemByID[state.Items[index].ID] = &state.Items[index]
+	}
+	topics := make(map[string]liveAnalysisTreeNode)
+	for _, node := range state.Tree.Nodes {
+		if node.Kind == "topic" {
+			topics[node.ID] = node
+		}
+	}
+	kept := make([]emergingTopicCandidate, 0, len(state.EmergingTopics))
+	for _, candidate := range state.EmergingTopics {
+		evidenceIDs := uniqueNonEmptyIDs(candidate.EvidenceItemIDs)
+		if candidate.Inactive || len(evidenceIDs) != 1 {
+			kept = append(kept, candidate)
+			continue
+		}
+		item := itemByID[evidenceIDs[0]]
+		if !confirmedFinalTodoCandidateItem(item, candidate.ID) {
+			kept = append(kept, candidate)
+			continue
+		}
+		node := liveTreeNodeByID(state.Tree, item.ID)
+		if node == nil || treeAuditIsManualChangeSource(node.LastParentChangeSource) {
+			kept = append(kept, candidate)
+			continue
+		}
+		initializeCandidateSubject(&candidate)
+		if candidateSubjectIncoherenceReason(candidate, func(id string) *liveAnalysisItem { return itemByID[id] }, TreeClassificationConfig{}) != "" {
+			kept = append(kept, candidate)
+			continue
+		}
+		label := truncateRunes(strings.TrimSpace(candidate.Label), liveAnalysisTopicLabelMaxRunes)
+		if label == "" || genericTopicLabel(label) {
+			label = truncateRunes(strings.TrimSpace(item.Title), liveAnalysisTopicLabelMaxRunes)
+		}
+		if label == "" || genericTopicLabel(label) || emergingTopicCore(label) == "" {
+			kept = append(kept, candidate)
+			continue
+		}
+
+		parentID := semanticExistingTopicID(label, candidate.Description, topics)
+		if parentID != "" {
+			stats.ConfirmedTodoCandidatesFolded++
+		} else {
+			parentID = stableDynamicTopicID(candidate.ID)
+			if existing := liveTreeNodeByID(state.Tree, parentID); existing == nil {
+				topic := liveAnalysisTreeNode{
+					ID: parentID, Kind: "topic", ParentID: treeRootNodeID,
+					Label:             label,
+					Description:       truncateRunes(strings.TrimSpace(candidate.Description), liveAnalysisTreeDescriptionMaxRunes),
+					SourceCandidateID: candidate.ID, Origin: topicOriginDynamic,
+					CreatedAtVersion: version, UpdatedAtVersion: version,
+				}
+				state.Tree.Nodes = append(state.Tree.Nodes, topic)
+				topics[parentID] = topic
+			}
+			stats.ConfirmedTodoCandidatesPromoted++
+		}
+		node.ParentID = parentID
+		node.LastParentChangeSource = "final_confirmed_todo"
+		node.LastParentChangeVersion = version
+		node.ParentConfidence = 0.95
+		item.ClassificationStatus = classificationAssigned
+		item.CandidateTopicID = ""
+		item.CandidateInactive = false
+		item.AssignmentConfidence = 0.95
+		item.AssignmentSource = "rule"
+		item.AssignmentReason = "final_explicit_owner_action_commitment"
+	}
+	state.EmergingTopics = kept
+	rebuildTreeAuditEdges(state.Tree)
+}
+
+func confirmedFinalTodoCandidateItem(item *liveAnalysisItem, candidateID string) bool {
+	if item == nil || item.Inactive || item.MergedIntoID != "" || item.Kind != "todo" ||
+		item.Status == "resolved" || item.Status == "dismissed" ||
+		item.ClassificationStatus != classificationTentative || item.CandidateTopicID != candidateID ||
+		(item.GroundingDecision != "accepted" && item.GroundingDecision != "rewritten") ||
+		len(item.EvidenceSequenceNos) == 0 {
+		return false
+	}
+	text := strings.TrimSpace(item.Title + " " + item.Body)
+	features := inferItemSemanticFeatures(*item, liveEvidenceScope{})
+	return features.OwnerPresent && features.ActionVerbPresent &&
+		features.DecisionOrCommitment && futureActionIntent(text) &&
+		deterministicTodoObjectPattern.MatchString(text) &&
+		!kindUnassignedNecessityPattern.MatchString(text)
 }
 
 func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.TranscriptSegment, mc *meetingContext, version int64, stats *finalRepairStats) {
@@ -52,7 +153,14 @@ func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.Transcri
 		append(append([]liveAnalysisItem(nil), state.Items...), synthesized...),
 		scope, timeline,
 	)...)
+	synthesized = append(synthesized, synthesizeExplicitOpenIssueItems(
+		state.Items, synthesized, scope, timeline,
+	)...)
+	synthesized = append(synthesized, synthesizeExplicitRiskItems(
+		state.Items, synthesized, scope, timeline, kindStats,
+	)...)
 	addOrUpdateFinalSynthesizedItems(state, synthesized, version)
+	splitPersistedRecoveryFacts(state, scope, version, kindStats)
 	splitPersistedItemKinds(state, scope, itemKindValidationFinal, "final_semantic_split", kindStats)
 	// Kind repair can turn a legacy compound Issue into a Todo. Split its
 	// owner-local assignments before semantic dedup; otherwise the combined

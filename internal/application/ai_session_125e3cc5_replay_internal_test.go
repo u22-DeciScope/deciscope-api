@@ -306,7 +306,9 @@ func TestSession125e3cc5ReplayFixesVpnDuplicationRecapAndDecisionDefects(t *test
 				alertRiskCount++
 			}
 		case "issue":
-			if strings.Contains(item.Title+item.Body, "検討") {
+			if strings.Contains(item.Title+item.Body, "検討") ||
+				(strings.Contains(item.Title+item.Body, "監視間隔") &&
+					strings.Contains(item.Title+item.Body, "通知条件")) {
 				alertConditionIssueCount++
 				if item.Subtype != issueSubtypeDiscussion {
 					t.Fatalf("alert condition issue = %+v, want subtype=discussion", item)
