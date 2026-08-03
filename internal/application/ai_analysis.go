@@ -555,9 +555,12 @@ type liveAnalysisSessionState struct {
 	runningTargetThroughSequenceNo  int64
 	runningTrigger                  string
 	runningCoalescedTriggerCount    int
-	recoveryInFlight                bool
-	lastPayload                     json.RawMessage
-	lastVersion                     int64
+	// Set when a final arrives after the current provider request is sealed.
+	// The next mutation remains serial but bypasses normal cooldown/max-wait.
+	catchUpRequested bool
+	recoveryInFlight bool
+	lastPayload      json.RawMessage
+	lastVersion      int64
 	// deferredUnreflected keeps the full transcript rows for the bounded
 	// "retry with the next normal round" path. They are not placed back in
 	// pending immediately (which would create an extra provider call); a later
@@ -695,6 +698,7 @@ func (s *MeetingAnalysisService) PublishTranscriptSegment(segment domain.Transcr
 	state.lastActivityAt = now
 	if state.running {
 		state.rerunRequested = true
+		state.catchUpRequested = true
 	}
 	s.mu.Unlock()
 	s.ensureMeetingContextPlanning(sessionID, nil)
@@ -919,19 +923,27 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		analysisCtx, cancel = context.WithTimeout(ctx, s.config.LiveRequestTimeout)
 		defer cancel()
 	}
-	// Ephemeral running notification so clients can show a "generating"
-	// state. It is broadcast only (never written to the database) and keeps
-	// the current version/payload so clients can safely replace their whole
-	// state with it.
+	requestedVersion := previousVersion + 1
+	runningStartedAt := s.now().UTC()
+	fromSequenceNo, throughSequenceNo := liveAnalysisSequenceRange(segments)
+	log.Printf("Live analysis request sealed. event=live_analysis_request_sealed sessionId=%s sealedAt=%s targetFromSequenceNo=%d targetThroughSequenceNo=%d segmentCount=%d",
+		sessionID, runningStartedAt.Format(time.RFC3339Nano), fromSequenceNo, throughSequenceNo, len(segments))
+	// Ephemeral status-only notification. Stable items and tree remain at the
+	// last completed snapshot until this requested analysis version completes.
 	s.publishAnalysis(domain.MeetingAIAnalysis{
-		SessionID: sessionID,
-		Type:      domain.MeetingAIAnalysisLive,
-		Status:    domain.MeetingAIAnalysisRunning,
-		Version:   previousVersion,
-		Payload:   previousPayload,
-		Model:     s.config.modelNameFor(aiTaskLiveExtraction),
-		UpdatedAt: s.now().UTC(),
+		SessionID:                sessionID,
+		Type:                     domain.MeetingAIAnalysisLive,
+		Status:                   domain.MeetingAIAnalysisRunning,
+		Version:                  requestedVersion,
+		Model:                    s.config.modelNameFor(aiTaskLiveExtraction),
+		UpdatedAt:                runningStartedAt,
+		RequestedAnalysisVersion: requestedVersion,
+		TargetFromSequenceNo:     fromSequenceNo,
+		TargetThroughSequenceNo:  throughSequenceNo,
+		StartedAt:                runningStartedAt,
 	})
+	log.Printf("Live analysis running publication. sessionId=%s requestedAnalysisVersion=%d targetFromSequenceNo=%d targetThroughSequenceNo=%d runningEventTreePayloadCount=0 runningEventItemPayloadCount=0",
+		sessionID, requestedVersion, fromSequenceNo, throughSequenceNo)
 	result, liveModel, err := s.completeTask(analysisCtx, aiTaskLiveExtraction, AIChatRequest{
 		System:    liveAnalysisSystemPrompt,
 		User:      userPrompt,
@@ -948,6 +960,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, err, len(segments), inputChars, elapsed)
 		return false, retryable
 	}
+	aiCompletedAt := s.now().UTC()
 	roundSeqNos := make([]int64, 0, len(segments))
 	for _, segment := range segments {
 		if segment.SequenceNo > 0 {
@@ -986,7 +999,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		log.Printf("Decision extraction reconciliation failed. sessionId=%s markerSegments=%d error=%v", sessionID, decisionAudit.MarkerSegments, reconcileErr)
 	}
 	treeStats := &liveAnalysisTreeMergeStats{}
-	newVersion := previousVersion + 1
+	newVersion := requestedVersion
 	payload, parseErr := parseAndMergeLiveAnalysisPayloadWithEvidence(reconciledContent, previousPayload, meetingCtx, newVersion, roundSeqNos, evidenceScope, s.config.TreeClassification, treeStats)
 	logTaskSchemaResult(aiTaskLiveExtraction, sessionID, parseErr)
 	if parseErr != nil {
@@ -1002,7 +1015,18 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	}
 	var coverageDecisions []finalSegmentCoverage
 	payload, coverageDecisions, parseErr = addLiveAnalysisCoverageWithResult(
-		payload, segments, coverageReason,
+		payload, segments, coverageReason, previousPayload,
+	)
+	if parseErr != nil {
+		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
+		return false, retryable
+	}
+	projectionCompletedAt := s.now().UTC()
+	s.mu.Lock()
+	highestAvailableFinalSequenceNo := s.sessionStateLocked(sessionID).highestAvailableFinalSequenceNo
+	s.mu.Unlock()
+	payload, parseErr = finalizeCompletedLiveProjection(
+		payload, previousPayload, newVersion, highestAvailableFinalSequenceNo, projectionCompletedAt,
 	)
 	if parseErr != nil {
 		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
@@ -1044,6 +1068,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		s.handleStaleLiveAnalysisResult(ctx, sessionID, segments, previousVersion)
 		return false, true
 	}
+	snapshotPersistedAt := s.now().UTC()
 	modelResolvedIDCount := countModelResolvedIDs(result.Content)
 	stats := countLiveAnalysisPayloadStats(payload)
 	treeStats.RecapMerged = issueAudit.RecapMerged
@@ -1052,6 +1077,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	treeStats.AssistantVisibleTentativeItems = stats.AssistantVisibleTentativeItems
 	payloadState := previousLiveAnalysisState(payload)
 	treeHealth := computeTreeHealth(payloadState.Tree)
+	semanticHealth := computeSemanticTreeHealth(payloadState)
 	relatedAgendaReferences := 0
 	for _, item := range payloadState.Items {
 		relatedAgendaReferences += len(item.RelatedAgendaIDs)
@@ -1111,33 +1137,49 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		treeStats.GroundingRejected, treeStats.GroundingUnsupportedAtoms,
 		treeStats.GroundingContextOnlyAtoms, treeStats.GroundingFutureLeaksPrevented)
 	for _, coverage := range coverageDecisions {
-		log.Printf("Initial transcript coverage evaluated. event=initial_transcript_coverage sessionId=%s analysisVersion=%d sequenceNo=%d processed=true meaningfullyCovered=%t reason=%s retryEligible=%t attemptCount=%d retryAfterSequenceNo=%d",
+		log.Printf("Initial transcript coverage evaluated. event=initial_transcript_coverage sessionId=%s analysisVersion=%d sequenceNo=%d processed=true meaningfullyCovered=%t disposition=%s reason=%s retryEligible=%t attemptCount=%d retryAfterSequenceNo=%d",
 			sessionID, newVersion, coverage.SequenceNo, coverage.MeaningfullyCovered,
-			coverage.Reason, coverage.RetryEligible, coverage.AttemptCount,
+			coverage.Disposition, coverage.Reason, coverage.RetryEligible, coverage.AttemptCount,
 			coverage.RetryAfterSequenceNo)
 		logCoverageRetryDecision(
 			sessionID, newVersion, coverage,
 			previousLiveAnalysisState(previousPayload).Items, payloadState.Items,
 		)
 	}
+	log.Printf("Recap span evaluated. sessionId=%s analysisVersion=%d recapModeActive=%t recapSpanStartSequenceNo=%d recapSpanEndSequenceNo=%d recapDisposition=%s matchedExistingItemIds=%v newInformationAtoms=%d newItemsCreatedFromRecap=%d",
+		sessionID, newVersion, payloadState.RecapSpan.Active,
+		payloadState.RecapSpan.StartSequenceNo, payloadState.RecapSpan.EndSequenceNo,
+		payloadState.RecapSpan.Disposition, payloadState.RecapSpan.MatchedExistingItemIDs,
+		payloadState.RecapSpan.NewInformationAtoms, payloadState.RecapSpan.NewItemsCreatedFromRecap)
 	for _, decision := range treeStats.KindValidationDecisions {
-		log.Printf("AI item kind validation evaluated. sessionId=%s analysisVersion=%d stage=%s sequenceNos=%v itemId=%s modelItemId=%s originalKind=%s canonicalKind=%s originalSubtype=%s canonicalSubtype=%s temporalScope=%s epistemicStatus=%s semanticRole=%s futureEventPresent=%t scheduledEventPresent=%t eventDatePresent=%t negativeImpactPresent=%t uncertaintyPresent=%t currentProblemPresent=%t confirmedEvidencePresent=%t actionVerbPresent=%t completedActionPresent=%t ownerPresent=%t deadlinePresent=%t decision=%s reason=%s confidence=%.2f",
+		log.Printf("AI item kind validation evaluated. sessionId=%s analysisVersion=%d stage=%s sequenceNos=%v itemId=%s modelItemId=%s originalKind=%s canonicalKind=%s originalSubtype=%s canonicalSubtype=%s temporalScope=%s epistemicStatus=%s semanticRole=%s futureEventPresent=%t scheduledEventPresent=%t eventDatePresent=%t pastEventTimePresent=%t futureDeadlinePresent=%t futureScheduledTimePresent=%t negativeImpactPresent=%t uncertaintyPresent=%t currentProblemPresent=%t confirmedEvidencePresent=%t actionVerbPresent=%t completedActionPresent=%t completedPredicatePresent=%t commitmentPresent=%t requestPresent=%t assigneePresent=%t ownerPresent=%t deadlinePresent=%t decision=%s reason=%s confidence=%.2f",
 			sessionID, newVersion, decision.Stage, decision.SequenceNos, decision.ItemID, decision.ModelItemID,
 			decision.OriginalKind, decision.CanonicalKind, decision.OriginalSubtype, decision.CanonicalSubtype,
 			decision.Features.TemporalScope, decision.Features.EpistemicStatus, decision.Features.SemanticRole,
 			decision.Features.FutureEventPresent, decision.Features.ScheduledEventPresent,
-			decision.Features.EventDatePresent, decision.Features.NegativeImpactPresent,
+			decision.Features.EventDatePresent, decision.Features.PastEventTimePresent,
+			decision.Features.FutureDeadlinePresent, decision.Features.FutureScheduledTimePresent,
+			decision.Features.NegativeImpactPresent,
 			decision.Features.UncertaintyPresent, decision.Features.CurrentProblemPresent,
 			decision.Features.ConfirmedEvidencePresent, decision.Features.ActionVerbPresent,
-			decision.Features.CompletedActionPresent, decision.Features.OwnerPresent,
+			decision.Features.CompletedActionPresent, decision.Features.CompletedPredicatePresent,
+			decision.Features.CommitmentPresent, decision.Features.RequestPresent,
+			decision.Features.AssigneePresent, decision.Features.OwnerPresent,
 			decision.Features.DeadlinePresent,
 			decision.Decision, decision.Reason, decision.Confidence)
 	}
 	for _, decision := range treeStats.KindSplitDecisions {
-		log.Printf("AI item semantic split completed. sessionId=%s analysisVersion=%d sourceItemId=%s fragmentCount=%d fragmentKinds=%v rejectedFragments=%d relationsCreated=%d",
-			sessionID, newVersion, decision.SourceItemID, decision.FragmentCount, decision.FragmentKinds,
-			decision.RejectedFragments, decision.RelationsCreated)
+		log.Printf("AI item semantic split completed. sessionId=%s analysisVersion=%d sourceItemId=%s sourceKind=%s sourceActiveBefore=%t fragmentCount=%d fragmentItemIds=%v fragmentKinds=%v rejectedFragments=%d replacementMode=%s sourceInactiveAfter=%t duplicateDetected=%t relationsCreated=%d relationsReassigned=%d",
+			sessionID, newVersion, decision.SourceItemID, decision.SourceKind,
+			decision.SourceActiveBefore, decision.FragmentCount, decision.FragmentItemIDs,
+			decision.FragmentKinds, decision.RejectedFragments, decision.ReplacementMode,
+			decision.SourceInactiveAfter, decision.DuplicateDetected,
+			decision.RelationsCreated, decision.RelationsReassigned)
 	}
+	log.Printf("Semantic split invariants evaluated. sessionId=%s analysisVersion=%d semanticSplitSourceActiveCount=%d semanticSplitSourceFragmentDuplicateCount=%d semanticSplitReplacementMissingCount=%d",
+		sessionID, newVersion, treeStats.SemanticSplitSourceActiveCount,
+		treeStats.SemanticSplitSourceFragmentDuplicateCount,
+		treeStats.SemanticSplitReplacementMissingCount)
 	log.Printf("Live action summary projection. sessionId=%s version=%d sourceActionSummaryAgendaCount=%d actionSummaryAgendaIds=%v logicalActionSummaryCount=%d actionSummaryCandidates=%d deduplicatedActionItems=%d renderedActionItems=%d renderedActionTabs=1 renderedReferenceNodes=0 activeTodoReferences=%d activeOpenIssueFallbacks=%d completedItemsExcluded=%d resolvedItemsExcluded=%d clusteredReferences=%d",
 		sessionID, newVersion, treeStats.SourceActionSummaryAgendaCount, actionSummaryAgendaIDs, treeStats.LogicalActionSummaryCount, treeStats.ActionSummaryCandidates, treeStats.DeduplicatedActionItems, treeStats.RenderedActionItems, treeStats.ActiveTodoReferences, treeStats.ActiveOpenIssueFallbacks, treeStats.CompletedTodoExcluded, treeStats.ResolvedItemsExcluded, treeStats.ClusteredReferences)
 	log.Printf("Live unclassified staging. sessionId=%s version=%d trueUnclassifiedItems=%d tentativeItems=%d treeHiddenTentativeItems=%d assistantVisibleTentativeItems=%d companionParentInherited=%d companionCandidateInherited=%d semanticParentCorrected=%d promotedItemsReparented=%d staleCandidatesHidden=%d tentativeMetadataLost=%d",
@@ -1184,10 +1226,11 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 			decision.RemovedSequenceNos, decision.Decision, decision.Reason)
 	}
 	for _, decision := range treeStats.CorrectionDecisions {
-		log.Printf("Live correction supersession evaluated. sessionId=%s version=%d correctionSequenceNo=%d targetSequenceNo=%d supersededItemId=%s replacementItemId=%s similarity=%.2f decision=%s reason=%s relationLocked=%t",
+		log.Printf("Live correction supersession evaluated. sessionId=%s version=%d correctionSequenceNo=%d targetSequenceNo=%d supersededItemId=%s replacementItemId=%s similarity=%.2f decision=%s reason=%s relationLocked=%t attemptedNextState=%s transitionRejected=%t",
 			sessionID, newVersion, decision.CorrectionSequenceNo, decision.TargetSequenceNo,
 			decision.SupersededItemID, decision.ReplacementItemID,
-			decision.Similarity, decision.Decision, decision.Reason, decision.RelationLocked)
+			decision.Similarity, decision.Decision, decision.Reason, decision.RelationLocked,
+			decision.AttemptedNextState, decision.TransitionRejected)
 		if decision.OldTargetSequenceNo > 0 || decision.NewTargetSequenceNo > 0 {
 			log.Printf("Correction relation change evaluated. event=correction_relation_changed sessionId=%s analysisVersion=%d sourceSequence=%d oldTargetSequence=%d newTargetSequence=%d allowed=%t confidence=%.2f reason=%s",
 				sessionID, newVersion, decision.CorrectionSequenceNo,
@@ -1201,6 +1244,10 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		treeStats.StrongDecisionCandidates, treeStats.StrongDecisionsSynthesized,
 		treeStats.CorrectionItemsReconstructed, treeStats.CorrectionItemsPending,
 		treeStats.CorrectionItemsSuperseded, treeStats.DivergentUpdatesDetached)
+	log.Printf("Correction monotonicity evaluated. event=correction_monotonicity_summary sessionId=%s treeVersion=%d supersededReactivatedCount=%d supersededResolvedCount=%d correctionMonotonicityViolationCount=%d",
+		sessionID, newVersion, treeStats.SupersededReactivated,
+		treeStats.SupersededResolved, treeStats.CorrectionMonotonicityViolations)
+	logCorrectionItemStates(sessionID, newVersion, payloadState)
 	log.Printf("Live evidence normalization. sessionId=%s version=%d numericStringsNormalized=%d rejectedValues=%d outOfRoundValues=%d quarantinedItems=%d currentRoundEvidenceAccepted=%d historicalEvidenceAccepted=%d futureEvidenceRejected=%d missingEvidenceRejected=%d existingEvidencePreserved=%d",
 		sessionID, newVersion, treeStats.EvidenceNumericStringsNormalized, treeStats.EvidenceValuesRejected, treeStats.EvidenceValuesOutOfRound, treeStats.EvidenceItemsQuarantined, treeStats.CurrentRoundEvidenceAccepted, treeStats.HistoricalEvidenceAccepted, treeStats.FutureEvidenceRejected, treeStats.MissingEvidenceRejected, treeStats.ExistingEvidencePreserved)
 	resolutionAudit := summarizeResolutionEvaluations(treeStats.ResolutionDecisions)
@@ -1246,13 +1293,16 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		treeStats.SynthesizedNodes, treeStats.OrphanRescuedEdges, treeStats.ReparentedNodes, treeStats.DuplicateItemsMerged, treeStats.SiblingDuplicateItemsMerged, relatedAgendaReferences,
 		treeStats.GroupsCreated, treeStats.GroupsFlattened, stats.TotalNodes, treeStats.TotalEdges, treeHealth.TopicCount, treeHealth.GroupCount, treeHealth.NestedGroupCount, treeHealth.DetailCount, treeStats.MaxDepth, treeHealth.AverageDepth, treeHealth.MaxChildren, treeHealth.MaxChildrenParentID, treeHealth.MaxGroupChildren, treeHealth.MaxGroupID, treeHealth.AverageBranchingFactor, treeHealth.FlatTopicCount, treeHealth.SingleChildGroupCount, treeStats.FlatTreeDetected,
 		stats.AssignedItems, stats.TentativeItems, stats.UnclassifiedItems, stats.EmergingCandidates, treeStats.DynamicTopicsPromoted)
+	log.Printf("Live semantic topic concentration. sessionId=%s analysisVersion=%d %s", sessionID, newVersion, semanticHealth)
 	log.Printf("Live group diagnostics. sessionId=%s version=%d groupCandidates=%d groupsCreated=%d groupsSkipped=%d groupSkipReasons=%v groupsFlattened=%d nestedGroupCount=%d",
 		sessionID, newVersion, treeStats.GroupCandidates, treeStats.GroupsCreated, treeStats.GroupsSkipped, treeStats.GroupSkipReasons, treeStats.GroupsFlattened, treeHealth.NestedGroupCount)
 	logClassificationDecisions(sessionID, newVersion, treeStats)
 	logAgendaProgressLinks(sessionID, newVersion, payloadState.AgendaProgress)
 	logAgendaProgressComputed(sessionID, newVersion, payloadState.AgendaProgress, nil, false)
 	logLiveSnapshotBroadcast(sessionID, payloadState, previousLiveAnalysisState(previousPayload))
-	s.publishAnalysis(*saved)
+	s.publishCompletedLiveAnalysis(*saved, previousPayload)
+	snapshotBroadcastAt := s.now().UTC()
+	logLiveProjectionLatency(sessionID, newVersion, segments, start, aiCompletedAt, projectionCompletedAt, snapshotPersistedAt, snapshotBroadcastAt)
 
 	// Task E: 全topic対象の過密検知に基づくライブ再編成。running=true のまま
 	// 同一ゴルーチンで実行するので、並行する次ラウンドが古い結果を上書きする
@@ -1280,6 +1330,8 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	state.rerunRequested = false
 	remainingPending := len(state.pending)
 	s.mu.Unlock()
+	log.Printf("Live analysis sealed range completed. event=live_analysis_sealed_range_completed sessionId=%s analysisVersion=%d targetFromSequenceNo=%d targetThroughSequenceNo=%d lateSegmentCount=%d catchUpRequested=%t",
+		sessionID, newVersion, fromSequenceNo, throughSequenceNo, remainingPending, rerunRequested)
 	nextAction := "idle"
 	if rerunRequested {
 		nextAction = "re_evaluate"
@@ -1317,6 +1369,7 @@ func (s *MeetingAnalysisService) liveEvidenceScope(ctx context.Context, sessionI
 		for sequenceNo := range scope.CurrentRound {
 			scope.Allowed[sequenceNo] = struct{}{}
 		}
+		applyAdjacentFinalSegmentStitches(&scope, round)
 		classifyLiveRoundInputs(&scope, previous, round)
 		return scope
 	}
@@ -1326,6 +1379,7 @@ func (s *MeetingAnalysisService) liveEvidenceScope(ctx context.Context, sessionI
 		for sequenceNo := range scope.CurrentRound {
 			scope.Allowed[sequenceNo] = struct{}{}
 		}
+		applyAdjacentFinalSegmentStitches(&scope, round)
 		classifyLiveRoundInputs(&scope, previous, round)
 		return scope
 	}
@@ -1340,6 +1394,7 @@ func (s *MeetingAnalysisService) liveEvidenceScope(ctx context.Context, sessionI
 		scope.TranscriptText[segment.SequenceNo] = strings.TrimSpace(segment.Text)
 		scope.Segments[segment.SequenceNo] = segment
 	}
+	applyAdjacentFinalSegmentStitches(&scope, segments)
 	classifyLiveRoundInputs(&scope, previous, round)
 	return scope
 }
@@ -1401,9 +1456,10 @@ func logCoverageRetryDecision(
 	if coverage.MeaningfullyCovered {
 		decision = "accepted"
 	}
-	log.Printf("Coverage retry evaluated. event=meaningful_coverage_retry_result sessionId=%s analysisVersion=%d sequenceNo=%d retryAttempt=%d generatedItemIds=%v mergedIntoItemIds=%v newItemIds=%v meaningfullyCovered=%t decision=%s reason=%s",
+	log.Printf("Coverage retry evaluated. event=meaningful_coverage_retry_result sessionId=%s analysisVersion=%d sequenceNo=%d retryAttempt=%d generatedItemIds=%v mergedIntoItemIds=%v newItemIds=%v meaningfullyCovered=%t decision=%s disposition=%s reason=%s",
 		sessionID, analysisVersion, coverage.SequenceNo, coverage.AttemptCount,
-		newItemIDs, mergedItemIDs, newItemIDs, coverage.MeaningfullyCovered, decision, coverage.Reason)
+		newItemIDs, mergedItemIDs, newItemIDs, coverage.MeaningfullyCovered, decision,
+		coverage.Disposition, coverage.Reason)
 }
 
 // logClassificationDecisions writes one log line per item-level assignment
@@ -1480,7 +1536,8 @@ func (s *MeetingAnalysisService) maybeReorganizeLiveTree(ctx context.Context, se
 		return payload, version
 	}
 	health := computeTreeHealth(current.Tree)
-	if !health.needsReorganization() {
+	semanticHealth := computeSemanticTreeHealth(current)
+	if !health.needsReorganization() && !semanticHealth.NeedsReorganization {
 		return payload, version
 	}
 
@@ -1494,7 +1551,7 @@ func (s *MeetingAnalysisService) maybeReorganizeLiveTree(ctx context.Context, se
 	state.lastReorganizeAt = now
 	s.mu.Unlock()
 
-	log.Printf("Tree reorganization triggered. sessionId=%s %s", sessionID, health)
+	log.Printf("Tree reorganization triggered. sessionId=%s structural=%q semantic=%q", sessionID, health, semanticHealth)
 
 	reorganizeCtx := ctx
 	if s.config.LiveRequestTimeout > 0 {
@@ -1510,18 +1567,42 @@ func (s *MeetingAnalysisService) maybeReorganizeLiveTree(ctx context.Context, se
 	// 再編成で親が変わったitemの分類メタデータを追従させる(source=reorganizer)。
 	previousTree := current.Tree
 	syncItemsWithReorganizedTree(current.Items, current.Tree, reorganized)
+	if liveTreeHash(previousTree) == liveTreeHash(reorganized) {
+		log.Printf("Tree reorganization suppressed. sessionId=%s analysisVersion=%d treeVersion=%d treeProjectionDisposition=no_op", sessionID, version, current.TreeVersion)
+		return payload, version
+	}
 	current.Tree = reorganized
+	updatedSemanticHealth := computeSemanticTreeHealth(current)
+	current.SemanticTreeHealth = &updatedSemanticHealth
 	newVersion := version + 1
-	current.TreeVersion = newVersion
-	current.TreeChanges = diffLiveAnalysisTrees(previousTree, reorganized, newVersion)
+	current.TreeVersion++
+	if current.TreeVersion <= 0 {
+		current.TreeVersion = 1
+	}
+	current.TreeChanges = diffLiveAnalysisTrees(previousTree, reorganized, current.TreeVersion)
+	current.AnalysisVersion = newVersion
+	current.ItemProjectionVersion = newVersion
+	current.TreeProjectionVersion = current.TreeVersion
+	current.TreeProjectionDisposition = "updated"
+	current.ItemProjectionCompleted = true
+	current.TreeProjectionCompleted = true
+	current.ProjectionCompletedAt = s.now().UTC().Format(time.RFC3339Nano)
 	if current.Items == nil {
 		current.Items = []liveAnalysisItem{}
 	}
-	applyLiveTreeSnapshotMetadata(&current, previousTree, version, nil)
+	applyLiveTreeSnapshotMetadata(&current, previousTree, current.TreeVersion-1, nil)
 	logLiveSnapshotBroadcast(sessionID, current, previousLiveAnalysisState(payload))
 	newPayload, marshalErr := json.Marshal(current)
 	if marshalErr != nil {
 		log.Printf("Tree reorganization marshal failed. sessionId=%s error=%v", sessionID, marshalErr)
+		return payload, version
+	}
+	newPayload, marshalErr = finalizeCompletedLiveProjection(
+		newPayload, payload, newVersion,
+		current.HighestAvailableFinalSequenceNo, s.now().UTC(),
+	)
+	if marshalErr != nil {
+		log.Printf("Tree reorganization projection finalize failed. sessionId=%s error=%v", sessionID, marshalErr)
 		return payload, version
 	}
 	saved, persisted, upsertErr := s.persistLiveAnalysis(ctx, version, domain.MeetingAIAnalysis{
@@ -1545,7 +1626,7 @@ func (s *MeetingAnalysisService) maybeReorganizeLiveTree(ctx context.Context, se
 		}
 		return payload, version
 	}
-	s.publishAnalysis(*saved)
+	s.publishCompletedLiveAnalysis(*saved, payload)
 	return newPayload, newVersion
 }
 
@@ -2292,33 +2373,45 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 				decision.FutureInformationDetected, decision.Decision, decision.Reason, decision.Confidence)
 		}
 		for _, decision := range repairStats.KindValidationDecisions {
-			log.Printf("AI item kind validation evaluated. sessionId=%s analysisVersion=%d stage=%s sequenceNos=%v itemId=%s modelItemId=%s originalKind=%s canonicalKind=%s originalSubtype=%s canonicalSubtype=%s temporalScope=%s epistemicStatus=%s semanticRole=%s futureEventPresent=%t scheduledEventPresent=%t eventDatePresent=%t negativeImpactPresent=%t uncertaintyPresent=%t currentProblemPresent=%t confirmedEvidencePresent=%t actionVerbPresent=%t completedActionPresent=%t ownerPresent=%t deadlinePresent=%t decision=%s reason=%s confidence=%.2f",
+			log.Printf("AI item kind validation evaluated. sessionId=%s analysisVersion=%d stage=%s sequenceNos=%v itemId=%s modelItemId=%s originalKind=%s canonicalKind=%s originalSubtype=%s canonicalSubtype=%s temporalScope=%s epistemicStatus=%s semanticRole=%s futureEventPresent=%t scheduledEventPresent=%t eventDatePresent=%t pastEventTimePresent=%t futureDeadlinePresent=%t futureScheduledTimePresent=%t negativeImpactPresent=%t uncertaintyPresent=%t currentProblemPresent=%t confirmedEvidencePresent=%t actionVerbPresent=%t completedActionPresent=%t completedPredicatePresent=%t commitmentPresent=%t requestPresent=%t assigneePresent=%t ownerPresent=%t deadlinePresent=%t decision=%s reason=%s confidence=%.2f",
 				sessionID, liveVersion, decision.Stage, decision.SequenceNos, decision.ItemID, decision.ModelItemID,
 				decision.OriginalKind, decision.CanonicalKind, decision.OriginalSubtype, decision.CanonicalSubtype,
 				decision.Features.TemporalScope, decision.Features.EpistemicStatus, decision.Features.SemanticRole,
 				decision.Features.FutureEventPresent, decision.Features.ScheduledEventPresent,
-				decision.Features.EventDatePresent, decision.Features.NegativeImpactPresent,
+				decision.Features.EventDatePresent, decision.Features.PastEventTimePresent,
+				decision.Features.FutureDeadlinePresent, decision.Features.FutureScheduledTimePresent,
+				decision.Features.NegativeImpactPresent,
 				decision.Features.UncertaintyPresent, decision.Features.CurrentProblemPresent,
 				decision.Features.ConfirmedEvidencePresent, decision.Features.ActionVerbPresent,
-				decision.Features.CompletedActionPresent, decision.Features.OwnerPresent,
+				decision.Features.CompletedActionPresent, decision.Features.CompletedPredicatePresent,
+				decision.Features.CommitmentPresent, decision.Features.RequestPresent,
+				decision.Features.AssigneePresent, decision.Features.OwnerPresent,
 				decision.Features.DeadlinePresent,
 				decision.Decision, decision.Reason, decision.Confidence)
 		}
 		for _, decision := range repairStats.KindSplitDecisions {
-			log.Printf("AI item semantic split completed. sessionId=%s analysisVersion=%d sourceItemId=%s fragmentCount=%d fragmentKinds=%v rejectedFragments=%d relationsCreated=%d",
-				sessionID, liveVersion, decision.SourceItemID, decision.FragmentCount,
-				decision.FragmentKinds, decision.RejectedFragments, decision.RelationsCreated)
+			log.Printf("AI item semantic split completed. sessionId=%s analysisVersion=%d sourceItemId=%s sourceKind=%s sourceActiveBefore=%t fragmentCount=%d fragmentItemIds=%v fragmentKinds=%v rejectedFragments=%d replacementMode=%s sourceInactiveAfter=%t duplicateDetected=%t relationsCreated=%d relationsReassigned=%d",
+				sessionID, liveVersion, decision.SourceItemID, decision.SourceKind,
+				decision.SourceActiveBefore, decision.FragmentCount, decision.FragmentItemIDs,
+				decision.FragmentKinds, decision.RejectedFragments, decision.ReplacementMode,
+				decision.SourceInactiveAfter, decision.DuplicateDetected,
+				decision.RelationsCreated, decision.RelationsReassigned)
 		}
+		log.Printf("Semantic split invariants evaluated. sessionId=%s analysisVersion=%d semanticSplitSourceActiveCount=%d semanticSplitSourceFragmentDuplicateCount=%d semanticSplitReplacementMissingCount=%d phase=final_repair",
+			sessionID, liveVersion, repairStats.SemanticSplitSourceActiveCount,
+			repairStats.SemanticSplitSourceFragmentDuplicateCount,
+			repairStats.SemanticSplitReplacementMissingCount)
 		for _, decision := range repairStats.EvidenceLocalizationDecisions {
 			log.Printf("Final item evidence localized. sessionId=%s analysisVersion=%d itemId=%s retainedSequenceNos=%v removedSequenceNos=%v decision=%s reason=%s",
 				sessionID, liveVersion, decision.ItemID, decision.RetainedSequenceNos,
 				decision.RemovedSequenceNos, decision.Decision, decision.Reason)
 		}
 		for _, decision := range repairStats.CorrectionDecisions {
-			log.Printf("Final correction supersession evaluated. sessionId=%s analysisVersion=%d correctionSequenceNo=%d targetSequenceNo=%d supersededItemId=%s replacementItemId=%s similarity=%.2f decision=%s reason=%s relationLocked=%t",
+			log.Printf("Final correction supersession evaluated. sessionId=%s analysisVersion=%d correctionSequenceNo=%d targetSequenceNo=%d supersededItemId=%s replacementItemId=%s similarity=%.2f decision=%s reason=%s relationLocked=%t attemptedNextState=%s transitionRejected=%t",
 				sessionID, liveVersion, decision.CorrectionSequenceNo, decision.TargetSequenceNo,
 				decision.SupersededItemID, decision.ReplacementItemID,
-				decision.Similarity, decision.Decision, decision.Reason, decision.RelationLocked)
+				decision.Similarity, decision.Decision, decision.Reason, decision.RelationLocked,
+				decision.AttemptedNextState, decision.TransitionRejected)
 			if decision.OldTargetSequenceNo > 0 || decision.NewTargetSequenceNo > 0 {
 				log.Printf("Correction relation change evaluated. event=correction_relation_changed sessionId=%s analysisVersion=%d sourceSequence=%d oldTargetSequence=%d newTargetSequence=%d allowed=%t confidence=%.2f reason=%s phase=final_repair",
 					sessionID, liveVersion, decision.CorrectionSequenceNo,
@@ -2630,57 +2723,60 @@ func finalizeAgendaLifecyclePayloadWithEvidenceAndHook(
 // finalRepairStats summarizes what applyDeterministicFinalTreeRepairs changed
 // (or safely declined to change).
 type finalRepairStats struct {
-	PromotedTopicDuplicatesFolded   int
-	PromotedTopicFoldsAborted       int
-	CrossKindDuplicatesMerged       int
-	SameKindDuplicatesMerged        int
-	SameEvidenceSynthesisMerged     int
-	RecapDuplicatesMerged           int
-	LowInformationItemsRewritten    int
-	LowInformationItemsMerged       int
-	LowInformationItemsRejected     int
-	GroundingAccepted               int
-	GroundingRewritten              int
-	GroundingTentative              int
-	GroundingCandidateOnly          int
-	GroundingRejected               int
-	GroundingUnsupportedAtoms       int
-	GroundingContextOnlyAtoms       int
-	FutureInformationLeaksPrevented int
-	GroundingDecisions              []itemGroundingDecision
-	KindValidationChanges           int
-	KindValidationAmbiguous         int
-	KindRelationsCreated            int
-	KindValidationDecisions         []itemKindValidationDecision
-	KindSemanticSplits              int
-	KindSplitFragments              int
-	KindSplitRejected               int
-	KindSplitDecisions              []itemKindSplitDecision
-	KindDistributionWarnings        []string
-	CorrectionItemsSuperseded       int
-	CorrectionItemsReconstructed    int
-	CorrectionItemsPending          int
-	CorrectionDecisions             []correctionSupersessionDecision
-	StrongTodoCandidates            int
-	StrongTodosSynthesized          int
-	StrongTodoDuplicatesSuppressed  int
-	StrongDecisionCandidates        int
-	StrongDecisionsSynthesized      int
-	DeterministicSynthesisDecisions []deterministicSynthesisDecision
-	EvidenceReferencesPruned        int
-	EvidenceLocalizationDecisions   []evidenceLocalizationDecision
-	IssuesRecoveredFromTodoEvidence int
-	IssueRecoveryDecisions          []issueRecoveryDecision
-	ConfirmedTodoCandidatesPromoted int
-	ConfirmedTodoCandidatesFolded   int
-	IncompleteLabelDecisions        []incompleteItemLabelDecision
-	DanglingCandidatesPruned        int
-	ValidatorsRerun                 bool
-	RemainingLowInformation         int
-	RemainingSemanticDuplicates     int
-	IntegrityRejected               bool
-	IntegrityDiagnostics            *treeIntegrityDiagnostics
-	Error                           string
+	PromotedTopicDuplicatesFolded             int
+	PromotedTopicFoldsAborted                 int
+	CrossKindDuplicatesMerged                 int
+	SameKindDuplicatesMerged                  int
+	SameEvidenceSynthesisMerged               int
+	RecapDuplicatesMerged                     int
+	LowInformationItemsRewritten              int
+	LowInformationItemsMerged                 int
+	LowInformationItemsRejected               int
+	GroundingAccepted                         int
+	GroundingRewritten                        int
+	GroundingTentative                        int
+	GroundingCandidateOnly                    int
+	GroundingRejected                         int
+	GroundingUnsupportedAtoms                 int
+	GroundingContextOnlyAtoms                 int
+	FutureInformationLeaksPrevented           int
+	GroundingDecisions                        []itemGroundingDecision
+	KindValidationChanges                     int
+	KindValidationAmbiguous                   int
+	KindRelationsCreated                      int
+	KindValidationDecisions                   []itemKindValidationDecision
+	KindSemanticSplits                        int
+	KindSplitFragments                        int
+	KindSplitRejected                         int
+	KindSplitDecisions                        []itemKindSplitDecision
+	SemanticSplitSourceActiveCount            int
+	SemanticSplitSourceFragmentDuplicateCount int
+	SemanticSplitReplacementMissingCount      int
+	KindDistributionWarnings                  []string
+	CorrectionItemsSuperseded                 int
+	CorrectionItemsReconstructed              int
+	CorrectionItemsPending                    int
+	CorrectionDecisions                       []correctionSupersessionDecision
+	StrongTodoCandidates                      int
+	StrongTodosSynthesized                    int
+	StrongTodoDuplicatesSuppressed            int
+	StrongDecisionCandidates                  int
+	StrongDecisionsSynthesized                int
+	DeterministicSynthesisDecisions           []deterministicSynthesisDecision
+	EvidenceReferencesPruned                  int
+	EvidenceLocalizationDecisions             []evidenceLocalizationDecision
+	IssuesRecoveredFromTodoEvidence           int
+	IssueRecoveryDecisions                    []issueRecoveryDecision
+	ConfirmedTodoCandidatesPromoted           int
+	ConfirmedTodoCandidatesFolded             int
+	IncompleteLabelDecisions                  []incompleteItemLabelDecision
+	DanglingCandidatesPruned                  int
+	ValidatorsRerun                           bool
+	RemainingLowInformation                   int
+	RemainingSemanticDuplicates               int
+	IntegrityRejected                         bool
+	IntegrityDiagnostics                      *treeIntegrityDiagnostics
+	Error                                     string
 }
 
 type finalRepairInput struct {
@@ -2803,6 +2899,11 @@ func applyDeterministicFinalTreeRepairs(payload json.RawMessage, mc *meetingCont
 		)
 	}
 	state.ReorganizationReasons = computeTreeHealth(state.Tree).reorganizationReasons()
+	semanticHealth := computeSemanticTreeHealth(state)
+	state.SemanticTreeHealth = &semanticHealth
+	if semanticHealth.NeedsReorganization {
+		state.ReorganizationReasons = uniqueNonEmptyIDs(append(state.ReorganizationReasons, "semantic_topic_concentration"))
+	}
 
 	encoded, err := json.Marshal(state)
 	if err != nil {
@@ -3151,21 +3252,45 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 			persistedTree = persisted.Tree
 		}
 	}
-	relationSummary := summarizeFinalRelations(persistedTree)
-	log.Printf("Final relation summary. event=final_relation_summary sessionId=%s treeVersion=%d relationCount=%d relationCountByType=%s activeRelationCount=%d inactiveRelationCount=%d danglingRelationCount=%d selfRelationCount=%d duplicateRelationCount=%d source=persisted_tree_payload",
+	relationSummary := summarizeFinalRelationsWithItems(persistedTree, previous.Items)
+	log.Printf("Final relation summary. event=final_relation_summary sessionId=%s treeVersion=%d relationCount=%d relationCountByType=%s activeRelationCount=%d inactiveRelationCount=%d danglingRelationCount=%d selfRelationCount=%d duplicateRelationCount=%d inactiveEndpointRelationCount=%d actionForFanOutMax=%d actionForSourceCount=%d supportedByCount=%d limitsCount=%d contradictsCount=%d refinesCount=%d expectedSupportedByMissingCount=%d expectedLimitsMissingCount=%d relationMonoculture=%t source=persisted_tree_payload",
 		sessionID, liveVersion, relationSummary.RelationCount,
 		formatRelationCountByType(relationSummary.RelationCountByType),
 		relationSummary.ActiveRelationCount, relationSummary.InactiveRelationCount,
 		relationSummary.DanglingRelationCount, relationSummary.SelfRelationCount,
-		relationSummary.DuplicateRelationCount)
+		relationSummary.DuplicateRelationCount, relationSummary.InactiveEndpointRelationCount,
+		relationSummary.ActionForFanOutMax, relationSummary.ActionForSourceCount,
+		relationSummary.RelationCountByType[itemRelationSupportedBy],
+		relationSummary.RelationCountByType[itemRelationLimits],
+		relationSummary.RelationCountByType[itemRelationContradicts],
+		relationSummary.RelationCountByType[itemRelationRefines],
+		relationSummary.ExpectedSupportedByMissingCount,
+		relationSummary.ExpectedLimitsMissingCount,
+		relationSummary.RelationMonoculture)
+	if relationSummary.RelationMonoculture ||
+		relationSummary.ExpectedSupportedByMissingCount > 0 ||
+		relationSummary.ExpectedLimitsMissingCount > 0 {
+		log.Printf("Final relation quality warning. event=final_relation_quality_warning sessionId=%s treeVersion=%d relationMonoculture=%t expectedSupportedByMissingCount=%d expectedLimitsMissingCount=%d actionForFanOutMax=%d",
+			sessionID, liveVersion, relationSummary.RelationMonoculture,
+			relationSummary.ExpectedSupportedByMissingCount,
+			relationSummary.ExpectedLimitsMissingCount,
+			relationSummary.ActionForFanOutMax)
+	}
+	itemByID := make(map[string]liveAnalysisItem, len(previous.Items))
+	for _, item := range previous.Items {
+		itemByID[item.ID] = item
+	}
 	for _, relation := range sortedRelationsForLog(persistedTree) {
-		log.Printf("Final relation detail. event=final_relation_detail sessionId=%s treeVersion=%d relationId=%s type=%s sourceItemId=%s targetItemId=%s status=%s origin=%s confidence=%.2f evidenceSequenceNos=%v createdTreeVersion=%d updatedTreeVersion=%d",
+		sourceItem, targetItem := itemByID[relation.Source], itemByID[relation.Target]
+		log.Printf("Final relation detail. event=final_relation_detail sessionId=%s treeVersion=%d relationId=%s type=%s sourceItemId=%s sourceKind=%s sourceSubtype=%s targetItemId=%s targetKind=%s targetSubtype=%s status=%s origin=%s confidence=%.2f evidenceSequenceNos=%v createdTreeVersion=%d updatedTreeVersion=%d",
 			sessionID, liveVersion, relation.ID, relation.Kind, relation.Source,
-			relation.Target, relation.Status, relation.Origin, relation.Confidence,
+			sourceItem.Kind, sourceItem.Subtype, relation.Target, targetItem.Kind,
+			targetItem.Subtype, relation.Status, relation.Origin, relation.Confidence,
 			relation.EvidenceSequenceNos, relation.CreatedAtVersion, relation.UpdatedAtVersion)
 	}
 	agendaCounts := summarizeAgendaAnchorStatuses(previous.AgendaAnchors)
 	finalHealth := computeTreeHealth(tree)
+	finalSemanticHealth := computeSemanticTreeHealth(previous)
 	// plannedAgendaCount/discussedAgendaCount/notDiscussedAgendaCount here are
 	// anchor-status counts (summarizeAgendaAnchorStatuses counts each anchor's
 	// exclusive Status), which is a different derivation from the tree-derived
@@ -3174,6 +3299,7 @@ func (s *MeetingAnalysisService) persistFinalTreeSnapshot(ctx context.Context, s
 	// children in validateTreeIntegrity). The anchorStatus* prefix keeps the
 	// two same-named-but-differently-derived counters from being confused.
 	log.Printf("Final tree snapshot persisted. sessionId=%s treeVersion=%d nodes=%d edges=%d coveredThroughSequenceNo=%d segmentCount=%d agendaRecordCount=%d agendaRecordsPreserved=%d anchorStatusPlannedCount=%d materializedAgendaCount=%d anchorStatusDiscussedCount=%d mergedAgendaCount=%d anchorStatusNotDiscussedCount=%d agendaReferenceIntegrityValid=%t agendaNodeIdNamespaceValid=%t agendaTopicIdCollisions=%d unknownAgendaRefs=%d orphanAgendaRefs=%d orphanMaterializedTopicIds=%d duplicateAgendaMaterializations=%d emptyAgendaTopicsAfter=%d treeIntegrityValid=%t needsReorganization=%t reorganizationReasons=%v reorganizationMetrics=%q", sessionID, liveVersion, len(tree.Nodes), len(tree.Edges), coveredThrough, segmentCount, integrity.AgendaRecordCount, integrity.AgendaRecordsPreserved, agendaCounts[agendaStatusPlanned], integrity.MaterializedAgendaCount, agendaCounts[agendaStatusDiscussed], agendaCounts[agendaStatusMerged], agendaCounts[agendaStatusNotDiscussed], integrity.AgendaReferenceIntegrityValid, integrity.AgendaNodeIDNamespaceValid, len(integrity.AgendaTopicIDCollisions), len(integrity.UnknownAgendaRefs), len(integrity.OrphanAgendaRefs), len(integrity.OrphanMaterializedTopicIDs), len(integrity.DuplicateAgendaMaterializations), len(integrity.EmptyAgendaTopicIDs), integrity.Valid, finalHealth.needsReorganization(), finalHealth.reorganizationReasons(), finalHealth.String())
+	log.Printf("Final semantic topic concentration. sessionId=%s treeVersion=%d %s", sessionID, liveVersion, finalSemanticHealth)
 	return true
 }
 
@@ -3729,6 +3855,7 @@ func sanitizeLiveAnalysisForDelivery(analysis *domain.MeetingAIAnalysis, mc *mee
 		}
 		state.TreeChanges = nil
 	}
+	state.Items = stableProjectionItemsForDelivery(state.Items)
 	payload, err := json.Marshal(state)
 	if err != nil {
 		return analysis
@@ -3736,6 +3863,26 @@ func sanitizeLiveAnalysisForDelivery(analysis *domain.MeetingAIAnalysis, mc *mee
 	copy := *analysis
 	copy.Payload = payload
 	return &copy
+}
+
+func stableProjectionItemsForDelivery(items []liveAnalysisItem) []liveAnalysisItem {
+	hasProjectionContract := false
+	for _, item := range items {
+		if strings.TrimSpace(item.ProjectionStatus) != "" {
+			hasProjectionContract = true
+			break
+		}
+	}
+	if !hasProjectionContract {
+		return items
+	}
+	stable := make([]liveAnalysisItem, 0, len(items))
+	for _, item := range items {
+		if item.ProjectionStatus == "stable" {
+			stable = append(stable, item)
+		}
+	}
+	return stable
 }
 
 func sanitizeTreeSnapshotForDelivery(analysis, live *domain.MeetingAIAnalysis, mc *meetingContext) *domain.MeetingAIAnalysis {
@@ -4297,7 +4444,11 @@ func buildLiveAnalysisTranscriptByClass(
 		selected := make([]domain.TranscriptSegment, 0, len(group.set))
 		for _, segment := range segments {
 			if _, exists := group.set[segment.SequenceNo]; exists {
-				selected = append(selected, segment)
+				projected := segment
+				if stitched := strings.TrimSpace(scope.TranscriptText[segment.SequenceNo]); stitched != "" {
+					projected.Text = stitched
+				}
+				selected = append(selected, projected)
 			}
 		}
 		if len(selected) == 0 {
@@ -4342,8 +4493,81 @@ func livePromptEvidenceScope(
 			scope.CoveredThrough = segment.SequenceNo
 		}
 	}
+	applyAdjacentFinalSegmentStitches(&scope, segments)
 	classifyLiveRoundInputs(&scope, previous, segments)
 	return scope
+}
+
+var (
+	liveFragmentEndingPattern       = regexp.MustCompile(`(?:で|では|には|から|まで|について|に対して|を|が|は|の)[、,。．.!！?？]*$`)
+	liveFragmentContinuationPattern = regexp.MustCompile(`^(?:中心に|主に|を中心に|について|により|によって|のため|および|または|さらに|その結果|接続|通信|発生|影響)`)
+)
+
+// applyAdjacentFinalSegmentStitches changes only the analysis evidence view;
+// durable transcript rows remain untouched. Both original sequence numbers
+// receive the combined text so grounding can retain [n,n+1].
+func applyAdjacentFinalSegmentStitches(scope *liveEvidenceScope, segments []domain.TranscriptSegment) {
+	if scope == nil || len(segments) < 2 {
+		return
+	}
+	ordered := append([]domain.TranscriptSegment(nil), segments...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].SequenceNo < ordered[j].SequenceNo })
+	for index := 0; index+1 < len(ordered); index++ {
+		left, right := ordered[index], ordered[index+1]
+		if !safeAdjacentFinalStitch(left, right) {
+			continue
+		}
+		joined := joinAdjacentFinalFragment(left.Text, right.Text)
+		if joined == "" {
+			continue
+		}
+		scope.TranscriptText[left.SequenceNo] = joined
+		scope.TranscriptText[right.SequenceNo] = joined
+		left.Text, right.Text = joined, joined
+		scope.Segments[left.SequenceNo] = left
+		scope.Segments[right.SequenceNo] = right
+	}
+}
+
+func safeAdjacentFinalStitch(left, right domain.TranscriptSegment) bool {
+	if !left.IsFinal || !right.IsFinal || left.SequenceNo <= 0 || right.SequenceNo != left.SequenceNo+1 {
+		return false
+	}
+	leftText, rightText := strings.TrimSpace(left.Text), strings.TrimSpace(right.Text)
+	if leftText == "" || rightText == "" || !liveFragmentEndingPattern.MatchString(leftText) || !liveFragmentContinuationPattern.MatchString(rightText) {
+		return false
+	}
+	leftSpeaker := strings.TrimSpace(left.SpeakerID + "\x00" + left.SpeakerName)
+	rightSpeaker := strings.TrimSpace(right.SpeakerID + "\x00" + right.SpeakerName)
+	if leftSpeaker != "\x00" && rightSpeaker != "\x00" && leftSpeaker != rightSpeaker {
+		return false
+	}
+	if discourseCorrectionPattern.MatchString(rightText) || hasLeadingRecapIntroClause(rightText) || classifyDiscourseAct(rightText) == discourseTopicTransition {
+		return false
+	}
+	leftAt, rightAt := left.ReceivedAtUTC, right.ReceivedAtUTC
+	if leftAt.IsZero() {
+		leftAt = left.RecognizedAtUTC
+	}
+	if rightAt.IsZero() {
+		rightAt = right.RecognizedAtUTC
+	}
+	if !leftAt.IsZero() && !rightAt.IsZero() && (rightAt.Before(leftAt) || rightAt.Sub(leftAt) > 5*time.Second) {
+		return false
+	}
+	return true
+}
+
+func joinAdjacentFinalFragment(left, right string) string {
+	left = strings.TrimRight(strings.TrimSpace(left), "、,。．.!！?？ ")
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return ""
+	}
+	if strings.HasSuffix(left, "で") && strings.HasPrefix(right, "中心に") {
+		return strings.TrimSuffix(left, "で") + "を" + right
+	}
+	return left + right
 }
 
 func buildAnalysisTranscriptTruncated(segments []domain.TranscriptSegment, maxChars int) (string, int, bool) {
@@ -4482,6 +4706,10 @@ type liveAnalysisPayload struct {
 	// final repair must preserve that target even if kind validation changes
 	// the old item or its node has already been removed.
 	CorrectionRelations []correctionRelation `json:"correctionRelations,omitempty"`
+	// RecapSpan is server-owned discourse state carried across provider rounds.
+	// It prevents a recap body split into a later STT batch from being treated as
+	// a new proposition merely because the introduction was in the prior batch.
+	RecapSpan recapSpanState `json:"recapSpan,omitempty"`
 	// TreeVersion is the analysis version whose merge produced Tree. It is
 	// informational for clients and offline comparison.
 	TreeVersion int64 `json:"treeVersion,omitempty"`
@@ -4530,6 +4758,22 @@ type liveAnalysisPayload struct {
 	RemovedNodeIDs []string `json:"removedNodeIds,omitempty"`
 	MergedNodeIDs  []string `json:"mergedNodeIds,omitempty"`
 	TreeHash       string   `json:"treeHash,omitempty"`
+	// Completed projection contract. AnalysisVersion is the canonical item
+	// snapshot revision; TreeProjectionVersion advances only for a meaningful
+	// canonical tree change. Both completion flags are stamped atomically.
+	AnalysisVersion                 int64               `json:"analysisVersion,omitempty"`
+	AIAssistantAnalysisVersion      int64               `json:"aiAssistantAnalysisVersion,omitempty"`
+	TreeAnalysisVersion             int64               `json:"treeAnalysisVersion,omitempty"`
+	HighestAvailableFinalSequenceNo int64               `json:"highestAvailableFinalSequenceNo,omitempty"`
+	ItemProjectionVersion           int64               `json:"itemProjectionVersion,omitempty"`
+	TreeProjectionVersion           int64               `json:"treeProjectionVersion,omitempty"`
+	ItemProjectionCompleted         bool                `json:"itemProjectionCompleted,omitempty"`
+	TreeProjectionCompleted         bool                `json:"treeProjectionCompleted,omitempty"`
+	ProjectionCompletedAt           string              `json:"projectionCompletedAt,omitempty"`
+	TreeProjectionDisposition       string              `json:"treeProjectionDisposition,omitempty"`
+	TreePayloadState                string              `json:"treePayloadState,omitempty"`
+	PendingTreeProjectionItemCount  int                 `json:"pendingTreeProjectionItemCount,omitempty"`
+	SemanticTreeHealth              *semanticTreeHealth `json:"semanticTreeHealth,omitempty"`
 	// quarantinedItemCount is populated only while decoding model output and
 	// is intentionally never persisted.
 	quarantinedItemCount int
@@ -4545,10 +4789,30 @@ type finalSegmentCoverage struct {
 	SequenceNo           int64  `json:"sequenceNo"`
 	MeaningfullyCovered  bool   `json:"meaningfullyCovered"`
 	Reason               string `json:"reason"`
+	Disposition          string `json:"disposition,omitempty"`
 	RetryEligible        bool   `json:"retryEligible"`
 	AttemptCount         int    `json:"attemptCount"`
 	RetryAfterSequenceNo int64  `json:"retryAfterSequenceNo,omitempty"`
 }
+
+const (
+	segmentDispositionNewItemCreated        = "new_item_created"
+	segmentDispositionExistingEvidenceAdded = "existing_item_evidence_added"
+	segmentDispositionExistingReconfirmed   = "existing_item_reconfirmed"
+	segmentDispositionCorrectionApplied     = "correction_applied"
+	segmentDispositionRelationEvidenceAdded = "relation_evidence_added"
+	segmentDispositionRecap                 = "recap_of_existing_items"
+	segmentDispositionMeetingMetaIgnored    = "meeting_meta_ignored"
+	segmentDispositionLowInformationIgnored = "low_information_ignored"
+	segmentDispositionUnsupportedIgnored    = "unsupported_ignored"
+	segmentDispositionDuplicateIgnored      = "duplicate_ignored"
+	segmentDispositionPendingForContext     = "pending_for_context"
+)
+
+var (
+	segmentRecapLeadPattern      = regexp.MustCompile(`^(?:以上をまとめ(?:ます|ると)?|先ほどの内容を確認(?:します|すると)?|改めて整理すると|つまり|決定事項としては|未解決事項は|担当は)[、,:：]?`)
+	segmentLowInformationPattern = regexp.MustCompile(`^(?:えー*と|ええと|えっと|あの|はい|ええ|うん|そうですね|以上です|特にありません|ありません|了解です|承知しました|お疲れ様でした)+$`)
+)
 
 func finalSegmentKey(callID string, sequenceNo int64) string {
 	return strings.TrimSpace(callID) + "\x00" + fmt.Sprintf("%d", sequenceNo)
@@ -4563,10 +4827,15 @@ func addLiveAnalysisCoverageWithResult(
 	payload json.RawMessage,
 	segments []domain.TranscriptSegment,
 	unreflectedReason string,
+	previousPayload ...json.RawMessage,
 ) (json.RawMessage, []finalSegmentCoverage, error) {
 	var state liveAnalysisPayload
 	if err := json.Unmarshal(payload, &state); err != nil {
 		return nil, nil, fmt.Errorf("parse live payload for coverage: %w", err)
+	}
+	previous := liveAnalysisPayload{}
+	if len(previousPayload) > 0 {
+		previous = previousLiveAnalysisState(previousPayload[0])
 	}
 	previousCoverage := make(map[string]finalSegmentCoverage, len(state.FinalSegmentCoverage))
 	for _, coverage := range state.FinalSegmentCoverage {
@@ -4597,6 +4866,18 @@ func addLiveAnalysisCoverageWithResult(
 		}
 	}
 	currentDecisions := make([]finalSegmentCoverage, 0, len(segments))
+	coverageScope := liveEvidenceScope{
+		Allowed: make(map[int64]struct{}), CurrentRound: make(map[int64]struct{}),
+		TranscriptText: make(map[int64]string), Segments: make(map[int64]domain.TranscriptSegment),
+		RecapSpan: previous.RecapSpan,
+	}
+	for _, segment := range segments {
+		coverageScope.Allowed[segment.SequenceNo] = struct{}{}
+		coverageScope.CurrentRound[segment.SequenceNo] = struct{}{}
+		coverageScope.TranscriptText[segment.SequenceNo] = segment.Text
+		coverageScope.Segments[segment.SequenceNo] = segment
+	}
+	coverageTimeline := classifyDiscourseTimeline(coverageScope)
 	for _, segment := range segments {
 		if !segment.IsFinal || segment.SequenceNo <= 0 || strings.TrimSpace(segment.Text) == "" {
 			continue
@@ -4609,25 +4890,27 @@ func addLiveAnalysisCoverageWithResult(
 		if segment.SequenceNo > state.CoveredThroughSequenceNo {
 			state.CoveredThroughSequenceNo = segment.SequenceNo
 		}
-		meaningful := finalSegmentRepresentedByItems(state.Items, segment.SequenceNo)
+		disposition, meaningful := classifyFinalSegmentDisposition(
+			state, previous, segment, unreflectedReason, coverageTimeline.Roles[segment.SequenceNo],
+		)
 		reason := "item_evidence"
-		if !meaningful && isDiscourseOnlyText(segment.Text) {
-			meaningful = true
-			reason = "intentional_discourse"
+		if disposition == segmentDispositionPendingForContext {
+			reason = strings.TrimSpace(unreflectedReason)
+			if reason == "" {
+				reason = "no_accepted_item"
+			}
+		} else if disposition != segmentDispositionNewItemCreated &&
+			disposition != segmentDispositionExistingEvidenceAdded &&
+			disposition != segmentDispositionExistingReconfirmed {
+			reason = disposition
 		}
 		attempt := 1
 		if previous, exists := previousCoverage[key]; exists {
 			attempt = previous.AttemptCount + 1
 		}
-		if !meaningful {
-			reason = strings.TrimSpace(unreflectedReason)
-			if reason == "" {
-				reason = "no_accepted_item"
-			}
-		}
 		coverage := finalSegmentCoverage{
 			CallID: segment.CallID, SequenceNo: segment.SequenceNo,
-			MeaningfullyCovered: meaningful, Reason: reason,
+			MeaningfullyCovered: meaningful, Reason: reason, Disposition: disposition,
 			RetryEligible: !meaningful && attempt < 2,
 			AttemptCount:  attempt, RetryAfterSequenceNo: maxRoundSequenceNo,
 		}
@@ -4636,7 +4919,23 @@ func addLiveAnalysisCoverageWithResult(
 		}
 		previousCoverage[key] = coverage
 		currentDecisions = append(currentDecisions, coverage)
+		if evidenceRole := coverageTimeline.Roles[segment.SequenceNo]; evidenceRole == liveEvidenceReferenceRecap {
+			matchedIDs := segmentSemanticallyMatchingItemIDs(previous.Items, segment.Text)
+			if len(matchedIDs) == 0 {
+				matchedIDs = segmentSemanticallyMatchingItemIDs(state.Items, segment.Text)
+			}
+			coverageTimeline.RecapSpan.MatchedExistingItemIDs = uniqueNonEmptyIDs(append(
+				coverageTimeline.RecapSpan.MatchedExistingItemIDs, matchedIDs...,
+			))
+			if disposition == segmentDispositionNewItemCreated && len(matchedIDs) == 0 {
+				newIDs, _ := retryEvidenceItemIDs(previous.Items, state.Items, segment.SequenceNo)
+				coverageTimeline.RecapSpan.NewInformationAtoms += len(newIDs)
+				coverageTimeline.RecapSpan.NewItemsCreatedFromRecap += len(newIDs)
+			}
+			coverageTimeline.RecapSpan.Disposition = disposition
+		}
 	}
+	state.RecapSpan = coverageTimeline.RecapSpan
 	state.AnalyzedFinalSegments = normalized
 	state.FinalSegmentCoverage = normalizedFinalSegmentCoverage(previousCoverage)
 	state.MeaningfullyCoveredFinalSegments = state.MeaningfullyCoveredFinalSegments[:0]
@@ -4658,6 +4957,119 @@ func addLiveAnalysisCoverageWithResult(
 		return nil, nil, fmt.Errorf("marshal live payload coverage: %w", err)
 	}
 	return encoded, currentDecisions, nil
+}
+
+func classifyFinalSegmentDisposition(
+	state, previous liveAnalysisPayload,
+	segment domain.TranscriptSegment,
+	unreflectedReason string,
+	evidenceRole liveEvidenceRole,
+) (string, bool) {
+	for _, relation := range state.CorrectionRelations {
+		if relation.SourceSequenceNo == segment.SequenceNo && relation.Locked {
+			if relation.Status == "superseded" {
+				return segmentDispositionCorrectionApplied, true
+			}
+			return segmentDispositionPendingForContext, false
+		}
+	}
+	if segmentIsRecapOfExistingItems(state.Items, segment.Text) {
+		return segmentDispositionRecap, true
+	}
+	if evidenceRole == liveEvidenceReferenceRecap &&
+		segmentSemanticallyReconfirmsExistingItem(previous.Items, segment.Text) {
+		return segmentDispositionRecap, true
+	}
+	previousByID := make(map[string]liveAnalysisItem, len(previous.Items))
+	for _, item := range previous.Items {
+		previousByID[item.ID] = item
+	}
+	for _, item := range state.Items {
+		if item.Inactive || item.MergedIntoID != "" ||
+			!containsInt64(item.EvidenceSequenceNos, segment.SequenceNo) {
+			continue
+		}
+		if old, existed := previousByID[item.ID]; existed {
+			if containsInt64(old.EvidenceSequenceNos, segment.SequenceNo) {
+				return segmentDispositionExistingReconfirmed, true
+			}
+			return segmentDispositionExistingEvidenceAdded, true
+		}
+		return segmentDispositionNewItemCreated, true
+	}
+	if relationEvidenceIncludesSequence(state.Tree, segment.SequenceNo) {
+		return segmentDispositionRelationEvidenceAdded, true
+	}
+	if segmentSemanticallyReconfirmsExistingItem(state.Items, segment.Text) {
+		return segmentDispositionExistingReconfirmed, true
+	}
+	act := classifyDiscourseAct(segment.Text)
+	switch act {
+	case discourseRecapIntro, discourseTopicTransition, discourseMeetingControl:
+		return segmentDispositionMeetingMetaIgnored, true
+	case discourseFiller:
+		return segmentDispositionLowInformationIgnored, true
+	}
+	if segmentIsLowInformation(segment.Text) {
+		return segmentDispositionLowInformationIgnored, true
+	}
+	if strings.TrimSpace(unreflectedReason) == segmentDispositionUnsupportedIgnored {
+		return segmentDispositionUnsupportedIgnored, true
+	}
+	return segmentDispositionPendingForContext, false
+}
+
+func relationEvidenceIncludesSequence(tree *liveAnalysisTree, sequenceNo int64) bool {
+	if tree == nil {
+		return false
+	}
+	for _, relation := range tree.Relations {
+		if containsInt64(relation.EvidenceSequenceNos, sequenceNo) {
+			return true
+		}
+	}
+	return false
+}
+
+func segmentIsRecapOfExistingItems(items []liveAnalysisItem, text string) bool {
+	normalized := strings.TrimSpace(text)
+	if !segmentRecapLeadPattern.MatchString(normalized) && !hasLeadingRecapIntroClause(text) {
+		return false
+	}
+	content := strings.TrimSpace(segmentRecapLeadPattern.ReplaceAllString(normalized, ""))
+	if content == "" {
+		return false
+	}
+	return segmentSemanticallyReconfirmsExistingItem(items, content)
+}
+
+func segmentSemanticallyReconfirmsExistingItem(items []liveAnalysisItem, text string) bool {
+	return len(segmentSemanticallyMatchingItemIDs(items, text)) > 0
+}
+
+func segmentSemanticallyMatchingItemIDs(items []liveAnalysisItem, text string) []string {
+	var matched []string
+	for _, item := range items {
+		if item.Inactive || item.MergedIntoID != "" {
+			continue
+		}
+		itemText := strings.TrimSpace(item.Title + " " + item.Body)
+		score := semanticItemSimilarity(itemText, text)
+		if score >= 0.62 ||
+			(score >= 0.35 && sharedTreeAuditSubjectTerm(itemText, text)) {
+			matched = append(matched, item.ID)
+		}
+	}
+	return uniqueNonEmptyIDs(matched)
+}
+
+func segmentIsLowInformation(text string) bool {
+	normalized := normalizeDiscourseText(text)
+	if normalized == "" || segmentLowInformationPattern.MatchString(normalized) {
+		return true
+	}
+	stripped := discourseFillerPattern.ReplaceAllString(normalized, "")
+	return stripped == "" || segmentLowInformationPattern.MatchString(stripped)
 }
 
 func finalSegmentRepresentedByItems(items []liveAnalysisItem, sequenceNo int64) bool {
@@ -4693,6 +5105,32 @@ func retryEvidenceItemIDs(
 	sort.Strings(newItemIDs)
 	sort.Strings(mergedItemIDs)
 	return uniqueNonEmptyIDs(newItemIDs), uniqueNonEmptyIDs(mergedItemIDs)
+}
+
+func logCorrectionItemStates(sessionID string, treeVersion int64, state liveAnalysisPayload) {
+	for _, item := range state.Items {
+		if item.SupersessionOrigin == "" && item.SupersededByItemID == "" && !item.Inactive {
+			continue
+		}
+		relationLockState := "none"
+		relationOrigin := ""
+		for _, relation := range state.CorrectionRelations {
+			if relation.TargetItemID != item.ID {
+				continue
+			}
+			if relation.Locked {
+				relationLockState = "locked"
+			} else {
+				relationLockState = "unlocked"
+			}
+			relationOrigin = relation.Origin
+			break
+		}
+		log.Printf("Correction item state. sessionId=%s itemId=%s treeVersion=%d active=%t inactive=%t status=%s informationStatus=%s supersededByItemId=%s supersededAtTreeVersion=%d supersessionOrigin=%s relationLockState=%s relationOrigin=%s",
+			sessionID, item.ID, treeVersion, !item.Inactive && item.MergedIntoID == "",
+			item.Inactive, item.Status, item.InformationStatus, item.SupersededByItemID,
+			item.SupersededAtTreeVersion, item.SupersessionOrigin, relationLockState, relationOrigin)
+	}
 }
 
 func normalizedFinalSegmentCoverage(values map[string]finalSegmentCoverage) []finalSegmentCoverage {
@@ -4781,6 +5219,9 @@ type liveAnalysisItem struct {
 	// meaningful issue still needs a later utterance/audit to resolve an
 	// anaphoric subject. It is independent from open/resolved lifecycle.
 	InformationStatus string `json:"informationStatus,omitempty"`
+	// ProjectionStatus prevents a canonical but not-yet-materialized item from
+	// being rendered as stable ahead of the discussion tree.
+	ProjectionStatus string `json:"projectionStatus,omitempty"`
 	// LabelResolution is additive server-owned provenance for deterministic
 	// label repair. It does not extend the lifecycle, classification, or
 	// grounding enums consumed by existing clients.
@@ -4861,6 +5302,19 @@ type liveAnalysisItem struct {
 	Inactive          bool   `json:"inactive,omitempty"`
 	MergedIntoID      string `json:"mergedIntoId,omitempty"`
 	SuppressionReason string `json:"suppressionReason,omitempty"`
+	// Explicit-correction supersession is an irreversible, server-owned
+	// lifecycle. Keeping the provenance on the item itself makes every clone,
+	// final snapshot and fresh reader enforce the same state without having to
+	// infer it from a log line or a detached relation array.
+	SupersededByItemID              string   `json:"supersededByItemId,omitempty"`
+	SupersededByItemIDs             []string `json:"supersededByItemIds,omitempty"`
+	SupersededAtTreeVersion         int64    `json:"supersededAtTreeVersion,omitempty"`
+	SupersessionOrigin              string   `json:"supersessionOrigin,omitempty"`
+	SupersessionEvidenceSequenceNos []int64  `json:"supersessionEvidenceSequenceNos,omitempty"`
+	// A restore is accepted only when a trusted manual path has already
+	// persisted both fields. Model output is normalized to remove them.
+	RestoredAtTreeVersion int64  `json:"restoredAtTreeVersion,omitempty"`
+	RestorationOrigin     string `json:"restorationOrigin,omitempty"`
 }
 
 // UnmarshalJSON isolates malformed items instead of allowing one item to
@@ -5196,6 +5650,13 @@ func normalizeLiveAnalysisItems(items []liveAnalysisItem, stats ...*liveAnalysis
 		item.Inactive = false
 		item.MergedIntoID = ""
 		item.SuppressionReason = ""
+		item.SupersededByItemID = ""
+		item.SupersededByItemIDs = nil
+		item.SupersededAtTreeVersion = 0
+		item.SupersessionOrigin = ""
+		item.SupersessionEvidenceSequenceNos = nil
+		item.RestoredAtTreeVersion = 0
+		item.RestorationOrigin = ""
 		item.InformationStatus = ""
 		if item.Title == "" && item.Body == "" {
 			continue
@@ -5269,6 +5730,7 @@ func mergeLiveAnalysisItems(previous, diff []liveAnalysisItem, updates map[strin
 				item.AssignmentConfidence = previousItem.AssignmentConfidence
 				item.AssignmentSource = previousItem.AssignmentSource
 				item.AssignmentReason = previousItem.AssignmentReason
+				item.InformationStatus = previousItem.InformationStatus
 				item.LabelResolution = cloneLabelResolution(previousItem.LabelResolution)
 				item.EvidenceSequenceNos = previousItem.EvidenceSequenceNos
 				item.RelatedAgendaIDs = previousItem.RelatedAgendaIDs
@@ -5278,6 +5740,14 @@ func mergeLiveAnalysisItems(previous, diff []liveAnalysisItem, updates map[strin
 				item.ReopenedAtVersion = previousItem.ReopenedAtVersion
 				item.ReopenEvidenceSequenceNos = previousItem.ReopenEvidenceSequenceNos
 				item.ReopenReason = previousItem.ReopenReason
+				item.SuppressionReason = previousItem.SuppressionReason
+				item.SupersededByItemID = previousItem.SupersededByItemID
+				item.SupersededByItemIDs = append([]string(nil), previousItem.SupersededByItemIDs...)
+				item.SupersededAtTreeVersion = previousItem.SupersededAtTreeVersion
+				item.SupersessionOrigin = previousItem.SupersessionOrigin
+				item.SupersessionEvidenceSequenceNos = append([]int64(nil), previousItem.SupersessionEvidenceSequenceNos...)
+				item.RestoredAtTreeVersion = previousItem.RestoredAtTreeVersion
+				item.RestorationOrigin = previousItem.RestorationOrigin
 				if item.reopenFromTombstone {
 					item.Inactive = false
 					item.MergedIntoID = ""
@@ -5484,67 +5954,73 @@ type liveAnalysisTreeMergeStats struct {
 	// Same-kind dedup diagnostics deliberately exclude cross-kind discussion
 	// companions. A question/open_issue/todo cluster remains separate canonical
 	// items even when it is rendered as one action-summary row.
-	SameKindSemanticMergeCandidates      int
-	SameKindSemanticMerged               int
-	CrossKindClustered                   int
-	PropositionItemsMerged               int
-	RecapMerged                          int
-	ReferenceRecapItemsMerged            int
-	ReferenceRecapItemsRejected          int
-	ReferenceRecapItemsRetained          int
-	RecapDecisions                       []recapItemDecision
-	ReferenceRecapTopicProposalsRejected int
-	LowInformationDecisionsRejected      int
-	LowInformationItemsRejected          int
-	LowInformationItemsRewritten         int
-	LowInformationItemsSplit             int
-	LowInformationSplitFragmentsRejected int
-	LowInformationTentativeRetained      int
-	SemanticKindMigrations               int
-	SemanticSubtypeMigrations            int
-	KindValidationChanges                int
-	KindValidationAmbiguous              int
-	KindSemanticSplits                   int
-	KindSplitFragments                   int
-	KindSplitRejected                    int
-	KindRelationsCreated                 int
-	ConfirmedEvidenceCandidates          int
-	AssignedActionRiskCandidates         int
-	CausalHypothesisRiskCandidates       int
-	KindValidationDecisions              []itemKindValidationDecision
-	KindSplitDecisions                   []itemKindSplitDecision
-	KindDistributionWarnings             []string
-	CrossKindUpdatesDetached             int
-	DivergentUpdatesDetached             int
-	CrossKindUpdateDecisions             []crossKindUpdateDecision
-	CorrectionItemsSuperseded            int
-	CorrectionItemsReconstructed         int
-	CorrectionItemsPending               int
-	CorrectionDecisions                  []correctionSupersessionDecision
-	StrongTodoCandidates                 int
-	StrongTodosSynthesized               int
-	StrongTodoDuplicatesSuppressed       int
-	StrongDecisionCandidates             int
-	StrongDecisionsSynthesized           int
-	DeterministicSynthesisDecisions      []deterministicSynthesisDecision
-	EvidenceReferencesPruned             int
-	EvidenceLocalizationDecisions        []evidenceLocalizationDecision
-	IssuesRecoveredFromTodoEvidence      int
-	IssueRecoveryDecisions               []issueRecoveryDecision
-	GroundingAccepted                    int
-	GroundingRewritten                   int
-	GroundingTentative                   int
-	GroundingCandidateOnly               int
-	GroundingRejected                    int
-	GroundingUnsupportedAtoms            int
-	GroundingContextOnlyAtoms            int
-	GroundingFutureLeaksPrevented        int
-	GroundingDecisions                   []itemGroundingDecision
-	LowInformationRejections             []liveItemRejection
-	IncompleteLabelDecisions             []incompleteItemLabelDecision
-	DiscourseTransitions                 []discourseTimelineTransition
-	ItemResurrectionPrevented            int
-	ResurrectionPreventions              []itemResurrectionPrevention
+	SameKindSemanticMergeCandidates           int
+	SameKindSemanticMerged                    int
+	CrossKindClustered                        int
+	PropositionItemsMerged                    int
+	RecapMerged                               int
+	ReferenceRecapItemsMerged                 int
+	ReferenceRecapItemsRejected               int
+	ReferenceRecapItemsRetained               int
+	RecapDecisions                            []recapItemDecision
+	ReferenceRecapTopicProposalsRejected      int
+	LowInformationDecisionsRejected           int
+	LowInformationItemsRejected               int
+	LowInformationItemsRewritten              int
+	LowInformationItemsSplit                  int
+	LowInformationSplitFragmentsRejected      int
+	LowInformationTentativeRetained           int
+	SemanticKindMigrations                    int
+	SemanticSubtypeMigrations                 int
+	KindValidationChanges                     int
+	KindValidationAmbiguous                   int
+	KindSemanticSplits                        int
+	KindSplitFragments                        int
+	KindSplitRejected                         int
+	KindRelationsCreated                      int
+	SemanticSplitSourceActiveCount            int
+	SemanticSplitSourceFragmentDuplicateCount int
+	SemanticSplitReplacementMissingCount      int
+	ConfirmedEvidenceCandidates               int
+	AssignedActionRiskCandidates              int
+	CausalHypothesisRiskCandidates            int
+	KindValidationDecisions                   []itemKindValidationDecision
+	KindSplitDecisions                        []itemKindSplitDecision
+	KindDistributionWarnings                  []string
+	CrossKindUpdatesDetached                  int
+	DivergentUpdatesDetached                  int
+	CrossKindUpdateDecisions                  []crossKindUpdateDecision
+	CorrectionItemsSuperseded                 int
+	CorrectionItemsReconstructed              int
+	CorrectionItemsPending                    int
+	SupersededReactivated                     int
+	SupersededResolved                        int
+	CorrectionMonotonicityViolations          int
+	CorrectionDecisions                       []correctionSupersessionDecision
+	StrongTodoCandidates                      int
+	StrongTodosSynthesized                    int
+	StrongTodoDuplicatesSuppressed            int
+	StrongDecisionCandidates                  int
+	StrongDecisionsSynthesized                int
+	DeterministicSynthesisDecisions           []deterministicSynthesisDecision
+	EvidenceReferencesPruned                  int
+	EvidenceLocalizationDecisions             []evidenceLocalizationDecision
+	IssuesRecoveredFromTodoEvidence           int
+	IssueRecoveryDecisions                    []issueRecoveryDecision
+	GroundingAccepted                         int
+	GroundingRewritten                        int
+	GroundingTentative                        int
+	GroundingCandidateOnly                    int
+	GroundingRejected                         int
+	GroundingUnsupportedAtoms                 int
+	GroundingContextOnlyAtoms                 int
+	GroundingFutureLeaksPrevented             int
+	GroundingDecisions                        []itemGroundingDecision
+	LowInformationRejections                  []liveItemRejection
+	IncompleteLabelDecisions                  []incompleteItemLabelDecision
+	DiscourseTransitions                      []discourseTimelineTransition
+	ItemResurrectionPrevented                 int
+	ResurrectionPreventions                   []itemResurrectionPrevention
 	// Classification/projection diagnostics make the computed action summary
 	// and tentative staging observable without creating extra tree nodes.
 	ActionSummaryCandidates  int
@@ -5841,6 +6317,7 @@ func previousLiveAnalysisState(previousPayload json.RawMessage) liveAnalysisPayl
 	previous.Summary = strings.TrimSpace(previous.Summary)
 	previous.CurrentTopic = strings.TrimSpace(previous.CurrentTopic)
 	normalizePersistedSemanticClassifications(&previous)
+	repairPersistedExplicitSupersessions(&previous)
 	return previous
 }
 
@@ -5877,6 +6354,7 @@ type liveEvidenceScope struct {
 	Segments         map[int64]domain.TranscriptSegment
 	EvidenceRoles    map[int64]liveEvidenceRole
 	CoveredThrough   int64
+	RecapSpan        recapSpanState
 }
 
 func newLiveEvidenceScope() liveEvidenceScope {
@@ -5896,6 +6374,7 @@ func classifyLiveRoundInputs(
 	if scope == nil {
 		return
 	}
+	scope.RecapSpan = previous.RecapSpan
 	if scope.FreshRound == nil {
 		scope.FreshRound = make(map[int64]struct{})
 	}
@@ -5974,6 +6453,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 		treeStats.EmptyAgendaTopicsBefore = previousAgendaMetrics.EmptyTopics
 		treeStats.DynamicAgendaOverlapBefore = previousAgendaMetrics.DynamicOverlap
 	}
+	evidenceScope.RecapSpan = previous.RecapSpan
 	timeline := classifyDiscourseTimelineWithModel(evidenceScope, diff.UtteranceRoles)
 	evidenceScope.EvidenceRoles = timeline.Roles
 	if treeStats != nil {
@@ -6154,6 +6634,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 		CurrentTopic:                         firstNonEmptyTrimmed(diff.CurrentTopic, previous.CurrentTopic),
 		ItemTombstones:                       append([]liveAnalysisItemTombstone(nil), previous.ItemTombstones...),
 		CorrectionRelations:                  append([]correctionRelation(nil), previous.CorrectionRelations...),
+		RecapSpan:                            timeline.RecapSpan,
 		AnalyzedFinalSegments:                append([]analyzedFinalSegmentRef(nil), previous.AnalyzedFinalSegments...),
 		CoveredThroughSequenceNo:             previous.CoveredThroughSequenceNo,
 		FinalSegmentCoverage:                 append([]finalSegmentCoverage(nil), previous.FinalSegmentCoverage...),
@@ -6173,10 +6654,15 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 		assignments, newTopics, previous, merged.Items, agendaEvidenceItems, mc,
 		agendaSpans, roundSeqNos, timeline, evidenceScope, treeStats,
 	)
+	assignments, newTopics = reconcileDiscourseTopicProposals(
+		assignments, newTopics, previous.Tree, merged.Items, evidenceScope,
+		agendaSpans, mc, treeStats,
+	)
 	merged.Tree, merged.Items, merged.EmergingTopics = rebuildDiscussionTree(
 		previous.Tree, mc, merged.Items, newTopics, assignments, resolvedIDs,
 		previous.EmergingTopics, treeVersion, cfg, treeStats)
 	repairCorrectionSupersessions(&merged, evidenceScope, timeline, treeVersion, treeStats)
+	enforceExplicitSupersessionMonotonicity(&merged, previous, treeVersion, treeStats)
 	canonicalizePropositionItems(&merged, timeline, treeStats, treeVersion)
 	repairPersistedItemKinds(&merged, evidenceScope, itemKindValidationLive, "post_semantic_dedup", treeStats)
 	repairIncompletePersistedItemLabels(
@@ -6244,8 +6730,7 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	}
 	recordItemKindDistribution(&merged, evidenceScope, treeStats)
 	recordItemLifecycleEvaluations(modelItems, previous.Items, diffItems, merged.Items, requestedResolvedIDs, resolvedIDs, resolver, treeStats)
-	merged.TreeVersion = treeVersion
-	merged.TreeChanges = diffLiveAnalysisTrees(previous.Tree, merged.Tree, treeVersion)
+	stampCanonicalTreeRevision(&merged, previous, treeVersion, mergeIDRemaps(legacyIDRemap, idRemap))
 	if treeStats != nil && len(treeStats.PromotedItemIDs) > 0 {
 		if merged.TreeChanges == nil {
 			merged.TreeChanges = &liveAnalysisTreeChanges{TreeVersion: treeVersion}
@@ -6262,7 +6747,6 @@ func parseAndMergeLiveAnalysisPayloadWithEvidence(content string, previousPayloa
 	if merged.Items == nil {
 		merged.Items = []liveAnalysisItem{}
 	}
-	applyLiveTreeSnapshotMetadata(&merged, previous.Tree, previous.TreeVersion, mergeIDRemaps(legacyIDRemap, idRemap))
 	normalized, err := json.Marshal(merged)
 	if err != nil {
 		return nil, fmt.Errorf("marshal normalized live analysis payload: %w", err)
@@ -6383,6 +6867,166 @@ func isLiveAnalysisSchemaError(err error) bool {
 	return errors.As(err, &schemaErr)
 }
 
+func stampCanonicalTreeRevision(payload *liveAnalysisPayload, previous liveAnalysisPayload, proposedVersion int64, mergedIDs map[string]string) {
+	if payload == nil || payload.Tree == nil {
+		return
+	}
+	previousHash := liveTreeHash(previous.Tree)
+	currentHash := liveTreeHash(payload.Tree)
+	if previous.Tree != nil && previousHash == currentHash {
+		payload.TreeVersion = previous.TreeVersion
+		payload.TreeChanges = nil
+		payload.TreeProjectionDisposition = "no_op"
+	} else {
+		nextTreeVersion := previous.TreeVersion + 1
+		if nextTreeVersion <= 0 {
+			nextTreeVersion = 1
+		}
+		// Legacy snapshots without a treeVersion retain monotonicity with their
+		// analysis revision on the first migration round.
+		if previous.Tree != nil && previous.TreeVersion == 0 && proposedVersion > nextTreeVersion {
+			nextTreeVersion = proposedVersion
+		}
+		payload.TreeVersion = nextTreeVersion
+		payload.TreeChanges = diffLiveAnalysisTrees(previous.Tree, payload.Tree, nextTreeVersion)
+		if previous.Tree == nil {
+			payload.TreeProjectionDisposition = "created"
+		} else {
+			payload.TreeProjectionDisposition = "updated"
+		}
+	}
+	applyLiveTreeSnapshotMetadata(payload, previous.Tree, previous.TreeVersion, mergedIDs)
+}
+
+func finalizeCompletedLiveProjection(payload, previousPayload json.RawMessage, analysisVersion, highestAvailableFinalSequenceNo int64, completedAt time.Time) (json.RawMessage, error) {
+	current := previousLiveAnalysisState(payload)
+	previous := previousLiveAnalysisState(previousPayload)
+	current.AnalysisVersion = analysisVersion
+	current.AIAssistantAnalysisVersion = analysisVersion
+	current.TreeAnalysisVersion = analysisVersion
+	current.HighestAvailableFinalSequenceNo = highestAvailableFinalSequenceNo
+	current.ItemProjectionVersion = analysisVersion
+	current.TreeProjectionVersion = current.TreeVersion
+	current.ItemProjectionCompleted = true
+	current.TreeProjectionCompleted = true
+	current.ProjectionCompletedAt = completedAt.UTC().Format(time.RFC3339Nano)
+	semanticHealth := computeSemanticTreeHealth(current)
+	current.SemanticTreeHealth = &semanticHealth
+
+	materialized := make(map[string]struct{})
+	if current.Tree != nil {
+		for _, node := range current.Tree.Nodes {
+			if node.Kind != "topic" && node.Kind != "group" {
+				materialized[node.ID] = struct{}{}
+			}
+			for _, itemID := range node.RelatedItemIDs {
+				materialized[itemID] = struct{}{}
+			}
+		}
+	}
+	current.PendingTreeProjectionItemCount = 0
+	for index := range current.Items {
+		item := &current.Items[index]
+		_, inTree := materialized[item.ID]
+		if inTree && !item.Inactive && item.MergedIntoID == "" &&
+			item.ClassificationStatus != classificationTentative &&
+			item.ClassificationStatus != classificationUnclassified {
+			item.ProjectionStatus = "stable"
+			continue
+		}
+		item.ProjectionStatus = "pending_tree_projection"
+		if !item.Inactive && item.MergedIntoID == "" && item.Status != "dismissed" {
+			current.PendingTreeProjectionItemCount++
+		}
+	}
+	if current.TreeProjectionDisposition == "no_op" && !liveEvidenceEqual(previous.Items, current.Items) {
+		current.TreeProjectionDisposition = "evidence_only"
+	}
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return nil, fmt.Errorf("marshal completed live projection: %w", err)
+	}
+	return encoded, nil
+}
+
+// publishCompletedLiveAnalysis sends item/status metadata for every completed
+// analysis revision, but removes the tree arrays when the canonical tree did
+// not change. REST and persistence keep the complete canonical snapshot.
+func (s *MeetingAnalysisService) publishCompletedLiveAnalysis(analysis domain.MeetingAIAnalysis, previousPayload json.RawMessage) {
+	current := previousLiveAnalysisState(analysis.Payload)
+	previous := previousLiveAnalysisState(previousPayload)
+	current.Items = stableProjectionItemsForDelivery(current.Items)
+	treeBroadcast := current.Tree != nil && liveTreeHash(current.Tree) != liveTreeHash(previous.Tree)
+	if !treeBroadcast && current.Tree != nil {
+		current.Tree = nil
+		current.TreeChanges = nil
+		current.TreePayloadState = "unchanged"
+		current.PayloadKind = "projection_update"
+	}
+	encoded, err := json.Marshal(current)
+	if err == nil {
+		analysis.Payload = encoded
+	} else {
+		log.Printf("Live completed projection broadcast marshal failed. sessionId=%s analysisVersion=%d error=%v", analysis.SessionID, analysis.Version, err)
+		return
+	}
+	stableProjectionSkewCount := 0
+	if current.AIAssistantAnalysisVersion != current.TreeAnalysisVersion {
+		stableProjectionSkewCount = 1
+	}
+	treeMaterializedItemCount := 0
+	for _, item := range current.Items {
+		if item.ProjectionStatus == "stable" {
+			treeMaterializedItemCount++
+		}
+	}
+	publishedAt := s.now().UTC().Format(time.RFC3339Nano)
+	noOpTreeVersionIncrementCount, noOpTreeBroadcastCount := 0, 0
+	log.Printf("Live projection publication. sessionId=%s analysisVersion=%d aiAssistantAnalysisVersion=%d treeAnalysisVersion=%d treeVersion=%d aiAssistantItemCount=%d treeMaterializedItemCount=%d pendingTreeProjectionItemCount=%d provisionalItemCount=0 stableProjectionVersionSkewCount=%d aiAssistantPublishedAt=%s treePublishedAt=%s aiAssistantTreeSkewMs=0 treeProjectionDisposition=%s treeSnapshotBroadcast=%t noOpTreeVersionIncrementCount=%d noOpTreeBroadcastCount=%d itemProjectionCompleted=%t treeProjectionCompleted=%t",
+		analysis.SessionID, analysis.Version, current.AIAssistantAnalysisVersion, current.TreeAnalysisVersion,
+		current.TreeVersion, len(current.Items), treeMaterializedItemCount, current.PendingTreeProjectionItemCount,
+		stableProjectionSkewCount, publishedAt, publishedAt, current.TreeProjectionDisposition,
+		treeBroadcast, noOpTreeVersionIncrementCount, noOpTreeBroadcastCount,
+		current.ItemProjectionCompleted, current.TreeProjectionCompleted,
+	)
+	if stableProjectionSkewCount > 0 {
+		log.Printf("Live projection skew warning. sessionId=%s analysisVersion=%d aiAssistantAnalysisVersion=%d treeAnalysisVersion=%d stableProjectionVersionSkewCount=%d",
+			analysis.SessionID, analysis.Version, current.AIAssistantAnalysisVersion, current.TreeAnalysisVersion, stableProjectionSkewCount)
+	}
+	s.publishAnalysis(analysis)
+}
+
+func logLiveProjectionLatency(
+	sessionID string,
+	analysisVersion int64,
+	segments []domain.TranscriptSegment,
+	analysisStartedAt, aiCompletedAt, projectionCompletedAt, snapshotPersistedAt, snapshotBroadcastAt time.Time,
+) {
+	for _, segment := range segments {
+		if !segment.IsFinal || segment.SequenceNo <= 0 {
+			continue
+		}
+		finalReceivedAt := segment.ReceivedAtUTC
+		if finalReceivedAt.IsZero() {
+			finalReceivedAt = analysisStartedAt
+		}
+		log.Printf("Live projection latency. event=live_projection_latency sessionId=%s analysisVersion=%d sequenceNo=%d finalReceivedAt=%s schedulerEvaluatedAt=%s scheduledFor=%s analysisStartedAt=%s aiCompletedAt=%s itemProjectionCompletedAt=%s treeProjectionCompletedAt=%s snapshotPersistedAt=%s snapshotBroadcastAt=%s schedulerWaitMs=%d aiProcessingMs=%d itemProjectionMs=%d treeProjectionMs=%d broadcastLatencyMs=%d finalToAiAssistantStableMs=%d finalToTreeStableMs=%d aiAssistantTreeSkewMs=0",
+			sessionID, analysisVersion, segment.SequenceNo,
+			finalReceivedAt.UTC().Format(time.RFC3339Nano), analysisStartedAt.UTC().Format(time.RFC3339Nano),
+			analysisStartedAt.UTC().Format(time.RFC3339Nano), analysisStartedAt.UTC().Format(time.RFC3339Nano),
+			aiCompletedAt.UTC().Format(time.RFC3339Nano), projectionCompletedAt.UTC().Format(time.RFC3339Nano),
+			projectionCompletedAt.UTC().Format(time.RFC3339Nano), snapshotPersistedAt.UTC().Format(time.RFC3339Nano),
+			snapshotBroadcastAt.UTC().Format(time.RFC3339Nano),
+			durationSince(analysisStartedAt, finalReceivedAt).Milliseconds(),
+			durationSince(aiCompletedAt, analysisStartedAt).Milliseconds(),
+			durationSince(projectionCompletedAt, aiCompletedAt).Milliseconds(),
+			durationSince(projectionCompletedAt, aiCompletedAt).Milliseconds(),
+			durationSince(snapshotBroadcastAt, snapshotPersistedAt).Milliseconds(),
+			durationSince(snapshotBroadcastAt, finalReceivedAt).Milliseconds(),
+			durationSince(snapshotBroadcastAt, finalReceivedAt).Milliseconds())
+	}
+}
+
 // logLiveSnapshotBroadcast records, right before a completed live payload is
 // broadcast, everything needed to diagnose "the tree disappeared" reports
 // from logs alone: what the snapshot contains and how it relates to the
@@ -6396,9 +7040,10 @@ func logLiveSnapshotBroadcast(sessionID string, current, previous liveAnalysisPa
 	if current.TreeChanges != nil {
 		newNodeCount = len(current.TreeChanges.NewNodeIDs)
 	}
-	log.Printf("Live analysis snapshot broadcast. sessionId=%s treeVersion=%d payloadKind=%s nodeCount=%d edgeCount=%d previousTreeVersion=%d previousNodeCount=%d removedNodeCount=%d mergedNodeCount=%d newNodeCount=%d treeHash=%s",
-		sessionID, current.TreeVersion, current.PayloadKind, current.NodeCount, current.EdgeCount,
-		previous.TreeVersion, previousNodeCount, len(current.RemovedNodeIDs), len(current.MergedNodeIDs), newNodeCount, current.TreeHash)
+	log.Printf("Live analysis snapshot broadcast. sessionId=%s analysisVersion=%d treeVersion=%d payloadKind=%s nodeCount=%d edgeCount=%d previousTreeVersion=%d previousNodeCount=%d removedNodeCount=%d mergedNodeCount=%d newNodeCount=%d treeHash=%s treeProjectionDisposition=%s treeSnapshotBroadcast=%t",
+		sessionID, current.AnalysisVersion, current.TreeVersion, current.PayloadKind, current.NodeCount, current.EdgeCount,
+		previous.TreeVersion, previousNodeCount, len(current.RemovedNodeIDs), len(current.MergedNodeIDs), newNodeCount, current.TreeHash,
+		current.TreeProjectionDisposition, liveTreeHash(current.Tree) != liveTreeHash(previous.Tree))
 }
 
 // applyLiveTreeSnapshotMetadata stamps the full-snapshot metadata on a payload
@@ -6439,19 +7084,47 @@ func applyLiveTreeSnapshotMetadata(payload *liveAnalysisPayload, previousTree *l
 	payload.TreeHash = liveTreeHash(payload.Tree)
 }
 
-// liveTreeHash is a deterministic short hash over node ids and parents, used
-// to compare what the server broadcast with what a client applied.
+// liveTreeHash is canonical over display/semantic tree state. Collection and
+// evidence ordering and lifecycle version stamps do not affect it.
 func liveTreeHash(tree *liveAnalysisTree) string {
 	if tree == nil {
 		return ""
 	}
-	lines := make([]string, 0, len(tree.Nodes))
+	lines := make([]string, 0, len(tree.Nodes)+len(tree.Edges)+len(tree.Relations))
 	for _, node := range tree.Nodes {
-		lines = append(lines, node.ID+"|"+node.ParentID)
+		labelResolution, _ := json.Marshal(node.LabelResolution)
+		descriptionResolution, _ := json.Marshal(node.DescriptionResolution)
+		lines = append(lines, fmt.Sprintf("node|%q|%q|%q|%q|%q|%q|%q|%q|%s|%s|%s|%q|%q|%s|%q|%t|%q|%.6f",
+			node.ID, node.ParentID, node.Kind, node.Subtype, node.Label, node.Description, node.Status,
+			node.Origin, canonicalStrings(node.RelatedItemIDs), string(labelResolution), string(descriptionResolution),
+			node.SourceCandidateID, node.AgendaRole, canonicalStrings(node.AgendaRefs), node.AgendaSplitGroupID,
+			node.Materialized, node.LastParentChangeSource, node.ParentConfidence))
+	}
+	for _, edge := range tree.Edges {
+		lines = append(lines, fmt.Sprintf("edge|%q|%q", edge.Source, edge.Target))
+	}
+	for _, relation := range tree.Relations {
+		lines = append(lines, fmt.Sprintf("relation|%q|%q|%q|%q|%.6f|%s|%q|%q",
+			relation.ID, relation.Source, relation.Target, relation.Kind, relation.Confidence,
+			canonicalInt64s(relation.EvidenceSequenceNos), relation.Origin, relation.Status))
 	}
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	return hex.EncodeToString(sum[:8])
+}
+
+func canonicalStrings(values []string) string {
+	copyValues := append([]string(nil), values...)
+	sort.Strings(copyValues)
+	encoded, _ := json.Marshal(copyValues)
+	return string(encoded)
+}
+
+func canonicalInt64s(values []int64) string {
+	copyValues := append([]int64(nil), values...)
+	sort.Slice(copyValues, func(i, j int) bool { return copyValues[i] < copyValues[j] })
+	encoded, _ := json.Marshal(copyValues)
+	return string(encoded)
 }
 
 func diffLiveAnalysisTrees(previous, current *liveAnalysisTree, treeVersion int64) *liveAnalysisTreeChanges {

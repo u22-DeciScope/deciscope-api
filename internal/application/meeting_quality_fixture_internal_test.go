@@ -148,8 +148,8 @@ func TestDeterministicMeetingQualitySuiteUsesProductionStages(t *testing.T) {
 			}
 		}
 	}
-	if direct != 26 || seeded != 4 || completedOnly != 0 {
-		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 26/4/0",
+	if direct != 29 || seeded != 5 || completedOnly != 0 {
+		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 29/5/0",
 			direct, seeded, completedOnly)
 	}
 }

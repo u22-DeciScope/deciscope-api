@@ -53,4 +53,11 @@ type MeetingAIAnalysis struct {
 	// the application service on published live analyses; it is not
 	// persisted.
 	IntervalSeconds int
+	// The following fields are ephemeral live-running status metadata. They
+	// identify the sealed request without attaching the previous item/tree
+	// snapshot to a running event and are not persisted by repositories.
+	RequestedAnalysisVersion int64
+	TargetFromSequenceNo     int64
+	TargetThroughSequenceNo  int64
+	StartedAt                time.Time
 }

@@ -15,6 +15,10 @@ type BotMediaMetrics struct {
 	// timestamp); the watchdog uses it to decide whether these metrics are
 	// still fresh enough to trust.
 	ReceivedAt                    time.Time
+	BotBuildVersion               string
+	BotGitCommitSHA               string
+	BotBuildTimestamp             string
+	BotDirtyBuild                 string
 	LastAudioFrameAt              time.Time
 	LastNonZeroAudioAt            time.Time
 	LastNonEmptyTranscriptAt      time.Time

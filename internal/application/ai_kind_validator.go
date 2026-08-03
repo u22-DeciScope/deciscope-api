@@ -30,6 +30,13 @@ type itemSemanticFeatures struct {
 	ConfirmedEvidencePresent   bool
 	ActionVerbPresent          bool
 	CompletedActionPresent     bool
+	PastEventTimePresent       bool
+	FutureDeadlinePresent      bool
+	FutureScheduledTimePresent bool
+	CompletedPredicatePresent  bool
+	CommitmentPresent          bool
+	RequestPresent             bool
+	AssigneePresent            bool
 	OwnerPresent               bool
 	DeadlinePresent            bool
 	EventDatePresent           bool
@@ -57,11 +64,18 @@ type itemKindValidationDecision struct {
 }
 
 type itemKindSplitDecision struct {
-	SourceItemID      string
-	FragmentCount     int
-	FragmentKinds     []string
-	RejectedFragments int
-	RelationsCreated  int
+	SourceItemID        string
+	SourceKind          string
+	FragmentCount       int
+	FragmentItemIDs     []string
+	FragmentKinds       []string
+	RejectedFragments   int
+	RelationsCreated    int
+	ReplacementMode     string
+	SourceActiveBefore  bool
+	SourceInactiveAfter bool
+	DuplicateDetected   bool
+	RelationsReassigned int
 }
 
 var (
@@ -94,19 +108,22 @@ var (
 		`(?i)(?:発生した|発生しました|していた|していました|しておりました|できなかった|できませんでした|だった|でした|行った|実施した|完了した|解消した|解消しました|正常になった|正常になりました|occurred|was |were |completed)`,
 	)
 	kindCompletedActionPattern = regexp.MustCompile(
-		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続|切り戻|復旧)(?:しました|した|済み|を完了(?:しました|した))|(?:行|おこな)(?:いました|った)|完了(?:しました|した|済み)|completed|was (?:updated|created|checked|reviewed|implemented))`,
+		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|設定|適用|依頼|連絡|共有|提出|準備|整備|送付|レビュー|監視|継続|切り戻|復旧|交換|再起動|戻)(?:しました|した|済み(?:です)?|を完了(?:しました|した))|(?:行|おこな)(?:いました|った)|完了(?:しました|した|済み(?:です)?)|completed|was (?:updated|created|checked|reviewed|implemented))`,
 	)
 	kindOpenQuestionPattern = regexp.MustCompile(
 		`(?i)(?:[?？]|(?:何|いつ|どこ|誰|どれ|どの|どちら|どう).{0,24}か|を行うか|か未確認|説明できるか|何を|どのように|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|(?:確認|調査|検討|対応|修正|更新|作業)(?:する)?(?:が)?必要|未解決|未確定|未決定|open question|needs investigation)`,
 	)
 	kindActionVerbPattern = regexp.MustCompile(
-		`(?i)(?:追加|作成|作(?:る|り|っ)|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続|切り戻|assign|update|create|check|review|investigate|implement)`,
+		`(?i)(?:追加|作成|作(?:る|り|っ)|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|整備|送付|レビュー|監視|継続|切り戻|交換|再起動|戻|assign|update|create|check|review|investigate|implement)`,
 	)
 	kindActionIntentPattern = regexp.MustCompile(
-		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続)(?:する|します|してください|して下さい|してもら(?:う|います)|を行(?:う|います)|をお願い(?:します|する)|予定(?:です)?|ことに(?:する|します|なりました))|作(?:る|ります)|(?:will|shall|must|to )(?:update|create|check|review|investigate|implement))`,
+		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|整備|送付|レビュー|監視|継続|切り戻|交換|再起動|戻)(?:す|する|します|してください|して下さい|してもら(?:う|います)|を行(?:う|います)|をお願い(?:します|する)|予定(?:です)?|ことに(?:する|します|なりました))|作(?:る|ります)|(?:will|shall|must|to )(?:update|create|check|review|investigate|implement))`,
 	)
 	kindCommitmentPattern = regexp.MustCompile(
-		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視)します|作ります|行います|してください|して下さい|(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|設定|適用|連絡|共有|提出|準備|送付|レビュー|監視)してもら|(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|設定|適用|連絡|共有|提出|準備|送付|レビュー|監視)をお願いします|ことに(?:します|なりました)|完了条件|合意|決定した|担当する|依頼する|予定です|will|shall|committed)`,
+		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|設定|適用|依頼|連絡|共有|提出|準備|整備|送付|レビュー|監視|切り戻|交換|再起動)します|作ります|行います|してください|して下さい|(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|設定|適用|連絡|共有|提出|準備|整備|送付|レビュー|監視|切り戻|交換|再起動)してもら|(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|設定|適用|連絡|共有|提出|準備|整備|送付|レビュー|監視|切り戻|交換|再起動)をお願いします|ことに(?:します|なりました)|完了条件|合意|決定した|担当する|依頼する|予定です|will|shall|committed)`,
+	)
+	kindRequestPattern = regexp.MustCompile(
+		`(?i)(?:してください|して下さい|してもら(?:う|います)|をお願い(?:します|する)|依頼(?:します|する)|please)`,
 	)
 	kindProposalPattern = regexp.MustCompile(
 		`(?i)(?:案|候補|提案|してはどう|した方が(?:よ|良)|する方が(?:よ|良)|よさそう|良さそう|すべき|検討したい|検討中|選択肢|proposal|option|considering)`,
@@ -143,6 +160,12 @@ var (
 	)
 	kindScheduledEventPattern = regexp.MustCompile(
 		`(?i)(?:(?:期限切れ|失効|満了|終了|開始|開催|到来)(?:に)?(?:なる|なります|する|します|予定)|(?:有効期限|契約期限|終了日|開催日)(?:は|が)|will (?:expire|end|start))`,
+	)
+	kindPastEventTimePattern = regexp.MustCompile(
+		`(?i)(?:(?:昨日|先週|当時|障害発生時|午前|午後|\d{1,2}時\d{0,2}分?).{0,100}(?:しました|した|済み(?:です)?|行いました|行った|戻しました|戻した))`,
+	)
+	kindFutureScheduledTimePattern = regexp.MustCompile(
+		`(?i)(?:(?:明日|次回|来週|来月|今週|本日)(?:の)?(?:午前|午後)?\d{0,2}時?\d{0,2}分?(?:に|から)?.{0,80}(?:する|します|予定)|(?:明日|次回|来週|来月|今週|本日).{0,80}予定)`,
 	)
 	kindInvestigationPattern = regexp.MustCompile(
 		`(?i)(?:原因|要因|因果|調査|検証|確認が必要|特定|説明できるか|切り分け|investigat|verify|root cause)`,
@@ -263,7 +286,8 @@ func actionDeadlinePresent(text string) bool {
 		}
 		if kindDeadlineMarkerPattern.MatchString(clause) ||
 			(kindRelativeWorkDatePattern.MatchString(clause) &&
-				!kindScheduledEventPattern.MatchString(clause)) {
+				!kindScheduledEventPattern.MatchString(clause) &&
+				!kindFutureScheduledTimePattern.MatchString(clause)) {
 			return true
 		}
 	}
@@ -427,7 +451,11 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		!kindProposalPattern.MatchString(text)
 	actionIntent := futureActionIntent(text)
 	commitment := futureActionCommitment(text)
-	scheduledEvent := kindScheduledEventPattern.MatchString(text)
+	request := kindRequestPattern.MatchString(text)
+	futureScheduledTime := kindFutureScheduledTimePattern.MatchString(text) && actionIntent
+	scheduledEvent := kindScheduledEventPattern.MatchString(text) || futureScheduledTime
+	deadline := actionDeadlinePresent(text)
+	owner := kindOwnerPattern.MatchString(text)
 	features := itemSemanticFeatures{
 		NegativeImpactPresent:      kindNegativeImpactPattern.MatchString(text),
 		UncertaintyPresent:         kindUncertaintyPattern.MatchString(text),
@@ -437,8 +465,15 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		ConfirmedEvidencePresent:   confirmedEvidence,
 		ActionVerbPresent:          kindActionVerbPattern.MatchString(text),
 		CompletedActionPresent:     completedAction,
-		OwnerPresent:               kindOwnerPattern.MatchString(text),
-		DeadlinePresent:            actionDeadlinePresent(text),
+		PastEventTimePresent:       kindPastEventTimePattern.MatchString(text) && completedAction,
+		FutureDeadlinePresent:      deadline,
+		FutureScheduledTimePresent: futureScheduledTime,
+		CompletedPredicatePresent:  completedAction,
+		CommitmentPresent:          commitment,
+		RequestPresent:             request,
+		AssigneePresent:            owner,
+		OwnerPresent:               owner,
+		DeadlinePresent:            deadline,
 		EventDatePresent:           kindEventDatePattern.MatchString(text),
 		DecisionOrCommitment:       commitment,
 		InvestigationIntentPresent: kindInvestigationPattern.MatchString(text),
@@ -472,6 +507,9 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		features.TemporalScope = "past"
 	case kindOngoingEventPattern.MatchString(text):
 		features.TemporalScope = "ongoing"
+	case features.CompletedPredicatePresent && !features.CommitmentPresent &&
+		!features.FutureScheduledTimePresent:
+		features.TemporalScope = "past"
 	case features.FutureEventPresent:
 		features.TemporalScope = "future"
 	case features.CurrentProblemPresent:
@@ -554,8 +592,11 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		!features.OwnerPresent && !features.DecisionOrCommitment
 	uncommittedProposal := features.ProposalPresent &&
 		!features.OwnerPresent && !features.DeadlinePresent && !features.DecisionOrCommitment
-	strongAction := actionIntent && !uncommittedProposal &&
-		(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment)
+	strongAction := actionIntent && !features.CompletedPredicatePresent && !uncommittedProposal &&
+		(features.CommitmentPresent || features.RequestPresent ||
+			features.FutureScheduledTimePresent) &&
+		(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment ||
+			features.RequestPresent || features.FutureScheduledTimePresent)
 	preserveExplicitQuestion := originalKind == "issue" && originalSubtype == issueSubtypeQuestion && openQuestion
 	preserveOpenIssue := originalKind == "issue" && validIssueSubtype(originalSubtype) &&
 		!features.ConfirmationSupersedesOpen &&
@@ -988,15 +1029,18 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 		}
 
 		primary := 0
+		retainsSourceProposition := false
 		for index := range fragments {
 			if fragments[index].Kind == item.Kind {
 				primary = index
+				retainsSourceProposition = true
 				break
 			}
 		}
 		sourceRef := modelItemReference(item)
 		sourceNode, hasNode := nodeByID[item.ID]
 		created := make([]liveAnalysisItem, 0, len(fragments))
+		fragmentIDs := make([]string, 0, len(fragments))
 		fragmentKinds := make([]string, 0, len(fragments))
 		rejected := 0
 		for index, fragment := range fragments {
@@ -1016,7 +1060,7 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 			candidate.evidenceSpecified = true
 			candidate.modelReference = sourceRef
 			candidate.semanticSplitFragment = true
-			if index != primary {
+			if !retainsSourceProposition || index != primary {
 				candidate.ID = serverGeneratedItemID(candidate)
 				candidate.ClientKey = ""
 				if _, collision := usedIDs[candidate.ID]; collision {
@@ -1025,7 +1069,17 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 				}
 				usedIDs[candidate.ID] = struct{}{}
 			}
+			candidate.Inactive = false
+			candidate.MergedIntoID = ""
+			candidate.SuppressionReason = ""
+			candidate.InformationStatus = informationStatusGrounded
+			candidate.SupersededByItemID = ""
+			candidate.SupersededByItemIDs = nil
+			candidate.SupersededAtTreeVersion = 0
+			candidate.SupersessionOrigin = ""
+			candidate.SupersessionEvidenceSequenceNos = nil
 			created = append(created, candidate)
+			fragmentIDs = append(fragmentIDs, candidate.ID)
 			allKnown = append(allKnown, candidate)
 
 			if hasNode {
@@ -1036,7 +1090,7 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 				node.Label = candidate.Title
 				node.Description = candidate.Body
 				node.Status = candidate.Status
-				if index == primary {
+				if retainsSourceProposition && index == primary {
 					for nodeIndex := range state.Tree.Nodes {
 						if state.Tree.Nodes[nodeIndex].ID == item.ID {
 							state.Tree.Nodes[nodeIndex] = node
@@ -1052,20 +1106,107 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 			expanded = append(expanded, item)
 			continue
 		}
+		replacementMode := "source_rewritten"
+		if !retainsSourceProposition {
+			replacementMode = "full_replacement"
+			source := item
+			source.Inactive = true
+			source.Status = "open"
+			source.InformationStatus = "superseded"
+			source.SuppressionReason = "semantic_split"
+			source.SupersessionOrigin = "semantic_split"
+			source.SupersededAtTreeVersion = state.TreeVersion
+			source.SupersessionEvidenceSequenceNos = append([]int64(nil), item.EvidenceSequenceNos...)
+			source.SupersededByItemIDs = append([]string(nil), fragmentIDs...)
+			if len(fragmentIDs) > 0 {
+				source.SupersededByItemID = fragmentIDs[0]
+				source.MergedIntoID = fragmentIDs[0]
+			}
+			expanded = append(expanded, source)
+			if hasNode {
+				keptNodes := state.Tree.Nodes[:0]
+				for _, node := range state.Tree.Nodes {
+					if node.ID != item.ID {
+						keptNodes = append(keptNodes, node)
+					}
+				}
+				state.Tree.Nodes = keptNodes
+			}
+			for relationIndex := range state.Tree.Relations {
+				relation := &state.Tree.Relations[relationIndex]
+				if relation.Source == item.ID || relation.Target == item.ID {
+					relation.Status = "inactive"
+					relation.UpdatedAtVersion = state.TreeVersion
+				}
+			}
+			addItemTombstone(state, item, "superseded", source.SupersededByItemID, "semantic_split", "", state.TreeVersion, state.TreeVersion, sourceNode.ParentID)
+		}
 		expanded = append(expanded, created...)
 		if stats != nil {
 			stats.KindSemanticSplits++
 			stats.KindSplitFragments += len(created)
 			stats.KindSplitRejected += rejected
 			stats.KindSplitDecisions = append(stats.KindSplitDecisions, itemKindSplitDecision{
-				SourceItemID: sourceRef, FragmentCount: len(created), FragmentKinds: fragmentKinds,
+				SourceItemID: sourceRef, SourceKind: item.Kind, FragmentCount: len(created),
+				FragmentItemIDs: fragmentIDs, FragmentKinds: fragmentKinds,
 				RejectedFragments: rejected, RelationsCreated: expectedSemanticKindRelations(created),
+				ReplacementMode: replacementMode, SourceActiveBefore: true,
+				SourceInactiveAfter: !retainsSourceProposition,
 			})
+			if !retainsSourceProposition && len(fragmentIDs) == 0 {
+				stats.SemanticSplitReplacementMissingCount++
+			}
 		}
 	}
 	state.Items = validateLiveItemKinds(expanded, scope, mode, stage, stats)
 	state.Tree.Nodes = append(state.Tree.Nodes, addedNodes...)
 	rebuildTreeAuditEdges(state.Tree)
+	evaluateSemanticSplitInvariants(state, stats)
+}
+
+func evaluateSemanticSplitInvariants(state *liveAnalysisPayload, stats *liveAnalysisTreeMergeStats) {
+	if state == nil || stats == nil {
+		return
+	}
+	for index := range stats.KindSplitDecisions {
+		decision := &stats.KindSplitDecisions[index]
+		if decision.ReplacementMode != "full_replacement" {
+			continue
+		}
+		var source *liveAnalysisItem
+		for itemIndex := range state.Items {
+			if canonicalReferenceKey(state.Items[itemIndex].ID) == canonicalReferenceKey(decision.SourceItemID) ||
+				canonicalReferenceKey(modelItemReference(state.Items[itemIndex])) == canonicalReferenceKey(decision.SourceItemID) {
+				source = &state.Items[itemIndex]
+				break
+			}
+		}
+		if source == nil {
+			stats.SemanticSplitReplacementMissingCount++
+			continue
+		}
+		decision.SourceInactiveAfter = source.Inactive && source.InformationStatus == "superseded"
+		if !decision.SourceInactiveAfter {
+			stats.SemanticSplitSourceActiveCount++
+		}
+		activeReplacements := 0
+		for _, fragmentID := range decision.FragmentItemIDs {
+			fragment := findItemByID(state.Items, fragmentID)
+			if fragment == nil || fragment.Inactive || fragment.MergedIntoID != "" {
+				continue
+			}
+			activeReplacements++
+			if !source.Inactive &&
+				(sameCanonicalProposition(*source, *fragment) ||
+					func() bool { matched, _ := sameKindSemanticDuplicate(*source, *fragment); return matched }()) {
+				decision.DuplicateDetected = true
+				stats.SemanticSplitSourceFragmentDuplicateCount++
+			}
+		}
+		if activeReplacements == 0 {
+			stats.SemanticSplitReplacementMissingCount++
+		}
+	}
 }
 
 func appendSemanticKindRelations(tree *liveAnalysisTree, items []liveAnalysisItem) int {
@@ -1215,6 +1356,17 @@ func semanticKindRelations(left, right liveAnalysisItem, scope liveEvidenceScope
 			result = append(result, liveAnalysisTreeRelation{
 				Source: source.ID, Target: target.ID, Kind: itemRelationSupportedBy, Confidence: 0.94,
 			})
+		case source.Kind == "risk" && sourceFeatures.UncertaintyPresent &&
+			sourceFeatures.NegativeImpactPresent && target.Kind == "fact" &&
+			(targetFeatures.FutureEventPresent || targetFeatures.ScheduledEventPresent || targetFeatures.EventDatePresent) &&
+			futureRiskSupportedByFact(source, target):
+			// A dated/scheduled fact about a concrete business object is evidence
+			// for the nearby conditional impact of leaving that object untreated.
+			// Keep this deliberately narrower than generic lexical similarity so
+			// unrelated future events cannot acquire causal-looking relations.
+			result = append(result, liveAnalysisTreeRelation{
+				Source: source.ID, Target: target.ID, Kind: itemRelationSupportedBy, Confidence: 0.92,
+			})
 		case source.Kind == "issue" && target.Kind == "issue" &&
 			itemRelationLimitPattern.MatchString(source.Title+" "+source.Body) &&
 			kindOpenQuestionPattern.MatchString(source.Title+" "+source.Body) &&
@@ -1231,6 +1383,20 @@ func semanticKindRelations(left, right liveAnalysisItem, scope liveEvidenceScope
 		}
 	}
 	return result
+}
+
+func futureRiskSupportedByFact(risk, fact liveAnalysisItem) bool {
+	if !itemEvidenceWithin(risk, fact, 2) {
+		return false
+	}
+	riskText := strings.TrimSpace(risk.Title + " " + risk.Body)
+	factText := strings.TrimSpace(fact.Title + " " + fact.Body)
+	riskSubject := normalizeForMatch(concreteBusinessSubject(riskText))
+	factSubject := normalizeForMatch(concreteBusinessSubject(factText))
+	if riskSubject != "" && riskSubject == factSubject {
+		return true
+	}
+	return specificSubjectOverlapLength(riskText, factText) >= 4
 }
 
 func semanticRelationItemsRelated(tree *liveAnalysisTree, source, target liveAnalysisItem, kind string) bool {

@@ -280,6 +280,46 @@ func TestTreeAuditAppliesWhenEnabledAndPersistsRunDetails(t *testing.T) {
 	}
 }
 
+func TestTreeAuditUsesAnalysisRevisionForCASAndIndependentTreeRevisionForAudit(t *testing.T) {
+	service, analysisRepo, auditRepo, _, completer, payload := newTreeAuditRunnerFixture(t, false)
+	state := previousLiveAnalysisState(payload)
+	state.AnalysisVersion = 12
+	state.TreeVersion = 9
+	state.TreeProjectionVersion = 9
+	payload, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysisRepo.mu.Lock()
+	stored := analysisRepo.store["session_26959b9519c5f880"]
+	stored.Payload = payload
+	analysisRepo.store[stored.SessionID] = stored
+	analysisRepo.mu.Unlock()
+	service.mu.Lock()
+	serviceState := service.sessionStateLocked(stored.SessionID)
+	serviceState.lastPayload = payload
+	serviceState.lastVersion = 12
+	service.mu.Unlock()
+	completer.mu.Lock()
+	completer.content = strings.Replace(validAuditMoveResponse(), `"basedOnTreeVersion":12`, `"basedOnTreeVersion":9`, 1)
+	completer.mu.Unlock()
+
+	execution, err := service.runTreeAudit(context.Background(), stored.SessionID, "test", aiTaskTreeAudit, payload, 12, false)
+	if err != nil {
+		t.Fatalf("runTreeAudit() error = %v", err)
+	}
+	if !execution.Applied || execution.Version != 13 || execution.AuditedVersion != 9 || execution.ResultingTreeVersion != 10 {
+		t.Fatalf("execution = %+v", execution)
+	}
+	audited := previousLiveAnalysisState(execution.Payload)
+	if audited.AnalysisVersion != 13 || audited.TreeVersion != 10 || audited.BasedOnTreeVersion != 9 {
+		t.Fatalf("audited revisions = analysis:%d tree:%d basedOn:%d", audited.AnalysisVersion, audited.TreeVersion, audited.BasedOnTreeVersion)
+	}
+	if run := auditRepo.latest(); run == nil || run.BasedOnTreeVersion != 9 || run.ResultingTreeVersion != 10 {
+		t.Fatalf("audit run = %+v", run)
+	}
+}
+
 func TestTreeAuditFakeProviderCleansDiscourseItemAndPreventsResurrection(t *testing.T) {
 	const sessionID = "session_tree_audit_discourse_cleanup"
 	state := liveAnalysisPayload{

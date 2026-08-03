@@ -676,6 +676,11 @@ func (api *MeetingSessionAPI) RecordBotHeartbeat(w http.ResponseWriter, r *http.
 	if api.metricsStore != nil {
 		if metrics, ok := request.botMediaMetrics(); ok {
 			api.metricsStore.Record(sessionID, metrics)
+			if metrics.BotGitCommitSHA != "" {
+				log.Printf("Meeting session component fingerprint. sessionId=%s botBuildVersion=%s botGitCommitSha=%s botBuildTimestamp=%s botDirtyBuild=%s",
+					sessionID, metrics.BotBuildVersion, metrics.BotGitCommitSHA,
+					metrics.BotBuildTimestamp, metrics.BotDirtyBuild)
+			}
 		}
 	}
 	session, err := api.service.RecordMeetingSessionHeartbeat(r.Context(), sessionID)
@@ -758,6 +763,10 @@ type meetingSessionMediaHealthRequest struct {
 
 type meetingSessionHeartbeatRequest struct {
 	BotCallID                        string  `json:"botCallId"`
+	BotBuildVersion                  string  `json:"botBuildVersion"`
+	BotGitCommitSHA                  string  `json:"botGitCommitSha"`
+	BotBuildTimestamp                string  `json:"botBuildTimestamp"`
+	BotDirtyBuild                    string  `json:"botDirtyBuild"`
 	LastAudioFrameAtUTC              string  `json:"lastAudioFrameAtUtc"`
 	LastNonZeroAudioAtUTC            string  `json:"lastNonZeroAudioAtUtc"`
 	LastNonEmptyTranscriptAtUTC      string  `json:"lastNonEmptyTranscriptAtUtc"`
@@ -792,6 +801,10 @@ type meetingSessionHeartbeatRequest struct {
 // recorded, so it does not overwrite/refresh previously stored metrics with
 // an all-zero value.
 func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.BotMediaMetrics, bool) {
+	hasBuildFingerprint := strings.TrimSpace(request.BotBuildVersion) != "" ||
+		strings.TrimSpace(request.BotGitCommitSHA) != "" ||
+		strings.TrimSpace(request.BotBuildTimestamp) != "" ||
+		strings.TrimSpace(request.BotDirtyBuild) != ""
 	hasSpeechPipelineMetrics := request.SpeechPipelineReady != nil ||
 		request.SpeechStarted != nil ||
 		request.SpeechAcceptingFrames != nil ||
@@ -803,6 +816,10 @@ func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.Bot
 		strings.TrimSpace(request.LastSpeechPartialAtUTC) != "" ||
 		strings.TrimSpace(request.LastSpeechFinalAtUTC) != ""
 	m := application.BotMediaMetrics{
+		BotBuildVersion:               strings.TrimSpace(request.BotBuildVersion),
+		BotGitCommitSHA:               strings.TrimSpace(request.BotGitCommitSHA),
+		BotBuildTimestamp:             strings.TrimSpace(request.BotBuildTimestamp),
+		BotDirtyBuild:                 strings.TrimSpace(request.BotDirtyBuild),
 		LastAudioFrameAt:              parseOptionalRFC3339(request.LastAudioFrameAtUTC),
 		LastNonZeroAudioAt:            parseOptionalRFC3339(request.LastNonZeroAudioAtUTC),
 		LastNonEmptyTranscriptAt:      parseOptionalRFC3339(request.LastNonEmptyTranscriptAtUTC),
@@ -830,7 +847,7 @@ func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.Bot
 		LastSpeechFinalAt:             parseOptionalRFC3339(request.LastSpeechFinalAtUTC),
 		HasSpeechPipelineMetrics:      hasSpeechPipelineMetrics,
 	}
-	m.HasMetrics = !m.LastAudioFrameAt.IsZero() ||
+	m.HasMetrics = hasBuildFingerprint || !m.LastAudioFrameAt.IsZero() ||
 		!m.LastNonZeroAudioAt.IsZero() ||
 		!m.LastNonEmptyTranscriptAt.IsZero() ||
 		!m.LastFinalTranscriptAt.IsZero() ||

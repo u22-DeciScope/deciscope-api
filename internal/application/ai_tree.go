@@ -614,7 +614,7 @@ func rebuildDiscussionTree(
 	}
 	newCandidatesThisRound := 0
 	for _, proposed := range newTopics {
-		label := truncateRunes(strings.TrimSpace(proposed.Label), liveAnalysisTopicLabelMaxRunes)
+		label := completeDynamicTopicLabel(proposed.Label, proposed.Description)
 		if label == "" {
 			continue
 		}

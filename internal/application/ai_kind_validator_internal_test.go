@@ -103,6 +103,67 @@ func TestJapaneseActionAspectAndDeadlineAttachment(t *testing.T) {
 	}
 }
 
+func TestJapaneseCompletedRecoveryAndTemporalFeatures(t *testing.T) {
+	tests := []struct {
+		name                string
+		text                string
+		wantKind            string
+		wantPastTime        bool
+		wantFutureDeadline  bool
+		wantFutureScheduled bool
+		wantCompleted       bool
+	}{
+		{
+			name:     "completed compound recovery",
+			text:     "午前9時52分に旧スイッチへ一度切り戻し、その後、新しいスイッチのトランク設定と許可VLANを修正しました。",
+			wantKind: "fact", wantPastTime: true, wantCompleted: true,
+		},
+		{
+			name:     "past clock time",
+			text:     "9時52分に旧スイッチへ切り戻した。",
+			wantKind: "fact", wantPastTime: true, wantCompleted: true,
+		},
+		{
+			name:     "future deadline",
+			text:     "金曜日までに旧スイッチへ切り戻します。",
+			wantKind: "todo", wantFutureDeadline: true,
+		},
+		{
+			name:     "future scheduled clock time",
+			text:     "明日の9時52分に旧スイッチへ切り戻します。",
+			wantKind: "todo", wantFutureScheduled: true,
+		},
+		{
+			name:     "committed maintenance verb",
+			text:     "再発防止として標準設定との差分確認手順を整備します。",
+			wantKind: "todo",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			item := liveAnalysisItem{
+				ID: "item-recovery", Kind: "todo", Title: test.text,
+				Body: test.text, Status: "open", EvidenceSequenceNos: []int64{1},
+			}
+			decision := evaluateLiveItemKind(item, liveEvidenceScope{}, "temporal_test")
+			if decision.CanonicalKind != test.wantKind {
+				t.Fatalf("decision=%+v, want kind=%s", decision, test.wantKind)
+			}
+			features := decision.Features
+			if features.PastEventTimePresent != test.wantPastTime ||
+				features.FutureDeadlinePresent != test.wantFutureDeadline ||
+				features.FutureScheduledTimePresent != test.wantFutureScheduled ||
+				features.CompletedPredicatePresent != test.wantCompleted {
+				t.Fatalf("temporal features=%+v", features)
+			}
+			if test.wantPastTime && (features.CommitmentPresent || features.RequestPresent ||
+				features.AssigneePresent || features.FutureDeadlinePresent) {
+				t.Fatalf("past action leaked future TODO features: %+v", features)
+			}
+		})
+	}
+}
+
 func TestFactRiskTodoCompositeUsesFragmentLocalSemantics(t *testing.T) {
 	text := "証明書が来月末に期限切れになります。放置すると接続できなくなる可能性があります。高橋さんが今週中に更新手順を確認します。"
 	scope := evidenceScopeFromTexts(map[int64]string{19: text}, 19)
@@ -335,6 +396,47 @@ func TestCommonItemKindValidatorSplitsCompositeSemanticRoles(t *testing.T) {
 				t.Fatalf("assignments=%+v items=%+v", assignments, items)
 			}
 		})
+	}
+}
+
+func TestSemanticSplitFullyReplacesSourceWhenNoSourceKindFragmentRemains(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		1: "許可VLAN一覧からVLAN30が漏れていました。監視対象を増やすとアラートが多くなりすぎる可能性があります。",
+	}, 1)
+	state := liveAnalysisPayload{
+		Items: []liveAnalysisItem{{
+			ID: "wrong-source-todo", Kind: "todo", Status: "open",
+			Title: "VLAN設定と監視対応", Body: scope.TranscriptText[1],
+			EvidenceSequenceNos: []int64{1}, EvidenceSnippets: []string{
+				"許可VLAN一覧からVLAN30が漏れていました",
+				"監視対象を増やすとアラートが多くなりすぎる可能性があります",
+			},
+		}},
+		Tree: &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+			{ID: treeRootNodeID, Kind: "topic", Label: "会議全体"},
+			{ID: "wrong-source-todo", Kind: "todo", ParentID: treeRootNodeID, Label: "VLAN設定と監視対応"},
+		}},
+	}
+	rebuildTreeAuditEdges(state.Tree)
+	stats := &liveAnalysisTreeMergeStats{}
+	splitPersistedItemKinds(&state, scope, itemKindValidationFinal, "replacement_test", stats)
+
+	source := findItemByID(state.Items, "wrong-source-todo")
+	if source == nil || !source.Inactive || source.InformationStatus != "superseded" ||
+		source.SupersessionOrigin != "semantic_split" {
+		t.Fatalf("source remained active after full replacement: source=%+v items=%+v", source, state.Items)
+	}
+	activeKinds := map[string]int{}
+	for _, item := range state.Items {
+		if !item.Inactive && item.MergedIntoID == "" {
+			activeKinds[item.Kind]++
+			if item.ID == source.ID {
+				t.Fatalf("source id was reused by an active fragment: %+v", item)
+			}
+		}
+	}
+	if activeKinds["fact"] != 1 || activeKinds["risk"] != 1 || activeKinds["todo"] != 0 {
+		t.Fatalf("activeKinds=%v items=%+v", activeKinds, state.Items)
 	}
 }
 

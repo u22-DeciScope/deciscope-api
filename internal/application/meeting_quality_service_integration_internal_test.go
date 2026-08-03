@@ -747,6 +747,7 @@ func TestMeetingQualityServiceIntegration(t *testing.T) {
 	t.Run("F_stale_live_CAS_cannot_overwrite_final_projection", testMeetingQualityServiceIntegrationStaleCAS)
 	t.Run("G_label_fallback_and_relations_survive_fresh_reader", testMeetingQualityServiceIntegrationFallbackRelations)
 	t.Run("H_correction_and_temporal_lifecycle_survive_fresh_reader", testMeetingQualityServiceIntegrationCorrectionTemporal)
+	t.Run("I_vpn_discourse_companions_promote_one_complete_topic", testMeetingQualityServiceIntegrationVPNCandidateCohesion)
 }
 
 func testMeetingQualityServiceIntegrationCorrectionTemporal(t *testing.T) {
@@ -1171,6 +1172,65 @@ func testMeetingQualityServiceIntegrationMultipleRoundPromotion(t *testing.T) {
 		t.Fatalf("candidate fragmentation=%d, want 0", result.Metrics.CandidateFragmentationCount)
 	}
 	t.Logf("orchestration=two explicit repository-observed rounds persistence=one dynamic topic semanticPassed=%t", result.Passed)
+}
+
+func testMeetingQualityServiceIntegrationVPNCandidateCohesion(t *testing.T) {
+	scenario := qualityServiceLoadScenario(t, "session-e1bb-vpn-candidate-cohesion")
+	h := newQualityServiceHarness(t, qualityServiceRoundResponses(scenario))
+	h.start()
+	segments := qualityServiceDomainSegments("quality-vpn-candidate-cohesion", scenario)
+	ingest := NewTranscriptIngestService(h.transcript, h.service)
+	var version int64
+	for _, segment := range segments {
+		qualityServiceIngest(t, ingest, segment)
+		write := qualityServiceWaitWrite(t, h.repo, domain.MeetingAIAnalysisLive, domain.MeetingAIAnalysisCompleted, version+1)
+		version = write.Version
+	}
+	if got := h.completer.callCount(qualityServiceLiveDeployment); got != len(segments) {
+		t.Fatalf("VPN live_extraction calls=%d, want %d", got, len(segments))
+	}
+	qualityServiceFinalize(t, h.service, segments[0].SessionID, int64(len(segments)))
+	snapshot := qualityServiceReload(t, h, segments[0].SessionID)
+	live, _ := qualityServiceAssertPersistence(t, snapshot, int64(len(segments)))
+	if got := qualityServiceDynamicTopicCount(live.Tree); got != 1 {
+		t.Fatalf("VPN materialized dynamic topics=%d, want 1: topics=%+v", got, live.Tree.Nodes)
+	}
+	dynamicTopicID := ""
+	dynamicTopicLabel := ""
+	for _, node := range live.Tree.Nodes {
+		if node.Kind == "topic" && node.Origin == topicOriginDynamic {
+			dynamicTopicID = node.ID
+			dynamicTopicLabel = node.Label
+		}
+	}
+	if ending := incompleteItemLabelEnding(liveAnalysisItem{Kind: "issue", Title: dynamicTopicLabel, Body: dynamicTopicLabel}); ending != "" || strings.HasSuffix(dynamicTopicLabel, "にな") {
+		t.Fatalf("VPN dynamic topic label=%q ending=%q, want complete label", dynamicTopicLabel, ending)
+	}
+	wantedKinds := map[string]bool{"fact": false, "risk": false, "issue": false, "todo": false}
+	for _, item := range live.Items {
+		if item.Inactive || item.MergedIntoID != "" {
+			continue
+		}
+		if _, tracked := wantedKinds[item.Kind]; tracked {
+			wantedKinds[item.Kind] = true
+		}
+		if parent := itemTopicID(live.Tree, item.ID); parent != dynamicTopicID {
+			t.Fatalf("VPN item %s kind=%s parent=%s, want %s", item.ID, item.Kind, parent, dynamicTopicID)
+		}
+	}
+	for kind, present := range wantedKinds {
+		if !present {
+			t.Fatalf("VPN topic is missing kind %q: %+v", kind, wantedKinds)
+		}
+	}
+	if len(live.EmergingTopics) != 0 {
+		t.Fatalf("VPN active candidates remain after promotion: %+v", live.EmergingTopics)
+	}
+	result := qualityServiceAssertEvaluation(t, scenario, snapshot.Live.Payload)
+	if result.Metrics.CandidateFragmentationCount != 0 {
+		t.Fatalf("VPN candidate fragmentation=%d, want 0", result.Metrics.CandidateFragmentationCount)
+	}
+	t.Logf("orchestration=four discourse rounds topic=%q semanticPassed=%t", dynamicTopicLabel, result.Passed)
 }
 
 func qualityServiceAgendaScenarioHarness(t *testing.T, sessionID string) (*qualityServiceHarness, MeetingQualityScenario, []domain.TranscriptSegment) {

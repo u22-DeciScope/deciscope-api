@@ -622,31 +622,45 @@ type meetingAIAnalysisMessage struct {
 }
 
 type meetingAIAnalysisData struct {
-	SessionID       string          `json:"sessionId"`
-	AnalysisType    string          `json:"analysisType"`
-	Status          string          `json:"status"`
-	Version         int64           `json:"version"`
-	Payload         json.RawMessage `json:"payload"`
-	Model           string          `json:"model,omitempty"`
-	UpdatedAtUTC    string          `json:"updatedAtUtc"`
-	IntervalSeconds int             `json:"intervalSeconds,omitempty"`
-	Error           string          `json:"error,omitempty"`
+	SessionID                string          `json:"sessionId"`
+	AnalysisType             string          `json:"analysisType"`
+	Status                   string          `json:"status"`
+	Version                  int64           `json:"version"`
+	Payload                  json.RawMessage `json:"payload"`
+	Model                    string          `json:"model,omitempty"`
+	UpdatedAtUTC             string          `json:"updatedAtUtc"`
+	IntervalSeconds          int             `json:"intervalSeconds,omitempty"`
+	Error                    string          `json:"error,omitempty"`
+	RequestedAnalysisVersion int64           `json:"requestedAnalysisVersion,omitempty"`
+	TargetFromSequenceNo     int64           `json:"targetFromSequenceNo,omitempty"`
+	TargetThroughSequenceNo  int64           `json:"targetThroughSequenceNo,omitempty"`
+	StartedAtUTC             string          `json:"startedAtUtc,omitempty"`
 }
 
 func meetingAIAnalysisProtocolMessage(analysis domain.MeetingAIAnalysis, sentAt time.Time) meetingAIAnalysisMessage {
+	payload := analysis.Payload
+	if analysis.Status == domain.MeetingAIAnalysisRunning {
+		// Defense in depth: callers cannot accidentally make running a stale
+		// item/tree snapshot delivery path.
+		payload = nil
+	}
 	return meetingAIAnalysisMessage{
 		Type:      meetingAIAnalysisUpdatedType,
 		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
 		Data: meetingAIAnalysisData{
-			SessionID:       analysis.SessionID,
-			AnalysisType:    string(analysis.Type),
-			Status:          string(analysis.Status),
-			Version:         analysis.Version,
-			Payload:         analysis.Payload,
-			Model:           analysis.Model,
-			UpdatedAtUTC:    analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
-			IntervalSeconds: analysis.IntervalSeconds,
-			Error:           analysis.LastError,
+			SessionID:                analysis.SessionID,
+			AnalysisType:             string(analysis.Type),
+			Status:                   string(analysis.Status),
+			Version:                  analysis.Version,
+			Payload:                  payload,
+			Model:                    analysis.Model,
+			UpdatedAtUTC:             analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			IntervalSeconds:          analysis.IntervalSeconds,
+			Error:                    analysis.LastError,
+			RequestedAnalysisVersion: analysis.RequestedAnalysisVersion,
+			TargetFromSequenceNo:     analysis.TargetFromSequenceNo,
+			TargetThroughSequenceNo:  analysis.TargetThroughSequenceNo,
+			StartedAtUTC:             optionalProtocolTime(analysis.StartedAt),
 		},
 	}
 }

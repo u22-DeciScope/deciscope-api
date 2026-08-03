@@ -510,6 +510,12 @@ func qualityMetricValues(metrics MeetingQualityMetrics) []meetingQualityMetricVa
 		{Name: "todoRecall", Value: metrics.TodoRecall, HigherIsGood: true},
 		{Name: "decisionRecall", Value: metrics.DecisionRecall, HigherIsGood: true},
 		{Name: "semanticDuplicateCount", Value: float64(metrics.SemanticDuplicateCount)},
+		{Name: "semantic_split_source_active_count", Value: float64(metrics.SemanticSplitSourceActiveCount)},
+		{Name: "semantic_split_source_fragment_duplicate_count", Value: float64(metrics.SemanticSplitSourceFragmentDuplicateCount)},
+		{Name: "semantic_split_replacement_missing_count", Value: float64(metrics.SemanticSplitReplacementMissingCount)},
+		{Name: "recap_duplicate_item_count", Value: float64(metrics.RecapDuplicateItemCount)},
+		{Name: "recap_existing_item_update_count", Value: float64(metrics.RecapExistingItemUpdateCount), HigherIsGood: true},
+		{Name: "recap_new_information_item_count", Value: float64(metrics.RecapNewInformationItemCount), Exact: true},
 		{Name: "lowInformationLabelCount", Value: float64(metrics.LowInformationLabelCount)},
 		{Name: "contextDependentLabelCount", Value: float64(metrics.ContextDependentLabelCount)},
 		{Name: "truncatedLabelCount", Value: float64(metrics.TruncatedLabelCount)},
@@ -564,6 +570,18 @@ func setMeetingQualityMetric(metrics *MeetingQualityMetrics, name string, value 
 		metrics.DecisionRecall = value
 	case "semanticDuplicateCount":
 		metrics.SemanticDuplicateCount = int(value)
+	case "semantic_split_source_active_count":
+		metrics.SemanticSplitSourceActiveCount = int(value)
+	case "semantic_split_source_fragment_duplicate_count":
+		metrics.SemanticSplitSourceFragmentDuplicateCount = int(value)
+	case "semantic_split_replacement_missing_count":
+		metrics.SemanticSplitReplacementMissingCount = int(value)
+	case "recap_duplicate_item_count":
+		metrics.RecapDuplicateItemCount = int(value)
+	case "recap_existing_item_update_count":
+		metrics.RecapExistingItemUpdateCount = int(value)
+	case "recap_new_information_item_count":
+		metrics.RecapNewInformationItemCount = int(value)
 	case "lowInformationLabelCount":
 		metrics.LowInformationLabelCount = int(value)
 	case "contextDependentLabelCount":

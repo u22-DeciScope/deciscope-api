@@ -244,6 +244,7 @@ func runMeetingQualityScenario(scenario MeetingQualityScenario) MeetingQualitySc
 				scope.CoveredThrough = segment.SequenceNo
 			}
 		}
+		applyAdjacentFinalSegmentStitches(&scope, segments)
 		classifyLiveRoundInputs(&scope, previous, roundSegments)
 		merged, err := parseAndMergeLiveAnalysisPayloadWithEvidence(
 			string(round.FixedAIResponse), raw, context, int64(index+1),
@@ -386,6 +387,8 @@ func evaluateMeetingQualityResult(
 	result.HardInvariantViolations = append(result.HardInvariantViolations, qualityIntegrityViolations(integrity)...)
 	result.HardInvariantViolations = append(result.HardInvariantViolations, qualityMissingEdgeEndpoints(state.Tree)...)
 	result.HardInvariantViolations = append(result.HardInvariantViolations, qualityActiveItemsOutsideTree(state)...)
+	semanticSplitSourceActive, semanticSplitDuplicates, semanticSplitMissing, semanticSplitViolations := qualitySemanticSplitState(state)
+	result.HardInvariantViolations = append(result.HardInvariantViolations, semanticSplitViolations...)
 
 	activeItems, nodes := qualityActiveItems(state)
 	evidenceScope := qualityFullEvidenceScope(segments)
@@ -483,6 +486,11 @@ func evaluateMeetingQualityResult(
 		}
 	}
 	result.Metrics, result.MetricEvidence = qualityMetrics(scenario, state, context, segments, activeItems, nodes, matches)
+	result.Metrics.SemanticSplitSourceActiveCount = semanticSplitSourceActive
+	result.Metrics.SemanticSplitSourceFragmentDuplicateCount = semanticSplitDuplicates
+	result.Metrics.SemanticSplitReplacementMissingCount = semanticSplitMissing
+	result.Metrics.RecapExistingItemUpdateCount = len(uniqueNonEmptyIDs(state.RecapSpan.MatchedExistingItemIDs))
+	result.Metrics.RecapNewInformationItemCount = state.RecapSpan.NewInformationAtoms
 	result.UnsupportedPropositions = qualityUnsupportedPropositions(activeItems, context, segments)
 	if len(result.UnsupportedPropositions) > 0 {
 		itemByID := make(map[string]liveAnalysisItem, len(activeItems))
@@ -833,6 +841,10 @@ func qualityMetrics(
 			if duplicate || similarity >= 0.88 ||
 				(itemEvidenceOverlaps(activeItems[left], activeItems[right]) && similarity >= 0.40) {
 				metrics.SemanticDuplicateCount++
+				if itemHasEvidenceRole(activeItems[left], evidenceScope, liveEvidenceReferenceRecap) ||
+					itemHasEvidenceRole(activeItems[right], evidenceScope, liveEvidenceReferenceRecap) {
+					metrics.RecapDuplicateItemCount++
+				}
 				itemIDs := []string{activeItems[left].ID, activeItems[right].ID}
 				metricEvidence = append(metricEvidence, MeetingQualityMetricEvidence{
 					Metric:         "semanticDuplicateCount",
@@ -970,6 +982,49 @@ func qualityMetrics(
 	return metrics, metricEvidence
 }
 
+func itemHasEvidenceRole(item liveAnalysisItem, scope liveEvidenceScope, role liveEvidenceRole) bool {
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		if scope.EvidenceRoles[sequenceNo] == role {
+			return true
+		}
+	}
+	return false
+}
+
+func qualitySemanticSplitState(state liveAnalysisPayload) (activeSources, duplicates, missing int, violations []string) {
+	for _, source := range state.Items {
+		if source.SupersessionOrigin != "semantic_split" {
+			continue
+		}
+		replacements := append([]string(nil), source.SupersededByItemIDs...)
+		if len(replacements) == 0 && source.SupersededByItemID != "" {
+			replacements = append(replacements, source.SupersededByItemID)
+		}
+		if !source.Inactive || source.InformationStatus != "superseded" {
+			activeSources++
+			violations = append(violations, "semantic_split_source_active:"+source.ID)
+		}
+		activeReplacementCount := 0
+		for _, replacementID := range uniqueNonEmptyIDs(replacements) {
+			replacement := findItemByID(state.Items, replacementID)
+			if replacement == nil || replacement.Inactive || replacement.MergedIntoID != "" {
+				continue
+			}
+			activeReplacementCount++
+			if !source.Inactive && sameCanonicalProposition(source, *replacement) {
+				duplicates++
+				violations = append(violations,
+					"semantic_split_source_fragment_duplicate:"+source.ID+":"+replacement.ID)
+			}
+		}
+		if activeReplacementCount == 0 {
+			missing++
+			violations = append(violations, "semantic_split_replacement_missing:"+source.ID)
+		}
+	}
+	return activeSources, duplicates, missing, violations
+}
+
 func qualityActualItem(item liveAnalysisItem) MeetingQualityActualItem {
 	return MeetingQualityActualItem{
 		ID:                  item.ID,
@@ -1067,6 +1122,7 @@ func qualityFullEvidenceScope(segments []domain.TranscriptSegment) liveEvidenceS
 			scope.CoveredThrough = segment.SequenceNo
 		}
 	}
+	applyAdjacentFinalSegmentStitches(&scope, segments)
 	timeline := classifyDiscourseTimeline(scope)
 	scope.EvidenceRoles = timeline.Roles
 	return scope

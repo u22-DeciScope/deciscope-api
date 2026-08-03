@@ -2205,6 +2205,278 @@
       ],
       "finalCoverage": 4,
       "applyFinalRepair": true
+    },
+    {
+      "id": "session-3d232d-completed-recovery-and-recap",
+      "description": "完了済み復旧作業をfactへ置換し、複数segmentのrecapで既存TODOを重複生成しない",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "山下", "text": "午前9時52分に旧スイッチへ一度切り戻し、その後、新しいスイッチのトランク設定と許可VLANを修正しました。"},
+        {"sequenceNo": 2, "speaker": "佐藤", "text": "佐藤さんが金曜日までに標準設定との差分を確認します。"},
+        {"sequenceNo": 3, "speaker": "山下", "text": "最後にここまでをまとめます。"},
+        {"sequenceNo": 4, "speaker": "山下", "text": "佐藤さんは金曜日までに標準設定との差分を確認します。"},
+        {"sequenceNo": 5, "speaker": "山下", "text": "以上で振り返りを終了します。"}
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "復旧作業", "currentTopic": "復旧",
+            "items": [{"clientKey": "wrong-recovery-todo", "kind": "todo", "severity": "medium", "title": "旧スイッチへの切り戻しと設定修正", "body": "午前9時52分に旧スイッチへ一度切り戻し、その後、新しいスイッチのトランク設定と許可VLANを修正した", "status": "open", "evidenceSequenceNos": [1], "evidenceSnippets": ["午前9時52分に旧スイッチへ一度切り戻し、その後、新しいスイッチのトランク設定と許可VLANを修正しました"]}],
+            "newTopics": [], "assignments": [], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [2],
+          "fixedAIResponse": {
+            "summary": "確認担当", "currentTopic": "再発防止",
+            "items": [{"clientKey": "settings-check-todo", "kind": "todo", "severity": "medium", "title": "標準設定との差分確認", "body": "佐藤さんが金曜日までに標準設定との差分を確認する", "status": "open", "evidenceSequenceNos": [2], "evidenceSnippets": ["佐藤さんが金曜日までに標準設定との差分を確認します"]}],
+            "newTopics": [], "assignments": [], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [3, 4, 5],
+          "fixedAIResponse": {
+            "summary": "振り返り", "currentTopic": "まとめ",
+            "items": [{"clientKey": "settings-check-recap-duplicate", "kind": "todo", "severity": "medium", "title": "標準設定との差分を確認", "body": "佐藤さんが金曜日までに標準設定との差分を確認する", "status": "open", "evidenceSequenceNos": [4], "evidenceSnippets": ["佐藤さんは金曜日までに標準設定との差分を確認します"]}],
+            "newTopics": [], "assignments": [], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "recovery-fact", "text": "午前9時52分に旧スイッチへ切り戻してトランク設定と許可VLANを修正した", "requiredKind": "fact", "evidenceSequenceNos": [1]},
+        {"id": "settings-check-todo", "text": "佐藤が金曜日までに標準設定との差分を確認する", "requiredKind": "todo", "evidenceSequenceNos": [2]}
+      ],
+      "forbiddenResults": [
+        {"type": "proposition", "text": "旧スイッチへの切り戻しと設定修正を今後行う"},
+        {"type": "semantic_duplicate"}
+      ],
+      "finalCoverage": 5,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "multi-round-explicit-correction-monotonicity",
+      "description": "明示訂正でsupersededになった旧命題を後続の別論点・recap・final repairでも復活またはresolved化しない",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "山下", "text": "交換後スイッチはアクセスポート設定でした。"},
+        {"sequenceNo": 2, "speaker": "山下", "text": "正確にはトランク設定はあり、許可VLAN一覧からVLAN30が漏れていました。"},
+        {"sequenceNo": 3, "speaker": "佐藤", "text": "再発防止として標準設定との差分確認手順を整備します。"},
+        {"sequenceNo": 4, "speaker": "山下", "text": "改めて整理すると、トランク設定はあり、VLAN30の許可漏れが原因候補です。"},
+        {"sequenceNo": 5, "speaker": "山下", "text": "2階の通信遅延までこの設定漏れで説明できるかは未確認です。"},
+        {"sequenceNo": 6, "speaker": "佐藤", "text": "標準設定との差分確認手順を整備します。"},
+        {"sequenceNo": 7, "speaker": "山下", "text": "以上で振り返りを終了します。"}
+      ],
+      "meetingContext": {},
+      "seedPayload": {
+        "summary": "設定調査",
+        "items": [
+          {"id": "old-access", "kind": "fact", "severity": "high", "title": "交換後スイッチはアクセスポート設定だった", "body": "交換後スイッチはアクセスポート設定だった", "status": "open", "evidenceSequenceNos": [1]}
+        ],
+        "tree": {
+          "nodes": [
+            {"id": "root", "kind": "topic", "label": "会議全体"},
+            {"id": "old-access", "kind": "fact", "parentId": "root", "label": "交換後スイッチはアクセスポート設定だった"}
+          ],
+          "edges": [{"source": "root", "target": "old-access"}]
+        },
+        "correctionRelations": [
+          {"sourceSequenceNo": 2, "targetSequenceNo": 1, "targetItemId": "old-access", "status": "pending", "confidence": 0.92, "locked": true, "establishedAtVersion": 1}
+        ],
+        "treeVersion": 1,
+        "coveredThroughSequenceNo": 1
+      },
+      "rounds": [
+        {
+          "sequenceNos": [2],
+          "fixedAIResponse": {"summary": "設定訂正", "currentTopic": "障害原因", "items": [], "newTopics": [], "assignments": [], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []}
+        },
+        {
+          "sequenceNos": [3],
+          "fixedAIResponse": {
+            "summary": "再発防止", "currentTopic": "再発防止",
+            "items": [{"clientKey": "prevention-todo", "kind": "todo", "severity": "medium", "title": "標準設定との差分確認手順を整備する", "body": "再発防止として標準設定との差分確認手順を整備する", "status": "open", "evidenceSequenceNos": [3], "evidenceSnippets": ["標準設定との差分確認手順を整備します"]}],
+            "newTopics": [], "assignments": [], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [4],
+          "fixedAIResponse": {
+            "summary": "設定訂正の再確認", "currentTopic": "障害原因",
+            "items": [{"clientKey": "recap-vlan", "kind": "fact", "severity": "high", "title": "許可VLAN一覧からVLAN30が漏れていた", "body": "VLAN30の許可漏れが原因候補", "status": "open", "evidenceSequenceNos": [4], "evidenceSnippets": ["トランク設定はあり、VLAN30の許可漏れが原因候補です"]}],
+            "newTopics": [], "assignments": [], "resolvedIds": ["old-access"], "resolutionUpdates": [{"itemId": "old-access", "status": "resolved", "evidenceSequenceNos": [4], "reason": "recapで再確認"}], "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [5],
+          "fixedAIResponse": {
+            "summary": "2階遅延の未確認事項", "currentTopic": "障害原因",
+            "items": [{"clientKey": "second-floor-limit", "kind": "issue", "subtype": "investigation", "severity": "medium", "title": "2階の通信遅延まで設定漏れで説明できるか未確認", "body": "2階の通信遅延までVLAN30設定漏れで説明できるかは未確認", "status": "open", "evidenceSequenceNos": [5], "evidenceSnippets": ["2階の通信遅延までこの設定漏れで説明できるかは未確認です"]}],
+            "newTopics": [], "assignments": [], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [6],
+          "fixedAIResponse": {
+            "summary": "再発防止策の再確認", "currentTopic": "再発防止",
+            "items": [{"clientKey": "prevention-recap-duplicate", "kind": "todo", "severity": "medium", "title": "標準設定との差分確認手順を整備する", "body": "再発防止として標準設定との差分確認手順を整備する", "status": "open", "evidenceSequenceNos": [6], "evidenceSnippets": ["標準設定との差分確認手順を整備します"]}],
+            "newTopics": [], "assignments": [], "resolvedIds": ["old-access"], "resolutionUpdates": [{"itemId": "old-access", "status": "resolved", "evidenceSequenceNos": [6], "reason": "後続roundのstale出力"}], "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [7],
+          "fixedAIResponse": {"summary": "会議終了", "currentTopic": "", "items": [], "newTopics": [], "assignments": [], "resolvedIds": ["old-access"], "resolutionUpdates": [{"itemId": "old-access", "status": "resolved", "evidenceSequenceNos": [7], "reason": "finalizationのstale出力"}], "utteranceRoles": []}
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "trunk-fact", "text": "トランク設定は入っていた", "requiredKind": "fact", "evidenceSequenceNos": [2]},
+        {"id": "vlan-fact", "text": "許可VLAN一覧からVLAN30が漏れていた", "requiredKind": "fact", "evidenceSequenceNos": [2]},
+        {"id": "prevention-todo", "text": "標準設定との差分確認手順を整備する", "requiredKind": "todo", "evidenceSequenceNos": [3]},
+        {"id": "second-floor-limit", "text": "2階の通信遅延までVLAN30設定漏れで説明できるか未確認", "requiredKind": "issue", "evidenceSequenceNos": [5]}
+      ],
+      "forbiddenResults": [
+        {"type": "proposition", "text": "交換後スイッチはアクセスポート設定だった"},
+        {"type": "semantic_duplicate"}
+      ],
+      "finalCoverage": 7,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "session-e1bb-vpn-candidate-cohesion",
+      "description": "同一no-agenda discourse spanのVPN証明書Fact・Risk・Issue・Todoを一つのdynamic topicへ統合し未完結labelを禁止する",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "山下", "text": "VPN装置の証明書が来月末に期限切れになります。"},
+        {"sequenceNo": 2, "speaker": "山下", "text": "放置するとリモート接続できなくなる可能性があります。"},
+        {"sequenceNo": 3, "speaker": "山下", "text": "今回の障害とは別の対応事項として管理します。"},
+        {"sequenceNo": 4, "speaker": "山下", "text": "高橋さんがVPN証明書の更新手順と作業可能日を確認します。"}
+      ],
+      "meetingContext": {},
+      "rounds": [
+        {
+          "sequenceNos": [1],
+          "fixedAIResponse": {
+            "summary": "VPN証明書の期限", "currentTopic": "VPN装置証明書",
+            "items": [{"clientKey": "vpn-expiry-fact", "kind": "fact", "severity": "high", "title": "VPN装置の証明書が来月末に期限切れになる", "body": "VPN装置の証明書が来月末に期限切れになる", "status": "open", "evidenceSequenceNos": [1], "evidenceSnippets": ["VPN装置の証明書が来月末に期限切れになります"]}],
+            "newTopics": [{"id": "vpn-device-certificate", "label": "VPN装置の証明書が来月末に期限切れになる", "description": "VPN装置証明書の期限切れ"}],
+            "assignments": [{"nodeId": "vpn-expiry-fact", "parentTopicId": "vpn-device-certificate", "confidence": 0.96}],
+            "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [2],
+          "fixedAIResponse": {
+            "summary": "リモート接続リスク", "currentTopic": "リモート接続リスク",
+            "items": [{"clientKey": "vpn-remote-risk", "kind": "risk", "severity": "high", "title": "証明書を放置するとリモート接続不能になるリスク", "body": "VPN装置の証明書を放置するとリモート接続できなくなる可能性がある", "status": "open", "evidenceSequenceNos": [1, 2], "evidenceSnippets": ["放置するとリモート接続できなくなる可能性があります"]}],
+            "newTopics": [{"id": "remote-connection-risk", "label": "リモート接続リスク", "description": "放置した場合の接続不能"}],
+            "assignments": [{"nodeId": "vpn-remote-risk", "parentTopicId": "remote-connection-risk", "confidence": 0.96}],
+            "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [3],
+          "fixedAIResponse": {
+            "summary": "別管理事項", "currentTopic": "VPN証明書更新管理",
+            "items": [{"clientKey": "vpn-management-issue", "kind": "issue", "subtype": "confirmation", "severity": "medium", "title": "VPN証明書更新を今回の障害とは別の対応事項として管理する", "body": "VPN証明書更新を今回の障害とは別の対応事項として管理する", "status": "open", "evidenceSequenceNos": [1, 3], "evidenceSnippets": ["今回の障害とは別の対応事項として管理します"]}],
+            "newTopics": [{"id": "vpn-renewal-management", "label": "VPN証明書更新管理", "description": "今回の障害とは別の対応事項"}],
+            "assignments": [{"nodeId": "vpn-management-issue", "parentTopicId": "vpn-renewal-management", "confidence": 0.96}],
+            "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []
+          }
+        },
+        {
+          "sequenceNos": [4],
+          "fixedAIResponse": {
+            "summary": "証明書更新確認", "currentTopic": "証明書更新作業",
+            "items": [{"clientKey": "vpn-renewal-todo", "kind": "todo", "severity": "high", "title": "高橋がVPN証明書の更新手順と作業可能日を確認する", "body": "高橋さんがVPN証明書の更新手順と作業可能日を確認する", "status": "open", "evidenceSequenceNos": [4], "evidenceSnippets": ["高橋さんがVPN証明書の更新手順と作業可能日を確認します"]}],
+            "newTopics": [{"id": "certificate-renewal-work", "label": "証明書更新作業", "description": "更新手順と作業可能日の確認"}],
+            "assignments": [{"nodeId": "vpn-renewal-todo", "parentTopicId": "certificate-renewal-work", "confidence": 0.96}],
+            "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "vpn-expiry-fact", "text": "VPN装置の証明書が来月末に期限切れになる", "requiredKind": "fact", "evidenceSequenceNos": [1]},
+        {"id": "vpn-remote-risk", "text": "VPN装置の証明書を放置するとリモート接続できなくなる可能性がある", "requiredKind": "risk", "evidenceSequenceNos": [1, 2]},
+        {"id": "vpn-management-issue", "text": "VPN証明書更新を今回の障害とは別の対応事項として管理する", "requiredKind": "issue", "evidenceSequenceNos": [1, 3]},
+        {"id": "vpn-renewal-todo", "text": "高橋がVPN証明書の更新手順と作業可能日を確認する", "requiredKind": "todo", "evidenceSequenceNos": [4]}
+      ],
+      "requiredRelations": [
+        {"from": "vpn-remote-risk", "to": "vpn-expiry-fact", "kind": "supported_by"},
+        {"from": "vpn-renewal-todo", "to": "vpn-management-issue", "kind": "action_for"}
+      ],
+      "forbiddenResults": [
+        {"type": "active_candidate", "text": "リモート接続リスク"},
+        {"type": "semantic_duplicate"}
+      ],
+      "finalCoverage": 4,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "session-fe947-publication-stitching-network-semantics",
+      "description": "実会議相当の分断文・過去fact・設定訂正・原因仮説と制約を複数アジェンダへ保持する",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "山下", "text": "ネットワーク障害の振り返りを始めます。"},
+        {"sequenceNo": 2, "speaker": "山下", "text": "本日午前9時20分ごろ、名古屋支社の3階で。"},
+        {"sequenceNo": 3, "speaker": "山下", "text": "中心に社内ネットワークへ接続できないという問題がありました。"},
+        {"sequenceNo": 4, "speaker": "山下", "text": "正確には2階の一部でも通信遅延が発生していました。"},
+        {"sequenceNo": 5, "speaker": "山下", "text": "有線LAN、無線LAN、ファイルサーバーへの接続に影響していました。"},
+        {"sequenceNo": 6, "speaker": "山下", "text": "インターネットは接続できる端末と接続できない端末が混在していました。"},
+        {"sequenceNo": 7, "speaker": "佐藤", "text": "ルーターとファイアウォールには異常がありませんでした。"},
+        {"sequenceNo": 8, "speaker": "佐藤", "text": "交換後スイッチのポートはアクセスポートでした。"},
+        {"sequenceNo": 9, "speaker": "佐藤", "text": "正確には、トランク設定はあり、許可VLAN一覧からVLAN30が漏れていました。"},
+        {"sequenceNo": 10, "speaker": "山下", "text": "VLAN30の設定漏れが障害の直接原因である可能性が最も高いです。ただし、2階の通信遅延までこの設定漏れで説明できるかは未確認です。"}
+      ],
+      "meetingContext": {
+        "title": "ネットワーク障害振り返り",
+        "agendaItems": [
+          {"id": "agenda-impact", "title": "障害の発生・影響範囲", "semanticHints": ["発生", "影響", "接続", "遅延"], "order": 1},
+          {"id": "agenda-cause", "title": "原因調査・設定漏れ", "semanticHints": ["原因", "設定", "VLAN", "スイッチ"], "order": 2}
+        ]
+      },
+      "rounds": [
+        {"sequenceNos": [1], "fixedAIResponse": {"summary": "会議開始", "currentTopic": "", "items": [], "newTopics": [], "assignments": [], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []}},
+        {"sequenceNos": [2,3], "fixedAIResponse": {"summary": "3階障害", "currentTopic": "障害の発生・影響範囲", "items": [{"clientKey": "third-floor", "kind": "fact", "severity": "high", "title": "名古屋支社3階を中心に社内ネットワーク接続障害が発生", "body": "本日午前9時20分ごろ名古屋支社3階を中心に社内ネットワークへ接続できない障害が発生した", "status": "open", "evidenceSequenceNos": [2,3], "evidenceSnippets": ["本日午前9時20分ごろ、名古屋支社の3階で", "中心に社内ネットワークへ接続できないという問題がありました"]}], "newTopics": [], "assignments": [{"nodeId": "third-floor", "parentTopicId": "agenda-impact", "confidence": 0.97}], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []}},
+        {"sequenceNos": [4,5,6,7,8], "fixedAIResponse": {"summary": "影響範囲と初期調査", "currentTopic": "障害の発生・影響範囲", "items": [
+          {"clientKey": "second-floor", "kind": "issue", "severity": "medium", "title": "2階の一部でも通信遅延が発生", "body": "2階の一部でも通信遅延が発生していた", "status": "open", "evidenceSequenceNos": [4], "evidenceSnippets": ["2階の一部でも通信遅延が発生していました"]},
+          {"clientKey": "services", "kind": "fact", "severity": "high", "title": "有線・無線・ファイルサーバー接続への影響", "body": "有線LAN、無線LAN、ファイルサーバーへの接続に影響していた", "status": "open", "evidenceSequenceNos": [5]},
+          {"clientKey": "mixed", "kind": "fact", "severity": "medium", "title": "接続できる端末とできない端末が混在", "body": "インターネットへ接続できる端末と接続できない端末が混在していた", "status": "open", "evidenceSequenceNos": [6]},
+          {"clientKey": "network-devices", "kind": "fact", "severity": "medium", "title": "ルーターとファイアウォールに異常なし", "body": "ルーターとファイアウォールには異常がなかった", "status": "open", "evidenceSequenceNos": [7]},
+          {"clientKey": "old-access", "kind": "fact", "severity": "high", "title": "交換後スイッチのポートはアクセスポート", "body": "交換後スイッチのポートはアクセスポートだった", "status": "open", "evidenceSequenceNos": [8]}
+        ], "newTopics": [], "assignments": [
+          {"nodeId": "second-floor", "parentTopicId": "agenda-impact", "confidence": 0.95},
+          {"nodeId": "services", "parentTopicId": "agenda-impact", "confidence": 0.95},
+          {"nodeId": "mixed", "parentTopicId": "agenda-impact", "confidence": 0.95},
+          {"nodeId": "network-devices", "parentTopicId": "agenda-cause", "confidence": 0.95},
+          {"nodeId": "old-access", "parentTopicId": "agenda-cause", "confidence": 0.95}
+        ], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []}},
+        {"sequenceNos": [9], "fixedAIResponse": {"summary": "設定訂正", "currentTopic": "原因調査・設定漏れ", "items": [
+          {"clientKey": "trunk", "kind": "fact", "severity": "high", "title": "交換後スイッチにはトランク設定あり", "body": "交換後スイッチにはトランク設定が入っていた", "status": "open", "evidenceSequenceNos": [9]},
+          {"clientKey": "vlan-missing", "kind": "fact", "severity": "high", "title": "許可VLAN一覧からVLAN30が漏れていた", "body": "交換後スイッチの許可VLAN一覧からVLAN30が漏れていた", "status": "open", "evidenceSequenceNos": [9]}
+        ], "newTopics": [], "assignments": [{"nodeId": "trunk", "parentTopicId": "agenda-cause", "confidence": 0.98}, {"nodeId": "vlan-missing", "parentTopicId": "agenda-cause", "confidence": 0.98}], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []}},
+        {"sequenceNos": [10], "fixedAIResponse": {"summary": "原因仮説と未確認範囲", "currentTopic": "原因調査・設定漏れ", "items": [
+          {"clientKey": "cause", "kind": "issue", "subtype": "investigation", "severity": "high", "title": "VLAN30設定漏れが障害の直接原因である可能性", "body": "VLAN30設定漏れが障害の直接原因である可能性が最も高い", "status": "open", "evidenceSequenceNos": [10]},
+          {"clientKey": "limit", "kind": "issue", "subtype": "investigation", "severity": "medium", "title": "2階の通信遅延まで説明できるか未確認", "body": "2階の通信遅延までVLAN30設定漏れで説明できるかは未確認", "status": "open", "evidenceSequenceNos": [10]}
+        ], "newTopics": [], "assignments": [{"nodeId": "cause", "parentTopicId": "agenda-cause", "confidence": 0.98}, {"nodeId": "limit", "parentTopicId": "agenda-cause", "confidence": 0.98}], "resolvedIds": [], "resolutionUpdates": [], "utteranceRoles": []}}
+      ],
+      "requiredPropositions": [
+        {"id": "third-floor", "text": "本日午前9時20分ごろ名古屋支社3階を中心に社内ネットワーク接続障害が発生", "requiredKind": "fact", "evidenceSequenceNos": [2,3], "requiredAgendaId": "agenda-impact"},
+        {"id": "second-floor", "text": "2階の一部でも通信遅延が発生していた", "requiredKind": "fact", "evidenceSequenceNos": [4], "requiredAgendaId": "agenda-impact", "requiredTemporalScope": "past", "requiredEpistemicStatus": "confirmed"},
+        {"id": "services", "text": "有線LAN、無線LAN、ファイルサーバーへの接続に影響していた", "requiredKind": "fact", "evidenceSequenceNos": [5]},
+        {"id": "network-devices", "text": "ルーターとファイアウォールには異常がなかった", "requiredKind": "fact", "evidenceSequenceNos": [7]},
+        {"id": "trunk", "text": "トランク設定はあり", "requiredKind": "fact", "evidenceSequenceNos": [9], "requiredAgendaId": "agenda-cause"},
+        {"id": "vlan-missing", "text": "許可VLAN一覧からVLAN30が漏れていた", "requiredKind": "fact", "evidenceSequenceNos": [9], "requiredAgendaId": "agenda-cause"},
+        {"id": "cause", "text": "VLAN30設定漏れが障害の直接原因である可能性が高い", "requiredKind": "issue", "evidenceSequenceNos": [10], "requiredAgendaId": "agenda-cause", "requiredEpistemicStatus": "hypothesis"},
+        {"id": "limit", "text": "2階の通信遅延までVLAN30設定漏れで説明できるか未確認", "requiredKind": "issue", "evidenceSequenceNos": [10], "requiredAgendaId": "agenda-cause", "requiredEpistemicStatus": "unresolved"}
+      ],
+      "requiredRelations": [
+        {"from": "cause", "to": "vlan-missing", "kind": "supported_by"},
+        {"from": "limit", "to": "cause", "kind": "limits"}
+      ],
+      "requiredParentSeparations": [{"from": "third-floor", "to": "cause"}],
+      "forbiddenResults": [
+        {"type": "proposition", "text": "交換後スイッチのポートはアクセスポートだった"},
+        {"type": "semantic_duplicate"}
+      ],
+      "finalCoverage": 10,
+      "applyFinalRepair": true
     }
   ]
 }

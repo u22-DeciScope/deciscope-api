@@ -354,6 +354,35 @@ func TestMeetingAIAnalysisProtocolMessageNullPayloadOnFailure(t *testing.T) {
 	}
 }
 
+func TestMeetingAIAnalysisProtocolMessageRunningIsStatusOnly(t *testing.T) {
+	analysis := domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisRunning, Version: 5,
+		Payload:                  json.RawMessage(`{"items":[{"id":"stale"}],"tree":{"nodes":[{"id":"root"}],"edges":[]}}`),
+		UpdatedAt:                time.Date(2026, 8, 3, 1, 2, 3, 0, time.UTC),
+		RequestedAnalysisVersion: 5,
+		TargetFromSequenceNo:     8,
+		TargetThroughSequenceNo:  9,
+		StartedAt:                time.Date(2026, 8, 3, 1, 2, 2, 0, time.UTC),
+	}
+	message := meetingAIAnalysisProtocolMessage(analysis, analysis.UpdatedAt)
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"stale"`) || strings.Contains(string(encoded), `"nodes"`) {
+		t.Fatalf("running event leaked stable projection: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"payload":null`) {
+		t.Fatalf("running payload is not null: %s", encoded)
+	}
+	for _, expected := range []string{`"requestedAnalysisVersion":5`, `"targetFromSequenceNo":8`, `"targetThroughSequenceNo":9`, `"startedAtUtc":"2026-08-03T01:02:02Z"`} {
+		if !strings.Contains(string(encoded), expected) {
+			t.Fatalf("running metadata %s missing: %s", expected, encoded)
+		}
+	}
+}
+
 func TestMeetingSessionStatusProtocolMessage(t *testing.T) {
 	session := domain.MeetingSession{
 		ID:        "session_1",

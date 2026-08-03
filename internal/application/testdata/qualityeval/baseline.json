@@ -14,6 +14,12 @@
     "todoRecall",
     "decisionRecall",
     "semanticDuplicateCount",
+    "semantic_split_source_active_count",
+    "semantic_split_source_fragment_duplicate_count",
+    "semantic_split_replacement_missing_count",
+    "recap_duplicate_item_count",
+    "recap_existing_item_update_count",
+    "recap_new_information_item_count",
     "lowInformationLabelCount",
     "contextDependentLabelCount",
     "truncatedLabelCount",
@@ -45,6 +51,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -93,6 +105,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -152,6 +170,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -211,6 +235,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -259,6 +289,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -311,6 +347,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -403,6 +445,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -451,6 +499,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -499,6 +553,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -547,6 +607,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -606,6 +672,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -665,6 +737,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -713,6 +791,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -779,6 +863,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 1,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -827,6 +917,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -886,6 +982,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -971,6 +1073,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -1086,6 +1194,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -1260,6 +1374,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -1341,6 +1461,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -1505,6 +1631,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -1587,6 +1719,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -1670,6 +1808,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -1751,6 +1895,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -1832,6 +1982,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -1939,6 +2095,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -2109,6 +2271,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -2191,6 +2359,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -2306,6 +2480,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -2439,6 +2619,12 @@
         "todoRecall": 1,
         "decisionRecall": 1,
         "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
         "lowInformationLabelCount": 0,
         "contextDependentLabelCount": 0,
         "truncatedLabelCount": 0,
@@ -2519,7 +2705,7 @@
           "propositionId": "vpn-risk",
           "kind": "risk",
           "parentPath": [
-            "監視運用"
+            "追加論点"
           ]
         }
       ],
@@ -2531,6 +2717,816 @@
       ],
       "finalCoverage": 2,
       "treeVersion": 2
+    },
+    {
+      "id": "multi-round-explicit-correction-monotonicity",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 2,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.5462409541677834,
+        "description_redundant_count": 0
+      },
+      "inputMode": "seeded_transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "trunk-fact",
+          "expectedText": "トランク設定は入っていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 0.631578947368421,
+          "bestActualCandidate": {
+            "id": "item-fact-9f0299b9efcb",
+            "kind": "fact",
+            "title": "トランク設定はあり",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "vlan-fact",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-a45546316d61",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていた",
+            "status": "updated",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "prevention-todo",
+          "expectedText": "標準設定との差分確認手順を整備する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-todo-ddb093755e1d",
+            "kind": "todo",
+            "title": "標準設定との差分確認手順を整備する",
+            "status": "updated",
+            "evidenceSequenceNos": [
+              3,
+              6
+            ]
+          }
+        },
+        {
+          "propositionId": "second-floor-limit",
+          "expectedText": "2階の通信遅延までVLAN30設定漏れで説明できるか未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            5
+          ],
+          "matched": true,
+          "similarity": 0.84,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-5acce3d1020f",
+            "kind": "issue",
+            "title": "2階の通信遅延まで設定漏れで説明できるか未確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              5
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "prevention-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "second-floor-limit",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "trunk-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "vlan-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 7,
+      "treeVersion": 6
+    },
+    {
+      "id": "session-3d232d-completed-recovery-and-recap",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 1,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.3823696145124717,
+        "description_redundant_count": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "recovery-fact",
+          "expectedText": "午前9時52分に旧スイッチへ切り戻してトランク設定と許可VLANを修正した",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 0.6349206349206349,
+          "bestActualCandidate": {
+            "id": "item-fact-f05da00ed6c2",
+            "kind": "fact",
+            "title": "新しいスイッチのトランク設定と許可VLANを修正しました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "settings-check-todo",
+          "expectedText": "佐藤が金曜日までに標準設定との差分を確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 0.9090909090909091,
+          "bestActualCandidate": {
+            "id": "item-todo-2eb759a1e76c",
+            "kind": "todo",
+            "title": "標準設定との差分確認",
+            "body": "佐藤さんが金曜日までに標準設定との差分を確認する",
+            "status": "updated",
+            "evidenceSequenceNos": [
+              2,
+              4
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "recovery-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "settings-check-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 5,
+      "treeVersion": 3
+    },
+    {
+      "id": "session-e1bb-vpn-candidate-cohesion",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 1,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.7459977623021102,
+        "description_redundant_count": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "vpn-expiry-fact",
+          "expectedText": "VPN装置の証明書が来月末に期限切れになる",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-9c39e150bd59",
+            "kind": "fact",
+            "title": "VPN装置の証明書が来月末に期限切れになる",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "vpn-remote-risk",
+          "expectedText": "VPN装置の証明書を放置するとリモート接続できなくなる可能性がある",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            1,
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-784749a310cc",
+            "kind": "risk",
+            "title": "証明書失効によるリモート接続不能リスク",
+            "body": "VPN装置の証明書を放置するとリモート接続できなくなる可能性がある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "vpn-management-issue",
+          "expectedText": "VPN証明書更新を今回の障害とは別の対応事項として管理する",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            1,
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-confirmation-7f3d2b34e9b4",
+            "kind": "issue",
+            "title": "VPN証明書更新を今回の障害とは別の対応事項として管理する",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "vpn-renewal-todo",
+          "expectedText": "高橋がVPN証明書の更新手順と作業可能日を確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-todo-8784af4fba5c",
+            "kind": "todo",
+            "title": "高橋がVPN証明書の更新手順と作業可能日を確認する",
+            "body": "高橋さんがVPN証明書の更新手順と作業可能日を確認する",
+            "status": "open",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "vpn-expiry-fact",
+          "kind": "fact",
+          "parentPath": [
+            "VPN装置の証明書の期限切れ対応",
+            "VPN証明書更新を今回の障害とは別の対応"
+          ]
+        },
+        {
+          "propositionId": "vpn-management-issue",
+          "kind": "issue",
+          "parentPath": [
+            "VPN装置の証明書の期限切れ対応",
+            "VPN証明書更新を今回の障害とは別の対応"
+          ]
+        },
+        {
+          "propositionId": "vpn-remote-risk",
+          "kind": "risk",
+          "parentPath": [
+            "VPN装置の証明書の期限切れ対応",
+            "VPN証明書更新を今回の障害とは別の対応"
+          ]
+        },
+        {
+          "propositionId": "vpn-renewal-todo",
+          "kind": "todo",
+          "parentPath": [
+            "VPN装置の証明書の期限切れ対応"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 4,
+      "treeVersion": 4
+    },
+    {
+      "id": "session-fe947-publication-stitching-network-semantics",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 5,
+        "issueCount": 2,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 2,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 4,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.5360148219365315,
+        "description_redundant_count": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "third-floor",
+          "expectedText": "本日午前9時20分ごろ名古屋支社3階を中心に社内ネットワーク接続障害が発生",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2,
+            3
+          ],
+          "matched": true,
+          "similarity": 0.8571428571428571,
+          "bestActualCandidate": {
+            "id": "item-fact-72852d19c12b",
+            "kind": "fact",
+            "title": "本日午前9時20分ごろ名古屋支社3階を中心に社内ネットワークへ接続できない障害が発生した",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2,
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "second-floor",
+          "expectedText": "2階の一部でも通信遅延が発生していた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            4
+          ],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "matched": true,
+          "similarity": 0.9333333333333333,
+          "bestActualCandidate": {
+            "id": "item-fact-ad6d007c84d9",
+            "kind": "fact",
+            "title": "2階の一部でも通信遅延が発生",
+            "status": "open",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        },
+        {
+          "propositionId": "services",
+          "expectedText": "有線LAN、無線LAN、ファイルサーバーへの接続に影響していた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            5
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-756dac0a7308",
+            "kind": "fact",
+            "title": "有線・無線・ファイルサーバー接続への影響",
+            "body": "有線LAN、無線LAN、ファイルサーバーへの接続に影響していた",
+            "status": "open",
+            "evidenceSequenceNos": [
+              5
+            ]
+          }
+        },
+        {
+          "propositionId": "network-devices",
+          "expectedText": "ルーターとファイアウォールには異常がなかった",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            7
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-b4f06a213e49",
+            "kind": "fact",
+            "title": "ルーターとファイアウォールに異常なし",
+            "body": "ルーターとファイアウォールには異常がなかった",
+            "status": "open",
+            "evidenceSequenceNos": [
+              7
+            ]
+          }
+        },
+        {
+          "propositionId": "trunk",
+          "expectedText": "トランク設定はあり",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            9
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-9f0299b9efcb",
+            "kind": "fact",
+            "title": "トランク設定はあり",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9
+            ]
+          }
+        },
+        {
+          "propositionId": "vlan-missing",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            9
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-000550e4d4ea",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていた",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9
+            ]
+          }
+        },
+        {
+          "propositionId": "cause",
+          "expectedText": "VLAN30設定漏れが障害の直接原因である可能性が高い",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            10
+          ],
+          "requiredEpistemicStatus": "hypothesis",
+          "matched": true,
+          "similarity": 0.9666666666666666,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-04c8ff5777f2",
+            "kind": "issue",
+            "title": "VLAN30設定漏れが障害の直接原因である可能性",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9,
+              10
+            ]
+          }
+        },
+        {
+          "propositionId": "limit",
+          "expectedText": "2階の通信遅延までVLAN30設定漏れで説明できるか未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            10
+          ],
+          "requiredEpistemicStatus": "unresolved",
+          "matched": true,
+          "similarity": 0.9473684210526315,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-3168f3dd6a03",
+            "kind": "issue",
+            "title": "2階の通信遅延まで説明できるか未確認",
+            "body": "2階の通信遅延までVLAN30設定漏れで説明できるかは未確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9,
+              10
+            ]
+          }
+        }
+      ],
+      "metricEvidence": [
+        {
+          "metric": "candidateFragmentationCount",
+          "expectationIds": [
+            "services",
+            "vlan-missing"
+          ],
+          "actualItemIds": [
+            "item-fact-000550e4d4ea",
+            "item-fact-756dac0a7308"
+          ],
+          "actualLabels": [
+            "許可VLAN一覧からVLAN30が漏れていた",
+            "有線・無線・ファイルサーバー接続への影響"
+          ],
+          "reason": "candidate_fragmentation: semantically similar evidence is split across top-level subjects"
+        },
+        {
+          "metric": "candidateFragmentationCount",
+          "expectationIds": [
+            "limit",
+            "second-floor"
+          ],
+          "actualItemIds": [
+            "item-fact-ad6d007c84d9",
+            "item-issue-investigation-3168f3dd6a03"
+          ],
+          "actualLabels": [
+            "2階の一部でも通信遅延が発生",
+            "2階の通信遅延まで説明できるか未確認"
+          ],
+          "reason": "candidate_fragmentation: semantically similar evidence is split across top-level subjects"
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "cause",
+          "kind": "issue",
+          "parentPath": [
+            "トランク設定はあり",
+            "2階の通信遅延まで説明できるか未確認"
+          ]
+        },
+        {
+          "propositionId": "limit",
+          "kind": "issue",
+          "parentPath": [
+            "トランク設定はあり",
+            "2階の通信遅延まで説明できるか未確認"
+          ]
+        },
+        {
+          "propositionId": "network-devices",
+          "kind": "fact",
+          "parentPath": [
+            "本日午前9時20分ごろ名古屋支社3階を中",
+            "2階の一部でも通信遅延が発生"
+          ]
+        },
+        {
+          "propositionId": "second-floor",
+          "kind": "fact",
+          "parentPath": [
+            "本日午前9時20分ごろ名古屋支社3階を中",
+            "2階の一部でも通信遅延が発生"
+          ]
+        },
+        {
+          "propositionId": "services",
+          "kind": "fact",
+          "parentPath": [
+            "本日午前9時20分ごろ名古屋支社3階を中",
+            "2階の一部でも通信遅延が発生"
+          ]
+        },
+        {
+          "propositionId": "third-floor",
+          "kind": "fact",
+          "parentPath": [
+            "本日午前9時20分ごろ名古屋支社3階を中",
+            "2階の一部でも通信遅延が発生"
+          ]
+        },
+        {
+          "propositionId": "trunk",
+          "kind": "fact",
+          "parentPath": [
+            "トランク設定はあり"
+          ]
+        },
+        {
+          "propositionId": "vlan-missing",
+          "kind": "fact",
+          "parentPath": [
+            "トランク設定はあり",
+            "2階の通信遅延まで説明できるか未確認"
+          ]
+        }
+      ],
+      "requiredParentSeparations": [
+        {
+          "from": "third-floor",
+          "to": "cause"
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 7
+        },
+        {
+          "kind": "issue",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 10,
+      "treeVersion": 4
     }
   ]
 }

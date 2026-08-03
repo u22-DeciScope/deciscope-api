@@ -19,6 +19,7 @@ import (
 
 func main() {
 	app.LoadEnvironmentFiles()
+	app.LogBuildFingerprint()
 
 	command := "serve"
 	if len(os.Args) > 1 {

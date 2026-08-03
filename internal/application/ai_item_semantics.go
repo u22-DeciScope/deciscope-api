@@ -9,6 +9,11 @@ import (
 
 var correctionSpecificTokenPattern = regexp.MustCompile(`[\p{Katakana}ー]{4,}|[A-Za-z][A-Za-z0-9_-]{2,}`)
 var strongCorrectionLeadPattern = regexp.MustCompile(`^(?:いえ[、,]?)?(?:正確には|厳密には|言い直すと|訂正(?:します|すると)?|先ほどの(?:説明|発言|内容))`)
+var correctionPortSubjectPattern = regexp.MustCompile(`(?:スイッチ|ポート|インターフェース|interface|switch|port)`)
+var correctionAccessModePattern = regexp.MustCompile(`(?:アクセスポート|アクセス(?:モード|設定)|access\s*port|portMode\s*=\s*access)`)
+var correctionTrunkModePattern = regexp.MustCompile(`(?:トランク(?:ポート|モード|設定)?|trunk\s*port|portMode\s*=\s*trunk)`)
+var correctionPortConfigurationPattern = regexp.MustCompile(`(?:トランク|アクセス|VLAN|許可(?:一覧|設定)?|ポート(?:モード|設定)?)`)
+var correctionAdditiveScopePattern = regexp.MustCompile(`(?:でも|にも|加えて|あわせて|一部でも|別の|さらに)`)
 
 type crossKindUpdateDecision struct {
 	ExistingItemID string
@@ -545,6 +550,8 @@ type correctionSupersessionDecision struct {
 	NewTargetSequenceNo   int64
 	RelationChangeAllowed bool
 	RelationLocked        bool
+	AttemptedNextState    string
+	TransitionRejected    bool
 }
 
 type correctionRelation struct {
@@ -697,7 +704,7 @@ func repairCorrectionSupersessions(
 			SourceSequenceNo: sequenceNo, TargetSequenceNo: targetSequenceNo,
 			TargetItemID: superseded.ID, ReplacementItemID: replacementID,
 			Status: "pending", Confidence: similarity, Locked: locked,
-			EstablishedAtVersion: treeVersion,
+			Origin: "explicit_correction", EstablishedAtVersion: treeVersion,
 		}
 		if !locked {
 			upsertCorrectionRelation(state, relation)
@@ -813,12 +820,31 @@ func applyLockedCorrectionRelation(
 	}
 	target := state.Items[targetAt]
 	replacement := state.Items[replacementAt]
+	if strings.TrimSpace(relation.Origin) == "" {
+		relation.Origin = "explicit_correction"
+	}
+	supersessionOrigin := "explicit_correction"
+	if manualCorrectionRelation(*relation) {
+		supersessionOrigin = "manual_user_edit"
+	}
 	changed := !target.Inactive || target.MergedIntoID != replacement.ID ||
-		target.SuppressionReason != "superseded_by_explicit_correction"
+		target.SuppressionReason != "superseded_by_explicit_correction" ||
+		target.InformationStatus != "superseded"
 	state.Items[targetAt].Inactive = true
 	state.Items[targetAt].MergedIntoID = replacement.ID
 	state.Items[targetAt].CandidateInactive = false
 	state.Items[targetAt].SuppressionReason = "superseded_by_explicit_correction"
+	state.Items[targetAt].InformationStatus = "superseded"
+	state.Items[targetAt].SupersededByItemID = replacement.ID
+	if state.Items[targetAt].SupersededAtTreeVersion == 0 {
+		state.Items[targetAt].SupersededAtTreeVersion = treeVersion
+	}
+	state.Items[targetAt].SupersessionOrigin = supersessionOrigin
+	state.Items[targetAt].SupersessionEvidenceSequenceNos = appendUniqueSequence(
+		state.Items[targetAt].SupersessionEvidenceSequenceNos, relation.SourceSequenceNo,
+	)
+	state.Items[targetAt].RestoredAtTreeVersion = 0
+	state.Items[targetAt].RestorationOrigin = ""
 	// Superseded is a correction lifecycle, not a successful resolution. A
 	// recovery sentence can be processed before this relation is applied in the
 	// same merge, and legacy payloads may already contain that invalid state.
@@ -830,7 +856,7 @@ func applyLockedCorrectionRelation(
 	relation.ReplacementItemID = replacement.ID
 	addItemTombstone(
 		state, target, "superseded", replacement.ID,
-		"correction_supersession", "", treeVersion-1, treeVersion,
+		supersessionOrigin, "", treeVersion-1, treeVersion,
 	)
 	removeItemNodesFromTree(state.Tree, map[string]struct{}{target.ID: {}})
 	removeSemanticRelationsForItems(state.Tree, map[string]struct{}{target.ID: {}})
@@ -853,6 +879,189 @@ func applyLockedCorrectionRelation(
 			Reason:         "explicit_correction_relation_locked",
 			RelationLocked: true,
 		})
+	}
+}
+
+// enforceExplicitSupersessionMonotonicity makes the previous canonical item
+// state authoritative over a later model diff, stale replay, validator pass,
+// or audit clone. Only a trusted manual restore carrying explicit provenance
+// may cross the superseded -> active boundary.
+func enforceExplicitSupersessionMonotonicity(
+	state *liveAnalysisPayload,
+	previous liveAnalysisPayload,
+	treeVersion int64,
+	stats *liveAnalysisTreeMergeStats,
+) {
+	if state == nil || len(previous.Items) == 0 {
+		return
+	}
+	currentByID := make(map[string]int, len(state.Items))
+	for index := range state.Items {
+		currentByID[state.Items[index].ID] = index
+	}
+	for _, old := range previous.Items {
+		if old.SupersessionOrigin != "explicit_correction" ||
+			old.SupersededAtTreeVersion <= 0 {
+			continue
+		}
+		if manualItemRestore(old) {
+			continue
+		}
+		at, exists := currentByID[old.ID]
+		if !exists {
+			continue
+		}
+		current := &state.Items[at]
+		if manualItemRestore(*current) {
+			continue
+		}
+		wasReactivated := !current.Inactive
+		wasResolved := current.Status == "resolved"
+		provenanceChanged := current.InformationStatus != "superseded" ||
+			current.SupersededByItemID != old.SupersededByItemID ||
+			current.SupersededAtTreeVersion != old.SupersededAtTreeVersion ||
+			current.SupersessionOrigin != old.SupersessionOrigin
+		if !wasReactivated && !wasResolved && !provenanceChanged {
+			continue
+		}
+		current.Inactive = true
+		current.MergedIntoID = firstNonEmptyTrimmed(old.SupersededByItemID, old.MergedIntoID)
+		current.CandidateInactive = false
+		current.InformationStatus = "superseded"
+		current.SuppressionReason = "superseded_by_explicit_correction"
+		current.SupersededByItemID = firstNonEmptyTrimmed(old.SupersededByItemID, old.MergedIntoID)
+		current.SupersededByItemIDs = append([]string(nil), old.SupersededByItemIDs...)
+		current.SupersededAtTreeVersion = old.SupersededAtTreeVersion
+		current.SupersessionOrigin = old.SupersessionOrigin
+		current.SupersessionEvidenceSequenceNos = append(
+			[]int64(nil), old.SupersessionEvidenceSequenceNos...,
+		)
+		current.Status = "open"
+		current.ResolvedAtVersion = 0
+		current.ResolutionEvidenceSequenceNos = nil
+		current.ResolutionReason = ""
+		current.RestoredAtTreeVersion = 0
+		current.RestorationOrigin = ""
+		removeItemNodesFromTree(state.Tree, map[string]struct{}{current.ID: {}})
+		removeSemanticRelationsForItems(state.Tree, map[string]struct{}{current.ID: {}})
+		addItemTombstone(
+			state, *current, "superseded", current.SupersededByItemID,
+			"explicit_correction", "", old.SupersededAtTreeVersion-1,
+			old.SupersededAtTreeVersion,
+		)
+		if stats != nil {
+			if wasReactivated {
+				stats.SupersededReactivated++
+			}
+			if wasResolved {
+				stats.SupersededResolved++
+			}
+			stats.CorrectionMonotonicityViolations++
+			attemptedState := "superseded_metadata_changed"
+			switch {
+			case wasReactivated:
+				attemptedState = "active"
+			case wasResolved:
+				attemptedState = "resolved"
+			}
+			stats.CorrectionDecisions = append(stats.CorrectionDecisions, correctionSupersessionDecision{
+				SupersededItemID:   old.ID,
+				ReplacementItemID:  old.SupersededByItemID,
+				Decision:           "transition_rejected",
+				Reason:             "supersession_is_monotonic",
+				AttemptedNextState: attemptedState,
+				TransitionRejected: true,
+			})
+		}
+	}
+}
+
+func manualItemRestore(item liveAnalysisItem) bool {
+	origin := strings.ToLower(strings.TrimSpace(item.RestorationOrigin))
+	return item.RestoredAtTreeVersion > item.SupersededAtTreeVersion &&
+		(origin == "manual" || origin == "manual_user_edit" || origin == "user")
+}
+
+// repairPersistedExplicitSupersessions upgrades legacy payloads and also
+// protects fresh readers from a partially written/stale item state. A locked
+// correction relation or explicit-correction tombstone is durable evidence;
+// the old proposition must not be projected as active merely because its item
+// fields came from an older snapshot.
+func repairPersistedExplicitSupersessions(state *liveAnalysisPayload) {
+	if state == nil {
+		return
+	}
+	type provenance struct {
+		replacementID string
+		version       int64
+		evidence      []int64
+	}
+	byID := make(map[string]provenance)
+	for _, relation := range state.CorrectionRelations {
+		if !relation.Locked || relation.Status != "superseded" || relation.TargetItemID == "" {
+			continue
+		}
+		version := relation.EstablishedAtVersion
+		if version <= 0 {
+			version = state.TreeVersion
+		}
+		byID[relation.TargetItemID] = provenance{
+			replacementID: relation.ReplacementItemID,
+			version:       version,
+			evidence:      []int64{relation.SourceSequenceNo},
+		}
+	}
+	for _, tombstone := range state.ItemTombstones {
+		if tombstone.Reason != "superseded" || tombstone.CanonicalItemID == "" {
+			continue
+		}
+		origin := strings.ToLower(strings.TrimSpace(tombstone.CreatedBy))
+		if origin != "explicit_correction" && origin != "correction_supersession" {
+			continue
+		}
+		if _, exists := byID[tombstone.CanonicalItemID]; !exists {
+			byID[tombstone.CanonicalItemID] = provenance{
+				replacementID: tombstone.MergedIntoItemID,
+				version:       tombstone.CreatedAtVersion,
+			}
+		}
+	}
+	for index := range state.Items {
+		item := &state.Items[index]
+		entry, exists := byID[item.ID]
+		if !exists && item.SupersessionOrigin != "explicit_correction" {
+			continue
+		}
+		if !exists {
+			entry = provenance{
+				replacementID: item.SupersededByItemID,
+				version:       item.SupersededAtTreeVersion,
+				evidence:      item.SupersessionEvidenceSequenceNos,
+			}
+		}
+		if manualItemRestore(*item) {
+			continue
+		}
+		item.Inactive = true
+		item.Status = "open"
+		item.InformationStatus = "superseded"
+		item.MergedIntoID = firstNonEmptyTrimmed(entry.replacementID, item.MergedIntoID)
+		item.SupersededByItemID = firstNonEmptyTrimmed(entry.replacementID, item.SupersededByItemID, item.MergedIntoID)
+		if item.SupersededAtTreeVersion == 0 {
+			item.SupersededAtTreeVersion = entry.version
+		}
+		item.SupersessionOrigin = "explicit_correction"
+		for _, sequenceNo := range entry.evidence {
+			item.SupersessionEvidenceSequenceNos = appendUniqueSequence(
+				item.SupersessionEvidenceSequenceNos, sequenceNo,
+			)
+		}
+		item.SuppressionReason = "superseded_by_explicit_correction"
+		item.ResolvedAtVersion = 0
+		item.ResolutionEvidenceSequenceNos = nil
+		item.ResolutionReason = ""
+		removeItemNodesFromTree(state.Tree, map[string]struct{}{item.ID: {}})
+		removeSemanticRelationsForItems(state.Tree, map[string]struct{}{item.ID: {}})
 	}
 }
 
@@ -904,7 +1113,13 @@ func bestSupersededCorrectionItem(
 		}
 		itemText := item.Title + " " + item.Body
 		score := semanticItemSimilarity(itemText, correctionText)
-		sharedSubject := sharedTreeAuditSubjectTerm(itemText, correctionText)
+		structuredContradiction := structuredCorrectionPredicateContradiction(itemText, correctionText)
+		sharedSubject := sharedTreeAuditSubjectTerm(itemText, correctionText) || structuredContradiction
+		if correctionAdditiveScopePattern.MatchString(correctionText) && oldReference == "" && !structuredContradiction {
+			// An additive location/entity qualifier expands the confirmed scope;
+			// it does not contradict and retire the preceding observation.
+			continue
+		}
 		// A correction marker alone is not enough to retire a proposition.
 		// Require both a concrete shared subject and meaningful proposition
 		// overlap so that a multi-fact recap containing "正確には" does not
@@ -939,6 +1154,9 @@ func bestSupersededCorrectionItem(
 		if immediateExplicitCorrection && sharedSubject && confidence < 0.35 {
 			confidence = 0.35
 		}
+		if immediateExplicitCorrection && structuredContradiction && confidence < 0.80 {
+			confidence = 0.80
+		}
 		if (!sharedSubject && !immediateExplicitCorrection &&
 			!oldReferenceTokenOverlap) || confidence < 0.20 {
 			continue
@@ -954,6 +1172,21 @@ func bestSupersededCorrectionItem(
 		}
 	}
 	return bestAt, bestScore
+}
+
+// structuredCorrectionPredicateContradiction is deliberately narrow: it
+// bridges lexical variation only for the same port-configuration subject and
+// requires the mutually exclusive access/trunk predicates. Proximity or the
+// generic word "設定" alone can never satisfy it.
+func structuredCorrectionPredicateContradiction(previous, correction string) bool {
+	previousHasSubject := correctionPortSubjectPattern.MatchString(previous)
+	correctionHasSubject := correctionPortSubjectPattern.MatchString(correction) ||
+		correctionPortConfigurationPattern.MatchString(correction)
+	if !previousHasSubject || !correctionHasSubject {
+		return false
+	}
+	return (correctionAccessModePattern.MatchString(previous) && correctionTrunkModePattern.MatchString(correction)) ||
+		(correctionTrunkModePattern.MatchString(previous) && correctionAccessModePattern.MatchString(correction))
 }
 
 func correctionReferencedOldContent(text string) string {

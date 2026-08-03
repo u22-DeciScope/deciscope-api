@@ -452,7 +452,11 @@ func TestMeetingSessionAPIRecordBotHeartbeatRecordsBotMediaMetrics(t *testing.T)
 		"recognizerInstanceIdHash": "abc123",
 		"lastRecognizerStartedAtUtc": "2026-06-27T00:04:20Z",
 		"lastSpeechPartialAtUtc": "2026-06-27T00:04:29Z",
-		"lastSpeechFinalAtUtc": "2026-06-27T00:04:30Z"
+		"lastSpeechFinalAtUtc": "2026-06-27T00:04:30Z",
+		"botBuildVersion": "main-42",
+		"botGitCommitSha": "0123456789abcdef0123456789abcdef01234567",
+		"botBuildTimestamp": "2026-06-27T00:00:00Z",
+		"botDirtyBuild": "false"
 	}`
 	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", body)
 	req.Header.Set("Content-Type", "application/json")
@@ -484,6 +488,11 @@ func TestMeetingSessionAPIRecordBotHeartbeatRecordsBotMediaMetrics(t *testing.T)
 	}
 	if metrics.ReceivedAt.IsZero() {
 		t.Fatalf("recorded metrics ReceivedAt should be stamped by the store, got zero value")
+	}
+	if metrics.BotBuildVersion != "main-42" ||
+		metrics.BotGitCommitSHA != "0123456789abcdef0123456789abcdef01234567" ||
+		metrics.BotBuildTimestamp != "2026-06-27T00:00:00Z" || metrics.BotDirtyBuild != "false" {
+		t.Fatalf("recorded bot build fingerprint = %+v", metrics)
 	}
 }
 

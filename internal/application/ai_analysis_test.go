@@ -99,10 +99,11 @@ func TestMeetingAnalysisServiceRunsLiveAnalysisAndPublishes(t *testing.T) {
 
 	waitUntil(t, time.Second, func() bool { return len(publisher.snapshot()) >= 2 })
 	published := publisher.snapshot()
-	// The ephemeral running notification is broadcast right before the Azure
-	// call and must never be written to the database.
-	if published[0].Status != domain.MeetingAIAnalysisRunning || published[0].Version != 0 {
-		t.Fatalf("first published = %+v, want ephemeral running event with previous version", published[0])
+	// The ephemeral running notification identifies the sealed requested
+	// version, carries no stable payload, and is never written to the database.
+	if published[0].Status != domain.MeetingAIAnalysisRunning || published[0].Version != 1 ||
+		published[0].RequestedAnalysisVersion != 1 || len(published[0].Payload) != 0 {
+		t.Fatalf("first published = %+v, want status-only requested version 1", published[0])
 	}
 	if published[len(published)-1].Status != domain.MeetingAIAnalysisCompleted {
 		t.Fatalf("published = %+v", published)

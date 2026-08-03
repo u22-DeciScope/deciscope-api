@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -34,6 +35,7 @@ const (
 	liveAnalysisDeferredRetryBlocked        = "retry_blocked"
 	liveAnalysisDeferredBackoff             = "backoff"
 	liveAnalysisDeferredSessionStatusLookup = "session_status_unavailable"
+	liveAnalysisTriggerImmediateCatchUp     = "immediate_catch_up"
 )
 
 var liveAnalysisFillerOnly = map[string]struct{}{
@@ -42,6 +44,67 @@ var liveAnalysisFillerOnly = map[string]struct{}{
 	"なるほど": {}, "了解": {}, "わかりました": {}, "承知しました": {},
 	"え": {}, "えー": {}, "ええと": {}, "えっと": {}, "あの": {},
 	"その": {}, "まあ": {}, "なんか": {}, "うーん": {}, "ん": {}, "無音": {},
+}
+
+var (
+	liveSemanticSentenceCompletePattern = regexp.MustCompile(`(?:でした|ました|ています|ていました|ありません|ないです|です|ます|した|する|なった|なる|できない|できません|未確認|未決定|可能性(?:が)?(?:高い|ある))[。．.!！?？]?$`)
+	liveSemanticSubjectPattern          = regexp.MustCompile(`(?:は|が|を|には|では|において|について|から|まで)`)
+	liveSemanticPredicatePattern        = regexp.MustCompile(`(?:発生|確認|異常|接続|復旧|切り戻|修正|影響|遅延|決定|合意|対応|実施|確認|担当|期限|原因|漏れ|不足|完了|終了|未確認|未決定|可能性)`)
+	liveSemanticCorrectionPattern       = regexp.MustCompile(`(?:正確には|訂正すると|先ほどの説明は違|ではなく|じゃなく|厳密には)`)
+	liveSemanticDecisionPattern         = regexp.MustCompile(`(?:決定しました|決めました|合意しました|とします|で進めます)`)
+	liveSemanticRiskPattern             = regexp.MustCompile(`(?:リスク|恐れ|懸念|可能性があります|おそれ)`)
+	liveSemanticTodoPattern             = regexp.MustCompile(`(?:担当|期限|までに|します|対応します|確認します|実施します)`)
+	liveSemanticHypothesisPattern       = regexp.MustCompile(`(?:原因である可能性|原因の可能性|可能性が最も高|原因候補|と考えられ)`)
+	liveSemanticUnresolvedPattern       = regexp.MustCompile(`(?:未確認|未解決|不明|未決定|確認できていない|説明できるか)`)
+	liveSemanticCompletedActionPattern  = regexp.MustCompile(`(?:完了しました|実施しました|切り戻しました|修正しました|復旧しました|対応済み)`)
+	liveSemanticConfirmedStatePattern   = regexp.MustCompile(`(?:発生していました|確認しました|異常はありませんでした|接続できませんでした|復旧しました|影響していました|遅延がありました)`)
+	liveSemanticSpecificPattern         = regexp.MustCompile(`(?:\d|午前|午後|本日|今日|明日|来週|VLAN|ルーター|ファイアウォール|サーバー|スイッチ|ネットワーク)`)
+)
+
+type liveSemanticTriggerFeatures struct {
+	SubjectPresent, PredicatePresent, SentenceComplete                   bool
+	CorrectionCuePresent, DecisionCuePresent, RiskCuePresent             bool
+	TodoCuePresent, HypothesisCuePresent, UnresolvedCuePresent           bool
+	CompletedActionPresent, ConfirmedStatePresent, SpecificEntityPresent bool
+}
+
+func semanticTriggerFeatures(text string) liveSemanticTriggerFeatures {
+	text = strings.TrimSpace(text)
+	return liveSemanticTriggerFeatures{
+		SubjectPresent:         liveSemanticSubjectPattern.MatchString(text),
+		PredicatePresent:       liveSemanticPredicatePattern.MatchString(text),
+		SentenceComplete:       liveSemanticSentenceCompletePattern.MatchString(text),
+		CorrectionCuePresent:   liveSemanticCorrectionPattern.MatchString(text),
+		DecisionCuePresent:     liveSemanticDecisionPattern.MatchString(text),
+		RiskCuePresent:         liveSemanticRiskPattern.MatchString(text),
+		TodoCuePresent:         liveSemanticTodoPattern.MatchString(text),
+		HypothesisCuePresent:   liveSemanticHypothesisPattern.MatchString(text),
+		UnresolvedCuePresent:   liveSemanticUnresolvedPattern.MatchString(text),
+		CompletedActionPresent: liveSemanticCompletedActionPattern.MatchString(text),
+		ConfirmedStatePresent:  liveSemanticConfirmedStatePattern.MatchString(text),
+		SpecificEntityPresent:  liveSemanticSpecificPattern.MatchString(text),
+	}
+}
+
+func (f liveSemanticTriggerFeatures) complete() bool {
+	semanticCue := f.CorrectionCuePresent || f.DecisionCuePresent || f.RiskCuePresent ||
+		f.TodoCuePresent || f.HypothesisCuePresent || f.UnresolvedCuePresent ||
+		f.CompletedActionPresent || f.ConfirmedStatePresent
+	return f.SentenceComplete && ((f.SubjectPresent && f.PredicatePresent) || semanticCue || (f.PredicatePresent && f.SpecificEntityPresent))
+}
+
+func (f liveSemanticTriggerFeatures) highPriority() bool {
+	return f.CorrectionCuePresent || f.DecisionCuePresent || f.RiskCuePresent ||
+		f.TodoCuePresent || f.HypothesisCuePresent || f.UnresolvedCuePresent
+}
+
+func pendingSemanticTrigger(segments []domain.TranscriptSegment) (complete, highPriority bool) {
+	for _, segment := range segments {
+		features := semanticTriggerFeatures(segment.Text)
+		complete = complete || features.complete()
+		highPriority = highPriority || features.highPriority()
+	}
+	return complete, highPriority
 }
 
 func (s *MeetingAnalysisService) logLiveAnalysisSchedulerStopped(reason string) {
@@ -81,6 +144,7 @@ func (s *MeetingAnalysisService) evaluateLiveAnalysisTrigger(sessionID, trigger 
 		return
 	case state.running:
 		state.rerunRequested = true
+		state.catchUpRequested = true
 		state.coalescedTriggerCount++
 		state.lastDeferredReason = liveAnalysisDeferredAnalysisRunning
 		s.logLiveAnalysisTriggerEvaluationLocked(sessionID, trigger, now, state, "coalesced", liveAnalysisDeferredAnalysisRunning, 0, time.Time{})
@@ -149,17 +213,25 @@ func (s *MeetingAnalysisService) evaluateLiveAnalysisTrigger(sessionID, trigger 
 }
 
 func (s *MeetingAnalysisService) nextLiveAnalysisTimeLocked(state *liveAnalysisSessionState, now time.Time) (time.Time, string) {
+	if state.catchUpRequested || (state.rerunRequested && state.lastDeferredReason == liveAnalysisDeferredAnalysisRunning) {
+		scheduledFor := now
+		if !state.nextAttemptAt.IsZero() && state.nextAttemptAt.After(scheduledFor) {
+			return state.nextAttemptAt, liveAnalysisDeferredBackoff
+		}
+		return scheduledFor, liveAnalysisTriggerImmediateCatchUp
+	}
+	semanticComplete, highPriority := pendingSemanticTrigger(state.pending)
 	debounceBase := state.latestPendingFinalAt
 	if debounceBase.IsZero() {
 		debounceBase = now
 	}
 	scheduledFor := debounceBase.Add(s.config.LiveDebounce)
 	reason := "debounce"
-	if state.pendingChars < s.config.LiveMinChars {
+	if state.pendingChars < s.config.LiveMinChars && !semanticComplete {
 		scheduledFor = state.oldestPendingFinalAt.Add(s.config.LiveMaxWait)
 		reason = liveAnalysisDeferredBelowMinimumInput
 	}
-	if !state.lastAnalysisCompletedAt.IsZero() {
+	if !state.lastAnalysisCompletedAt.IsZero() && !highPriority {
 		cooldownUntil := state.lastAnalysisCompletedAt.Add(s.config.LiveCooldown)
 		if cooldownUntil.After(scheduledFor) {
 			scheduledFor = cooldownUntil
@@ -236,6 +308,7 @@ func (s *MeetingAnalysisService) dispatchScheduledLiveAnalysis(sessionID string,
 		return
 	case state.running:
 		state.rerunRequested = true
+		state.catchUpRequested = true
 		s.logLiveAnalysisTriggerEvaluationLocked(sessionID, liveAnalysisTriggerScheduledTimer, now, state, "coalesced", liveAnalysisDeferredAnalysisRunning, 0, time.Time{})
 		s.mu.Unlock()
 		return
@@ -271,7 +344,8 @@ func (s *MeetingAnalysisService) dispatchScheduledLiveAnalysis(sessionID string,
 	if runTrigger == "" {
 		runTrigger = liveAnalysisTriggerScheduledTimer
 	}
-	if state.pendingChars < s.config.LiveMinChars || (!oldestPendingAt.IsZero() && now.Sub(oldestPendingAt) >= s.config.LiveMaxWait) {
+	semanticComplete, _ := pendingSemanticTrigger(state.pending)
+	if (state.pendingChars < s.config.LiveMinChars && !semanticComplete) || (!oldestPendingAt.IsZero() && now.Sub(oldestPendingAt) >= s.config.LiveMaxWait) {
 		runTrigger = liveAnalysisTriggerMaxWait
 	}
 	fromSequence, throughSequence := liveAnalysisSequenceRange(segments)
@@ -283,6 +357,7 @@ func (s *MeetingAnalysisService) dispatchScheduledLiveAnalysis(sessionID string,
 	state.running = true
 	state.runningDone = make(chan struct{})
 	state.rerunRequested = false
+	state.catchUpRequested = false
 	state.lastAnalysisStartedAt = now
 	state.lastTrigger = runTrigger
 	state.lastDeferredReason = ""
@@ -294,14 +369,13 @@ func (s *MeetingAnalysisService) dispatchScheduledLiveAnalysis(sessionID string,
 	state.runningCoalescedTriggerCount = coalesced
 	state.coalescedTriggerCount = 0
 	state.scheduledTrigger = ""
-	oldestAge := durationSince(now, oldestPendingAt)
-	latestDelay := durationSince(now, latestFinalAt)
+	delays := livePendingFinalDelays(now, oldestPendingAt, latestFinalAt)
 	log.Printf("Live AI analysis trigger evaluated. sessionId=%s trigger=%s currentTime=%s lastCoveredSequenceNo=%d highestAvailableFinalSequenceNo=%d pendingFinalSegmentCount=%d pendingChars=%d oldestPendingAgeMs=%d analysisRunning=%t analysisScheduled=%t cooldownRemainingMs=0 contextStatus=%s decision=scheduled reason=eligible scheduledDelayMs=0 scheduledFor=%s",
 		sessionID, runTrigger, now.UTC().Format(time.RFC3339Nano), state.lastCoveredSequenceNo, state.highestAvailableFinalSequenceNo,
-		len(segments), sumSegmentChars(segments), oldestAge.Milliseconds(), state.running, state.analysisScheduled, liveContextStatus(state), now.UTC().Format(time.RFC3339Nano))
+		len(segments), sumSegmentChars(segments), delays.FromOldest.Milliseconds(), state.running, state.analysisScheduled, liveContextStatus(state), now.UTC().Format(time.RFC3339Nano))
 	log.Printf("Live AI analysis started. sessionId=%s trigger=%s targetFromSequenceNo=%d targetThroughSequenceNo=%d segmentCount=%d chars=%d oldestPendingAgeMs=%d delayFromLatestFinalMs=%d delayFromOldestFinalMs=%d coalescedTriggerCount=%d",
 		sessionID, runTrigger, fromSequence, throughSequence, len(segments), sumSegmentChars(segments),
-		oldestAge.Milliseconds(), latestDelay.Milliseconds(), oldestAge.Milliseconds(), coalesced)
+		delays.FromOldest.Milliseconds(), delays.FromLatest.Milliseconds(), delays.FromOldest.Milliseconds(), coalesced)
 	s.mu.Unlock()
 
 	go s.runLiveAnalysis(runCtx, sessionID, segments)
@@ -469,6 +543,21 @@ func durationSince(now, then time.Time) time.Duration {
 		return 0
 	}
 	return now.Sub(then)
+}
+
+type livePendingFinalDelayMetrics struct {
+	FromOldest time.Duration
+	FromLatest time.Duration
+}
+
+// livePendingFinalDelays names the two scheduler ages at their source. The
+// oldest pending final arrived first and therefore must never have a smaller
+// delay than the latest pending final when both timestamps are valid.
+func livePendingFinalDelays(now, oldest, latest time.Time) livePendingFinalDelayMetrics {
+	return livePendingFinalDelayMetrics{
+		FromOldest: durationSince(now, oldest),
+		FromLatest: durationSince(now, latest),
+	}
 }
 
 func liveAnalysisTreesEqual(left, right *liveAnalysisTree) bool {

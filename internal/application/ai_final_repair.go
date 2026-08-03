@@ -183,6 +183,9 @@ func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.Transcri
 	stats.KindSplitFragments += kindStats.KindSplitFragments
 	stats.KindSplitRejected += kindStats.KindSplitRejected
 	stats.KindSplitDecisions = append(stats.KindSplitDecisions, kindStats.KindSplitDecisions...)
+	stats.SemanticSplitSourceActiveCount += kindStats.SemanticSplitSourceActiveCount
+	stats.SemanticSplitSourceFragmentDuplicateCount += kindStats.SemanticSplitSourceFragmentDuplicateCount
+	stats.SemanticSplitReplacementMissingCount += kindStats.SemanticSplitReplacementMissingCount
 	stats.KindRelationsCreated += reconcileSemanticKindRelations(
 		state.Tree, state.Items, scope, version, "final_repair",
 	)
