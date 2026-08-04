@@ -216,6 +216,8 @@ func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.Transcri
 	stats.GroundingContextOnlyAtoms += kindStats.GroundingContextOnlyAtoms
 	stats.FutureInformationLeaksPrevented += kindStats.GroundingFutureLeaksPrevented
 	stats.GroundingDecisions = append(stats.GroundingDecisions, kindStats.GroundingDecisions...)
+	stats.LabelQuality = kindStats.LabelQuality
+	stats.ManualLabelsPreserved += kindStats.ManualLabelsPreserved
 }
 
 func repairFinalItemGrounding(state *liveAnalysisPayload, scope liveEvidenceScope, mc *meetingContext, version int64, stats *liveAnalysisTreeMergeStats) {

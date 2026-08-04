@@ -555,6 +555,15 @@ type liveAnalysisSessionState struct {
 	runningTargetThroughSequenceNo  int64
 	runningTrigger                  string
 	runningCoalescedTriggerCount    int
+	// liveRunCounter/runningGeneration/runningOperationID identify the sealed
+	// live round the finalization barrier is allowed to await and, on timeout,
+	// supersede. supersededGeneration is the highest generation whose result
+	// must be discarded rather than persisted, so a round finishing after the
+	// barrier gave up cannot rewind the finalized tree.
+	liveRunCounter       uint64
+	runningGeneration    uint64
+	runningOperationID   string
+	supersededGeneration uint64
 	// Set when a final arrives after the current provider request is sealed.
 	// The next mutation remains serial but bypasses normal cooldown/max-wait.
 	catchUpRequested bool
@@ -858,6 +867,9 @@ func (s *MeetingAnalysisService) sessionStateLocked(sessionID string) *liveAnaly
 }
 
 func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID string, segments []domain.TranscriptSegment) (success bool, retryable bool) {
+	s.mu.Lock()
+	generation := s.sessionStateLocked(sessionID).runningGeneration
+	s.mu.Unlock()
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Live AI analysis panic recovered. sessionId=%s panic=%v", sessionID, r)
@@ -865,7 +877,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 			s.mu.Lock()
 			state := s.sessionStateLocked(sessionID)
 			oldestPendingAt := state.runningOldestPendingAt
-			finishLiveRunLocked(state)
+			finishLiveRunLocked(state, generation)
 			restorePendingLiveSegmentsLocked(state, segments, oldestPendingAt, now)
 			state.lastAnalysisCompletedAt = now
 			state.failureCount++
@@ -913,7 +925,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	userPrompt := buildLiveAnalysisUserPrompt(previousPayload, meetingCtx, diffText, previousVersion)
 
 	if s.completer == nil {
-		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, errors.New("azure openai completer is not configured"), len(segments), inputChars, s.now().Sub(start))
+		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, generation, segments, previousPayload, previousVersion, errors.New("azure openai completer is not configured"), len(segments), inputChars, s.now().Sub(start))
 		return false, retryable
 	}
 
@@ -957,7 +969,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	}, previousVersion)
 	elapsed := s.now().Sub(start)
 	if err != nil {
-		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, err, len(segments), inputChars, elapsed)
+		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, generation, segments, previousPayload, previousVersion, err, len(segments), inputChars, elapsed)
 		return false, retryable
 	}
 	aiCompletedAt := s.now().UTC()
@@ -1003,7 +1015,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 	payload, parseErr := parseAndMergeLiveAnalysisPayloadWithEvidence(reconciledContent, previousPayload, meetingCtx, newVersion, roundSeqNos, evidenceScope, s.config.TreeClassification, treeStats)
 	logTaskSchemaResult(aiTaskLiveExtraction, sessionID, parseErr)
 	if parseErr != nil {
-		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
+		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, generation, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
 		return false, retryable
 	}
 	diffItemCount, diffTreeNodeCount, diffTreeEdgeCount := countLiveAnalysisDiffStats(result.Content)
@@ -1018,7 +1030,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		payload, segments, coverageReason, previousPayload,
 	)
 	if parseErr != nil {
-		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
+		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, generation, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
 		return false, retryable
 	}
 	projectionCompletedAt := s.now().UTC()
@@ -1029,8 +1041,21 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		payload, previousPayload, newVersion, highestAvailableFinalSequenceNo, projectionCompletedAt,
 	)
 	if parseErr != nil {
-		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
+		retryable = s.handleLiveAnalysisFailure(ctx, sessionID, generation, segments, previousPayload, previousVersion, parseErr, len(segments), inputChars, elapsed)
 		return false, retryable
+	}
+
+	// A round the finalization barrier stopped waiting for must never publish
+	// or persist: finalization already snapshotted the last stable projection
+	// and may have written the final tree, so this older result would rewind it.
+	if s.liveRunSuperseded(sessionID, generation) {
+		s.mu.Lock()
+		state = s.sessionStateLocked(sessionID)
+		finishLiveRunLocked(state, generation)
+		s.mu.Unlock()
+		log.Printf("Live AI analysis result discarded as superseded. event=live_round_superseded sessionId=%s liveRoundGeneration=%d requestedVersion=%d reason=finalization_barrier",
+			sessionID, generation, newVersion)
+		return false, false
 	}
 
 	saved, persisted, upsertErr := s.persistLiveAnalysis(ctx, previousVersion, domain.MeetingAIAnalysis{
@@ -1051,7 +1076,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		state = s.sessionStateLocked(sessionID)
 		oldestPendingAt := state.runningOldestPendingAt
 		targetThrough := state.runningTargetThroughSequenceNo
-		finishLiveRunLocked(state)
+		finishLiveRunLocked(state, generation)
 		restorePendingLiveSegmentsLocked(state, segments, oldestPendingAt, failedAt)
 		state.lastAnalysisCompletedAt = failedAt
 		state.failureCount++
@@ -1065,7 +1090,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		return false, true
 	}
 	if !persisted {
-		s.handleStaleLiveAnalysisResult(ctx, sessionID, segments, previousVersion)
+		s.handleStaleLiveAnalysisResult(ctx, sessionID, generation, segments, previousVersion)
 		return false, true
 	}
 	snapshotPersistedAt := s.now().UTC()
@@ -1192,6 +1217,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 		sessionID, newVersion, treeStats.GenericCandidateLabelsRewritten, treeStats.GenericTopicLabelsRewritten, treeStats.SubjectFragmentationRepairs)
 	log.Printf("Live semantic dedup. event=low_information_repair_result sessionId=%s version=%d sameKindSemanticMergeCandidates=%d sameKindSemanticMerged=%d crossKindClustered=%d propositionItemsMerged=%d recapMerged=%d referenceRecapItemsMerged=%d referenceRecapItemsRetained=%d referenceRecapItemsRejected=%d referenceRecapTopicProposalsRejected=%d lowInformationDecisionsRejected=%d lowInformationItemsRejected=%d lowInformationItemsRewritten=%d lowInformationItemsSplit=%d lowInformationSplitFragmentsRejected=%d lowInformationTentativeRetained=%d semanticKindMigrations=%d semanticSubtypeMigrations=%d itemResurrectionPrevented=%d",
 		sessionID, newVersion, treeStats.SameKindSemanticMergeCandidates, treeStats.SameKindSemanticMerged, treeStats.CrossKindClustered, treeStats.PropositionItemsMerged, treeStats.RecapMerged, treeStats.ReferenceRecapItemsMerged, treeStats.ReferenceRecapItemsRetained, treeStats.ReferenceRecapItemsRejected, treeStats.ReferenceRecapTopicProposalsRejected, treeStats.LowInformationDecisionsRejected, treeStats.LowInformationItemsRejected, treeStats.LowInformationItemsRewritten, treeStats.LowInformationItemsSplit, treeStats.LowInformationSplitFragmentsRejected, treeStats.LowInformationTentativeRetained, treeStats.SemanticKindMigrations, treeStats.SemanticSubtypeMigrations, treeStats.ItemResurrectionPrevented)
+	logLabelQualitySummary(sessionID, newVersion, "live", treeStats)
 	noAgendaStarts := make(map[int64]struct{}, len(treeStats.NoAgendaSpanStartSequences))
 	for _, sequenceNo := range treeStats.NoAgendaSpanStartSequences {
 		noAgendaStarts[sequenceNo] = struct{}{}
@@ -1311,7 +1337,7 @@ func (s *MeetingAnalysisService) runLiveAnalysis(ctx context.Context, sessionID 
 
 	s.mu.Lock()
 	state = s.sessionStateLocked(sessionID)
-	finishLiveRunLocked(state)
+	finishLiveRunLocked(state, generation)
 	state.lastPayload = payload
 	state.lastVersion = newVersion
 	state.lastCoveredSequenceNo = payloadState.CoveredThroughSequenceNo
@@ -1517,12 +1543,46 @@ func summarizeAgendaAssignmentOutcomes(decisions []assignmentDecision) (accepted
 	return accepted, deferred, rejected
 }
 
-func finishLiveRunLocked(state *liveAnalysisSessionState) {
+// beginLiveRunLocked seals one live round and returns its generation. Every
+// round owner (the debounced scheduler and the finalization-owned flush) goes
+// through here, so the finalization barrier always has an operation identity to
+// await, log and supersede.
+func beginLiveRunLocked(state *liveAnalysisSessionState, trigger string, fromSequenceNo, throughSequenceNo int64) uint64 {
+	state.liveRunCounter++
+	state.runningGeneration = state.liveRunCounter
+	state.runningOperationID = domain.NewID("live-round")
+	state.running = true
+	state.runningDone = make(chan struct{})
+	state.runningTrigger = trigger
+	state.runningTargetFromSequenceNo = fromSequenceNo
+	state.runningTargetThroughSequenceNo = throughSequenceNo
+	return state.runningGeneration
+}
+
+// finishLiveRunLocked releases the round identified by generation. A superseded
+// round (one the finalization barrier stopped waiting for) must not clear the
+// flags of the round that replaced it, so a generation mismatch is a no-op.
+func finishLiveRunLocked(state *liveAnalysisSessionState, generation uint64) {
+	if generation != 0 && state.runningGeneration != generation {
+		return
+	}
 	state.running = false
+	state.runningOperationID = ""
 	if state.runningDone != nil {
 		close(state.runningDone)
 		state.runningDone = nil
 	}
+}
+
+// liveRunSuperseded reports whether the finalization barrier took ownership of
+// this session while the round was in flight.
+func (s *MeetingAnalysisService) liveRunSuperseded(sessionID string, generation uint64) bool {
+	if generation == 0 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionStateLocked(sessionID).supersededGeneration >= generation
 }
 
 // maybeReorganizeLiveTree checks the finished tree's health and, when a topic
@@ -1736,7 +1796,7 @@ func finalizedProjectionUpdatedAt(now time.Time, current *domain.MeetingAIAnalys
 	return updatedAt
 }
 
-func (s *MeetingAnalysisService) handleStaleLiveAnalysisResult(ctx context.Context, sessionID string, segments []domain.TranscriptSegment, expectedVersion int64) {
+func (s *MeetingAnalysisService) handleStaleLiveAnalysisResult(ctx context.Context, sessionID string, generation uint64, segments []domain.TranscriptSegment, expectedVersion int64) {
 	current, err := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive)
 	remaining := segments
 	if err == nil && current != nil {
@@ -1745,7 +1805,7 @@ func (s *MeetingAnalysisService) handleStaleLiveAnalysisResult(ctx context.Conte
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
 	oldestPendingAt := state.runningOldestPendingAt
-	finishLiveRunLocked(state)
+	finishLiveRunLocked(state, generation)
 	restorePendingLiveSegmentsLocked(state, remaining, oldestPendingAt, s.now())
 	state.nextAttemptAt = time.Time{}
 	state.lastAnalysisCompletedAt = s.now()
@@ -1800,7 +1860,7 @@ func filterAlreadyAnalyzedSegments(segments []domain.TranscriptSegment, payload 
 	return filtered
 }
 
-func (s *MeetingAnalysisService) handleLiveAnalysisFailure(ctx context.Context, sessionID string, segments []domain.TranscriptSegment, previousPayload json.RawMessage, previousVersion int64, cause error, segmentCount, inputChars int, elapsed time.Duration) bool {
+func (s *MeetingAnalysisService) handleLiveAnalysisFailure(ctx context.Context, sessionID string, generation uint64, segments []domain.TranscriptSegment, previousPayload json.RawMessage, previousVersion int64, cause error, segmentCount, inputChars int, elapsed time.Duration) bool {
 	retryable := !isLiveAnalysisSchemaError(cause)
 	log.Printf("Live AI analysis failed. sessionId=%s segmentCount=%d inputChars=%d elapsed=%s retryable=%t error=%v", sessionID, segmentCount, inputChars, elapsed, retryable, cause)
 
@@ -1809,7 +1869,7 @@ func (s *MeetingAnalysisService) handleLiveAnalysisFailure(ctx context.Context, 
 	failedAt := s.now()
 	oldestPendingAt := state.runningOldestPendingAt
 	targetThrough := state.runningTargetThroughSequenceNo
-	finishLiveRunLocked(state)
+	finishLiveRunLocked(state, generation)
 	restorePendingLiveSegmentsLocked(state, segments, oldestPendingAt, failedAt)
 	state.lastAnalysisCompletedAt = failedAt
 	if retryable {
@@ -1910,11 +1970,28 @@ func (s *MeetingAnalysisService) FinalizeMeetingSession(ctx context.Context, ses
 		}
 		return fmt.Errorf("read finalization result: %w", err)
 	}
+	var payload finalizationProgressPayload
+	if len(progress.Payload) > 0 {
+		_ = json.Unmarshal(progress.Payload, &payload)
+	}
 	if progress.Status != domain.MeetingAIAnalysisCompleted {
-		if progress.LastError != "" {
-			return errors.New(progress.LastError)
+		if message := firstNonEmptyTrimmed(payload.FinalizationErrorMessage, progress.LastError); message != "" {
+			return errors.New(message)
 		}
 		return fmt.Errorf("meeting finalization ended with status %s", progress.Status)
+	}
+	// A finalization that produced a summary from a degraded input still
+	// completes, but the caller keeps recording the coverage gap on the session
+	// so operators can tell a full run from a recovered one.
+	if payload.FinalizationIncomplete {
+		if message := firstNonEmptyTrimmed(payload.FinalizationErrorMessage, progress.LastError); message != "" {
+			return errors.New(message)
+		}
+		code := payload.FinalizationErrorCode
+		if code == "" {
+			code = finalizationErrorCodeIncompleteCoverage
+		}
+		return fmt.Errorf("meeting finalization completed with incomplete coverage (%s)", code)
 	}
 	return nil
 }
@@ -1929,6 +2006,14 @@ type finalizationPreparation struct {
 	LiveVersion                  int64
 	WaitTimedOut                 bool
 	TranscriptFallbackUsed       bool
+	// LiveWaitTimedOut records that the sealed live round did not finish
+	// within the barrier timeout. That round is superseded and finalization
+	// continues from the latest fully projected persisted snapshot.
+	LiveWaitTimedOut bool
+	// LiveFallbackUsed records that the stable snapshot came from the durable
+	// live row rather than the in-process last-completed payload.
+	LiveFallbackUsed bool
+	WaitOperations   []finalizationWaitOperation
 }
 
 type finalizationProgressPayload struct {
@@ -1948,9 +2033,43 @@ type finalizationProgressPayload struct {
 	FinalTreeReviewFailed           bool   `json:"finalTreeReviewFailed,omitempty"`
 	FinalTreeReviewResult           string `json:"finalTreeReviewResult,omitempty"`
 	FinalTreeAuditRunID             string `json:"finalTreeAuditRunId,omitempty"`
+
+	// Finalization state machine. These fields live inside the existing
+	// payload column, so no database migration is required.
+	FinalizationStatus       string                      `json:"finalizationStatus,omitempty"`
+	FinalizationStartedAt    string                      `json:"finalizationStartedAt,omitempty"`
+	FinalizationUpdatedAt    string                      `json:"finalizationUpdatedAt,omitempty"`
+	FinalizationCompletedAt  string                      `json:"finalizationCompletedAt,omitempty"`
+	FinalizationFailedAt     string                      `json:"finalizationFailedAt,omitempty"`
+	FinalizationErrorCode    string                      `json:"finalizationErrorCode,omitempty"`
+	FinalizationErrorMessage string                      `json:"finalizationErrorMessage,omitempty"`
+	Retryable                bool                        `json:"retryable,omitempty"`
+	AttemptCount             int                         `json:"attemptCount,omitempty"`
+	SourceTreeVersion        int64                       `json:"sourceTreeVersion,omitempty"`
+	SourceAnalysisVersion    int64                       `json:"sourceAnalysisVersion,omitempty"`
+	SummaryVersion           int64                       `json:"summaryVersion,omitempty"`
+	LiveWaitTimedOut         bool                        `json:"liveWaitTimedOut,omitempty"`
+	LiveFallbackUsed         bool                        `json:"liveFallbackUsed,omitempty"`
+	WaitingOperations        []finalizationWaitOperation `json:"waitingOperations,omitempty"`
 }
 
 func (s *MeetingAnalysisService) persistFinalizationProgress(ctx context.Context, sessionID string, status domain.MeetingAIAnalysisStatus, version int64, payload finalizationProgressPayload, cause error) {
+	now := s.now().UTC()
+	if payload.FinalizationStatus == "" {
+		payload.FinalizationStatus = finalizationStatusForStage(payload.Stage)
+	}
+	payload.FinalizationUpdatedAt = now.Format(time.RFC3339Nano)
+	switch status {
+	case domain.MeetingAIAnalysisCompleted:
+		payload.FinalizationCompletedAt = payload.FinalizationUpdatedAt
+		payload.Retryable = false
+	case domain.MeetingAIAnalysisFailed:
+		payload.FinalizationFailedAt = payload.FinalizationUpdatedAt
+		payload.Retryable = true
+	}
+	if cause != nil && payload.FinalizationErrorMessage == "" {
+		payload.FinalizationErrorMessage = truncateErrorMessage(cause, 300)
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Meeting finalization progress marshal failed. sessionId=%s stage=%s error=%v", sessionID, payload.Stage, err)
@@ -1962,10 +2081,23 @@ func (s *MeetingAnalysisService) persistFinalizationProgress(ctx context.Context
 	}
 	if _, err := s.analysisRepo.UpsertMeetingAIAnalysis(ctx, domain.MeetingAIAnalysis{
 		SessionID: sessionID, Type: domain.MeetingAIAnalysisFinalization, Status: status,
-		Version: version, Payload: encoded, LastError: lastError, UpdatedAt: s.now().UTC(),
+		Version: version, Payload: encoded, LastError: lastError, UpdatedAt: now,
 	}); err != nil {
 		log.Printf("Meeting finalization progress persist failed. sessionId=%s stage=%s error=%v", sessionID, payload.Stage, err)
 	}
+	log.Printf("Meeting finalization state changed. event=finalization_state_changed sessionId=%s finalizationId=%s finalizationStatus=%s finalizationStage=%s attemptCount=%d retryable=%t waitingOperationCount=%d waitingOperationTypes=%s finalizationErrorCode=%s incomplete=%t",
+		sessionID, payload.FinalizationID, payload.FinalizationStatus, payload.Stage,
+		payload.AttemptCount, payload.Retryable, len(payload.WaitingOperations),
+		finalizationWaitOperationTypes(payload.WaitingOperations), payload.FinalizationErrorCode,
+		payload.FinalizationIncomplete)
+}
+
+func finalizationWaitOperationTypes(operations []finalizationWaitOperation) string {
+	types := make([]string, 0, len(operations))
+	for _, operation := range operations {
+		types = append(types, operation.Type)
+	}
+	return strings.Join(uniqueNonEmptyIDs(types), ",")
 }
 
 func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessionID string, request MeetingSessionFinalizationRequest) (finalizationPreparation, error) {
@@ -1989,16 +2121,7 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 		auditCancel()
 	}
 
-	if done != nil {
-		waitCtx, cancel := context.WithTimeout(ctx, s.config.finalizationWaitTimeout())
-		select {
-		case <-done:
-			cancel()
-		case <-waitCtx.Done():
-			cancel()
-			return finalizationPreparation{}, fmt.Errorf("wait for in-flight live analysis: %w", waitCtx.Err())
-		}
-	}
+	waitOperations, liveWaitTimedOut := s.awaitSealedLiveRound(ctx, sessionID)
 
 	segments, target, timedOut, transcriptErr := s.waitForStableFinalSegments(ctx, sessionID, request)
 	transcriptFallbackUsed := transcriptErr != nil
@@ -2010,23 +2133,7 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 			sessionID, target, transcriptErr)
 	}
 
-	s.mu.Lock()
-	state = s.sessionStateLocked(sessionID)
-	livePayload := append(json.RawMessage(nil), state.lastPayload...)
-	liveVersion := state.lastVersion
-	s.mu.Unlock()
-	if len(livePayload) == 0 {
-		if live, liveErr := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive); liveErr == nil && live != nil {
-			livePayload = live.Payload
-			liveVersion = live.Version
-			s.mu.Lock()
-			state = s.sessionStateLocked(sessionID)
-			state.lastPayload = livePayload
-			state.lastVersion = liveVersion
-			state.versionSeeded = true
-			s.mu.Unlock()
-		}
-	}
+	livePayload, liveVersion, liveFallbackUsed := s.latestStableLiveSnapshot(ctx, sessionID, liveWaitTimedOut)
 	coverage := previousLiveAnalysisState(livePayload)
 	if transcriptFallbackUsed && target == 0 {
 		target = coverage.CoveredThroughSequenceNo
@@ -2046,6 +2153,8 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 		}
 	}
 
+	flushFailed := false
+	flushFailureReason := ""
 	if len(pending) > 0 && s.config.liveActive() {
 		var flushed bool
 		attempts := 0
@@ -2056,17 +2165,16 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 			state = s.sessionStateLocked(sessionID)
 			startedAt := s.now()
 			fromSequence, throughSequence := liveAnalysisSequenceRange(pending)
-			state.running = true
-			state.runningDone = make(chan struct{})
+			// The finalization pipeline owns this round. Sealing it through the
+			// shared helper means a superseded predecessor can no longer clear
+			// this round's running flags or completion channel.
+			beginLiveRunLocked(state, liveAnalysisTriggerFinalizationFlush, fromSequence, throughSequence)
 			state.lastAnalysisStartedAt = startedAt
 			state.runningOldestPendingAt = state.oldestPendingFinalAt
 			if state.runningOldestPendingAt.IsZero() {
 				state.runningOldestPendingAt = startedAt
 			}
 			state.runningLatestFinalAt = state.latestPendingFinalAt
-			state.runningTargetFromSequenceNo = fromSequence
-			state.runningTargetThroughSequenceNo = throughSequence
-			state.runningTrigger = liveAnalysisTriggerFinalizationFlush
 			s.mu.Unlock()
 			success, retryable := s.runLiveAnalysis(ctx, sessionID, pending)
 			if success {
@@ -2080,19 +2188,25 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 			}
 			log.Printf("Final transcript flush retry scheduled. sessionId=%s attempt=%d maxAttempts=%d", sessionID, attempt, s.config.finalFlushMaxAttempts())
 		}
+		// A failed flush is not a reason to abandon finalization. The latest
+		// stable snapshot is still the correct input for the final tree and
+		// summary; the uncovered range stays observable in the progress row.
 		if !flushed {
+			reason := "final transcript flush failed"
 			if nonRetryable {
-				return finalizationPreparation{Segments: segments, TargetSequence: target, PendingSegmentCount: len(pending), WaitTimedOut: timedOut, LastSuccessfullyAnalyzed: coverage.CoveredThroughSequenceNo}, fmt.Errorf("final transcript flush stopped after non-retryable schema failure on attempt %d", attempts)
+				reason = "final transcript flush stopped after a non-retryable schema failure"
 			}
-			return finalizationPreparation{Segments: segments, TargetSequence: target, PendingSegmentCount: len(pending), WaitTimedOut: timedOut, LastSuccessfullyAnalyzed: coverage.CoveredThroughSequenceNo}, fmt.Errorf("final transcript flush failed after %d attempts", attempts)
+			flushFailed = true
+			flushFailureReason = fmt.Sprintf("%s after %d attempts", reason, attempts)
+			log.Printf("Final transcript flush incomplete; continuing from the latest stable snapshot. sessionId=%s attempts=%d nonRetryable=%t pendingFinalSegments=%d",
+				sessionID, attempts, nonRetryable, len(pending))
 		}
 	}
 
-	s.mu.Lock()
-	state = s.sessionStateLocked(sessionID)
-	livePayload = append(json.RawMessage(nil), state.lastPayload...)
-	liveVersion = state.lastVersion
-	s.mu.Unlock()
+	if updatedPayload, updatedVersion, updatedFallback := s.latestStableLiveSnapshot(ctx, sessionID, liveWaitTimedOut); len(updatedPayload) > 0 && updatedVersion >= liveVersion {
+		livePayload, liveVersion = updatedPayload, updatedVersion
+		liveFallbackUsed = liveFallbackUsed || updatedFallback
+	}
 	updatedCoverage := previousLiveAnalysisState(livePayload)
 	latest := int64(0)
 	for _, segment := range segments {
@@ -2100,14 +2214,111 @@ func (s *MeetingAnalysisService) prepareFinalization(ctx context.Context, sessio
 			latest = segment.SequenceNo
 		}
 	}
-	log.Printf("Final transcript flush completed. sessionId=%s lastAnalyzedSequence=%d targetSequence=%d pendingFinalSegments=%d treeVersion=%d waitTimedOut=%t",
-		sessionID, updatedCoverage.CoveredThroughSequenceNo, target, len(pending), liveVersion, timedOut)
-	return finalizationPreparation{
+	log.Printf("Final transcript flush completed. sessionId=%s lastAnalyzedSequence=%d targetSequence=%d pendingFinalSegments=%d treeVersion=%d waitTimedOut=%t liveWaitTimedOut=%t flushFailed=%t",
+		sessionID, updatedCoverage.CoveredThroughSequenceNo, target, len(pending), liveVersion, timedOut, liveWaitTimedOut, flushFailed)
+	prepared := finalizationPreparation{
 		Segments: segments, TargetSequence: target, LatestPersistedFinalSequence: latest,
 		LastSuccessfullyAnalyzed: updatedCoverage.CoveredThroughSequenceNo,
 		PendingSegmentCount:      len(pending), LivePayload: livePayload, LiveVersion: liveVersion, WaitTimedOut: timedOut,
 		TranscriptFallbackUsed: transcriptFallbackUsed,
-	}, nil
+		LiveWaitTimedOut:       liveWaitTimedOut,
+		LiveFallbackUsed:       liveFallbackUsed,
+		WaitOperations:         waitOperations,
+	}
+	if flushFailed {
+		return prepared, errors.New(flushFailureReason)
+	}
+	return prepared, nil
+}
+
+// awaitSealedLiveRound is the finalization barrier. It waits for the sealed
+// live round - extraction, projection, persistence and the tree reorganization
+// that runs inside the same round - to finish. On timeout the round is
+// superseded rather than abandoned: finalization keeps ownership, the late
+// result is discarded before it can rewind the finalized tree, and the awaited
+// operation is recorded so the timeout stays diagnosable.
+func (s *MeetingAnalysisService) awaitSealedLiveRound(ctx context.Context, sessionID string) ([]finalizationWaitOperation, bool) {
+	s.mu.Lock()
+	state := s.sessionStateLocked(sessionID)
+	done := state.runningDone
+	operation := finalizationWaitOperation{
+		OperationID:       state.runningOperationID,
+		Type:              finalizationWaitOperationLiveRound,
+		Generation:        state.runningGeneration,
+		Trigger:           state.runningTrigger,
+		FromSequenceNo:    state.runningTargetFromSequenceNo,
+		ThroughSequenceNo: state.runningTargetThroughSequenceNo,
+	}
+	s.mu.Unlock()
+	if done == nil {
+		return nil, false
+	}
+	log.Printf("Finalization barrier entered. event=finalization_barrier_entered sessionId=%s operationId=%s operationType=%s liveRoundGeneration=%d trigger=%s targetFromSequenceNo=%d targetThroughSequenceNo=%d timeout=%s",
+		sessionID, operation.OperationID, operation.Type, operation.Generation, operation.Trigger,
+		operation.FromSequenceNo, operation.ThroughSequenceNo, s.config.finalizationWaitTimeout())
+	startedAt := s.now()
+	waitCtx, cancel := context.WithTimeout(ctx, s.config.finalizationWaitTimeout())
+	defer cancel()
+	select {
+	case <-done:
+		operation.WaitMs = s.now().Sub(startedAt).Milliseconds()
+		operation.Result = finalizationWaitResultCompleted
+		log.Printf("Finalization operation completed. event=finalization_operation_completed sessionId=%s operationId=%s operationType=%s liveRoundGeneration=%d waitMs=%d",
+			sessionID, operation.OperationID, operation.Type, operation.Generation, operation.WaitMs)
+		return []finalizationWaitOperation{operation}, false
+	case <-waitCtx.Done():
+		operation.WaitMs = s.now().Sub(startedAt).Milliseconds()
+		operation.Result = finalizationWaitResultTimedOut
+		s.mu.Lock()
+		state = s.sessionStateLocked(sessionID)
+		if state.runningGeneration > state.supersededGeneration {
+			state.supersededGeneration = state.runningGeneration
+		}
+		s.mu.Unlock()
+		log.Printf("Finalization operation awaited. event=finalization_operation_awaited sessionId=%s operationId=%s operationType=%s liveRoundGeneration=%d trigger=%s targetFromSequenceNo=%d targetThroughSequenceNo=%d waitMs=%d result=%s finalizationTimeoutCount=1",
+			sessionID, operation.OperationID, operation.Type, operation.Generation, operation.Trigger,
+			operation.FromSequenceNo, operation.ThroughSequenceNo, operation.WaitMs, operation.Result)
+		log.Printf("Finalization fallback selected. event=finalization_fallback_selected sessionId=%s operationId=%s reason=%s fallback=latest_stable_persisted_snapshot finalizationFallbackCount=1",
+			sessionID, operation.OperationID, finalizationErrorCodeLiveWaitTimeout)
+		return []finalizationWaitOperation{operation}, true
+	}
+}
+
+// latestStableLiveSnapshot resolves the input the final tree and summary are
+// built from. The durable live row is the latest fully projected and persisted
+// snapshot; the in-process payload is preferred only when it is strictly newer,
+// and never when the barrier superseded an in-flight round.
+func (s *MeetingAnalysisService) latestStableLiveSnapshot(ctx context.Context, sessionID string, preferPersisted bool) (json.RawMessage, int64, bool) {
+	s.mu.Lock()
+	state := s.sessionStateLocked(sessionID)
+	memoryPayload := append(json.RawMessage(nil), state.lastPayload...)
+	memoryVersion := state.lastVersion
+	s.mu.Unlock()
+
+	persistedPayload := json.RawMessage(nil)
+	persistedVersion := int64(0)
+	if live, err := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive); err == nil && live != nil {
+		persistedPayload = append(json.RawMessage(nil), live.Payload...)
+		persistedVersion = live.Version
+	} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		log.Printf("Finalization stable snapshot lookup failed. sessionId=%s error=%v", sessionID, err)
+	}
+
+	usePersisted := len(persistedPayload) > 0 &&
+		(len(memoryPayload) == 0 || preferPersisted || persistedVersion >= memoryVersion)
+	if !usePersisted {
+		return memoryPayload, memoryVersion, false
+	}
+	s.mu.Lock()
+	state = s.sessionStateLocked(sessionID)
+	state.lastPayload = append(json.RawMessage(nil), persistedPayload...)
+	state.lastVersion = persistedVersion
+	state.versionSeeded = true
+	s.mu.Unlock()
+	fallbackUsed := len(memoryPayload) == 0 || persistedVersion != memoryVersion
+	log.Printf("Finalization stable snapshot selected. event=finalization_stable_snapshot_selected sessionId=%s source=persisted_live_row snapshotVersion=%d inProcessVersion=%d fallbackUsed=%t",
+		sessionID, persistedVersion, memoryVersion, fallbackUsed)
+	return persistedPayload, persistedVersion, fallbackUsed
 }
 
 func (s *MeetingAnalysisService) finishFinalizing(sessionID string) {
@@ -2219,48 +2430,73 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 
 	finalizationID := domain.NewID("finalization")
 	progressVersion := int64(1)
+	attemptCount := 1
 	if existingProgress, err := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisFinalization); err == nil && existingProgress != nil {
 		if existingProgress.Status == domain.MeetingAIAnalysisCompleted {
 			log.Printf("Meeting finalization skipped because it is already complete. sessionId=%s version=%d", sessionID, existingProgress.Version)
 			return
 		}
 		progressVersion = existingProgress.Version + 1
+		attemptCount = 2
+		var previous finalizationProgressPayload
+		if len(existingProgress.Payload) > 0 &&
+			json.Unmarshal(existingProgress.Payload, &previous) == nil && previous.AttemptCount > 0 {
+			attemptCount = previous.AttemptCount + 1
+		}
 	} else if existingFinal, finalErr := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisFinal); finalErr == nil && existingFinal != nil && existingFinal.Status == domain.MeetingAIAnalysisCompleted {
 		log.Printf("Meeting finalization skipped for legacy completed final analysis. sessionId=%s finalVersion=%d", sessionID, existingFinal.Version)
 		return
 	}
-	progress := finalizationProgressPayload{FinalizationID: finalizationID, Stage: "requested", BotLastForwardedFinalSequence: request.BotLastForwardedFinalSequence}
-	s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisRunning, progressVersion, progress, nil)
-	log.Printf("Meeting finalization started. sessionId=%s finalizationId=%s", sessionID, finalizationID)
-
-	prepared, err := s.prepareFinalization(ctx, sessionID, request)
-	if err != nil {
-		progress.Stage = "final_flush_failed"
-		progress.FinalizationIncomplete = true
-		progress.PendingSegmentCount = prepared.PendingSegmentCount
-		progress.FinalizationTargetSequence = prepared.TargetSequence
-		progress.LastSuccessfullyAnalyzed = prepared.LastSuccessfullyAnalyzed
-		progress.WaitTimedOut = prepared.WaitTimedOut
-		progress.RetryCount = s.config.finalFlushMaxAttempts()
-		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisFailed, progressVersion, progress, err)
-		log.Printf("Meeting finalization failed. sessionId=%s finalizationId=%s stage=%s error=%v", sessionID, finalizationID, progress.Stage, err)
-		return
+	progress := finalizationProgressPayload{
+		FinalizationID: finalizationID, Stage: "waiting_for_transcript_drain",
+		BotLastForwardedFinalSequence: request.BotLastForwardedFinalSequence,
+		FinalizationStartedAt:         s.now().UTC().Format(time.RFC3339Nano),
+		AttemptCount:                  attemptCount,
 	}
+	s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisRunning, progressVersion, progress, nil)
+	log.Printf("Meeting finalization started. sessionId=%s finalizationId=%s attemptCount=%d", sessionID, finalizationID, attemptCount)
+
+	// A degraded preparation (superseded live round, failed flush, transcript
+	// fetch failure) is recorded but never abandons finalization: the latest
+	// stable snapshot still produces a final tree and a final summary.
+	prepared, prepareErr := s.prepareFinalization(ctx, sessionID, request)
 	progress.Stage = "final_flush_completed"
+	progress.FinalizationStatus = finalizationStatusBuildingFinalTree
 	progress.LatestPersistedFinalSequence = prepared.LatestPersistedFinalSequence
 	progress.LastSuccessfullyAnalyzed = prepared.LastSuccessfullyAnalyzed
 	progress.FinalizationTargetSequence = prepared.TargetSequence
 	progress.PendingSegmentCount = prepared.PendingSegmentCount
 	progress.WaitTimedOut = prepared.WaitTimedOut
 	progress.TranscriptFallbackUsed = prepared.TranscriptFallbackUsed
+	progress.LiveWaitTimedOut = prepared.LiveWaitTimedOut
+	progress.LiveFallbackUsed = prepared.LiveFallbackUsed
+	progress.WaitingOperations = prepared.WaitOperations
+	progress.SourceAnalysisVersion = prepared.LiveVersion
+	progress.SourceTreeVersion = previousLiveAnalysisState(prepared.LivePayload).TreeVersion
+	if progress.SourceTreeVersion <= 0 {
+		progress.SourceTreeVersion = prepared.LiveVersion
+	}
 	progress.FinalizationIncomplete = prepared.TranscriptFallbackUsed ||
 		prepared.WaitTimedOut ||
+		prepared.LiveWaitTimedOut ||
+		prepareErr != nil ||
 		prepared.LastSuccessfullyAnalyzed < prepared.TargetSequence
+	switch {
+	case prepareErr != nil:
+		progress.RetryCount = s.config.finalFlushMaxAttempts()
+		progress.FinalizationErrorCode = finalizationErrorCodeFinalFlushFailed
+		progress.FinalizationErrorMessage = truncateErrorMessage(prepareErr, 300)
+		log.Printf("Meeting finalization degraded but continuing. sessionId=%s finalizationId=%s stage=%s errorCode=%s error=%v",
+			sessionID, finalizationID, progress.Stage, progress.FinalizationErrorCode, prepareErr)
+	case prepared.LiveWaitTimedOut:
+		progress.FinalizationErrorCode = finalizationErrorCodeLiveWaitTimeout
+	}
 	s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisRunning, progressVersion, progress, nil)
 
 	finalSegments := prepared.Segments
-	if len(finalSegments) == 0 && !prepared.TranscriptFallbackUsed {
+	if len(finalSegments) == 0 && !prepared.TranscriptFallbackUsed && len(prepared.LivePayload) == 0 {
 		progress.Stage = "completed"
+		progress.FinalizationStatus = finalizationStatusCompleted
 		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisCompleted, progressVersion, progress, nil)
 		log.Printf("Meeting finalization completed with empty transcript. sessionId=%s finalizationId=%s", sessionID, finalizationID)
 		return
@@ -2269,6 +2505,8 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	if s.completer == nil {
 		err := errors.New("azure openai completer is not configured")
 		progress.Stage = "final_summary_failed"
+		progress.FinalizationStatus = finalizationStatusFailed
+		progress.FinalizationErrorCode = finalizationErrorCodeCompleterMissing
 		progress.FinalizationIncomplete = true
 		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisFailed, progressVersion, progress, err)
 		return
@@ -2277,6 +2515,8 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	existing, err := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisFinal)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		progress.Stage = "final_summary_lookup_failed"
+		progress.FinalizationStatus = finalizationStatusFailed
+		progress.FinalizationErrorCode = finalizationErrorCodeSummaryLookupFailed
 		progress.FinalizationIncomplete = true
 		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisFailed, progressVersion, progress, err)
 		return
@@ -2299,6 +2539,8 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	if err != nil {
 		log.Printf("Final AI summary running state persist failed. sessionId=%s error=%v", sessionID, err)
 		progress.Stage = "final_summary_running_persist_failed"
+		progress.FinalizationStatus = finalizationStatusFailed
+		progress.FinalizationErrorCode = finalizationErrorCodeSummaryPersistFailed
 		progress.FinalizationIncomplete = true
 		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisFailed, progressVersion, progress, err)
 		return
@@ -2401,6 +2643,7 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 			sessionID, liveVersion, repairStats.SemanticSplitSourceActiveCount,
 			repairStats.SemanticSplitSourceFragmentDuplicateCount,
 			repairStats.SemanticSplitReplacementMissingCount)
+		logFinalLabelQualitySummary(sessionID, liveVersion, repairStats)
 		for _, decision := range repairStats.EvidenceLocalizationDecisions {
 			log.Printf("Final item evidence localized. sessionId=%s analysisVersion=%d itemId=%s retainedSequenceNos=%v removedSequenceNos=%v decision=%s reason=%s",
 				sessionID, liveVersion, decision.ItemID, decision.RetainedSequenceNos,
@@ -2506,8 +2749,10 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	userPrompt := buildFinalAnalysisUserPrompt(livePayload, meetingCtx, transcriptText, truncated)
 
 	start := s.now()
-	log.Printf("Final AI summary started. sessionId=%s segmentCount=%d inputChars=%d", sessionID, len(finalSegments), inputChars)
+	log.Printf("Final AI summary started. event=final_summary_started sessionId=%s finalizationId=%s segmentCount=%d inputChars=%d sourceTreeVersion=%d finalSummaryStartedCount=1",
+		sessionID, finalizationID, len(finalSegments), inputChars, liveVersion)
 	progress.Stage = "final_summary_running"
+	progress.FinalizationStatus = finalizationStatusGeneratingSummary
 	s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisRunning, progressVersion, progress, nil)
 
 	analysisCtx := ctx
@@ -2524,26 +2769,20 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	elapsed := s.now().Sub(start)
 	if err != nil {
 		s.handleFinalAnalysisFailure(ctx, sessionID, version, previousPayload, err, len(finalSegments), inputChars, elapsed)
-		progress.Stage = "final_summary_failed"
-		progress.FinalizationIncomplete = true
-		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisFailed, progressVersion, progress, err)
+		s.persistFinalSummaryFailure(ctx, sessionID, finalizationID, progressVersion, progress, err)
 		return
 	}
 	payload, parseErr := parseAndValidateFinalAnalysisPayload(result.Content)
 	logTaskSchemaResult(aiTaskFinalSummary, sessionID, parseErr)
 	if parseErr != nil {
 		s.handleFinalAnalysisFailure(ctx, sessionID, version, previousPayload, parseErr, len(finalSegments), inputChars, elapsed)
-		progress.Stage = "final_summary_failed"
-		progress.FinalizationIncomplete = true
-		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisFailed, progressVersion, progress, parseErr)
+		s.persistFinalSummaryFailure(ctx, sessionID, finalizationID, progressVersion, progress, parseErr)
 		return
 	}
 	payload, err = addFinalAnalysisCoverage(payload, prepared.TargetSequence, len(finalSegments), liveVersion)
 	if err != nil {
 		s.handleFinalAnalysisFailure(ctx, sessionID, version, previousPayload, err, len(finalSegments), inputChars, elapsed)
-		progress.Stage = "final_summary_failed"
-		progress.FinalizationIncomplete = true
-		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisFailed, progressVersion, progress, err)
+		s.persistFinalSummaryFailure(ctx, sessionID, finalizationID, progressVersion, progress, err)
 		return
 	}
 
@@ -2561,25 +2800,141 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 	if err != nil {
 		log.Printf("Final AI summary persist failed. sessionId=%s error=%v", sessionID, err)
 		progress.Stage = "final_summary_persist_failed"
+		progress.FinalizationStatus = finalizationStatusFailed
+		progress.FinalizationErrorCode = finalizationErrorCodeSummaryPersistFailed
 		progress.FinalizationIncomplete = true
 		s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisFailed, progressVersion, progress, err)
 		return
 	}
-	log.Printf("Final AI summary completed. sessionId=%s segmentCount=%d inputChars=%d version=%d promptTokens=%d completionTokens=%d elapsed=%s",
-		sessionID, len(finalSegments), inputChars, saved.Version, result.PromptTokens, result.CompletionTokens, elapsed)
+	log.Printf("Final AI summary completed. event=final_summary_completed sessionId=%s finalizationId=%s segmentCount=%d inputChars=%d version=%d promptTokens=%d completionTokens=%d elapsed=%s finalSummaryCompletedCount=1",
+		sessionID, finalizationID, len(finalSegments), inputChars, saved.Version, result.PromptTokens, result.CompletionTokens, elapsed)
 	s.publishAnalysis(*saved)
 	progress.Stage = "completed"
+	progress.SummaryVersion = saved.Version
 	progress.SummaryCoveredThroughSequenceNo = prepared.TargetSequence
-	if s.config.liveActive() && prepared.TargetSequence > 0 && (!treeSaved || progress.TreeCoveredThroughSequenceNo != prepared.TargetSequence) {
-		progress.FinalizationIncomplete = true
+	// A summary built from a degraded or superseded input is still a real
+	// summary. Coverage gaps stay observable in the payload while the
+	// finalization itself terminates as completed, so the web never shows a
+	// permanent spinner and a finished pipeline never asks for a retry.
+	coverageIncomplete := progress.FinalizationIncomplete ||
+		(s.config.liveActive() && prepared.TargetSequence > 0 &&
+			(!treeSaved || progress.TreeCoveredThroughSequenceNo != prepared.TargetSequence))
+	progress.FinalizationIncomplete = coverageIncomplete
+	progress.FinalizationStatus = finalizationStatusCompleted
+	if coverageIncomplete && progress.FinalizationErrorCode == "" {
+		progress.FinalizationErrorCode = finalizationErrorCodeIncompleteCoverage
 	}
-	status := domain.MeetingAIAnalysisCompleted
-	if progress.FinalizationIncomplete {
-		status = domain.MeetingAIAnalysisFailed
+	s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisCompleted, progressVersion, progress, nil)
+	log.Printf("Meeting finalization completed. sessionId=%s finalizationId=%s treeCoveredThrough=%d summaryCoveredThrough=%d treeVersion=%d incomplete=%t liveWaitTimedOut=%t attemptCount=%d",
+		sessionID, finalizationID, progress.TreeCoveredThroughSequenceNo, progress.SummaryCoveredThroughSequenceNo,
+		liveVersion, progress.FinalizationIncomplete, progress.LiveWaitTimedOut, progress.AttemptCount)
+}
+
+func (s *MeetingAnalysisService) persistFinalSummaryFailure(
+	ctx context.Context,
+	sessionID, finalizationID string,
+	progressVersion int64,
+	progress finalizationProgressPayload,
+	cause error,
+) {
+	progress.Stage = "final_summary_failed"
+	progress.FinalizationStatus = finalizationStatusFailed
+	// Keep the earliest degradation as the reported root cause: a summary that
+	// fails after a broken flush is a consequence, not the reason.
+	if progress.FinalizationErrorCode == "" {
+		progress.FinalizationErrorCode = finalizationErrorCodeSummaryFailed
+		progress.FinalizationErrorMessage = truncateErrorMessage(cause, 300)
 	}
-	s.persistFinalizationProgress(ctx, sessionID, status, progressVersion, progress, nil)
-	log.Printf("Meeting finalization completed. sessionId=%s finalizationId=%s treeCoveredThrough=%d summaryCoveredThrough=%d treeVersion=%d incomplete=%t",
-		sessionID, finalizationID, progress.TreeCoveredThroughSequenceNo, progress.SummaryCoveredThroughSequenceNo, liveVersion, progress.FinalizationIncomplete)
+	progress.FinalizationIncomplete = true
+	s.persistFinalizationProgress(ctx, sessionID, domain.MeetingAIAnalysisFailed, progressVersion, progress, cause)
+	log.Printf("Final AI summary failed. event=final_summary_failed sessionId=%s finalizationId=%s finalSummaryFailedCount=1 error=%v",
+		sessionID, finalizationID, cause)
+}
+
+// finalizationRetryPrecheck validates a retry request without starting one, so
+// the HTTP adapter can answer 409/503 synchronously while the pass itself runs
+// outside the request.
+func (s *MeetingAnalysisService) finalizationRetryPrecheck(ctx context.Context, sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("%w: sessionId is required", domain.ErrInvalidArgument)
+	}
+	if s == nil || !s.config.finalActive() {
+		return ErrMeetingFinalizationRetryUnavailable
+	}
+	progress, err := s.getOptionalAnalysis(ctx, sessionID, domain.MeetingAIAnalysisFinalization)
+	if err != nil {
+		return err
+	}
+	final, err := s.getOptionalAnalysis(ctx, sessionID, domain.MeetingAIAnalysisFinal)
+	if err != nil {
+		return err
+	}
+	if !finalizationRetryable(progress, final) {
+		log.Printf("Finalization retry ignored because finalization already completed. event=finalization_retry_ignored sessionId=%s", sessionID)
+		return ErrMeetingFinalizationAlreadyCompleted
+	}
+	return nil
+}
+
+// StartMeetingSessionFinalizationRetry validates the request and runs the retry
+// outside the caller's request. Clients observe the outcome through the
+// finalization state on the AI analyses endpoint, exactly as they do for the
+// finalization that runs at meeting end.
+func (s *MeetingAnalysisService) StartMeetingSessionFinalizationRetry(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if err := s.finalizationRetryPrecheck(ctx, sessionID); err != nil {
+		return err
+	}
+	go func() {
+		if err := s.RetryMeetingSessionFinalization(context.Background(), sessionID); err != nil &&
+			!errors.Is(err, ErrMeetingFinalizationAlreadyCompleted) {
+			log.Printf("Finalization retry finished with an error. sessionId=%s error=%v", sessionID, err)
+		}
+	}()
+	return nil
+}
+
+// RetryMeetingSessionFinalization re-runs finalization for a session that ended
+// without a usable final summary. It is single-flight per session, an explicit
+// no-op once finalization has completed, and always restarts from the latest
+// stable persisted snapshot.
+func (s *MeetingAnalysisService) RetryMeetingSessionFinalization(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if err := s.finalizationRetryPrecheck(ctx, sessionID); err != nil {
+		return err
+	}
+	log.Printf("Finalization retry started. event=finalization_retry_started sessionId=%s finalizationRetryCount=1", sessionID)
+
+	// A previous attempt left the session stopped. Reopen it for exactly this
+	// finalization-owned pass; no normal live round can start meanwhile because
+	// the scheduler still refuses an ending/ended session.
+	s.mu.Lock()
+	state := s.sessionStateLocked(sessionID)
+	state.stopped = false
+	state.finalizing = false
+	s.mu.Unlock()
+
+	session := domain.MeetingSession{ID: sessionID}
+	if s.sessionRepo != nil {
+		if stored, storedErr := s.sessionRepo.GetMeetingSession(ctx, sessionID); storedErr == nil && stored != nil {
+			session = *stored
+		}
+	}
+	s.generateFinalSummary(ctx, session, MeetingSessionFinalizationRequest{TranscriptQueueDrained: true})
+
+	retried, err := s.getOptionalAnalysis(ctx, sessionID, domain.MeetingAIAnalysisFinalization)
+	if err != nil {
+		return err
+	}
+	if retried != nil && retried.Status == domain.MeetingAIAnalysisFailed {
+		log.Printf("Finalization retry completed. event=finalization_retry_completed sessionId=%s result=failed finalizationRetryFailureCount=1", sessionID)
+		if message := strings.TrimSpace(retried.LastError); message != "" {
+			return errors.New(message)
+		}
+		return errors.New("meeting finalization retry did not complete")
+	}
+	log.Printf("Finalization retry completed. event=finalization_retry_completed sessionId=%s result=completed finalizationRetrySuccessCount=1", sessionID)
+	return nil
 }
 
 func addFinalAnalysisCoverage(payload json.RawMessage, coveredThrough int64, segmentCount int, treeVersion int64) (json.RawMessage, error) {
@@ -2770,6 +3125,8 @@ type finalRepairStats struct {
 	ConfirmedTodoCandidatesPromoted           int
 	ConfirmedTodoCandidatesFolded             int
 	IncompleteLabelDecisions                  []incompleteItemLabelDecision
+	LabelQuality                              labelQualityStats
+	ManualLabelsPreserved                     int
 	DanglingCandidatesPruned                  int
 	ValidatorsRerun                           bool
 	RemainingLowInformation                   int
@@ -3553,6 +3910,13 @@ func (s *MeetingAnalysisService) GetMeetingAIAnalyses(ctx context.Context, sessi
 	if err != nil {
 		return nil, err
 	}
+	// A durable "running" finalization row whose owning process disappeared
+	// must never be delivered as "still generating": the backend finalization
+	// state is the source of truth for the web's summary panel.
+	s.mu.Lock()
+	_, finalizationInFlight := s.finalSummaryInFlight[sessionID]
+	s.mu.Unlock()
+	finalization = projectFinalizationForDelivery(finalization, finalizationInFlight, s.now().UTC())
 	var mc *meetingContext
 	if contextAnalysis, contextErr := s.getOptionalAnalysis(ctx, sessionID, domain.MeetingAIAnalysisContext); contextErr == nil && contextAnalysis != nil {
 		mc = unmarshalMeetingContext(contextAnalysis.Payload)
@@ -6018,6 +6382,8 @@ type liveAnalysisTreeMergeStats struct {
 	GroundingDecisions                        []itemGroundingDecision
 	LowInformationRejections                  []liveItemRejection
 	IncompleteLabelDecisions                  []incompleteItemLabelDecision
+	LabelQuality                              labelQualityStats
+	ManualLabelsPreserved                     int
 	DiscourseTransitions                      []discourseTimelineTransition
 	ItemResurrectionPrevented                 int
 	ResurrectionPreventions                   []itemResurrectionPrevention

@@ -739,6 +739,83 @@ func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
 	}
 }
 
+func retryFinalizationTestSession(t *testing.T) *fakeMeetingSessionUseCases {
+	t.Helper()
+	return &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionEnded,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+}
+
+func TestMeetingSessionAPIRetryWorkspaceFinalizationAcceptsRetryableSession(t *testing.T) {
+	analysis := &fakeMeetingAIAnalysisUseCases{snapshot: &application.MeetingAIAnalysesSnapshot{
+		SessionID: "session_1",
+		Finalization: &domain.MeetingAIAnalysis{
+			SessionID: "session_1", Type: domain.MeetingAIAnalysisFinalization,
+			Status: domain.MeetingAIAnalysisRunning, Version: 2,
+			Payload:   json.RawMessage(`{"stage":"waiting_for_transcript_drain","finalizationStatus":"waiting_for_transcript_drain"}`),
+			UpdatedAt: mustTime(t, "2026-06-27T00:00:03Z"),
+		},
+	}}
+	api := NewMeetingSessionAPI(retryFinalizationTestSession(t), testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPost, "/v1/workspaces/workspace_1/meeting-sessions/session_1/finalization/retry", "")
+	resp := httptest.NewRecorder()
+
+	api.RetryWorkspaceFinalization(resp, req)
+
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("response = %d %s, want 202", resp.Code, resp.Body.String())
+	}
+	if len(analysis.gotRetrySessionIDs) != 1 || analysis.gotRetrySessionIDs[0] != "session_1" {
+		t.Fatalf("retry session ids = %v", analysis.gotRetrySessionIDs)
+	}
+	var body meetingAIAnalysesResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Finalization == nil || body.Finalization.Status != "running" {
+		t.Fatalf("body.Finalization = %+v, want the current finalization state", body.Finalization)
+	}
+}
+
+func TestMeetingSessionAPIRetryWorkspaceFinalizationRejectsCompletedFinalization(t *testing.T) {
+	analysis := &fakeMeetingAIAnalysisUseCases{
+		retryErr: application.ErrMeetingFinalizationAlreadyCompleted,
+		snapshot: &application.MeetingAIAnalysesSnapshot{SessionID: "session_1"},
+	}
+	api := NewMeetingSessionAPI(retryFinalizationTestSession(t), testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPost, "/v1/workspaces/workspace_1/meeting-sessions/session_1/finalization/retry", "")
+	resp := httptest.NewRecorder()
+
+	api.RetryWorkspaceFinalization(resp, req)
+
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("response = %d %s, want 409", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIRetryWorkspaceFinalizationReportsUnavailableAnalysis(t *testing.T) {
+	analysis := &fakeMeetingAIAnalysisUseCases{
+		retryErr: application.ErrMeetingFinalizationRetryUnavailable,
+		snapshot: &application.MeetingAIAnalysesSnapshot{SessionID: "session_1"},
+	}
+	api := NewMeetingSessionAPI(retryFinalizationTestSession(t), testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPost, "/v1/workspaces/workspace_1/meeting-sessions/session_1/finalization/retry", "")
+	resp := httptest.NewRecorder()
+
+	api.RetryWorkspaceFinalization(resp, req)
+
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response = %d %s, want 503", resp.Code, resp.Body.String())
+	}
+}
+
 func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsNullsWhenNoAnalysisExists(t *testing.T) {
 	service := &fakeMeetingSessionUseCases{
 		session: domain.MeetingSession{
@@ -1056,6 +1133,14 @@ type fakeMeetingAIAnalysisUseCases struct {
 	overrideErr          error
 	gotOverrideSessionID string
 	gotOverrideInput     application.AgendaProgressOverrideInput
+
+	retryErr           error
+	gotRetrySessionIDs []string
+}
+
+func (f *fakeMeetingAIAnalysisUseCases) StartMeetingSessionFinalizationRetry(_ context.Context, sessionID string) error {
+	f.gotRetrySessionIDs = append(f.gotRetrySessionIDs, sessionID)
+	return f.retryErr
 }
 
 func (f *fakeMeetingAIAnalysisUseCases) UpdateAgendaProgressOverride(_ context.Context, sessionID string, input application.AgendaProgressOverrideInput) (json.RawMessage, error) {

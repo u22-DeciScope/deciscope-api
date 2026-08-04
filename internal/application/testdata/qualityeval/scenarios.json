@@ -2477,6 +2477,178 @@
       ],
       "finalCoverage": 10,
       "applyFinalRepair": true
+    },
+    {
+      "id": "session-c01a27-stt-enumeration-label",
+      "description": "STTが崩した列挙から意味不明なノードラベルを作らない(session_c01a27bf3197e2c1相当)",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "田中", "text": "本日午前9時20分ごろ、名古屋支社で社内ネットワークへ接続できない障害が発生しました。"},
+        {"sequenceNo": 2, "speaker": "田中", "text": "影響を受けたのは、有線LAN車内有線LANファイルサーバー、社内システムへの接続です。"},
+        {"sequenceNo": 3, "speaker": "鈴木", "text": "ルーターとファイアウォールには異常がありませんでした。"},
+        {"sequenceNo": 4, "speaker": "鈴木", "text": "交換したスイッチの許可VLAN一覧からVLAN30が漏れていました。"},
+        {"sequenceNo": 5, "speaker": "鈴木", "text": "このVLAN設定漏れが今回の障害の原因である可能性が高いと考えられます。"},
+        {"sequenceNo": 6, "speaker": "田中", "text": "2階の遅延まで今回のVLAN設定漏れで説明できるかは未確認です。"},
+        {"sequenceNo": 7, "speaker": "高橋", "text": "VPN装置の証明書が来月末に期限切れになります。"},
+        {"sequenceNo": 8, "speaker": "高橋", "text": "更新しないとリモート接続ができなくなる可能性があります。"},
+        {"sequenceNo": 9, "speaker": "高橋", "text": "高橋がVPN証明書の更新手順と作業可能日を確認します。"}
+      ],
+      "meetingContext": {
+        "title": "ネットワーク障害レビュー",
+        "agendaItems": [
+          {"id": "agenda-1", "title": "障害の影響範囲", "semanticHints": ["影響", "接続"], "order": 1},
+          {"id": "agenda-2", "title": "原因と対応", "semanticHints": ["VLAN", "証明書"], "order": 2}
+        ]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3],
+          "fixedAIResponse": {
+            "summary": "障害の影響範囲",
+            "currentTopic": "障害の影響範囲",
+            "items": [
+              {
+                "clientKey": "impact-scope",
+                "kind": "fact",
+                "severity": "high",
+                "title": "有線LAN車内有線LANファイルサーバー",
+                "body": "有線LAN車内有線LANファイルサーバー",
+                "status": "open",
+                "evidenceSequenceNos": [2],
+                "evidenceSnippets": ["影響を受けたのは、有線LAN車内有線LANファイルサーバー、社内システムへの接続です。"]
+              },
+              {
+                "clientKey": "router-firewall",
+                "kind": "fact",
+                "severity": "medium",
+                "title": "ルーターとファイアウォール",
+                "body": "ルーターとファイアウォール",
+                "status": "open",
+                "evidenceSequenceNos": [3],
+                "evidenceSnippets": ["ルーターとファイアウォールには異常がありませんでした。"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": [
+              {"nodeId": "impact-scope", "parentTopicId": "agenda-1", "confidence": 0.92},
+              {"nodeId": "router-firewall", "parentTopicId": "agenda-1", "confidence": 0.9}
+            ]
+          }
+        },
+        {
+          "sequenceNos": [4, 5, 6],
+          "fixedAIResponse": {
+            "summary": "原因の切り分け",
+            "currentTopic": "原因と対応",
+            "items": [
+              {
+                "clientKey": "vlan-missing",
+                "kind": "fact",
+                "severity": "high",
+                "title": "許可VLAN一覧からVLAN30が漏れていました",
+                "body": "交換したスイッチの許可VLAN一覧からVLAN30が漏れていた",
+                "status": "open",
+                "evidenceSequenceNos": [4],
+                "evidenceSnippets": ["交換したスイッチの許可VLAN一覧からVLAN30が漏れていました。"]
+              },
+              {
+                "clientKey": "second-floor-unconfirmed",
+                "kind": "issue",
+                "subtype": "investigation",
+                "severity": "medium",
+                "title": "2階の遅延まで今回のVLAN設定漏れで説明できるかは未確認です",
+                "body": "2階の遅延をVLAN設定漏れで説明できるかは未確認",
+                "status": "open",
+                "evidenceSequenceNos": [6],
+                "evidenceSnippets": ["2階の遅延まで今回のVLAN設定漏れで説明できるかは未確認です。"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": [
+              {"nodeId": "vlan-missing", "parentTopicId": "agenda-2", "confidence": 0.94},
+              {"nodeId": "second-floor-unconfirmed", "parentTopicId": "agenda-2", "confidence": 0.9}
+            ]
+          }
+        },
+        {
+          "sequenceNos": [7, 8, 9],
+          "fixedAIResponse": {
+            "summary": "証明書対応",
+            "currentTopic": "原因と対応",
+            "items": [
+              {
+                "clientKey": "cert-expiry",
+                "kind": "fact",
+                "severity": "medium",
+                "title": "VPN装置の証明書が来月末に期限切れになります",
+                "body": "VPN装置の証明書が来月末に期限切れになる",
+                "status": "open",
+                "evidenceSequenceNos": [7],
+                "evidenceSnippets": ["VPN装置の証明書が来月末に期限切れになります。"]
+              },
+              {
+                "clientKey": "remote-access-risk",
+                "kind": "risk",
+                "severity": "high",
+                "title": "更新しないとリモート接続ができなくなる可能性があります",
+                "body": "証明書を更新しないとリモート接続ができなくなる可能性がある",
+                "status": "open",
+                "evidenceSequenceNos": [8],
+                "evidenceSnippets": ["更新しないとリモート接続ができなくなる可能性があります。"]
+              },
+              {
+                "clientKey": "cert-todo",
+                "kind": "todo",
+                "severity": "high",
+                "title": "高橋がVPN証明書の更新手順と作業可能日を確認します",
+                "body": "高橋がVPN証明書の更新手順と作業可能日を確認する",
+                "status": "open",
+                "evidenceSequenceNos": [9],
+                "evidenceSnippets": ["高橋がVPN証明書の更新手順と作業可能日を確認します。"]
+              }
+            ],
+            "newTopics": [],
+            "assignments": [
+              {"nodeId": "cert-expiry", "parentTopicId": "agenda-2", "confidence": 0.9},
+              {"nodeId": "remote-access-risk", "parentTopicId": "agenda-2", "confidence": 0.92},
+              {"nodeId": "cert-todo", "parentTopicId": "agenda-2", "confidence": 0.95}
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {
+          "id": "vlan-missing",
+          "text": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "evidenceSequenceNos": [4]
+        },
+        {
+          "id": "second-floor-unconfirmed",
+          "text": "2階の遅延をVLAN設定漏れで説明できるかは未確認",
+          "requiredKind": "issue",
+          "evidenceSequenceNos": [6]
+        },
+        {
+          "id": "remote-access-risk",
+          "text": "証明書を更新しないとリモート接続ができなくなる可能性がある",
+          "requiredKind": "risk",
+          "evidenceSequenceNos": [8]
+        },
+        {
+          "id": "cert-todo",
+          "text": "高橋がVPN証明書の更新手順と作業可能日を確認する",
+          "requiredKind": "todo",
+          "evidenceSequenceNos": [9]
+        }
+      ],
+      "forbiddenResults": [
+        {"type": "bare_enumeration_label"},
+        {"type": "unresolved_stt_noise_label"},
+        {"type": "proposition", "text": "社内無線LANが影響を受けた"},
+        {"type": "semantic_duplicate"}
+      ],
+      "finalCoverage": 9,
+      "applyFinalRepair": true
     }
   ]
 }

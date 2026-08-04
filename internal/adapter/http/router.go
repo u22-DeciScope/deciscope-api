@@ -104,6 +104,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 						r.Get("/transcript-stream", deps.MeetingSessionAPI.StreamWorkspaceTranscriptSegments)
 						r.Get("/media-health", deps.MeetingSessionAPI.GetWorkspaceBotMediaHealth)
 						r.Get("/ai-analyses", deps.MeetingSessionAPI.GetWorkspaceAIAnalyses)
+						r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Post("/finalization/retry", deps.MeetingSessionAPI.RetryWorkspaceFinalization)
 						r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Patch("/agenda-progress", deps.MeetingSessionAPI.UpdateAgendaProgressForWorkspace)
 					})
 				}

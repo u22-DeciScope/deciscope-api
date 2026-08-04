@@ -1383,6 +1383,21 @@ func qualityForbiddenResults(
 					found = append(found, "context_dependent_label:"+item.ID)
 				}
 			}
+		case "bare_enumeration_label":
+			// An active detail node whose label is only a noun list cannot be
+			// understood on its own (§10). Reported per item so a regression
+			// names the offending node.
+			for _, item := range items {
+				if evaluateItemLabelQuality(item).LabelIsBareEnumeration {
+					found = append(found, "bare_enumeration_label:"+item.ID)
+				}
+			}
+		case "unresolved_stt_noise_label":
+			for _, item := range items {
+				if evaluateItemLabelQuality(item).LabelContainsUnresolvedSTTNoise {
+					found = append(found, "unresolved_stt_noise_label:"+item.ID)
+				}
+			}
 		case "decision_issue_same_proposition":
 			for _, decision := range items {
 				if decision.Kind != "decision" {

@@ -3527,6 +3527,187 @@
       ],
       "finalCoverage": 10,
       "treeVersion": 4
+    },
+    {
+      "id": "session-c01a27-stt-enumeration-label",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 2,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 4,
+        "label_transcript_copy_ratio": 0.5714285714285714,
+        "label_compression_ratio": 0.7744714609103404,
+        "description_redundant_count": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "vlan-missing",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 0.9129032258064516,
+          "bestActualCandidate": {
+            "id": "item-fact-79ecc81676f1",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていました",
+            "body": "交換したスイッチの許可VLAN一覧からVLAN30が漏れていた",
+            "status": "open",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        },
+        {
+          "propositionId": "second-floor-unconfirmed",
+          "expectedText": "2階の遅延をVLAN設定漏れで説明できるかは未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            6
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-1e56bf18d2e8",
+            "kind": "issue",
+            "title": "2階の遅延まで今回のVLAN設定漏れで説明できるかは未確認です",
+            "body": "2階の遅延をVLAN設定漏れで説明できるかは未確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              6
+            ]
+          }
+        },
+        {
+          "propositionId": "remote-access-risk",
+          "expectedText": "証明書を更新しないとリモート接続ができなくなる可能性がある",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            8
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-deb93c3e24f8",
+            "kind": "risk",
+            "title": "証明書失効によるリモート接続不能リスク",
+            "body": "証明書を更新しないとリモート接続ができなくなる可能性がある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "propositionId": "cert-todo",
+          "expectedText": "高橋がVPN証明書の更新手順と作業可能日を確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            9
+          ],
+          "matched": true,
+          "similarity": 0.8979591836734694,
+          "bestActualCandidate": {
+            "id": "item-todo-78eb193224c4",
+            "kind": "todo",
+            "title": "高橋がVPN証明書の更新手順と作業可能日を確認します",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "cert-todo",
+          "kind": "todo",
+          "parentPath": [
+            "2階の遅延まで今回のVLAN設定漏れで説"
+          ]
+        },
+        {
+          "propositionId": "remote-access-risk",
+          "kind": "risk",
+          "parentPath": [
+            "複数の対象が影響を受けた"
+          ]
+        },
+        {
+          "propositionId": "second-floor-unconfirmed",
+          "kind": "issue",
+          "parentPath": [
+            "2階の遅延まで今回のVLAN設定漏れで説"
+          ]
+        },
+        {
+          "propositionId": "vlan-missing",
+          "kind": "fact",
+          "parentPath": [
+            "2階の遅延まで今回のVLAN設定漏れで説"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 4
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 9,
+      "treeVersion": 3
     }
   ]
 }

@@ -93,7 +93,10 @@ func incompleteItemLabelEnding(item liveAnalysisItem) string {
 	case itemLabelDanglingParticlePattern.MatchString(label):
 		return "dangling_particle"
 	default:
-		return ""
+		// A grammatically closed label can still be unreadable on its own: a
+		// bare noun list has no proposition at all. The quality gate reuses this
+		// ending vocabulary so those labels enter the same rewrite pipeline.
+		return labelQualityEnding(item)
 	}
 }
 
@@ -265,6 +268,11 @@ func repairIncompleteItemLabel(
 	if endingType == "" {
 		return item, decision, referentEvidenceRestored || unusedAntecedentPruned
 	}
+	if labelQualityFailureEnding(endingType) && !labelQualityActionable(item, scope) {
+		decision.EndingType = ""
+		decision.RewriteAttempted = false
+		return item, decision, referentEvidenceRestored || unusedAntecedentPruned
+	}
 
 	candidates := make([]string, 0, len(item.EvidenceSequenceNos)+1)
 	if body := strings.TrimSpace(item.Body); body != "" && body != strings.TrimSpace(item.Title) {
@@ -285,9 +293,16 @@ func repairIncompleteItemLabel(
 		score int
 	}
 	var best labelCandidate
+	requireGroundedCandidate := labelQualityFailureEnding(endingType)
 	for _, candidateText := range candidates {
 		label := semanticallyCompleteItemLabel(candidateText, item.Kind)
 		if label == "" || !itemLabelCandidatePreservesSemantics(item, label, scope) {
+			continue
+		}
+		// A label that is not a proposition is replaced by wording the cited
+		// transcript actually supports (§12.1). Promoting an ungrounded Body
+		// would move unsupported wording into the visible node label.
+		if requireGroundedCandidate && !itemLabelCandidateGroundedInEvidence(item, label, scope) {
 			continue
 		}
 		candidate := labelCandidate{
@@ -314,7 +329,20 @@ func repairIncompleteItemLabel(
 			decision.FinalDecision = "fallback_applied"
 			return repaired, decision, true
 		}
-	} else if strings.TrimSpace(item.GroundingDecision) == "" && len(item.EvidenceSequenceNos) > 0 {
+		// The listed entities cannot be reproduced without carrying an ASR
+		// mishearing into the label. Abstract the subject while keeping the
+		// transcript's own predicate, and leave the original wording in the
+		// description.
+		if label, source, ok := abstractLabelFromCleftEnumeration(item, scope, timeline); ok &&
+			labelQualityFailureEnding(endingType) {
+			repaired := applyRepairedItemLabel(item, label, source)
+			repaired = withLabelResolution(repaired, "abstract_rewrite", endingType, repaired.EvidenceSequenceNos)
+			decision.RewriteResult = "abstract_rewrite"
+			decision.FinalDecision = "rewritten"
+			return repaired, decision, true
+		}
+	} else if strings.TrimSpace(item.GroundingDecision) == "" && len(item.EvidenceSequenceNos) > 0 &&
+		!labelQualityFailureEnding(endingType) {
 		decision.RewriteResult = "deferred"
 		decision.FinalDecision = "deferred_until_grounded"
 		return item, decision, referentEvidenceRestored
@@ -609,6 +637,30 @@ func applyRepairedItemLabel(item liveAnalysisItem, label, source string) liveAna
 	return repaired
 }
 
+// itemLabelCandidateGroundedInEvidence reports whether the cited transcript
+// supports the candidate wording. A verbatim clause of the evidence is always
+// grounded; anything else must share its subject and enough surface with it.
+func itemLabelCandidateGroundedInEvidence(item liveAnalysisItem, label string, scope liveEvidenceScope) bool {
+	normalized := strings.Trim(strings.TrimSpace(label), "。．.!！?？ ")
+	if normalized == "" {
+		return false
+	}
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		evidence := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+		if evidence == "" {
+			continue
+		}
+		if strings.Contains(evidence, normalized) {
+			return true
+		}
+		if sharedTreeAuditSubjectTerm(normalized, evidence) &&
+			semanticItemSimilarity(normalized, evidence) >= 0.20 {
+			return true
+		}
+	}
+	return false
+}
+
 func itemLabelCandidatePreservesSemantics(item liveAnalysisItem, label string, scope liveEvidenceScope) bool {
 	return itemLabelCandidatePreservesSemanticsWithQualifierPolicy(item, label, scope, true)
 }
@@ -623,6 +675,12 @@ func itemLabelCandidatePreservesSemanticsWithQualifierPolicy(
 	if incompleteItemLabelEnding(probe) != "" || liveItemTextNeedsReferent(probe) ||
 		itemLabelConditionalWithoutSubjectPattern.MatchString(label) ||
 		isDiscourseOnlyItem(label, "") {
+		return false
+	}
+	// A transcript sentence can be grammatically complete and still contain an
+	// ASR splice (the same term transcribed twice). Copying it verbatim would
+	// publish unresolved recognition noise as a node label.
+	if labelHasRepeatedAdjacentTerm(label) {
 		return false
 	}
 	semanticSource := itemLabelSemanticSourceText(item, scope)
@@ -893,6 +951,11 @@ func deterministicCurrentConditionalRiskLabel(text string) string {
 }
 
 func labelFailureRetentionEligible(item liveAnalysisItem, scope liveEvidenceScope, timeline discourseTimeline) bool {
+	// A bare enumeration is never retained "because there is some information
+	// in it": an active detail node must be readable on its own.
+	if labelQualityFailureEnding(incompleteItemLabelEnding(item)) {
+		return false
+	}
 	if item.GroundingDecision != "accepted" && item.GroundingDecision != "rewritten" {
 		return false
 	}
@@ -961,12 +1024,18 @@ func repairIncompleteDiffItemLabels(
 	stats *liveAnalysisTreeMergeStats,
 ) []liveAnalysisItem {
 	for index := range items {
+		if stats != nil {
+			stats.LabelQuality.record(evaluateItemLabelQuality(items[index]))
+		}
 		repaired, decision, changed := repairIncompleteItemLabel(items[index], scope, timeline)
 		if changed {
 			items[index] = repaired
 		}
 		if decision.EndingType == "" {
 			continue
+		}
+		if stats != nil {
+			recordLabelQualityDecision(&stats.LabelQuality, decision, changed)
 		}
 		if changed {
 			if stats != nil {
@@ -978,6 +1047,32 @@ func repairIncompleteDiffItemLabels(
 		}
 	}
 	return items
+}
+
+// recordLabelQualityDecision keeps the §21.2 label metrics next to the existing
+// low-information counters. Only decisions and counts are recorded.
+func recordLabelQualityDecision(stats *labelQualityStats, decision incompleteItemLabelDecision, changed bool) {
+	if stats == nil {
+		return
+	}
+	switch {
+	case decision.RewriteResult == "abstract_rewrite":
+		stats.AbstractLabelRewrites++
+	case changed && (decision.RewriteResult == "success" || decision.RewriteResult == "deterministic_fallback"):
+		stats.GroundedLabelRewrites++
+	case decision.RewriteResult == "failed":
+		stats.LabelRewritesFailed++
+	}
+	switch decision.FinalDecision {
+	case "rejected":
+		if labelQualityFailureEnding(decision.EndingType) {
+			stats.LowQualityItemsRejected++
+		}
+	case "retained_degraded", "deferred_until_grounded":
+		if labelQualityFailureEnding(decision.EndingType) {
+			stats.LowQualityItemsHidden++
+		}
+	}
 }
 
 func repairIncompletePersistedItemLabels(
@@ -997,9 +1092,23 @@ func repairIncompletePersistedItemLabels(
 		if !ok {
 			continue
 		}
+		// A label a person edited by hand is authoritative: never rewrite and
+		// never reject it automatically.
+		if finalItemManualProtected(state, itemID) {
+			if stats != nil {
+				stats.ManualLabelsPreserved++
+			}
+			continue
+		}
+		if stats != nil {
+			stats.LabelQuality.record(evaluateItemLabelQuality(item))
+		}
 		repaired, decision, changed := repairIncompleteItemLabel(item, scope, timeline)
 		if decision.EndingType == "" {
 			continue
+		}
+		if stats != nil {
+			recordLabelQualityDecision(&stats.LabelQuality, decision, changed)
 		}
 		if changed {
 			updateFinalItemAndNode(state, repaired)

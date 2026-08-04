@@ -600,11 +600,12 @@ GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-se
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/media-health
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
+POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/finalization/retry
 PATCH /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/agenda-progress
 ```
 
-- `POST`（作成）、`POST .../end`（終了）、`DELETE`、`PATCH .../agenda-progress`
-  はworkspaceのadmin/ownerロールが必要です。
+- `POST`（作成）、`POST .../end`（終了）、`DELETE`、`POST .../finalization/retry`、
+  `PATCH .../agenda-progress` はworkspaceのadmin/ownerロールが必要です。
 - `final-summaries` はworkspace内の完了済み最終要約を一括取得し、
   `{"items":[{"sessionId":"...","overview":"..."}]}` を返します。最終要約がない
   セッションは含まれず、AI分析が無効な場合は空配列です。
@@ -621,7 +622,19 @@ PATCH /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/agenda-progr
   未検知またはAPI再起動後は`state: "ok", event: "snapshot"`です。
 - `ai-analyses` は最新のライブ分析・最終要約・durable tree・finalization進行状態を返します。
   存在しない分析は `null` で、`404` にはなりません。`finalization.payload` にはtarget sequence、
-  tree/summaryのcoverage、timeout、retry回数、不完全終了の有無が入ります。
+  tree/summaryのcoverage、timeout、retry回数、不完全終了の有無が入ります。さらに
+  `finalizationStatus`（`not_started` / `waiting_for_transcript_drain` /
+  `waiting_for_live_analysis` / `building_final_tree` / `generating_summary` /
+  `completed` / `failed`）、`finalizationErrorCode`、`retryable`、`attemptCount`、
+  `sourceTreeVersion`、`summaryVersion`、`waitingOperations` を持ちます。
+  クライアントはこの状態だけで「生成中」「完了」「失敗」「不完全終了」を判別します
+  （最終要約が無いことを理由に生成中と表示してはいけません）。
+  所有プロセスが消えた `running` の行は、読み出し時に `failed` + `retryable` として返します。
+- `finalization/retry` は最終要約まで到達しなかったセッションの終了処理を再実行します。
+  検証だけを同期で行い、処理自体はリクエスト外で走るため `202 Accepted` と現在の
+  `ai-analyses` 相当のスナップショットを返します。セッション単位のsingle-flightで、
+  すでに完了している場合は `409 finalization_already_completed`、
+  最終分析が無効な構成では `503 finalization_retry_unavailable` を返します。
 - `agenda-progress` は手動上書きを1操作ずつ受け付けます。本文は
   `{"entryId":"agenda-1","manualStatus":"discussed"}`（`null`で解除）、または
   `{"manualCurrentTopicId":"agenda-1"}`（`null`で解除）のどちらか一方です。

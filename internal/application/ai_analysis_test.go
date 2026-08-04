@@ -1327,6 +1327,20 @@ func (f *fakeAIChatCompleter) callCount() int {
 	return f.calls
 }
 
+// deploymentCallCount counts the calls routed to one task deployment, so a
+// per-task expectation stays independent of how many other pipeline stages ran.
+func (f *fakeAIChatCompleter) deploymentCallCount(deployment string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, request := range f.requests {
+		if request.Deployment == deployment {
+			count++
+		}
+	}
+	return count
+}
+
 func (f *fakeAIChatCompleter) requestSnapshot() []application.AIChatRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1973,6 +1987,10 @@ func TestMeetingFinalizationDoesNotRetryFinalFlushSchemaFailure(t *testing.T) {
 	config := testLiveOnlyConfig(time.Hour, 1)
 	config.FinalEnabled = true
 	config.FinalFlushMaxAttempts = 3
+	// Route live extraction to its own deployment: finalization now continues
+	// past a failed flush, so the shared call counter also sees the final tree
+	// review and the final summary. Only the flush task must stay at one call.
+	config.TaskModels.LiveExtraction = finalizationTestLiveDeployment
 	service := application.NewMeetingAnalysisService(repository, &fakeAnalysisTranscriptRepository{segments: finalSegmentsThrough(27)}, &fakeAnalysisSessionRepository{}, completer, config)
 
 	err := service.FinalizeMeetingSession(context.Background(), domain.MeetingSession{ID: "session_1"}, application.MeetingSessionFinalizationRequest{
@@ -1981,7 +1999,7 @@ func TestMeetingFinalizationDoesNotRetryFinalFlushSchemaFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "non-retryable schema failure") {
 		t.Fatalf("FinalizeMeetingSession() error = %v, want non-retryable schema failure", err)
 	}
-	if got := completer.callCount(); got != 1 {
+	if got := completer.deploymentCallCount(finalizationTestLiveDeployment); got != 1 {
 		t.Fatalf("final flush calls = %d, want 1 for deterministic schema failure", got)
 	}
 	live, _ := repository.GetMeetingAIAnalysis(context.Background(), "session_1", domain.MeetingAIAnalysisLive)

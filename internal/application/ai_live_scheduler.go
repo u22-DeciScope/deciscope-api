@@ -354,8 +354,7 @@ func (s *MeetingAnalysisService) dispatchScheduledLiveAnalysis(sessionID string,
 	state.pendingChars = 0
 	state.oldestPendingFinalAt = time.Time{}
 	state.latestPendingFinalAt = time.Time{}
-	state.running = true
-	state.runningDone = make(chan struct{})
+	beginLiveRunLocked(state, runTrigger, fromSequence, throughSequence)
 	state.rerunRequested = false
 	state.catchUpRequested = false
 	state.lastAnalysisStartedAt = now
@@ -363,9 +362,6 @@ func (s *MeetingAnalysisService) dispatchScheduledLiveAnalysis(sessionID string,
 	state.lastDeferredReason = ""
 	state.runningOldestPendingAt = oldestPendingAt
 	state.runningLatestFinalAt = latestFinalAt
-	state.runningTargetFromSequenceNo = fromSequence
-	state.runningTargetThroughSequenceNo = throughSequence
-	state.runningTrigger = runTrigger
 	state.runningCoalescedTriggerCount = coalesced
 	state.coalescedTriggerCount = 0
 	state.scheduledTrigger = ""

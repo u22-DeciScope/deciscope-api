@@ -40,6 +40,7 @@ type MeetingAIAnalysisUseCases interface {
 	GetMeetingAIAnalyses(ctx context.Context, sessionID string) (*application.MeetingAIAnalysesSnapshot, error)
 	ListFinalSummaryPreviews(ctx context.Context, sessionIDs []string) ([]application.MeetingFinalSummaryPreview, error)
 	UpdateAgendaProgressOverride(ctx context.Context, sessionID string, input application.AgendaProgressOverrideInput) (json.RawMessage, error)
+	StartMeetingSessionFinalizationRetry(ctx context.Context, sessionID string) error
 }
 
 type MeetingSessionAPI struct {
@@ -409,6 +410,46 @@ func (api *MeetingSessionAPI) GetWorkspaceAIAnalyses(w http.ResponseWriter, r *h
 		return
 	}
 	writeJSON(w, http.StatusOK, meetingAIAnalysesResponseFromSnapshot(session.ID, snapshot))
+}
+
+// RetryWorkspaceFinalization re-runs the finalization pipeline for a session
+// that ended without a usable final summary. The pass itself runs outside the
+// request; clients observe the outcome through the finalization state on the
+// AI analyses endpoint.
+func (api *MeetingSessionAPI) RetryWorkspaceFinalization(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	if api.aiAnalysis == nil {
+		writeError(w, http.StatusServiceUnavailable, "ai_analysis_unavailable", "AI analysis service is unavailable")
+		return
+	}
+	err := api.aiAnalysis.StartMeetingSessionFinalizationRetry(r.Context(), session.ID)
+	switch {
+	case err == nil:
+	case errors.Is(err, application.ErrMeetingFinalizationAlreadyCompleted):
+		writeError(w, http.StatusConflict, "finalization_already_completed", "meeting finalization already completed")
+		return
+	case errors.Is(err, application.ErrMeetingFinalizationRetryUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "finalization_retry_unavailable", "meeting finalization retry is unavailable")
+		return
+	case errors.Is(err, domain.ErrInvalidArgument):
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	default:
+		log.Printf("Workspace finalization retry failed. workspaceId=%s sessionId=%s error=%v", session.WorkspaceID, session.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	log.Printf("Workspace finalization retry accepted. workspaceId=%s sessionId=%s", session.WorkspaceID, session.ID)
+	snapshot, snapshotErr := api.aiAnalysis.GetMeetingAIAnalyses(r.Context(), session.ID)
+	if snapshotErr != nil {
+		log.Printf("Workspace finalization retry snapshot fetch failed. workspaceId=%s sessionId=%s error=%v", session.WorkspaceID, session.ID, snapshotErr)
+		writeJSON(w, http.StatusAccepted, meetingAIAnalysesResponse{SessionID: session.ID, LiveHistory: []meetingAIAnalysisResponse{}})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, meetingAIAnalysesResponseFromSnapshot(session.ID, snapshot))
 }
 
 // UpdateAgendaProgressForWorkspace applies exactly one manual agenda-progress
