@@ -3708,6 +3708,224 @@
       ],
       "finalCoverage": 9,
       "treeVersion": 3
+    },
+    {
+      "id": "fragmented-additional-subject",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 1,
+        "resolvedIssueCount": 1,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.688783833889507,
+        "description_redundant_count": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "recovery-fact",
+          "expectedText": "9時52分に旧スイッチへ切り戻して復旧した",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-d588ff127f1a",
+            "kind": "fact",
+            "title": "9時52分に旧スイッチへ切り戻して復旧した",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "cert-fact",
+          "expectedText": "VPN装置の証明書が来月末に期限切れになる",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-9c39e150bd59",
+            "kind": "fact",
+            "title": "VPN装置の証明書が来月末に期限切れになる",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "cert-risk",
+          "expectedText": "証明書放置によるリモート接続不能リスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-5d68ce59258c",
+            "kind": "risk",
+            "title": "証明書放置によるリモート接続不能リスク",
+            "body": "証明書を放置するとリモート接続ができなくなる可能性がある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "cert-todo",
+          "expectedText": "田中が証明書の更新手順と作業日を今週中に確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            6
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-todo-ce0a7b5e2e7c",
+            "kind": "todo",
+            "title": "田中が証明書の更新手順と作業日を今週中に確認する",
+            "status": "open",
+            "evidenceSequenceNos": [
+              6
+            ]
+          }
+        },
+        {
+          "propositionId": "line-issue",
+          "expectedText": "拠点間回線が朝夕の時間帯に不安定",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-f26eaba60107",
+            "kind": "issue",
+            "title": "拠点間回線が朝夕の時間帯に不安定",
+            "status": "resolved",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "cert-fact",
+          "kind": "fact",
+          "parentPath": [
+            "証明書の期限切れ対応"
+          ]
+        },
+        {
+          "propositionId": "cert-risk",
+          "kind": "risk",
+          "parentPath": [
+            "証明書の期限切れ対応"
+          ]
+        },
+        {
+          "propositionId": "cert-todo",
+          "kind": "todo",
+          "parentPath": [
+            "証明書の期限切れ対応"
+          ]
+        },
+        {
+          "propositionId": "line-issue",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "recovery-fact",
+          "kind": "fact",
+          "parentPath": [
+            "9時52分に旧スイッチへ切り戻して復旧し"
+          ]
+        }
+      ],
+      "requiredParentSeparations": [
+        {
+          "from": "cert-risk",
+          "to": "line-issue"
+        },
+        {
+          "from": "cert-risk",
+          "to": "recovery-fact"
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        },
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 6,
+      "treeVersion": 1
     }
   ]
 }

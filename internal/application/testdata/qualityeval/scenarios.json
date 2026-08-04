@@ -3,6 +3,61 @@
   "name": "deterministic",
   "scenarios": [
     {
+      "id": "fragmented-additional-subject",
+      "description": "複数発話にまたがるVPN証明書対応を1つの追加論点topicへ集約し、無関係な追加論点は分けたままにする",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "田中", "text": "名古屋支社の障害は9時52分に旧スイッチへ切り戻して復旧しました。"},
+        {"sequenceNo": 2, "speaker": "佐藤", "text": "今回の障害とは別に、VPN装置の証明書が来月末に期限切れになります。"},
+        {"sequenceNo": 3, "speaker": "鈴木", "text": "証明書を放置するとリモート接続ができなくなる可能性があります。"},
+        {"sequenceNo": 4, "speaker": "山下", "text": "名古屋と本社の拠点間回線が朝夕の時間帯に不安定になっています。"},
+        {"sequenceNo": 5, "speaker": "佐藤", "text": "証明書の更新は今回の障害対応とは別チケットで管理することにします。"},
+        {"sequenceNo": 6, "speaker": "田中", "text": "田中が証明書の更新手順と作業日を今週中に確認します。"}
+      ],
+      "meetingContext": {
+        "agendaItems": [
+          {"id": "agenda-1", "title": "障害の経緯と復旧確認", "order": 1}
+        ]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3, 4, 5, 6],
+          "fixedAIResponse": {
+            "summary": "障害復旧と証明書対応",
+            "currentTopic": "障害の経緯と復旧確認",
+            "items": [
+              {"clientKey": "recovery-fact", "kind": "fact", "severity": "medium", "title": "9時52分に旧スイッチへ切り戻して復旧した", "body": "名古屋支社の障害は9時52分に旧スイッチへ切り戻して復旧した", "status": "open", "evidenceSequenceNos": [1], "evidenceSnippets": ["名古屋支社の障害は9時52分に旧スイッチへ切り戻して復旧しました"]},
+              {"clientKey": "cert-fact", "kind": "fact", "severity": "medium", "title": "VPN装置の証明書が来月末に期限切れになる", "body": "VPN装置の証明書が来月末に期限切れになる", "status": "open", "evidenceSequenceNos": [2], "evidenceSnippets": ["VPN装置の証明書が来月末に期限切れになります"]},
+              {"clientKey": "cert-risk", "kind": "risk", "severity": "high", "title": "証明書放置によるリモート接続不能リスク", "body": "証明書を放置するとリモート接続ができなくなる可能性がある", "status": "open", "evidenceSequenceNos": [3], "evidenceSnippets": ["証明書を放置するとリモート接続ができなくなる可能性があります"]},
+              {"clientKey": "line-issue", "kind": "issue", "subtype": "discussion", "severity": "medium", "title": "拠点間回線が朝夕の時間帯に不安定", "body": "名古屋と本社の拠点間回線が朝夕の時間帯に不安定になっている", "status": "open", "evidenceSequenceNos": [4], "evidenceSnippets": ["名古屋と本社の拠点間回線が朝夕の時間帯に不安定になっています"]},
+              {"clientKey": "cert-decision", "kind": "decision", "severity": "medium", "title": "証明書の更新は別チケットで管理する", "body": "証明書の更新は今回の障害対応とは別チケットで管理する", "status": "open", "evidenceSequenceNos": [5], "evidenceSnippets": ["証明書の更新は今回の障害対応とは別チケットで管理することにします"]},
+              {"clientKey": "cert-todo", "kind": "todo", "severity": "medium", "title": "田中が証明書の更新手順と作業日を今週中に確認する", "body": "田中が証明書の更新手順と作業日を今週中に確認する", "status": "open", "evidenceSequenceNos": [6], "evidenceSnippets": ["田中が証明書の更新手順と作業日を今週中に確認します"]}
+            ],
+            "newTopics": [],
+            "assignments": [
+              {"nodeId": "recovery-fact", "parentTopicId": "agenda-1", "confidence": 0.92}
+            ],
+            "resolvedIds": [],
+            "resolutionUpdates": [],
+            "utteranceRoles": []
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "recovery-fact", "text": "9時52分に旧スイッチへ切り戻して復旧した", "requiredKind": "fact", "evidenceSequenceNos": [1]},
+        {"id": "cert-fact", "text": "VPN装置の証明書が来月末に期限切れになる", "requiredKind": "fact", "evidenceSequenceNos": [2]},
+        {"id": "cert-risk", "text": "証明書放置によるリモート接続不能リスク", "requiredKind": "risk", "evidenceSequenceNos": [3]},
+        {"id": "cert-todo", "text": "田中が証明書の更新手順と作業日を今週中に確認する", "requiredKind": "todo", "evidenceSequenceNos": [6]},
+        {"id": "line-issue", "text": "拠点間回線が朝夕の時間帯に不安定", "requiredKind": "issue", "evidenceSequenceNos": [4]}
+      ],
+      "requiredParentSeparations": [
+        {"from": "cert-risk", "to": "line-issue"},
+        {"from": "cert-risk", "to": "recovery-fact"}
+      ],
+      "forbiddenResults": [{"type": "semantic_duplicate"}],
+      "finalCoverage": 6,
+      "applyFinalRepair": true
+    },
+    {
       "id": "agenda-misassignment",
       "description": "VPNセキュリティ論点を予算アジェンダへ誤割り当てしない",
       "transcriptSegments": [

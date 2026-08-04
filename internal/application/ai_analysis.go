@@ -3124,6 +3124,10 @@ type finalRepairStats struct {
 	IssueRecoveryDecisions                    []issueRecoveryDecision
 	ConfirmedTodoCandidatesPromoted           int
 	ConfirmedTodoCandidatesFolded             int
+	UnclassifiedItemsReparented               int
+	UnclassifiedTopicsMaterialized            int
+	UnclassifiedItemsRetained                 int
+	UnclassifiedDecisions                     []finalUnclassifiedDecision
 	IncompleteLabelDecisions                  []incompleteItemLabelDecision
 	LabelQuality                              labelQualityStats
 	ManualLabelsPreserved                     int
@@ -3190,6 +3194,9 @@ func applyDeterministicFinalTreeRepairs(payload json.RawMessage, mc *meetingCont
 	mergeSameEvidenceSynthesisDuplicates(&state, version, &stats)
 	foldDuplicatePromotedDynamicTopics(&state, version, &stats)
 	mergeSameEvidenceCrossKindDuplicates(&state, version, &stats)
+	// 重複統合が終わった確定itemに対して、追加論点の箱に残ったものを意味単位へ
+	// 接地し直す。topicのmaterialize→reparent→候補整理→空箱除去の順に適用する。
+	repairFinalUnclassifiedItems(&state, mc, version, &stats)
 	stats.DanglingCandidatesPruned += pruneDanglingFinalCandidates(&state)
 	pruneEmptyFinalUnclassifiedTopic(state.Tree)
 	rebuildTreeAuditEdges(state.Tree)

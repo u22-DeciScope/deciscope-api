@@ -26,6 +26,9 @@ func finalRepairStatsChanged(stats finalRepairStats) bool {
 		stats.CorrectionItemsSuperseded > 0 ||
 		stats.CorrectionItemsReconstructed > 0 ||
 		stats.CorrectionItemsPending > 0 ||
+		stats.UnclassifiedItemsReparented > 0 ||
+		stats.UnclassifiedTopicsMaterialized > 0 ||
+		stats.UnclassifiedItemsRetained > 0 ||
 		stats.StrongTodosSynthesized > 0 ||
 		stats.StrongDecisionsSynthesized > 0 ||
 		stats.EvidenceReferencesPruned > 0 ||
