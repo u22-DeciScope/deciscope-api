@@ -9,7 +9,7 @@ import (
 
 const (
 	meetingQualityMetricEpsilon         = 1e-9
-	meetingQualityBaselineSchemaVersion = 4
+	meetingQualityBaselineSchemaVersion = 5
 )
 
 var meetingQualityMetricSchemaV3 = []string{
@@ -19,6 +19,24 @@ var meetingQualityMetricSchemaV3 = []string{
 	"semanticDuplicateCount", "lowInformationLabelCount", "contextDependentLabelCount",
 	"truncatedLabelCount", "hierarchyRelationAccuracy", "candidateFragmentationCount",
 	"crossAgendaContaminationCount",
+}
+
+// meetingQualityMetricSchemaV4 は singleton attachment 軸を追加する前の承認済み
+// metric列。v4→v5も v3→v4 と同じく「既存軸は据え置き、末尾に追加された軸だけを
+// 現在のレポートから初期登録する」加算移行だけを許す。
+var meetingQualityMetricSchemaV4 = []string{
+	"requiredPropositionRecall", "unsupportedPropositionCount", "classificationAccuracy",
+	"temporalScopeAccuracy", "pastFactCount", "issueCount", "resolvedIssueCount",
+	"incorrectResolvedIssueCount", "riskRecall", "todoRecall", "decisionRecall",
+	"semanticDuplicateCount", "semantic_split_source_active_count",
+	"semantic_split_source_fragment_duplicate_count", "semantic_split_replacement_missing_count",
+	"recap_duplicate_item_count", "recap_existing_item_update_count",
+	"recap_new_information_item_count", "lowInformationLabelCount",
+	"contextDependentLabelCount", "truncatedLabelCount", "hierarchyRelationAccuracy",
+	"candidateFragmentationCount", "crossAgendaContaminationCount",
+	"label_description_exact_duplicate_count", "label_description_high_similarity_count",
+	"description_unsupported_atom_count", "description_added_grounded_detail_count",
+	"label_transcript_copy_ratio", "label_compression_ratio", "description_redundant_count",
 }
 
 type meetingQualityMetricValue struct {
@@ -364,11 +382,11 @@ func acceptReviewedParentAssignmentAdditions(
 	return baseline, reviewed
 }
 
-// migrateMeetingQualityBaselineSchema permits exactly one audited, additive
-// migration: the known v3 metric list to v4. Existing metric values are kept;
-// only the seven newly introduced axes are initialized from the passing current
-// report because no historical value exists for them. Arbitrary deletion,
-// reordering, or same-version schema drift remains an error.
+// migrateMeetingQualityBaselineSchema permits only audited, additive
+// migrations: the known v3 or v4 metric list to the current one. Existing
+// metric values are kept; only the newly introduced axes are initialized from
+// the passing current report because no historical value exists for them.
+// Arbitrary deletion, reordering, or same-version schema drift remains an error.
 func migrateMeetingQualityBaselineSchema(
 	baseline MeetingQualityBaseline,
 	current MeetingQualitySuiteReport,
@@ -379,7 +397,14 @@ func migrateMeetingQualityBaselineSchema(
 		}
 		return baseline, nil, nil, nil
 	}
-	if baseline.SchemaVersion != 3 || !reflect.DeepEqual(baseline.MetricSchema, meetingQualityMetricSchemaV3) {
+	var previousSchema []string
+	switch baseline.SchemaVersion {
+	case 3:
+		previousSchema = meetingQualityMetricSchemaV3
+	case 4:
+		previousSchema = meetingQualityMetricSchemaV4
+	}
+	if previousSchema == nil || !reflect.DeepEqual(baseline.MetricSchema, previousSchema) {
 		return baseline, nil, nil, fmt.Errorf(
 			"baseline schema migration rejected: schemaVersion=%d metricSchema=%v",
 			baseline.SchemaVersion, baseline.MetricSchema,
@@ -392,7 +417,7 @@ func migrateMeetingQualityBaselineSchema(
 	for _, scenario := range current.Scenarios {
 		currentByID[scenario.ID] = scenario
 	}
-	added := append([]string(nil), qualityMetricNames()[len(meetingQualityMetricSchemaV3):]...)
+	added := append([]string(nil), qualityMetricNames()[len(previousSchema):]...)
 	var reviewedExact []MeetingQualityMetricChange
 	for index := range baseline.Scenarios {
 		currentScenario, ok := currentByID[baseline.Scenarios[index].ID]
@@ -402,7 +427,8 @@ func migrateMeetingQualityBaselineSchema(
 				baseline.Scenarios[index].ID,
 			)
 		}
-		if baseline.Scenarios[index].Metrics.PastFactCount != currentScenario.Metrics.PastFactCount &&
+		if baseline.SchemaVersion == 3 &&
+			baseline.Scenarios[index].Metrics.PastFactCount != currentScenario.Metrics.PastFactCount &&
 			currentScenario.Passed &&
 			meetingQualityAddedTemporalExpectation(baseline.Scenarios[index], currentScenario) {
 			reviewedExact = append(reviewedExact, MeetingQualityMetricChange{
@@ -413,7 +439,7 @@ func migrateMeetingQualityBaselineSchema(
 			baseline.Scenarios[index].Metrics.PastFactCount = currentScenario.Metrics.PastFactCount
 		}
 		currentMetrics := qualityMetricValues(currentScenario.Metrics)
-		for metricIndex := len(meetingQualityMetricSchemaV3); metricIndex < len(currentMetrics); metricIndex++ {
+		for metricIndex := len(previousSchema); metricIndex < len(currentMetrics); metricIndex++ {
 			setMeetingQualityMetric(
 				&baseline.Scenarios[index].Metrics,
 				currentMetrics[metricIndex].Name,
@@ -529,6 +555,12 @@ func qualityMetricValues(metrics MeetingQualityMetrics) []meetingQualityMetricVa
 		{Name: "label_transcript_copy_ratio", Value: metrics.LabelTranscriptCopyRatio},
 		{Name: "label_compression_ratio", Value: metrics.LabelCompressionRatio},
 		{Name: "description_redundant_count", Value: float64(metrics.DescriptionRedundantCount)},
+		{Name: "singletonAttachmentEligibleCount", Value: float64(metrics.SingletonAttachmentEligibleCount), Exact: true},
+		{Name: "singletonAttachmentAppliedCount", Value: float64(metrics.SingletonAttachmentAppliedCount), HigherIsGood: true},
+		{Name: "singletonAttachmentDeferredCount", Value: float64(metrics.SingletonAttachmentDeferredCount), Exact: true},
+		{Name: "singletonAttachmentAmbiguousCount", Value: float64(metrics.SingletonAttachmentAmbiguousCount), Exact: true},
+		{Name: "singletonAttachmentWrongParentCount", Value: float64(metrics.SingletonAttachmentWrongParentCount)},
+		{Name: "unclassifiedGroundedSingletonCount", Value: float64(metrics.UnclassifiedGroundedSingletonCount), Exact: true},
 	}
 }
 
@@ -608,6 +640,18 @@ func setMeetingQualityMetric(metrics *MeetingQualityMetrics, name string, value 
 		metrics.LabelCompressionRatio = value
 	case "description_redundant_count":
 		metrics.DescriptionRedundantCount = int(value)
+	case "singletonAttachmentEligibleCount":
+		metrics.SingletonAttachmentEligibleCount = int(value)
+	case "singletonAttachmentAppliedCount":
+		metrics.SingletonAttachmentAppliedCount = int(value)
+	case "singletonAttachmentDeferredCount":
+		metrics.SingletonAttachmentDeferredCount = int(value)
+	case "singletonAttachmentAmbiguousCount":
+		metrics.SingletonAttachmentAmbiguousCount = int(value)
+	case "singletonAttachmentWrongParentCount":
+		metrics.SingletonAttachmentWrongParentCount = int(value)
+	case "unclassifiedGroundedSingletonCount":
+		metrics.UnclassifiedGroundedSingletonCount = int(value)
 	}
 }
 

@@ -79,6 +79,7 @@ func EvaluateMeetingQualitySnapshot(
 	result.FinalCoverage = state.CoveredThroughSequenceNo
 	result.TreeVersion = state.TreeVersion
 	evaluateMeetingQualityResult(&result, scenario, state, context, segments)
+	result.Metrics.UnclassifiedGroundedSingletonCount = unclassifiedGroundedSingletonCount(state)
 	result.Passed = result.Error == "" &&
 		len(result.HardInvariantViolations) == 0 &&
 		len(result.MissingRequiredPropositions) == 0 &&
@@ -272,8 +273,9 @@ func runMeetingQualityScenario(scenario MeetingQualityScenario) MeetingQualitySc
 		)
 		raw = merged
 	}
+	var repairStats finalRepairStats
 	if scenario.ApplyFinalRepair {
-		raw, _ = applyDeterministicFinalTreeRepairs(raw, context, int64(len(scenario.Rounds)+1), finalRepairInput{
+		raw, repairStats = applyDeterministicFinalTreeRepairs(raw, context, int64(len(scenario.Rounds)+1), finalRepairInput{
 			Segments: segments,
 			Audit:    TreeAuditConfig{},
 		})
@@ -292,6 +294,7 @@ func runMeetingQualityScenario(scenario MeetingQualityScenario) MeetingQualitySc
 	result.TreeVersion = state.TreeVersion
 	result.FinalCoverage = state.CoveredThroughSequenceNo
 	evaluateMeetingQualityResult(&result, scenario, state, context, segments)
+	recordSingletonAttachmentMetrics(&result, scenario, state, repairStats)
 	result.Passed = result.Error == "" &&
 		len(result.HardInvariantViolations) == 0 &&
 		len(result.MissingRequiredPropositions) == 0 &&
@@ -299,6 +302,67 @@ func runMeetingQualityScenario(scenario MeetingQualityScenario) MeetingQualitySc
 		len(result.ForbiddenResultsFound) == 0 &&
 		len(result.SafetyFailures) == 0
 	return result
+}
+
+// recordSingletonAttachmentMetrics records the final singleton-attachment axes.
+// singletonAttachmentWrongParentCount counts only attachments that landed in a
+// topic already holding a proposition the scenario declares must stay
+// separated, so a negative fixture proves the misattachment rather than only
+// the aggregate count changing.
+func recordSingletonAttachmentMetrics(
+	result *MeetingQualityScenarioResult,
+	scenario MeetingQualityScenario,
+	state liveAnalysisPayload,
+	stats finalRepairStats,
+) {
+	result.Metrics.SingletonAttachmentEligibleCount = stats.SingletonAttachmentEligible
+	result.Metrics.SingletonAttachmentAppliedCount = stats.SingletonAttachmentApplied
+	result.Metrics.SingletonAttachmentDeferredCount = stats.SingletonAttachmentDeferred
+	result.Metrics.SingletonAttachmentAmbiguousCount = stats.SingletonAttachmentAmbiguous
+	result.Metrics.UnclassifiedGroundedSingletonCount = unclassifiedGroundedSingletonCount(state)
+	if len(scenario.RequiredParentSeparations) == 0 || state.Tree == nil {
+		return
+	}
+	propositionByItem := make(map[string]string, len(result.PropositionMatches))
+	itemByProposition := make(map[string]string, len(result.PropositionMatches))
+	for _, match := range result.PropositionMatches {
+		if !match.Matched || match.BestActualCandidate == nil {
+			continue
+		}
+		propositionByItem[match.BestActualCandidate.ID] = match.PropositionID
+		itemByProposition[match.PropositionID] = match.BestActualCandidate.ID
+	}
+	for _, decision := range stats.SingletonAttachmentDecisions {
+		if decision.Decision != singletonAttachmentApplied {
+			continue
+		}
+		propositionID, known := propositionByItem[decision.ItemID]
+		if !known {
+			continue
+		}
+		for _, separation := range scenario.RequiredParentSeparations {
+			counterpart := ""
+			switch propositionID {
+			case separation.From:
+				counterpart = separation.To
+			case separation.To:
+				counterpart = separation.From
+			default:
+				continue
+			}
+			counterpartItemID, matched := itemByProposition[counterpart]
+			if !matched || treeItemTopic(state.Tree, counterpartItemID) != decision.TargetTopicID {
+				continue
+			}
+			result.Metrics.SingletonAttachmentWrongParentCount++
+			result.MetricEvidence = append(result.MetricEvidence, MeetingQualityMetricEvidence{
+				Metric:         "singletonAttachmentWrongParentCount",
+				ExpectationIDs: []string{propositionID, counterpart},
+				ActualItemIDs:  []string{decision.ItemID, counterpartItemID},
+				Reason:         "singleton_attached_into_a_topic_required_to_stay_separate",
+			})
+		}
+	}
 }
 
 func validateOneMeetingQualityScenario(scenario MeetingQualityScenario) error {

@@ -148,8 +148,8 @@ func TestDeterministicMeetingQualitySuiteUsesProductionStages(t *testing.T) {
 			}
 		}
 	}
-	if direct != 31 || seeded != 5 || completedOnly != 0 {
-		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 31/5/0",
+	if direct != 37 || seeded != 5 || completedOnly != 0 {
+		t.Fatalf("pipeline modes direct=%d seeded=%d completedOnly=%d, want 37/5/0",
 			direct, seeded, completedOnly)
 	}
 }
@@ -166,7 +166,9 @@ func TestDeterministicMeetingQualityKnownProblemsHaveMetricProvenance(t *testing
 		want     int
 	}{
 		{"unspoken-information-contamination", "semanticDuplicateCount", 0},
-		{"semantic-kind-classification", "candidateFragmentationCount", 2},
+		// 監視ログを対象とするTodoが、同じ監視ログのfact/原因issueと同じtopicへ
+		// 接地されるようになり、2件あったfragmentationのうち1件が解消した。
+		{"semantic-kind-classification", "candidateFragmentationCount", 1},
 		{"semantic-duplicate-proposition", "semanticDuplicateCount", 1},
 	}
 	for _, test := range tests {
@@ -214,7 +216,8 @@ func TestDeterministicMeetingQualityKnownProblemsHaveMetricProvenance(t *testing
 }
 
 func TestDeterministicMeetingQualitySuiteMatchesApprovedBaseline(t *testing.T) {
-	report := RunMeetingQualitySuite(loadDeterministicMeetingQualitySuite(t))
+	suite := loadDeterministicMeetingQualitySuite(t)
+	report := RunMeetingQualitySuite(suite)
 	raw, err := meetingQualityFixtureFS.ReadFile("testdata/qualityeval/baseline.json")
 	if err != nil {
 		t.Fatalf("read quality baseline: %v", err)
@@ -231,16 +234,68 @@ func TestDeterministicMeetingQualitySuiteMatchesApprovedBaseline(t *testing.T) {
 	for _, scenario := range report.Scenarios {
 		currentByID[scenario.ID] = scenario
 	}
+	scenarioByID := make(map[string]MeetingQualityScenario, len(suite.Scenarios))
+	for _, scenario := range suite.Scenarios {
+		scenarioByID[scenario.ID] = scenario
+	}
 	var unexpectedParentDiffs []MeetingQualityParentDiff
 	for _, diff := range comparison.ParentRelationDiffs {
-		if !meetingQualityParentDiffSatisfiesRequiredSeparation(diff, currentByID[diff.Scenario]) {
-			unexpectedParentDiffs = append(unexpectedParentDiffs, diff)
+		if meetingQualityParentDiffSatisfiesRequiredSeparation(diff, currentByID[diff.Scenario]) ||
+			meetingQualityParentDiffSatisfiesRequiredSameBranch(
+				diff, scenarioByID[diff.Scenario], currentByID[diff.Scenario],
+			) {
+			continue
 		}
+		unexpectedParentDiffs = append(unexpectedParentDiffs, diff)
 	}
 	if len(unexpectedParentDiffs) != 0 || len(comparison.KindDistributionDiffs) != 0 {
 		t.Fatalf("unexpected structural baseline diff: parents=%+v kinds=%+v",
 			unexpectedParentDiffs, comparison.KindDistributionDiffs)
 	}
+}
+
+// meetingQualityParentDiffSatisfiesRequiredSameBranch accepts a recorded parent
+// change only when the scenario itself declares that the moved proposition must
+// share a branch with another proposition, that relation holds in the current
+// result, and no other proposition moved. It is the structural counterpart of
+// the separation rule: an approved repair is one the scenario asked for, never
+// arbitrary drift toward whatever the pipeline currently produces.
+func meetingQualityParentDiffSatisfiesRequiredSameBranch(
+	diff MeetingQualityParentDiff,
+	scenario MeetingQualityScenario,
+	current MeetingQualityScenarioResult,
+) bool {
+	if len(scenario.RequiredRelations) == 0 || len(current.RelationFailures) != 0 ||
+		!current.Passed || len(diff.Before) != len(diff.After) {
+		return false
+	}
+	allowed := make(map[string]struct{}, len(scenario.RequiredRelations)*2)
+	for _, relation := range scenario.RequiredRelations {
+		if !relation.RequireSameBranch {
+			continue
+		}
+		allowed[relation.From] = struct{}{}
+		allowed[relation.To] = struct{}{}
+	}
+	afterByID := make(map[string]MeetingQualityParentAssignment, len(diff.After))
+	for _, assignment := range diff.After {
+		afterByID[assignment.PropositionID] = assignment
+	}
+	changed := 0
+	for _, previous := range diff.Before {
+		actual, exists := afterByID[previous.PropositionID]
+		if !exists || actual.Kind != previous.Kind {
+			return false
+		}
+		if reflect.DeepEqual(previous, actual) {
+			continue
+		}
+		if _, ok := allowed[previous.PropositionID]; !ok {
+			return false
+		}
+		changed++
+	}
+	return changed > 0
 }
 
 func meetingQualityParentDiffSatisfiesRequiredSeparation(

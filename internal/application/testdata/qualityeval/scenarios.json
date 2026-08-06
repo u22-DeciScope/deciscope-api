@@ -680,6 +680,14 @@
           "requiredKind": "decision"
         }
       ],
+      "requiredRelations": [
+        {
+          "from": "log-todo",
+          "to": "cause-issue",
+          "kind": "action_for",
+          "requireSameBranch": true
+        }
+      ],
       "finalCoverage": 5,
       "applyFinalRepair": true
     },
@@ -2703,6 +2711,260 @@
         {"type": "semantic_duplicate"}
       ],
       "finalCoverage": 9,
+      "applyFinalRepair": true
+        },
+    {
+      "id": "singleton-monitoring-attachment",
+      "description": "運用パラメータが未決定という単独Issueを、同じ対象の既存topicへ接続する",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "田中", "text": "監視対象のサーバーが先月から20台に増えています。"},
+        {"sequenceNo": 2, "speaker": "佐藤", "text": "監視対象を増やすとアラートが多くなりすぎる可能性があります。"},
+        {"sequenceNo": 3, "speaker": "鈴木", "text": "監視間隔と通知条件はまだ決まっていません。"}
+      ],
+      "meetingContext": {
+        "title": "運用定例",
+        "agendaItems": [{"id": "agenda-1", "title": "先月の稼働報告", "order": 1}]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3],
+          "fixedAIResponse": {
+            "summary": "監視強化の検討",
+            "currentTopic": "監視強化",
+            "items": [
+              {"clientKey": "monitor-fact", "kind": "fact", "severity": "medium", "title": "監視対象のサーバーが20台に増えた", "body": "監視対象のサーバーが先月から20台に増えた", "status": "open", "evidenceSequenceNos": [1], "evidenceSnippets": ["監視対象のサーバーが先月から20台に増えています"]},
+              {"clientKey": "monitor-risk", "kind": "risk", "severity": "high", "title": "監視対象拡大によるアラート過多", "body": "監視対象を増やすとアラートが多くなりすぎる可能性がある", "status": "open", "evidenceSequenceNos": [2], "evidenceSnippets": ["監視対象を増やすとアラートが多くなりすぎる可能性があります"]},
+              {"clientKey": "monitor-issue", "kind": "issue", "subtype": "discussion", "severity": "medium", "title": "監視間隔と通知条件が未決定", "body": "監視間隔と通知条件がまだ決まっていない", "status": "open", "evidenceSequenceNos": [3], "evidenceSnippets": ["監視間隔と通知条件はまだ決まっていません"]}
+            ],
+            "newTopics": [{"id": "topic-monitoring", "label": "監視強化の方針", "description": "監視対象の拡大"}],
+            "assignments": [
+              {"nodeId": "monitor-fact", "parentTopicId": "topic-monitoring", "confidence": 0.93},
+              {"nodeId": "monitor-risk", "parentTopicId": "topic-monitoring", "confidence": 0.93}
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "monitor-fact", "text": "監視対象のサーバーが20台に増えた", "requiredKind": "fact", "evidenceSequenceNos": [1]},
+        {"id": "monitor-risk", "text": "監視対象拡大によるアラート過多のリスク", "requiredKind": "risk", "evidenceSequenceNos": [2]},
+        {"id": "monitor-issue", "text": "監視間隔と通知条件が未決定", "requiredKind": "issue", "evidenceSequenceNos": [3]}
+      ],
+      "requiredRelations": [
+        {"from": "monitor-issue", "to": "monitor-risk", "kind": "refines", "requireSameBranch": true}
+      ],
+      "finalCoverage": 3,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "singleton-release-rollback-attachment",
+      "description": "段階的リリースのagenda semantic hintと一致する単独Issueを、そのagenda topicへ接続する",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "山田", "text": "今回は段階的リリースで公開範囲を広げていきます。"},
+        {"sequenceNo": 2, "speaker": "井上", "text": "一斉公開すると障害が広範囲に拡大する恐れがあります。"},
+        {"sequenceNo": 3, "speaker": "森", "text": "段階的リリースのロールバック条件はまだ決めていません。"}
+      ],
+      "meetingContext": {
+        "title": "リリース計画",
+        "agendaItems": [{"id": "agenda-1", "title": "段階的リリースの進め方", "description": "公開範囲の広げ方", "semanticHints": ["ロールバック", "段階公開"], "order": 1}]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3],
+          "fixedAIResponse": {
+            "summary": "段階的リリースの進め方",
+            "currentTopic": "段階的リリース",
+            "items": [
+              {"clientKey": "release-fact", "kind": "fact", "severity": "medium", "title": "段階的リリースで公開範囲を広げる", "body": "今回は段階的リリースで公開範囲を広げる", "status": "open", "evidenceSequenceNos": [1], "evidenceSnippets": ["今回は段階的リリースで公開範囲を広げていきます"]},
+              {"clientKey": "release-risk", "kind": "risk", "severity": "high", "title": "一斉公開による障害拡大リスク", "body": "一斉公開すると障害が広範囲に拡大する恐れがある", "status": "open", "evidenceSequenceNos": [2], "evidenceSnippets": ["一斉公開すると障害が広範囲に拡大する恐れがあります"]},
+              {"clientKey": "rollback-issue", "kind": "issue", "subtype": "discussion", "severity": "medium", "title": "ロールバック条件が未決定", "body": "ロールバック条件がまだ決まっていない", "status": "open", "evidenceSequenceNos": [3], "evidenceSnippets": ["段階的リリースのロールバック条件はまだ決めていません"]}
+            ],
+            "newTopics": [],
+            "assignments": [
+              {"nodeId": "release-fact", "parentTopicId": "agenda-1", "confidence": 0.94},
+              {"nodeId": "release-risk", "parentTopicId": "agenda-1", "confidence": 0.94}
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "release-fact", "text": "段階的リリースで公開範囲を広げる", "requiredKind": "fact", "evidenceSequenceNos": [1]},
+        {"id": "release-risk", "text": "一斉公開による障害拡大リスク", "requiredKind": "risk", "evidenceSequenceNos": [2]},
+        {"id": "rollback-issue", "text": "ロールバック条件が未決定", "requiredKind": "issue", "evidenceSequenceNos": [3]}
+      ],
+      "requiredRelations": [
+        {"from": "rollback-issue", "to": "release-risk", "kind": "refines", "requireSameBranch": true}
+      ],
+      "finalCoverage": 3,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "singleton-hiring-evaluation-attachment",
+      "description": "面接評価プロセスの既存topicへ、評価基準が未決定という単独Issueを接続する",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "岡田", "text": "面接評価プロセスの見直しを進めています。"},
+        {"sequenceNo": 2, "speaker": "西村", "text": "評価者ごとに合否の基準がばらついています。"},
+        {"sequenceNo": 3, "speaker": "岡田", "text": "最終判定の評価基準はまだ決まっていません。"}
+      ],
+      "meetingContext": {
+        "title": "採用定例",
+        "agendaItems": [{"id": "agenda-1", "title": "今期の応募状況", "order": 1}]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3],
+          "fixedAIResponse": {
+            "summary": "面接評価プロセスの見直し",
+            "currentTopic": "面接評価プロセス",
+            "items": [
+              {"clientKey": "hiring-fact", "kind": "fact", "severity": "medium", "title": "面接評価プロセスの見直しを進めている", "body": "面接評価プロセスの見直しを進めている", "status": "open", "evidenceSequenceNos": [1], "evidenceSnippets": ["面接評価プロセスの見直しを進めています"]},
+              {"clientKey": "evaluator-fact", "kind": "fact", "severity": "medium", "title": "評価者ごとに合否の基準がばらついている", "body": "評価者ごとに合否の基準がばらついている", "status": "open", "evidenceSequenceNos": [2], "evidenceSnippets": ["評価者ごとに合否の基準がばらついています"]},
+              {"clientKey": "criteria-issue", "kind": "issue", "subtype": "discussion", "severity": "medium", "title": "最終判定の評価基準が未決定", "body": "最終判定の評価基準がまだ決まっていない", "status": "open", "evidenceSequenceNos": [3], "evidenceSnippets": ["最終判定の評価基準はまだ決まっていません"]}
+            ],
+            "newTopics": [{"id": "topic-hiring", "label": "面接評価プロセスの見直し", "description": "評価者間のばらつき"}],
+            "assignments": [
+              {"nodeId": "hiring-fact", "parentTopicId": "topic-hiring", "confidence": 0.93},
+              {"nodeId": "evaluator-fact", "parentTopicId": "topic-hiring", "confidence": 0.93}
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "hiring-fact", "text": "面接評価プロセスの見直しを進めている", "requiredKind": "fact", "evidenceSequenceNos": [1]},
+        {"id": "evaluator-fact", "text": "評価者ごとに合否の基準がばらついている", "requiredKind": "fact", "evidenceSequenceNos": [2]},
+        {"id": "criteria-issue", "text": "最終判定の評価基準が未決定", "requiredKind": "issue", "evidenceSequenceNos": [3]}
+      ],
+      "requiredRelations": [
+        {"from": "criteria-issue", "to": "evaluator-fact", "kind": "refines", "requireSameBranch": true}
+      ],
+      "finalCoverage": 3,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "singleton-inventory-alert-attachment",
+      "description": "在庫アラート運用の既存topicへ、通知閾値が未決定という単独Issueを接続する",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "小林", "text": "在庫アラート運用の見直しを始めました。"},
+        {"sequenceNo": 2, "speaker": "藤井", "text": "通知が増えると重要な警告が埋もれてしまいます。"},
+        {"sequenceNo": 3, "speaker": "小林", "text": "在庫アラート通知の閾値はまだ決まっていません。"}
+      ],
+      "meetingContext": {
+        "title": "在庫運用定例",
+        "agendaItems": [{"id": "agenda-1", "title": "今月の在庫回転", "order": 1}]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3],
+          "fixedAIResponse": {
+            "summary": "在庫アラート運用の見直し",
+            "currentTopic": "在庫アラート運用",
+            "items": [
+              {"clientKey": "inventory-fact", "kind": "fact", "severity": "medium", "title": "在庫アラート運用の見直しを始めた", "body": "在庫アラート運用の見直しを始めた", "status": "open", "evidenceSequenceNos": [1], "evidenceSnippets": ["在庫アラート運用の見直しを始めました"]},
+              {"clientKey": "alert-risk", "kind": "risk", "severity": "high", "title": "通知増加で重要な警告が埋もれるリスク", "body": "通知が増えると重要な警告が埋もれてしまう", "status": "open", "evidenceSequenceNos": [2], "evidenceSnippets": ["通知が増えると重要な警告が埋もれてしまいます"]},
+              {"clientKey": "threshold-issue", "kind": "issue", "subtype": "discussion", "severity": "medium", "title": "アラート通知の閾値が未決定", "body": "アラート通知の閾値がまだ決まっていない", "status": "open", "evidenceSequenceNos": [3], "evidenceSnippets": ["在庫アラート通知の閾値はまだ決まっていません"]}
+            ],
+            "newTopics": [{"id": "topic-inventory-alert", "label": "在庫アラート運用の見直し", "description": "在庫アラートの出し方"}],
+            "assignments": [
+              {"nodeId": "inventory-fact", "parentTopicId": "topic-inventory-alert", "confidence": 0.93},
+              {"nodeId": "alert-risk", "parentTopicId": "topic-inventory-alert", "confidence": 0.93}
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "inventory-fact", "text": "在庫アラート運用の見直しを始めた", "requiredKind": "fact", "evidenceSequenceNos": [1]},
+        {"id": "alert-risk", "text": "通知増加で重要な警告が埋もれるリスク", "requiredKind": "risk", "evidenceSequenceNos": [2]},
+        {"id": "threshold-issue", "text": "アラート通知の閾値が未決定", "requiredKind": "issue", "evidenceSequenceNos": [3]}
+      ],
+      "requiredRelations": [
+        {"from": "threshold-issue", "to": "alert-risk", "kind": "refines", "requireSameBranch": true}
+      ],
+      "finalCoverage": 3,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "singleton-generic-term-overlap-defer",
+      "description": "既存topicの配下item1件と汎用語だけを共有する単独Issueは、接続せず追加論点に残す",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "斎藤", "text": "拠点間回線が朝夕の時間帯に不安定になっています。"},
+        {"sequenceNo": 2, "speaker": "斎藤", "text": "回線が切れると受発注の入力がやり直しになります。"},
+        {"sequenceNo": 3, "speaker": "森本", "text": "経費精算の入力手順はまだ決まっていません。"}
+      ],
+      "meetingContext": {
+        "title": "拠点運用定例",
+        "agendaItems": [{"id": "agenda-1", "title": "拠点の稼働状況", "order": 1}]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3],
+          "fixedAIResponse": {
+            "summary": "拠点間回線の不安定",
+            "currentTopic": "拠点間回線",
+            "items": [
+              {"clientKey": "link-fact", "kind": "fact", "severity": "medium", "title": "拠点間回線が朝夕に不安定になっている", "body": "拠点間回線が朝夕の時間帯に不安定になっている", "status": "open", "evidenceSequenceNos": [1], "evidenceSnippets": ["拠点間回線が朝夕の時間帯に不安定になっています"]},
+              {"clientKey": "entry-risk", "kind": "risk", "severity": "high", "title": "回線断による受発注入力のやり直しリスク", "body": "回線が切れると受発注の入力がやり直しになる", "status": "open", "evidenceSequenceNos": [2], "evidenceSnippets": ["回線が切れると受発注の入力がやり直しになります"]},
+              {"clientKey": "expense-issue", "kind": "issue", "subtype": "discussion", "severity": "low", "title": "経費精算の入力手順が未決定", "body": "経費精算の入力手順がまだ決まっていない", "status": "open", "evidenceSequenceNos": [3], "evidenceSnippets": ["経費精算の入力手順はまだ決まっていません"]}
+            ],
+            "newTopics": [{"id": "topic-link-instability", "label": "拠点間回線の不安定", "description": "朝夕の回線断"}],
+            "assignments": [
+              {"nodeId": "link-fact", "parentTopicId": "topic-link-instability", "confidence": 0.93},
+              {"nodeId": "entry-risk", "parentTopicId": "topic-link-instability", "confidence": 0.93}
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "link-fact", "text": "拠点間回線が朝夕に不安定になっている", "requiredKind": "fact", "evidenceSequenceNos": [1]},
+        {"id": "entry-risk", "text": "回線断による受発注入力のやり直しリスク", "requiredKind": "risk", "evidenceSequenceNos": [2]},
+        {"id": "expense-issue", "text": "経費精算の入力手順が未決定", "requiredKind": "issue", "evidenceSequenceNos": [3]}
+      ],
+      "requiredParentSeparations": [
+        {"from": "expense-issue", "to": "link-fact"},
+        {"from": "expense-issue", "to": "entry-risk"}
+      ],
+      "finalCoverage": 3,
+      "applyFinalRepair": true
+    },
+    {
+      "id": "singleton-unrelated-nearby-defer",
+      "description": "直前の発話と近接し話者も同じでも、対象が異なる単独Issueは既存topicへ接続しない",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "斎藤", "text": "拠点間回線が朝夕の時間帯に不安定になっています。"},
+        {"sequenceNo": 2, "speaker": "斎藤", "text": "回線が切れると受発注の入力がやり直しになります。"},
+        {"sequenceNo": 3, "speaker": "斎藤", "text": "会議室備品の購入判断は保留のままです。"}
+      ],
+      "meetingContext": {
+        "title": "拠点運用定例",
+        "agendaItems": [{"id": "agenda-1", "title": "拠点の稼働状況", "order": 1}]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3],
+          "fixedAIResponse": {
+            "summary": "拠点間回線の不安定",
+            "currentTopic": "拠点間回線",
+            "items": [
+              {"clientKey": "line-fact", "kind": "fact", "severity": "medium", "title": "拠点間回線が朝夕に不安定になっている", "body": "拠点間回線が朝夕の時間帯に不安定になっている", "status": "open", "evidenceSequenceNos": [1], "evidenceSnippets": ["拠点間回線が朝夕の時間帯に不安定になっています"]},
+              {"clientKey": "order-risk", "kind": "risk", "severity": "high", "title": "回線断による受発注入力のやり直しリスク", "body": "回線が切れると受発注の入力がやり直しになる", "status": "open", "evidenceSequenceNos": [2], "evidenceSnippets": ["回線が切れると受発注の入力がやり直しになります"]},
+              {"clientKey": "supply-issue", "kind": "issue", "subtype": "discussion", "severity": "low", "title": "会議室備品の購入判断が保留", "body": "会議室備品の購入判断が保留のままである", "status": "open", "evidenceSequenceNos": [3], "evidenceSnippets": ["会議室備品の購入判断は保留のままです"]}
+            ],
+            "newTopics": [{"id": "topic-line", "label": "拠点間回線の不安定", "description": "朝夕の回線断"}],
+            "assignments": [
+              {"nodeId": "line-fact", "parentTopicId": "topic-line", "confidence": 0.93},
+              {"nodeId": "order-risk", "parentTopicId": "topic-line", "confidence": 0.93}
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "line-fact", "text": "拠点間回線が朝夕に不安定になっている", "requiredKind": "fact", "evidenceSequenceNos": [1]},
+        {"id": "order-risk", "text": "回線断による受発注入力のやり直しリスク", "requiredKind": "risk", "evidenceSequenceNos": [2]},
+        {"id": "supply-issue", "text": "会議室備品の購入判断が保留", "requiredKind": "issue", "evidenceSequenceNos": [3]}
+      ],
+      "requiredParentSeparations": [
+        {"from": "supply-issue", "to": "line-fact"},
+        {"from": "supply-issue", "to": "order-risk"}
+      ],
+      "finalCoverage": 3,
       "applyFinalRepair": true
     }
   ]

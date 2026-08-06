@@ -146,6 +146,15 @@ type MeetingQualityMetrics struct {
 	LabelTranscriptCopyRatio                  float64 `json:"label_transcript_copy_ratio"`
 	LabelCompressionRatio                     float64 `json:"label_compression_ratio"`
 	DescriptionRedundantCount                 int     `json:"description_redundant_count"`
+	// 追加論点の箱に単独で残ったitemを既存topicへ接続する最終repairの軸。
+	// applied は正例の接続成功、wrongParent は negative fixture の誤接続、
+	// unclassifiedGroundedSingleton は接続も新規topic化もされずに残った件数。
+	SingletonAttachmentEligibleCount    int `json:"singletonAttachmentEligibleCount"`
+	SingletonAttachmentAppliedCount     int `json:"singletonAttachmentAppliedCount"`
+	SingletonAttachmentDeferredCount    int `json:"singletonAttachmentDeferredCount"`
+	SingletonAttachmentAmbiguousCount   int `json:"singletonAttachmentAmbiguousCount"`
+	SingletonAttachmentWrongParentCount int `json:"singletonAttachmentWrongParentCount"`
+	UnclassifiedGroundedSingletonCount  int `json:"unclassifiedGroundedSingletonCount"`
 }
 
 type MeetingQualityParentAssignment struct {

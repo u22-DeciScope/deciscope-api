@@ -77,12 +77,24 @@ func repairFinalUnclassifiedItems(
 		if treeItemTopic(state.Tree, node.ID) != treeUnclassifiedTopicID {
 			continue
 		}
-		if treeAuditIsManualChangeSource(node.LastParentChangeSource) {
+		item, active := itemByID[node.ID]
+		if !active {
 			continue
 		}
-		if _, active := itemByID[node.ID]; active {
-			memberIDs = append(memberIDs, node.ID)
+		if treeAuditIsManualChangeSource(node.LastParentChangeSource) {
+			// 手動で追加論点へ置かれたitemは自動修復の対象外。観測できるよう
+			// 記録だけ残し、親も分類状態も変えない。
+			stats.SingletonAttachmentManualPreserved++
+			stats.SingletonAttachmentDecisions = append(stats.SingletonAttachmentDecisions, singletonAttachmentDecision{
+				ItemID: node.ID, SourceParentID: node.ParentID,
+				EvidenceSequenceNos:     append([]int64(nil), item.EvidenceSequenceNos...),
+				ManualProtectionPenalty: 1,
+				Decision:                singletonAttachmentManualPreserved,
+				Reason:                  "manual_parent_change_source",
+			})
+			continue
 		}
+		memberIDs = append(memberIDs, node.ID)
 	}
 	if len(memberIDs) == 0 {
 		return
@@ -153,27 +165,31 @@ func repairFinalUnclassifiedItems(
 
 	// 2. component ごとに、既存topicへのfold → 新規materialize → 現状維持の
 	//    順で処理する。node追加は必ず reparent より前に行う(依存順)。
-	//    単独itemは今回の欠陥(関連する追加論点の分断)ではないので触らない。
-	//    「単独だが意味のある追加論点」を個別topicへ昇格させるかは、既存の候補
-	//    昇格ポリシーとdeterministic評価シナリオの期待構造の変更を伴うため、
-	//    この決定的repairの対象外にしている。
+	//    ここで扱うのは「複数itemから新しいtopicを作る」判断で、単独itemは
+	//    3. の singleton attachment(既存topicへ移すだけで箱を増やさない)へ回す。
+	//    単独itemから新しいdynamic topicを自動生成することは、引き続き行わない。
+	type deferredUnclassifiedComponent struct {
+		members []string
+		reason  string
+	}
+	deferred := make([]deferredUnclassifiedComponent, 0, len(order))
 	for _, root := range order {
 		members := components[root]
 		signals := componentSignals[root]
 		if len(members) < 2 {
-			retainUnclassifiedItems(state, members, itemByID, stats, "single_additional_point")
+			deferred = append(deferred, deferredUnclassifiedComponent{members: members, reason: "single_additional_point"})
 			continue
 		}
 		// 1つの発話から複数kindが取り出されただけの組は、同じ命題の別側面で
 		// あって「複数回にわたって語られた追加論点」ではない。topicを作ると
 		// 命題1件に対して箱を1つ増やすだけになるため対象外にする。
 		if distinctUnclassifiedEvidenceCount(members, itemByID) < 2 {
-			retainUnclassifiedItems(state, members, itemByID, stats, "single_utterance_facets")
+			deferred = append(deferred, deferredUnclassifiedComponent{members: members, reason: "single_utterance_facets"})
 			continue
 		}
 		label := unclassifiedComponentTopicLabel(members, itemByID)
 		if label == "" || genericTopicLabel(label) || isDiscourseOnlyText(label) {
-			retainUnclassifiedItems(state, members, itemByID, stats, "topic_label_not_derivable")
+			deferred = append(deferred, deferredUnclassifiedComponent{members: members, reason: "topic_label_not_derivable"})
 			continue
 		}
 
@@ -182,7 +198,7 @@ func repairFinalUnclassifiedItems(
 		if targetID == "" {
 			if dynamicTopicCount >= defaultMaxDynamicTopics ||
 				len(state.Tree.Nodes) >= liveAnalysisTreeMaxNodes {
-				retainUnclassifiedItems(state, members, itemByID, stats, "dynamic_topic_budget_exhausted")
+				deferred = append(deferred, deferredUnclassifiedComponent{members: members, reason: "dynamic_topic_budget_exhausted"})
 				continue
 			}
 			targetID = stableDynamicTopicID(unclassifiedComponentCandidateID(members, itemByID))
@@ -213,6 +229,33 @@ func repairFinalUnclassifiedItems(
 			})
 		}
 	}
+
+	// 3. component修復のあとに、追加論点の箱へ単独で残ったgrounded itemを既存
+	//    topicへ接続する。新規topicは作らないため、componentの
+	//    item数>=2 / evidence sequence数>=2 の条件は要求しない。ここで移動した
+	//    itemは 4. の edge再構築より前に確定させる。
+	singletons := make([]string, 0, len(deferred))
+	for _, component := range deferred {
+		if len(component.members) == 1 && component.reason == "single_additional_point" {
+			singletons = append(singletons, component.members[0])
+		}
+	}
+	attached := attachUnclassifiedSingletonsToExistingTopics(
+		state, mc, version, stats, singletons, itemByID,
+	)
+	for _, component := range deferred {
+		remaining := make([]string, 0, len(component.members))
+		for _, itemID := range component.members {
+			if _, moved := attached[itemID]; !moved {
+				remaining = append(remaining, itemID)
+			}
+		}
+		if len(remaining) > 0 {
+			retainUnclassifiedItems(state, remaining, itemByID, stats, component.reason)
+		}
+	}
+
+	// 4. edge再構築 → 空dynamic topicのprune → 空の追加論点箱のprune。
 	finalizeUnclassifiedContainer(state)
 }
 

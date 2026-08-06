@@ -39,8 +39,9 @@ go run ./cmd/meeting-quality-eval -suite deterministic -accept-improvements
 
 `-update-baseline`による全置換は拒否されます。`-accept-improvements`も、
 失敗中のsuite、悪化軸、scenario削除、metric schema削除・並べ替え、未知のschema
-versionを拒否します。既知のv3→v4移行だけは既存18軸を独立比較した上で、新規7軸を
-初期登録し、`baselineUpdate.addedMetricSchema`へ明示します。出力される
+versionを拒否します。既知のv3→v4およびv4→v5移行だけは、既存軸を独立比較した上で
+末尾に追加された軸だけを初期登録し、`baselineUpdate.addedMetricSchema`へ明示します。
+v5で追加したのはsingleton attachmentの6軸です。出力される
 `baselineUpdate.appliedMetrics`と合わせてPRでレビューします。
 fixtureも現在の出力へ自動追従させず、期待する会議上の事実・行動・関係を先に
 レビューします。
@@ -68,7 +69,7 @@ epistemic status`を決定論的に抽出します。数値・階・曜日・期
 日本語bigramを使います。自然な言い換えは許容しますが、単純な部分文字列包含を
 即一致にはしません。
 
-deterministic suiteには次の22件があります。
+deterministic suiteの代表的なシナリオは次の通りです(現在の総数は42件)。
 
 1. 予定アジェンダへの誤割り当て
 2. 予定外candidateの複数round昇格
@@ -93,14 +94,24 @@ deterministic suiteには次の22件があります。
 21. 明示訂正によるAI relation lock再検証
 22. VLAN30指示語、原因仮説、適用範囲relationの保持
 
+追加論点の箱に単独で残ったitemを既存topicへ接続する最終repairについては、
+別ドメインの正例と負例を独立したシナリオとして持ちます。
+
+- `singleton-monitoring-attachment`: 運用パラメータの未決定Issueを監視topicへ接続
+- `singleton-release-rollback-attachment`: agenda semantic hint経由でrelease topicへ接続
+- `singleton-hiring-evaluation-attachment`: 評価基準の未決定Issueを採用topicへ接続
+- `singleton-inventory-alert-attachment`: 通知閾値の未決定Issueをアラート運用topicへ接続
+- `singleton-generic-term-overlap-defer`: 汎用語だけの一致では接続せず追加論点に残す
+- `singleton-unrelated-nearby-defer`: 近接発話・同一話者でも対象が違えば接続しない
+
 finalizationの実際のgoroutine待機境界は、固定round replayに加えて
 `TestMeetingFinalizationWaitsForInFlightLiveAnalysis`とservice integration harnessが
 開始／releaseチャネルで同期して検証します。どちらにもsleepやtimeout延長による
 順序固定はありません。テスト内のtimeoutはdeadlock時に終了させる安全弁だけで、
 順序の成立判定には使用しません。
 
-22 scenarioはすべてtranscript、meeting context、fixed AI responseを入力として
-productionのmerge関数群を呼びます。19件は空状態から、3件はdurable seedへ
+42 scenarioはすべてtranscript、meeting context、fixed AI responseを入力として
+productionのmerge関数群を呼びます。37件は空状態から、5件はdurable seedへ
 新しいroundを適用します。完成済みsnapshotだけを評価するdeterministic scenarioは
 ありません。
 
@@ -199,6 +210,13 @@ process exit code非0へ伝播することを確認します。
 - label transcript copy ratio
 - label compression ratio
 - description redundant count
+- singleton attachment eligible / applied / deferred / ambiguous count
+- singleton attachment wrong parent count
+- unclassified grounded singleton count
+
+singleton attachmentの軸は、追加論点の箱に単独で残ったgrounded itemを既存topicへ
+接続する最終repairを評価します。`wrong parent count`は、シナリオが分離を要求した
+命題と同じtopicへ接続した件数だけを数えるため、負例では0でなければなりません。
 
 論理関係は評価器内部で`supported_by`、`caused_by`、`limits`、`resolves`、
 `action_for`、`contradicts`、`refines`を表現できます。persisted

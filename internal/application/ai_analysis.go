@@ -2680,6 +2680,22 @@ func (s *MeetingAnalysisService) generateFinalSummary(ctx context.Context, sessi
 				decision.RecoveredIssueID, decision.EvidenceSequenceNo,
 				decision.Decision, decision.Reason)
 		}
+		log.Printf("Final singleton attachment evaluated. event=singleton_attachment_considered sessionId=%s analysisVersion=%d eligibleCount=%d appliedCount=%d deferredCount=%d ambiguousCount=%d manualPreservedCount=%d unclassifiedGroundedSingletonCount=%d phase=final_repair",
+			sessionID, liveVersion, repairStats.SingletonAttachmentEligible,
+			repairStats.SingletonAttachmentApplied, repairStats.SingletonAttachmentDeferred,
+			repairStats.SingletonAttachmentAmbiguous, repairStats.SingletonAttachmentManualPreserved,
+			unclassifiedGroundedSingletonCount(previousLiveAnalysisState(livePayload)))
+		for _, decision := range repairStats.SingletonAttachmentDecisions {
+			log.Printf("Final singleton attachment decided. event=singleton_attachment_%s sessionId=%s analysisVersion=%d itemId=%s sourceParentId=%s targetTopicId=%s candidateTopicCount=%d bestScore=%.3f secondBestScore=%.3f scoreMargin=%.3f subjectMatchStrength=%.3f predicateCompatibility=%.3f relationSupport=%.3f evidenceSupport=%.3f agendaSupport=%.3f discourseSupport=%.3f contradictionPenalty=%.3f genericOverlapPenalty=%.3f manualProtectionPenalty=%.3f evidenceSequenceNos=%v reason=%s phase=final_repair",
+				decision.Decision, sessionID, liveVersion, decision.ItemID,
+				decision.SourceParentID, decision.TargetTopicID, decision.CandidateTopicCount,
+				decision.BestScore, decision.SecondBestScore, decision.ScoreMargin,
+				decision.SubjectMatchStrength, decision.PredicateCompatibility,
+				decision.RelationSupport, decision.EvidenceSupport, decision.AgendaSupport,
+				decision.DiscourseSupport, decision.ContradictionPenalty,
+				decision.GenericOverlapPenalty, decision.ManualProtectionPenalty,
+				decision.EvidenceSequenceNos, decision.Reason)
+		}
 	}
 	finalKindCounts := livePayloadItemKindCounts(livePayload)
 	log.Printf("Final item kind distribution evaluated. sessionId=%s analysisVersion=%d phase=finalization factCount=%d issueCount=%d riskCount=%d todoCount=%d decisionCount=%d kindChanges=%d ambiguousItems=%d distributionWarnings=%v",
@@ -3128,6 +3144,12 @@ type finalRepairStats struct {
 	UnclassifiedTopicsMaterialized            int
 	UnclassifiedItemsRetained                 int
 	UnclassifiedDecisions                     []finalUnclassifiedDecision
+	SingletonAttachmentEligible               int
+	SingletonAttachmentApplied                int
+	SingletonAttachmentDeferred               int
+	SingletonAttachmentAmbiguous              int
+	SingletonAttachmentManualPreserved        int
+	SingletonAttachmentDecisions              []singletonAttachmentDecision
 	IncompleteLabelDecisions                  []incompleteItemLabelDecision
 	LabelQuality                              labelQualityStats
 	ManualLabelsPreserved                     int
