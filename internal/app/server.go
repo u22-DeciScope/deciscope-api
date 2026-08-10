@@ -334,9 +334,6 @@ func (p compositeTranscriptSegmentPublisher) PublishTranscriptSegment(segment do
 // every operation on the service becomes a no-op, so callers never need nil
 // checks.
 func buildMeetingAnalysisService(config AIConfig, postgresDB *sql.DB, meetingSessionRepository application.MeetingSessionRepository, publisher application.MeetingAIAnalysisPublisher) *application.MeetingAnalysisService {
-	if config.TreeAuditModeDeprecated {
-		log.Printf("TREE_AUDIT_MODE is deprecated and ignored.")
-	}
 	enabled := config.Enabled()
 	if !enabled {
 		log.Printf("AI meeting analysis disabled; missing environment variables: %s", strings.Join(config.MissingAzureOpenAIVars(), ", "))

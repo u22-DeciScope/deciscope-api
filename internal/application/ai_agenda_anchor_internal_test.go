@@ -80,7 +80,7 @@ func TestNetworkAgendaAndVPNNoAgendaReplay(t *testing.T) {
 		t.Fatalf("integrity=%+v", diagnostics)
 	}
 
-	finalRaw, err := finalizeAgendaLifecyclePayload(raw, mc, 3)
+	finalRaw, _, err := finalizeAgendaLifecyclePayloadWithEvidence(raw, mc, 3, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestIncidentRecoveryAgendaReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finalRaw, err := finalizeAgendaLifecyclePayload(raw, mc, 4)
+	finalRaw, _, err := finalizeAgendaLifecyclePayloadWithEvidence(raw, mc, 4, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +504,7 @@ func TestFinalAgendaLifecycleMergesOverlappingDynamicTopic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finalRaw, err := finalizeAgendaLifecyclePayload(raw, mc, 12)
+	finalRaw, _, err := finalizeAgendaLifecyclePayloadWithEvidence(raw, mc, 12, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

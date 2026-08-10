@@ -8,8 +8,6 @@ Tree Auditorは、ライブ抽出とは別のGPT-5-mini deploymentで現在の�
 監査AIは`enabled` / `disabled`の2状態だけです。モード切替(`off`/`shadow`/
 `apply_high_confidence`)は廃止されました。`TREE_AUDIT_ENABLED=true`(既定)で
 単一の実行経路が有効になり、`TREE_AUDIT_ENABLED=false`で停止します。
-`TREE_AUDIT_MODE`はdeprecatedであり、設定されていても無視されます(起動時に
-一度だけ警告ログを出力します)。
 
 ## 単一経路
 

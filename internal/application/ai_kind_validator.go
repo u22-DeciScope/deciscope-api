@@ -767,11 +767,6 @@ func validateLiveItemKinds(items []liveAnalysisItem, scope liveEvidenceScope, mo
 	return validated
 }
 
-func splitAndValidateLiveItemKinds(previous, items []liveAnalysisItem, assignments []treeAssignment, scope liveEvidenceScope, mode itemKindValidationMode, stage string, stats *liveAnalysisTreeMergeStats) ([]liveAnalysisItem, []treeAssignment) {
-	expanded, expandedAssignments := splitLiveItemKinds(previous, items, assignments, scope, stats)
-	return validateLiveItemKinds(expanded, scope, mode, stage, stats), expandedAssignments
-}
-
 func splitLiveItemKinds(previous, items []liveAnalysisItem, assignments []treeAssignment, scope liveEvidenceScope, stats *liveAnalysisTreeMergeStats) ([]liveAnalysisItem, []treeAssignment) {
 	expanded := make([]liveAnalysisItem, 0, len(items)+2)
 	expandedAssignments := append([]treeAssignment(nil), assignments...)
@@ -1207,12 +1202,6 @@ func evaluateSemanticSplitInvariants(state *liveAnalysisPayload, stats *liveAnal
 			stats.SemanticSplitReplacementMissingCount++
 		}
 	}
-}
-
-func appendSemanticKindRelations(tree *liveAnalysisTree, items []liveAnalysisItem) int {
-	return reconcileSemanticKindRelations(
-		tree, items, liveEvidenceScope{}, 0, "deterministic_inference",
-	)
 }
 
 const (

@@ -3004,11 +3004,6 @@ const (
 
 type agendaFinalizationStageHook func(agendaFinalizationStage) error
 
-func finalizeAgendaLifecyclePayload(payload json.RawMessage, mc *meetingContext, treeVersion int64) (json.RawMessage, error) {
-	finalized, _, err := finalizeAgendaLifecyclePayloadWithEvidence(payload, mc, treeVersion, nil)
-	return finalized, err
-}
-
 func finalizeAgendaLifecyclePayloadWithEvidence(payload json.RawMessage, mc *meetingContext, treeVersion int64, segments []domain.TranscriptSegment) (json.RawMessage, []agendaReconciliationDecision, error) {
 	return finalizeAgendaLifecyclePayloadWithEvidenceAndHook(payload, mc, treeVersion, segments, nil)
 }
@@ -5463,15 +5458,6 @@ func segmentIsLowInformation(text string) bool {
 	}
 	stripped := discourseFillerPattern.ReplaceAllString(normalized, "")
 	return stripped == "" || segmentLowInformationPattern.MatchString(stripped)
-}
-
-func finalSegmentRepresentedByItems(items []liveAnalysisItem, sequenceNo int64) bool {
-	for _, item := range items {
-		if containsInt64(item.EvidenceSequenceNos, sequenceNo) {
-			return true
-		}
-	}
-	return false
 }
 
 func retryEvidenceItemIDs(

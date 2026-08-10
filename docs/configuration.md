@@ -24,9 +24,6 @@
 | `GOOGLE_APPLICATION_CREDENTIALS` | 未設定 | Firebase service account JSONのパス |
 | `FIREBASE_CREDENTIALS_JSON` | 未設定 | Firebase credential JSON本体 |
 
-共有トークンを使うブラウザWebSocket経路は削除済みです。
-`DECISCOPE_WS_CLIENT_TOKEN` は読み取りません。
-
 ## Bot control
 
 | 変数 | 既定値 | 用途 |
@@ -116,33 +113,38 @@
 
 ## Tree audit
 
-| 変数 | 既定値 |
-| --- | --- |
-| `TREE_AUDIT_ENABLED` | `true` |
-| `TREE_AUDIT_INTERVAL_VERSIONS` | `3` |
-| `TREE_AUDIT_INTERVAL_SECONDS` | `300` |
-| `TREE_AUDIT_MIN_INTERVAL_SECONDS` | `300` |
-| `TREE_AUDIT_MAX_RUNS_PER_SESSION` | `20` |
-| `TREE_AUDIT_MAX_RUNS_PER_HOUR` | `12` |
-| `TREE_AUDIT_HIGH_SEVERITY_MIN_INTERVAL_SECONDS` | `60` |
-| `TREE_AUDIT_HIGH_SEVERITY_MAX_RUNS_PER_HOUR` | `4` |
-| `TREE_AUDIT_TIMEOUT_SECONDS` | `25` |
-| `TREE_AUDIT_MAX_OUTPUT_TOKENS` | `2500` |
-| `TREE_AUDIT_MAX_NODES` | `80` |
-| `TREE_AUDIT_MAX_RECENT_SEGMENTS` | `16` |
-| `TREE_AUDIT_MAX_EVIDENCE_SEGMENTS` | `24` |
-| `TREE_AUDIT_MAX_INPUT_TOKENS` | `12000` |
-| `TREE_AUDIT_MAX_PERSISTED_JSON_BYTES` | `262144` |
-| `TREE_AUDIT_HIGH_CONFIDENCE_THRESHOLD` | `0.90` |
-| `TREE_AUDIT_REQUIRED_IMPROVEMENT_MARGIN` | `0.18` |
-| `TREE_AUDIT_COHESION_THRESHOLD` | `0.20` |
-| `TREE_AUDIT_TENTATIVE_MAX_VERSIONS` | `3` |
-| `TREE_AUDIT_UNAPPLIED_WARNING_THRESHOLD` | `3` |
+| 変数 | 既定値 | 用途 |
+| --- | --- | --- |
+| `TREE_AUDIT_ENABLED` | `true` | 議論ツリー監査schedulerの有効化 |
+| `TREE_AUDIT_INTERVAL_VERSIONS` | `3` | 監査を起動するtree version間隔 |
+| `TREE_AUDIT_INTERVAL_SECONDS` | `300` | 時間経過による監査起動間隔 |
+| `TREE_AUDIT_MIN_INTERVAL_SECONDS` | `300` | 通常trigger間の最小間隔 |
+| `TREE_AUDIT_MAX_RUNS_PER_SESSION` | `20` | 1 sessionの通常監査回数上限 |
+| `TREE_AUDIT_MAX_RUNS_PER_HOUR` | `12` | 1時間の通常監査回数上限 |
+| `TREE_AUDIT_HIGH_SEVERITY_MIN_INTERVAL_SECONDS` | `60` | 高severity trigger間の最小間隔 |
+| `TREE_AUDIT_HIGH_SEVERITY_MAX_RUNS_PER_HOUR` | `4` | 1時間の高severity監査回数上限 |
+| `TREE_AUDIT_TIMEOUT_SECONDS` | `25` | 監査AIリクエストのtimeout |
+| `TREE_AUDIT_MAX_OUTPUT_TOKENS` | `2500` | 監査AI出力token上限 |
+| `TREE_AUDIT_MAX_NODES` | `80` | 監査対象に含めるtree node上限 |
+| `TREE_AUDIT_MAX_RECENT_SEGMENTS` | `16` | contextへ含める直近transcript上限 |
+| `TREE_AUDIT_MAX_EVIDENCE_SEGMENTS` | `24` | evidenceとして含めるtranscript上限 |
+| `TREE_AUDIT_MAX_INPUT_TOKENS` | `12000` | 監査AI入力token上限 |
+| `TREE_AUDIT_MAX_PERSISTED_JSON_BYTES` | `262144` | 保存する監査JSONの最大byte数 |
+| `TREE_AUDIT_HIGH_CONFIDENCE_THRESHOLD` | `0.90` | 自動適用に必要なconfidence下限 |
+| `TREE_AUDIT_REQUIRED_IMPROVEMENT_MARGIN` | `0.18` | 自動適用に必要な改善幅 |
+| `TREE_AUDIT_COHESION_THRESHOLD` | `0.20` | branch cohesionの判定境界 |
+| `TREE_AUDIT_TENTATIVE_MAX_VERSIONS` | `3` | tentative itemを保持するversion数 |
+| `TREE_AUDIT_UNAPPLIED_WARNING_THRESHOLD` | `3` | 未適用operation警告を出す件数境界 |
 
 挙動の詳細は [tree-auditor.md](./tree-auditor.md) を参照してください。
-`TREE_AUDIT_MODE` はdeprecatedで、値を設定しても無視します。
 
 ## Compose-only variables
 
-`API_PORT`、`POSTGRES_DB`、`POSTGRES_USER`、`POSTGRES_PASSWORD` は
-アプリケーションではなく `compose.yaml` が読み取ります。
+| 変数 | 既定値 | 用途 |
+| --- | --- | --- |
+| `API_PORT` | `9090` | APIコンテナをホストへ公開するポート |
+| `POSTGRES_DB` | `deciscope` | PostgreSQLコンテナが初期作成するdatabase名 |
+| `POSTGRES_USER` | `deciscope` | PostgreSQLコンテナが初期作成するuser名 |
+| `POSTGRES_PASSWORD` | なし（必須） | PostgreSQL userのpassword |
+
+これらはアプリケーションではなく `compose.yaml` が読み取ります。

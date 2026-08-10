@@ -160,10 +160,6 @@ func detachCrossKindActionUpdates(
 	return diff, assignments
 }
 
-func sameKindUpdateDiverges(existing, update liveAnalysisItem, scope liveEvidenceScope) bool {
-	return !evaluatePropositionUpdateCompatibility(existing, update, scope).Compatible
-}
-
 func evaluatePropositionUpdateCompatibility(existing, update liveAnalysisItem, scope liveEvidenceScope) propositionUpdateCompatibility {
 	result := propositionUpdateCompatibility{
 		Compatible: true, Reason: "same_or_strengthened_proposition",

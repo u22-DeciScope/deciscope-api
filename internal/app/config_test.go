@@ -51,39 +51,14 @@ func TestAIConfigLiveSchedulerDefaultsAndOverrides(t *testing.T) {
 
 func TestAIConfigTreeAuditDefaultsToEnabled(t *testing.T) {
 	t.Setenv("TREE_AUDIT_ENABLED", "")
-	t.Setenv("TREE_AUDIT_MODE", "")
 	config := aiConfigFromEnv()
 	if !config.TreeAudit.Enabled {
 		t.Fatal("tree audit must be enabled by default")
-	}
-	if config.TreeAuditModeDeprecated {
-		t.Fatal("TreeAuditModeDeprecated must be false when TREE_AUDIT_MODE is unset")
 	}
 	if config.TreeAudit.Interval != 5*time.Minute || config.TreeAudit.MinInterval != 5*time.Minute ||
 		config.TreeAudit.MaxRunsPerHour != 12 || config.TreeAudit.HighSeverityMinInterval != time.Minute ||
 		config.TreeAudit.HighSeverityMaxRunsPerHour != 4 || config.TreeAudit.UnappliedWarningThreshold != 3 {
 		t.Fatalf("tree audit scheduling defaults = %+v", config.TreeAudit)
-	}
-}
-
-// TREE_AUDIT_MODEはモード切替の廃止により無視される。設定してもTreeAuditの
-// 動作(enabled/scheduling)には影響せず、TreeAuditModeDeprecatedがtrueになる
-// だけであることを確認する。
-func TestAIConfigTreeAuditModeEnvIsDeprecatedAndDoesNotAffectBehavior(t *testing.T) {
-	t.Setenv("TREE_AUDIT_ENABLED", "true")
-	t.Setenv("TREE_AUDIT_MODE", "shadow")
-	config := aiConfigFromEnv()
-	if !config.TreeAudit.Enabled || config.TreeAuditEnabledInvalid {
-		t.Fatalf("tree audit enablement = enabled:%t invalid:%t", config.TreeAudit.Enabled, config.TreeAuditEnabledInvalid)
-	}
-	if !config.TreeAuditModeDeprecated {
-		t.Fatal("TreeAuditModeDeprecated must be true when TREE_AUDIT_MODE is set")
-	}
-
-	t.Setenv("TREE_AUDIT_MODE", "unsafe")
-	config = aiConfigFromEnv()
-	if !config.TreeAudit.Enabled || !config.TreeAuditModeDeprecated {
-		t.Fatalf("an invalid TREE_AUDIT_MODE value must not disable tree audit: enabled=%t deprecated=%t", config.TreeAudit.Enabled, config.TreeAuditModeDeprecated)
 	}
 }
 

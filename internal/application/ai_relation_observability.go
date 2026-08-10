@@ -22,10 +22,6 @@ type finalRelationSummary struct {
 	RelationMonoculture             bool
 }
 
-func summarizeFinalRelations(tree *liveAnalysisTree) finalRelationSummary {
-	return summarizeFinalRelationsWithItems(tree, nil)
-}
-
 func summarizeFinalRelationsWithItems(
 	tree *liveAnalysisTree,
 	items []liveAnalysisItem,

@@ -43,7 +43,6 @@ var (
 	itemLabelLeadingConnectorPattern = regexp.MustCompile(
 		`^(?:その後|また|さらに|加えて|ただし|まずは|いえ|正確には|復旧対応としては)[[:space:]、,]*`,
 	)
-	itemLabelClauseSubjectPattern    = regexp.MustCompile(`(?:は|が|を|に|へ|で|から|より|まで)`)
 	itemLabelAnaphoricSubjectPattern = regexp.MustCompile(`^(?:(?:この|その)(?:点|件|事項|問題)?|本件|それ)(?:は|を)?`)
 	itemLabelContextDependentPattern = regexp.MustCompile(
 		`^(?:現時点では[、,]?)?(?:(?:この|その)(?:点|問題|件|条件|事項|設定漏れ)|本件|それ)(?:は|が|を|の|に|で|では)?|^完全な[^。]{1,80}(?:ではありません|ではない)$`,
@@ -107,32 +106,6 @@ func unclosedItemLabelDelimiter(label string) bool {
 		}
 	}
 	return false
-}
-
-func itemLabelMissingPredicate(kind, label string) bool {
-	normalized := strings.Trim(strings.TrimSpace(label), "。.!！?？ ")
-	if normalized == "" {
-		return true
-	}
-	if itemLabelCompletePredicatePattern.MatchString(normalized) {
-		return false
-	}
-	if itemLabelNaturalNominalizationPattern.MatchString(normalized) {
-		return false
-	}
-	switch kind {
-	case "todo", "decision":
-		return !itemLabelNaturalNominalizationPattern.MatchString(normalized)
-	case "risk":
-		return !lowInformationRiskPattern.MatchString(normalized)
-	case "fact", "issue":
-		return itemLabelClauseSubjectPattern.MatchString(normalized) &&
-			!lowInformationAssertionPattern.MatchString(normalized) &&
-			!lowInformationQuestionPattern.MatchString(normalized) &&
-			!itemLabelCompletePredicatePattern.MatchString(normalized)
-	default:
-		return false
-	}
 }
 
 // semanticallyCompleteItemLabel prefers a complete clause within the historic

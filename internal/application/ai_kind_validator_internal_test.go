@@ -176,10 +176,9 @@ func TestFactRiskTodoCompositeUsesFragmentLocalSemantics(t *testing.T) {
 			"高橋さんが今週中に更新手順を確認します",
 		}, evidenceSpecified: true,
 	}
-	items, _ := splitAndValidateLiveItemKinds(
-		nil, []liveAnalysisItem{item}, nil, scope,
-		itemKindValidationLive, "three_way_split", &liveAnalysisTreeMergeStats{},
-	)
+	stats := &liveAnalysisTreeMergeStats{}
+	items, _ := splitLiveItemKinds(nil, []liveAnalysisItem{item}, nil, scope, stats)
+	items = validateLiveItemKinds(items, scope, itemKindValidationLive, "three_way_split", stats)
 	if len(items) != 3 {
 		t.Fatalf("items=%+v, want three semantic fragments", items)
 	}
@@ -369,11 +368,13 @@ func TestCommonItemKindValidatorSplitsCompositeSemanticRoles(t *testing.T) {
 				Title: "複合命題", Body: test.body, Status: "open",
 				EvidenceSequenceNos: []int64{1}, evidenceSpecified: true,
 			}
-			items, assignments := splitAndValidateLiveItemKinds(
+			stats := &liveAnalysisTreeMergeStats{}
+			items, assignments := splitLiveItemKinds(
 				nil, []liveAnalysisItem{item},
 				[]treeAssignment{{NodeID: item.ID, ParentTopicID: "topic-network"}},
-				liveEvidenceScope{}, itemKindValidationLive, "test_split", &liveAnalysisTreeMergeStats{},
+				liveEvidenceScope{}, stats,
 			)
+			items = validateLiveItemKinds(items, liveEvidenceScope{}, itemKindValidationLive, "test_split", stats)
 			got := make([]string, 0, len(items))
 			for _, split := range items {
 				got = append(got, split.Kind)
@@ -447,7 +448,7 @@ func TestCommonItemKindRelationsPreserveDistinctPropositions(t *testing.T) {
 		{ID: "scope-limit", Kind: "issue", Subtype: issueSubtypeConfirmation, Title: "2階の通信遅延までこの設定漏れで説明できるかは未確認", EvidenceSequenceNos: []int64{3}},
 	}
 	tree := &liveAnalysisTree{}
-	if created := appendSemanticKindRelations(tree, items); created != 2 {
+	if created := reconcileSemanticKindRelations(tree, items, liveEvidenceScope{}, 0, "deterministic_inference"); created != 2 {
 		t.Fatalf("created=%d relations=%+v", created, tree.Relations)
 	}
 	got := map[string]liveAnalysisTreeRelation{}
@@ -463,7 +464,7 @@ func TestCommonItemKindRelationsPreserveDistinctPropositions(t *testing.T) {
 			t.Fatalf("relation %s=%+v, want kind=%q all=%+v", pair, relation, kind, tree.Relations)
 		}
 	}
-	if created := appendSemanticKindRelations(tree, items); created != 0 {
+	if created := reconcileSemanticKindRelations(tree, items, liveEvidenceScope{}, 0, "deterministic_inference"); created != 0 {
 		t.Fatalf("relations duplicated: created=%d relations=%+v", created, tree.Relations)
 	}
 }
@@ -491,7 +492,7 @@ func TestSemanticRelationsRejectFalseLinksAndDanglingEndpoints(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			tree := &liveAnalysisTree{}
-			if created := appendSemanticKindRelations(tree, test.items); created != 0 || len(tree.Relations) != 0 {
+			if created := reconcileSemanticKindRelations(tree, test.items, liveEvidenceScope{}, 0, "deterministic_inference"); created != 0 || len(tree.Relations) != 0 {
 				t.Fatalf("false relation created: created=%d relations=%+v", created, tree.Relations)
 			}
 		})

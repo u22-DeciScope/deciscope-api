@@ -216,7 +216,7 @@ func TestSession125e3cc5ReplayFixesVpnDuplicationRecapAndDecisionDefects(t *test
 		t.Fatal(err)
 	}
 
-	finalizedRaw, err := finalizeAgendaLifecyclePayload(round2Raw, mc, 16)
+	finalizedRaw, _, err := finalizeAgendaLifecyclePayloadWithEvidence(round2Raw, mc, 16, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
