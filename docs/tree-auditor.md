@@ -8,8 +8,6 @@ Tree Auditorは、ライブ抽出とは別のGPT-5-mini deploymentで現在の�
 監査AIは`enabled` / `disabled`の2状態だけです。モード切替(`off`/`shadow`/
 `apply_high_confidence`)は廃止されました。`TREE_AUDIT_ENABLED=true`(既定)で
 単一の実行経路が有効になり、`TREE_AUDIT_ENABLED=false`で停止します。
-`TREE_AUDIT_MODE`はdeprecatedであり、設定されていても無視されます(起動時に
-一度だけ警告ログを出力します)。
 
 ## 単一経路
 
@@ -147,7 +145,7 @@ rangeを確認するstructural validationの後、subject、predicate、entity�
 人名、担当者、場所、階数、日時、数値、識別子、原因、対策、決定、将来影響は引用発言による
 直接支持を必須とします。
 
-live extraction v18の`evidenceSnippets`は、指定sequenceのfinal発言からの短い引用です。
+live extraction v18以降の`evidenceSnippets`は、指定sequenceのfinal発言からの短い引用です。
 全角半角、空白、句読点、数字表記、英字大小文字を正規化して実在性と命題支持を確認します。
 安全に発言範囲へ縮約できる場合は`rewritten`、一部だけ支持される場合は`tentative`、
 事前contextだけにある場合は`candidate_only`、支持されない場合は`rejected`とし、後三者は
@@ -171,7 +169,7 @@ operation評価には`groundingDecision`、`groundingConfidence`、hash化した
 
 ## Semantic kind validator
 
-live prompt v18とサーバー共通validatorは、単語だけでなく次の特徴を組み合わせて
+live prompt v20とサーバー共通validatorは、単語だけでなく次の特徴を組み合わせて
 `fact` / `issue` / `risk` / `todo`を判定します。
 
 - 時制: `past` / `current` / `future` / `unknown`
@@ -179,14 +177,52 @@ live prompt v18とサーバー共通validatorは、単語だけでなく次の�
   `unresolved` / `proposed` / `committed`
 - 意味役割: 状態、原因仮説、未解決の問い、将来悪影響、行動、提案
 - 補助特徴: 悪影響、不確実性、未来事象、現在問題、確認表現、実行動詞、
-  担当者、期限、commitment、調査意図、mitigation意図
+  完了行動、scheduled event、event date、担当者、行動節に係る期限、commitment、
+  調査意図、mitigation意図
 
 優先順位は、強い担当・期限・commitment付き行動、確認済み事実、原因仮説・
 現在の未解決事項、将来の不確定な悪影響、その他の明示的行動です。
 原因である可能性は`issue/investigation`、将来の悪影響・不確実性・negative
-impactをすべて満たす場合だけ`risk`、対策行動は`todo`として扱います。
-単なる提案として既に`todo`になっている項目は強制変更せずtentative判定を記録し、
-誤って`risk`になっている明確な提案は`issue/discussion`へ修正します。
+impactをすべて満たす場合だけ`risk`、担当・期限・commitmentのある対策行動は`todo`として扱います。
+完了した作業は`fact`へ戻し、対象物の失効・満了日はevent dateとして作業期限と分離します。
+未確定の提案、必要性の指摘、不完全な目的節は`issue/discussion`とし、同一発言の
+fact / risk / todoはfragmentごとに証拠、担当、期限を局所化します。既存IssueのidをTodo更新に
+再利用した場合も、別itemとして分離して両方を保持します。
+
+担当者（話者本人を含む）・将来の実行動詞・具体的な行動対象・commitmentが同一節に揃う発話は、
+期限の有無にかかわらず決定論的Todo safety netでも検査します。1 sequenceからの採用は
+3件を上限とし、上限前でも候補密度が高い場合は`deterministic_candidate_density_anomaly`を
+本文なしで記録します。方針採用、必須化、運用開始はTodoではなくDecisionとして分離します。
+モデルが同じ分析batchの
+低情報発話だけを返した場合や、行動をIssueへ誤分類した場合でも、後続の強いTodo節を
+final transcriptから補完します。複数の担当者または期限を持つ節は別Todoとして保持し、
+既存Todoのenrichmentは高い命題一致がある一件に限定します。この補完は追加のAI呼び出しを
+行いません。
+
+明示的な訂正は、置換Factがgroundingを通らなかった時点で旧命題を
+`correction_pending_replacement`として通常ツリーから退避します。final repairは同じ
+final transcriptから訂正節だけを再構築し、成功時は旧Itemをinactiveにして
+`superseded` tombstoneへ記録します。再実行時は同じ置換を増やしません。訂正でない
+過去の「設定を修正しました」やrecapだけからFactを新設することはありません。
+
+同じkind・同じItem IDの更新でも、主命題または日時が異なる場合は別Itemへdetachし、
+古い発生事実と後続の復旧事実のevidenceを和集合にしません。recapは既存の担当・期限付き
+Todoや未解決Issueを上書きせず、該当する命題節だけへevidenceを局所化します。
+Item IDは生成後はopaqueな不変識別子です。`item-todo-*`等の歴史的prefixは現在の
+`kind`を保証するAPIではなく、表示・分類は常に`items[].kind`を参照します。
+同じIDを使う更新はsubject / predicate / object / qualifierを比較し、同一命題の
+言い換え・具体化だけを許可します。明示訂正、または中心命題に互換性がない更新は
+新しいIDへdetachし、`event=item_proposition_changed`へ本文を含めず記録します。
+
+coverage retryを含むlive入力は`currentRoundSegments` / `retrySegments` /
+`contextOnlySegments` / `recapSegments`へ分離してpromptへ渡します。retryは未反映発話を
+次の通常roundで一度だけ再提示する仕組みで、新規発話の命題やIDを上書きする権限では
+ありません。agenda照合ではprimary/source evidenceを優先し、recapはsourceが存在しない
+場合だけfallbackとして使います。判定は`event=agenda_assignment_decision`、
+retry結果は`event=meaningful_coverage_retry_result`、low-information検出は
+`event=low_information_item_detected`、決定論的補完候補は
+`event=deterministic_synthesis_candidate`に、session/version/sequence/item ID、
+判定特徴、採否、reasonだけを記録します。
 
 同一itemのdescriptionに複数の強い意味役割を持つ文がある場合は、各文を再検証して
 別itemへ分割します。subjectを持たない短いfragmentはlow-information gateで棄却し、

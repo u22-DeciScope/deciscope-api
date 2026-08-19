@@ -52,7 +52,10 @@ func TestRecapRoundMergesDuplicateTodoWithoutCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	recapText := "最後にここまでをまとめます。今回の障害は、交換したアクセススイッチでvラン30の許可設定が漏れていたことが主な原因と考えられます。再発防止として、交換前後でvランごとの疎通確認を実施するチェックリストを作成することを必須にします。"
-	scope := evidenceScopeFromTexts(map[int64]string{19: recapText}, 19)
+	scope := evidenceScopeFromTexts(map[int64]string{
+		12: "交換前後でVLANごとの疎通確認を実施するチェックリストを作成します。",
+		19: recapText,
+	}, 19)
 	diff := `{"summary":"まとめ","currentTopic":"まとめ","items":[{"id":"item-todo-checklist-dup","kind":"todo","severity":"medium","title":"vランごとの疎通確認チェックリストの作成","body":"交換前後でvランごとの疎通確認を実施するチェックリストを作成する","status":"open"}],"newTopics":[{"id":"topic-checklist-recap","label":"チェックリスト作成"}],"assignments":[{"nodeId":"item-todo-checklist-dup","parentTopicId":"topic-checklist-recap","confidence":0.7}]}`
 	stats := &liveAnalysisTreeMergeStats{}
 	raw, err := parseAndMergeLiveAnalysisPayloadWithEvidence(diff, previousJSON, nil, 2, []int64{19}, scope, TreeClassificationConfig{}, stats)

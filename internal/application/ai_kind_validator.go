@@ -1,6 +1,7 @@
 package application
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"sort"
@@ -24,11 +25,21 @@ type itemSemanticFeatures struct {
 	NegativeImpactPresent      bool
 	UncertaintyPresent         bool
 	FutureEventPresent         bool
+	ScheduledEventPresent      bool
 	CurrentProblemPresent      bool
 	ConfirmedEvidencePresent   bool
 	ActionVerbPresent          bool
+	CompletedActionPresent     bool
+	PastEventTimePresent       bool
+	FutureDeadlinePresent      bool
+	FutureScheduledTimePresent bool
+	CompletedPredicatePresent  bool
+	CommitmentPresent          bool
+	RequestPresent             bool
+	AssigneePresent            bool
 	OwnerPresent               bool
 	DeadlinePresent            bool
+	EventDatePresent           bool
 	DecisionOrCommitment       bool
 	InvestigationIntentPresent bool
 	MitigationIntentPresent    bool
@@ -53,15 +64,22 @@ type itemKindValidationDecision struct {
 }
 
 type itemKindSplitDecision struct {
-	SourceItemID      string
-	FragmentCount     int
-	FragmentKinds     []string
-	RejectedFragments int
-	RelationsCreated  int
+	SourceItemID        string
+	SourceKind          string
+	FragmentCount       int
+	FragmentItemIDs     []string
+	FragmentKinds       []string
+	RejectedFragments   int
+	RelationsCreated    int
+	ReplacementMode     string
+	SourceActiveBefore  bool
+	SourceInactiveAfter bool
+	DuplicateDetected   bool
+	RelationsReassigned int
 }
 
 var (
-	kindUncertaintyPattern      = regexp.MustCompile(`(?i)(?:可能性|おそれ|恐れ|懸念|かもしれ|なりかね|risk|may|might|could)`)
+	kindUncertaintyPattern      = regexp.MustCompile(`(?i)(?:可能性|おそれ|恐れ|懸念|リスク|かもしれ|なりかね|risk|may|might|could)`)
 	kindCausalHypothesisPattern = regexp.MustCompile(
 		`(?i)(?:(?:原因|要因|理由|因果).{0,24}(?:可能性|候補|仮説|推定|考え)|(?:可能性|候補|仮説|推定).{0,24}(?:原因|要因|理由|因果)|root cause.{0,24}(?:may|might|likely))`,
 	)
@@ -71,38 +89,83 @@ var (
 	kindOngoingEventPattern = regexp.MustCompile(
 		`(?i)(?:継続的|断続的|引き続き|依然として|常時|繰り返し|ongoing|continuing|recurring)`,
 	)
+	kindPastObservationPattern = regexp.MustCompile(
+		`(?i)(?:(?:混在していました|混在していた|発生していました|発生していた|遅延していました|遅延していた|停止していました|停止していた|影響が出ていました|影響が出ていた|接続できませんでした|接続できなかった|利用できませんでした|利用できなかった)|(?:障害発生時|当時|昨日|先週|午前|午後).{0,80}(?:でした|ました|していた|していました|できなかった|できませんでした|解消した|解消しました|正常になった|正常になりました))`,
+	)
+	kindExplicitCurrentIssuePattern = regexp.MustCompile(
+		`(?i)(?:現在(?:も|は)|現時点(?:でも|では)|今も|引き続き|依然として|発生中|継続中|まだ.{0,24}(?:解決していな|分かっていな|わかっていな|特定できていな|接続できな)|原因.{0,16}(?:不明|分かっていな|わかっていな|特定できていな)|(?:調査|対応|判断|確認)(?:する)?(?:こと)?が必要|未解決|unresolved|currently)`,
+	)
 	kindNegativeImpactPattern = regexp.MustCompile(
-		`(?i)(?:障害|停止|切断|切れ|接続(?:が)?できな|利用(?:が)?できな|過多|多くなりすぎ|見落と|失敗|損失|漏えい|遅延|再発|不能|悪化|欠落|期限切れ|危険|adverse|outage|failure|loss|unavailable)`,
+		`(?i)(?:障害|停止|切断|切れ|接続(?:が)?できな|利用(?:が)?できな|過多|多くなりすぎ|増えすぎ|通知が多発|アラート疲れ|運用負荷が高く|監視ノイズが増え|見落と|失敗|損失|漏えい|遅延|再発|不能|悪化|欠落|期限切れ|危険|adverse|outage|failure|loss|unavailable)`,
 	)
 	kindCurrentProblemPattern = regexp.MustCompile(
 		`(?i)(?:現在|現時点|発生中|発生している|継続している|できていな(?:い|く|かった)|できていません|接続できない|未解決|未確認|未確定|未決定|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|unknown|unresolved|currently)`,
 	)
 	kindConfirmedPattern = regexp.MustCompile(
-		`(?i)(?:確認した|確認しました|確認済み|判明した|判明しました|観測した|報告された|報告されました|報告がありました|報告があった|漏れてい(?:た|ました)|異常はなかった|正常になった|復旧した|切り戻した|修正した後|であることが分かった|confirmed|observed|verified|reported)`,
+		`(?i)(?:確認した|確認しました|確認済み|判明した|判明しました|分かりました|わかりました|明らかになった|観測した|報告された|報告されました|報告がありました|報告があった|漏れてい(?:た|ました)|異常はなかった|正常になった|復旧した|復旧しました|解消した|解消しました|切り戻した|切り戻しました|修正した後|であることが分かった|confirmed|observed|verified|reported)`,
 	)
 	kindPastEventPattern = regexp.MustCompile(
-		`(?i)(?:発生した|発生しました|していた|だった|でした|行った|実施した|完了した|occurred|was |were |completed)`,
+		`(?i)(?:発生した|発生しました|していた|していました|しておりました|できなかった|できませんでした|だった|でした|行った|実施した|完了した|解消した|解消しました|正常になった|正常になりました|occurred|was |were |completed)`,
+	)
+	kindCompletedActionPattern = regexp.MustCompile(
+		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|設定|適用|依頼|連絡|共有|提出|準備|整備|送付|レビュー|監視|継続|切り戻|復旧|交換|再起動|戻)(?:しました|した|済み(?:です)?|を完了(?:しました|した))|(?:行|おこな)(?:いました|った)|完了(?:しました|した|済み(?:です)?)|completed|was (?:updated|created|checked|reviewed|implemented))`,
 	)
 	kindOpenQuestionPattern = regexp.MustCompile(
-		`(?i)(?:[?？]|(?:何|いつ|どこ|誰|どれ|どの|どちら|どう).{0,24}か|を行うか|か未確認|説明できるか|何を|どのように|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|確認が必要|調査が必要|検討が必要|未解決|未確定|未決定|open question|needs investigation)`,
+		`(?i)(?:[?？]|(?:何|いつ|どこ|誰|どれ|どの|どちら|どう).{0,24}か|を行うか|か未確認|説明できるか|何を|どのように|決まっていな(?:い|かった)|決まっていません|特定できていな(?:い|かった)|特定できていません|(?:確認|調査|検討|対応|修正|更新|作業)(?:する)?(?:が)?必要|未解決|未確定|未決定|open question|needs investigation)`,
 	)
 	kindActionVerbPattern = regexp.MustCompile(
-		`(?i)(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続|切り戻|assign|update|create|check|review|investigate|implement)`,
+		`(?i)(?:追加|作成|作(?:る|り|っ)|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|整備|送付|レビュー|監視|継続|切り戻|交換|再起動|戻|assign|update|create|check|review|investigate|implement)`,
 	)
 	kindActionIntentPattern = regexp.MustCompile(
-		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視|継続)(?:する|します|してもら|を行う|予定|ことにする)|(?:will|shall|must|to )(?:update|create|check|review|investigate|implement))`,
+		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|決定|決め|設定|適用|依頼|連絡|共有|提出|準備|整備|送付|レビュー|監視|継続|切り戻|交換|再起動|戻)(?:す|する|します|してください|して下さい|してもら(?:う|います)|を行(?:う|います)|をお願い(?:します|する)|予定(?:です)?|ことに(?:する|します|なりました))|作(?:る|ります)|(?:will|shall|must|to )(?:update|create|check|review|investigate|implement))`,
 	)
 	kindCommitmentPattern = regexp.MustCompile(
-		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|設定|適用|依頼|連絡|共有|提出|準備|送付|レビュー|監視)します|行います|確認してもら|ことにします|完了条件|合意|決定した|担当する|依頼する|予定です|will|shall|committed)`,
+		`(?i)(?:(?:追加|作成|更新|修正|調査|確認|実施|対応|設定|適用|依頼|連絡|共有|提出|準備|整備|送付|レビュー|監視|切り戻|交換|再起動)します|作ります|行います|してください|して下さい|(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|設定|適用|連絡|共有|提出|準備|整備|送付|レビュー|監視|切り戻|交換|再起動)してもら|(?:追加|作成|更新|修正|調査|確認|実施|対応|検討|設定|適用|連絡|共有|提出|準備|整備|送付|レビュー|監視|切り戻|交換|再起動)をお願いします|ことに(?:します|なりました)|完了条件|合意|決定した|担当する|依頼する|予定です|will|shall|committed)`,
+	)
+	kindRequestPattern = regexp.MustCompile(
+		`(?i)(?:してください|して下さい|してもら(?:う|います)|をお願い(?:します|する)|依頼(?:します|する)|please)`,
 	)
 	kindProposalPattern = regexp.MustCompile(
-		`(?i)(?:案|候補|提案|してはどう|検討したい|検討中|選択肢|proposal|option|considering)`,
+		`(?i)(?:案|候補|提案|してはどう|した方が(?:よ|良)|する方が(?:よ|良)|よさそう|良さそう|すべき|検討したい|検討中|選択肢|proposal|option|considering)`,
+	)
+	kindRecommendationPattern = regexp.MustCompile(
+		`(?i)(?:した方が(?:よ|良)|する方が(?:よ|良)|してはどう|よさそう|良さそう|すべき|would be better|should consider)`,
+	)
+	kindIncompletePurposePattern = regexp.MustCompile(
+		`(?i)(?:できる|する|なる)ように[。.!！]?$`,
+	)
+	kindUnassignedNecessityPattern = regexp.MustCompile(
+		`(?i)(?:(?:確認|調査|検討|対応|修正|更新|作業|調整|判断|決定)(?:する)?(?:こと)?(?:が|は)?必要|要検討|要確認|needs? (?:review|investigation|consideration))`,
+	)
+	kindUnassignedManagementPattern = regexp.MustCompile(
+		`(?i)(?:別(?:の|件|枠).{0,20}(?:対応事項|管理)|対応事項として(?:管理|扱)|管理(?:する|します|方針)|(?:計画|方針)を確定|追加する案)`,
 	)
 	kindOwnerPattern = regexp.MustCompile(
-		`(?i)(?:[一-龠々ぁ-んァ-ヶーA-Za-z]{1,24}(?:さん|氏)(?:が|は|に)|(?:私|わたし|自分)(?:が|は)|担当者|責任者|owner|assignee)`,
+		`(?i)(?:[一-龠々ぁ-んァ-ヶーA-Za-z]{1,24}(?:さん|氏)(?:が|は|に|へ)|(?:私|わたし|自分)(?:が|は)|担当者|責任者|owner|assignee)`,
 	)
-	kindDeadlinePattern = regexp.MustCompile(
+	kindDeadlineMarkerPattern = regexp.MustCompile(
+		`(?i)(?:までに|まで|今週中|来週中|本日中|明日中|月末まで|週末まで|次回(?:会議)?まで|[月火水木金土日]曜(?:日)?まで|due|deadline|by next)`,
+	)
+	// kindDateMentionPattern is used only by the grounding atom checker. Kind
+	// classification must use actionDeadlinePresent so an object's event date
+	// cannot become a TODO deadline.
+	kindDateMentionPattern = regexp.MustCompile(
 		`(?i)(?:までに|今週|来週|本日|明日|月末|週末|次回(?:会議)?まで|[月火水木金土日]曜(?:日)?|期限|due|deadline|by next)`,
+	)
+	kindRelativeWorkDatePattern = regexp.MustCompile(
+		`(?i)(?:今週|来週|本日|明日|今月|来月|月末|週末|[月火水木金土日]曜(?:日)?)`,
+	)
+	kindEventDatePattern = regexp.MustCompile(
+		`(?i)(?:今週|来週|今月|来月|本日|明日|月末|週末|午前|午後|\d{1,2}月\d{1,2}日|\d{1,2}時\d{0,2}分?|[月火水木金土日]曜(?:日)?|\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?)`,
+	)
+	kindScheduledEventPattern = regexp.MustCompile(
+		`(?i)(?:(?:期限切れ|失効|満了|終了|開始|開催|到来)(?:に)?(?:なる|なります|する|します|予定)|(?:有効期限|契約期限|終了日|開催日)(?:は|が)|will (?:expire|end|start))`,
+	)
+	kindPastEventTimePattern = regexp.MustCompile(
+		`(?i)(?:(?:昨日|先週|当時|障害発生時|午前|午後|\d{1,2}時\d{0,2}分?).{0,100}(?:しました|した|済み(?:です)?|行いました|行った|戻しました|戻した))`,
+	)
+	kindFutureScheduledTimePattern = regexp.MustCompile(
+		`(?i)(?:(?:明日|次回|来週|来月|今週|本日)(?:の)?(?:午前|午後)?\d{0,2}時?\d{0,2}分?(?:に|から)?.{0,80}(?:する|します|予定)|(?:明日|次回|来週|来月|今週|本日).{0,80}予定)`,
 	)
 	kindInvestigationPattern = regexp.MustCompile(
 		`(?i)(?:原因|要因|因果|調査|検証|確認が必要|特定|説明できるか|切り分け|investigat|verify|root cause)`,
@@ -111,7 +174,125 @@ var (
 		`(?i)(?:防止|予防|対策|回避|抑制|監視|更新|チェックリスト|見直し|再発防止|mitigat|prevent|remediat)`,
 	)
 	kindSentenceBoundaryPattern = regexp.MustCompile(`[。！？\r\n]+`)
+	// ASR often removes punctuation between two commitments. Split only after
+	// a completed commitment form and only when the following text begins with
+	// an explicit new owner, so ordinary compound predicates stay intact.
+	kindClauseCommitmentEndPattern = regexp.MustCompile(
+		`(?:してもらいます|をお願いします|いたします|行います|作ります|します)`,
+	)
+	kindClauseOwnerLeadPattern = regexp.MustCompile(
+		`^(?:(?:私|わたし|自分)(?:が|は)|[一-龠々ぁ-んァ-ヶーA-Za-z]{1,24}(?:さん|氏)(?:に(?:は)?|が|は|へ))`,
+	)
 )
+
+func semanticKindClauses(text string) []string {
+	raw := kindSentenceBoundaryPattern.Split(text, -1)
+	clauses := make([]string, 0, len(raw))
+	for _, clause := range raw {
+		for _, temporalSplit := range splitPastCurrentTransition(clause) {
+			for _, split := range splitImplicitTodoOwnerTransitions(temporalSplit) {
+				if trimmed := strings.TrimSpace(split); trimmed != "" {
+					clauses = append(clauses, trimmed)
+				}
+			}
+		}
+	}
+	return clauses
+}
+
+func splitPastCurrentTransition(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	for _, marker := range []string{"が、原因", "が原因", "が、理由", "が理由", "が、要因", "が要因"} {
+		at := strings.Index(text, marker)
+		if at <= 0 {
+			continue
+		}
+		left := strings.TrimSpace(text[:at])
+		right := strings.TrimSpace(text[at+len("が"):])
+		right = strings.TrimLeft(right, "、, ")
+		if kindPastObservationPattern.MatchString(left) && kindExplicitCurrentIssuePattern.MatchString(right) {
+			return []string{left, right}
+		}
+	}
+	return []string{text}
+}
+
+func splitImplicitTodoOwnerTransitions(text string) []string {
+	remaining := strings.TrimSpace(text)
+	if remaining == "" {
+		return nil
+	}
+	var result []string
+	for {
+		splitAt := -1
+		for _, location := range kindClauseCommitmentEndPattern.FindAllStringIndex(remaining, -1) {
+			suffix := remaining[location[1]:]
+			trimmed := strings.TrimLeft(suffix, " \t　、,")
+			if trimmed == "" || !kindClauseOwnerLeadPattern.MatchString(trimmed) {
+				continue
+			}
+			splitAt = location[1]
+			break
+		}
+		if splitAt <= 0 || splitAt >= len(remaining) {
+			result = append(result, remaining)
+			break
+		}
+		result = append(result, strings.TrimSpace(remaining[:splitAt]))
+		remaining = strings.TrimLeft(remaining[splitAt:], " \t　、,")
+	}
+	return result
+}
+
+// futureActionIntent requires a future/imperative action form in the same
+// sentence. A completed form such as 「修正しました」 contains the byte
+// sequence 「修正します」, so a whole-text regexp alone would incorrectly
+// classify it as a TODO.
+func futureActionIntent(text string) bool {
+	for _, clause := range semanticKindClauses(text) {
+		remaining := kindCompletedActionPattern.ReplaceAllString(clause, "")
+		if kindActionIntentPattern.MatchString(remaining) {
+			return true
+		}
+	}
+	return false
+}
+
+func futureActionCommitment(text string) bool {
+	for _, clause := range semanticKindClauses(text) {
+		remaining := kindCompletedActionPattern.ReplaceAllString(clause, "")
+		if kindCommitmentPattern.MatchString(remaining) {
+			return true
+		}
+	}
+	return false
+}
+
+// actionDeadlinePresent accepts a date as a deadline only when that date and
+// a future action belong to the same sentence. Object/event dates such as
+// 「証明書が来月末に失効する」 and past timestamps therefore remain event
+// metadata, not TODO deadlines.
+func actionDeadlinePresent(text string) bool {
+	for _, clause := range semanticKindClauses(text) {
+		action := futureActionIntent(clause)
+		if !action && kindOpenQuestionPattern.MatchString(clause) {
+			action = kindActionVerbPattern.MatchString(clause)
+		}
+		if !action {
+			continue
+		}
+		if kindDeadlineMarkerPattern.MatchString(clause) ||
+			(kindRelativeWorkDatePattern.MatchString(clause) &&
+				!kindScheduledEventPattern.MatchString(clause) &&
+				!kindFutureScheduledTimePattern.MatchString(clause)) {
+			return true
+		}
+	}
+	return false
+}
 
 func itemKindValidationThreshold(mode itemKindValidationMode) float64 {
 	switch mode {
@@ -125,18 +306,97 @@ func itemKindValidationThreshold(mode itemKindValidationMode) float64 {
 }
 
 func itemSemanticEvidenceText(item liveAnalysisItem, scope liveEvidenceScope) string {
-	var values []string
+	return strings.Join(itemSemanticEvidenceClauses(item, scope), "。")
+}
+
+// itemSemanticEvidenceClauses returns only the evidence clauses that belong to
+// this proposition. One transcript segment can contain several independent
+// actions/issues; carrying the full segment into every sibling item leaks an
+// assignee or deadline from one clause into another.
+func itemSemanticEvidenceClauses(item liveAnalysisItem, scope liveEvidenceScope) []string {
+	var localized []string
+	add := func(value string) {
+		for _, clause := range semanticKindClauses(value) {
+			clause = strings.TrimSpace(clause)
+			if clause != "" && !containsExactString(localized, clause) {
+				localized = append(localized, clause)
+			}
+		}
+	}
+
+	// A grounding-verified snippet is the strongest proposition-local signal.
+	// Select the best matching snippet clause per cited sequence; split
+	// fragments intentionally retain the original snippet list for audit.
+	proposition := strings.TrimSpace(item.Title + " " + item.Body)
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		transcript := normalizeGroundingText(scope.TranscriptText[sequenceNo])
+		bestClause, bestScore := "", -1.0
+		for _, snippet := range item.EvidenceSnippets {
+			if normalized := normalizeGroundingText(snippet); normalized == "" ||
+				!strings.Contains(transcript, normalized) {
+				continue
+			}
+			for _, clause := range semanticKindClauses(snippet) {
+				score := semanticItemSimilarity(proposition, clause)
+				if sharedTreeAuditSubjectTerm(proposition, clause) {
+					score += 0.15
+				}
+				if score > bestScore {
+					bestClause, bestScore = clause, score
+				}
+			}
+		}
+		if bestClause != "" {
+			add(bestClause)
+		}
+	}
+	if len(localized) > 0 {
+		return localized
+	}
+
 	seen := make(map[int64]struct{}, len(item.EvidenceSequenceNos))
 	for _, sequenceNo := range item.EvidenceSequenceNos {
 		if _, duplicate := seen[sequenceNo]; duplicate {
 			continue
 		}
 		seen[sequenceNo] = struct{}{}
-		if text := strings.TrimSpace(scope.TranscriptText[sequenceNo]); text != "" {
-			values = append(values, text)
+		clauses := semanticKindClauses(scope.TranscriptText[sequenceNo])
+		if len(clauses) == 1 {
+			add(clauses[0])
+			continue
+		}
+		bestClause := ""
+		bestScore := -1.0
+		for _, clause := range clauses {
+			score := semanticItemSimilarity(proposition, clause)
+			if sharedTreeAuditSubjectTerm(proposition, clause) {
+				score += 0.15
+			}
+			if score > bestScore {
+				bestClause, bestScore = clause, score
+			}
+		}
+		if bestClause != "" && bestScore >= 0.08 {
+			add(bestClause)
 		}
 	}
-	return strings.Join(values, "。")
+	return localized
+}
+
+func itemKindSemanticText(item liveAnalysisItem, scope liveEvidenceScope) string {
+	proposition := strings.TrimSpace(item.Title + "。" + item.Body)
+	if len(item.EvidenceSnippets) == 0 &&
+		utf8.RuneCountInString(proposition) >= 12 {
+		return proposition
+	}
+	evidence := itemSemanticEvidenceText(item, scope)
+	if evidence == "" {
+		return proposition
+	}
+	// The title provides the model's intended subject while the localized,
+	// transcript-grounded clause supplies authoritative owner/deadline/action
+	// attributes. A composite body is deliberately omitted here.
+	return strings.TrimSpace(item.Title + "。" + evidence)
 }
 
 func latestItemSemanticEvidence(item liveAnalysisItem, scope liveEvidenceScope) (int64, string) {
@@ -173,22 +433,49 @@ func semanticEvidenceRole(roles []liveEvidenceRoleRef, sequenceNo int64) liveEvi
 
 func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) itemSemanticFeatures {
 	proposition := strings.TrimSpace(item.Title + "。" + item.Body)
-	evidence := itemSemanticEvidenceText(item, scope)
-	text := proposition
-	if utf8.RuneCountInString(strings.TrimSpace(proposition)) < 12 {
-		text = strings.TrimSpace(proposition + "。" + evidence)
+	text := itemKindSemanticText(item, scope)
+	if utf8.RuneCountInString(strings.TrimSpace(text)) < 12 {
+		text = proposition
 	}
 
+	pastObservation := kindPastObservationPattern.MatchString(text)
+	explicitCurrentIssue := kindExplicitCurrentIssuePattern.MatchString(text)
+	confirmedEvidence := (kindConfirmedPattern.MatchString(text) ||
+		(pastObservation && !explicitCurrentIssue)) &&
+		!kindRecommendationPattern.MatchString(text)
+	currentProblem := kindCurrentProblemPattern.MatchString(text)
+	if pastObservation && !explicitCurrentIssue {
+		currentProblem = false
+	}
+	completedAction := kindCompletedActionPattern.MatchString(text) &&
+		!kindProposalPattern.MatchString(text)
+	actionIntent := futureActionIntent(text)
+	commitment := futureActionCommitment(text)
+	request := kindRequestPattern.MatchString(text)
+	futureScheduledTime := kindFutureScheduledTimePattern.MatchString(text) && actionIntent
+	scheduledEvent := kindScheduledEventPattern.MatchString(text) || futureScheduledTime
+	deadline := actionDeadlinePresent(text)
+	owner := kindOwnerPattern.MatchString(text)
 	features := itemSemanticFeatures{
 		NegativeImpactPresent:      kindNegativeImpactPattern.MatchString(text),
 		UncertaintyPresent:         kindUncertaintyPattern.MatchString(text),
-		FutureEventPresent:         kindFutureEventPattern.MatchString(text),
-		CurrentProblemPresent:      kindCurrentProblemPattern.MatchString(text),
-		ConfirmedEvidencePresent:   kindConfirmedPattern.MatchString(text),
+		FutureEventPresent:         kindFutureEventPattern.MatchString(text) || scheduledEvent,
+		ScheduledEventPresent:      scheduledEvent,
+		CurrentProblemPresent:      currentProblem,
+		ConfirmedEvidencePresent:   confirmedEvidence,
 		ActionVerbPresent:          kindActionVerbPattern.MatchString(text),
-		OwnerPresent:               kindOwnerPattern.MatchString(text),
-		DeadlinePresent:            kindDeadlinePattern.MatchString(text),
-		DecisionOrCommitment:       kindCommitmentPattern.MatchString(text),
+		CompletedActionPresent:     completedAction,
+		PastEventTimePresent:       kindPastEventTimePattern.MatchString(text) && completedAction,
+		FutureDeadlinePresent:      deadline,
+		FutureScheduledTimePresent: futureScheduledTime,
+		CompletedPredicatePresent:  completedAction,
+		CommitmentPresent:          commitment,
+		RequestPresent:             request,
+		AssigneePresent:            owner,
+		OwnerPresent:               owner,
+		DeadlinePresent:            deadline,
+		EventDatePresent:           kindEventDatePattern.MatchString(text),
+		DecisionOrCommitment:       commitment,
 		InvestigationIntentPresent: kindInvestigationPattern.MatchString(text),
 		MitigationIntentPresent:    kindMitigationPattern.MatchString(text),
 		CausalHypothesisPresent:    kindCausalHypothesisPattern.MatchString(text),
@@ -203,6 +490,7 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 	if latestEvidence != "" &&
 		semanticItemSimilarity(proposition, latestEvidence) >= 0.12 &&
 		kindConfirmedPattern.MatchString(latestEvidence) &&
+		!kindRecommendationPattern.MatchString(latestEvidence) &&
 		!kindUncertaintyPattern.MatchString(latestEvidence) &&
 		!kindOpenQuestionPattern.MatchString(latestEvidence) {
 		features.ConfirmedEvidencePresent = true
@@ -219,6 +507,9 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		features.TemporalScope = "past"
 	case kindOngoingEventPattern.MatchString(text):
 		features.TemporalScope = "ongoing"
+	case features.CompletedPredicatePresent && !features.CommitmentPresent &&
+		!features.FutureScheduledTimePresent:
+		features.TemporalScope = "past"
 	case features.FutureEventPresent:
 		features.TemporalScope = "future"
 	case features.CurrentProblemPresent:
@@ -233,6 +524,8 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		features.EpistemicStatus = "confirmed"
 	case features.DecisionOrCommitment:
 		features.EpistemicStatus = "committed"
+	case features.CompletedActionPresent:
+		features.EpistemicStatus = "confirmed"
 	case features.CausalHypothesisPresent:
 		features.EpistemicStatus = "hypothesis"
 	case features.CurrentProblemPresent || kindOpenQuestionPattern.MatchString(text):
@@ -247,13 +540,16 @@ func inferItemSemanticFeatures(item liveAnalysisItem, scope liveEvidenceScope) i
 		features.EpistemicStatus = "reported"
 	}
 	openQuestion := kindOpenQuestionPattern.MatchString(text)
-	actionIntent := kindActionIntentPattern.MatchString(text) ||
+	actionIntent = actionIntent ||
 		(features.ActionVerbPresent && !openQuestion &&
-			(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment))
+			(features.DeadlinePresent || features.DecisionOrCommitment))
 	switch {
 	case features.ConfirmationSupersedesOpen:
 		features.SemanticRole = "state"
-	case actionIntent && features.ProposalPresent:
+	case features.CompletedActionPresent && !actionIntent:
+		features.SemanticRole = "state"
+	case actionIntent && features.ProposalPresent &&
+		!features.OwnerPresent && !features.DeadlinePresent && !features.DecisionOrCommitment:
 		features.SemanticRole = "proposal"
 	case actionIntent:
 		features.SemanticRole = "action"
@@ -287,19 +583,49 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		return decision
 	}
 
-	text := strings.TrimSpace(item.Title + " " + item.Body)
+	text := itemKindSemanticText(item, scope)
 	openQuestion := kindOpenQuestionPattern.MatchString(text)
-	actionIntent := kindActionIntentPattern.MatchString(text) ||
+	actionIntent := futureActionIntent(text) ||
 		(features.ActionVerbPresent && !openQuestion &&
-			(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment))
-	strongAction := actionIntent &&
-		((!features.ProposalPresent &&
-			(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment)) ||
-			features.DecisionOrCommitment || (features.OwnerPresent && features.DeadlinePresent))
+			(features.DeadlinePresent || features.DecisionOrCommitment))
+	unassignedNecessity := kindUnassignedNecessityPattern.MatchString(text) &&
+		!features.OwnerPresent && !features.DecisionOrCommitment
+	uncommittedProposal := features.ProposalPresent &&
+		!features.OwnerPresent && !features.DeadlinePresent && !features.DecisionOrCommitment
+	strongAction := actionIntent && !features.CompletedPredicatePresent && !uncommittedProposal &&
+		(features.CommitmentPresent || features.RequestPresent ||
+			features.FutureScheduledTimePresent) &&
+		(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment ||
+			features.RequestPresent || features.FutureScheduledTimePresent)
 	preserveExplicitQuestion := originalKind == "issue" && originalSubtype == issueSubtypeQuestion && openQuestion
+	preserveOpenIssue := originalKind == "issue" && validIssueSubtype(originalSubtype) &&
+		!features.ConfirmationSupersedesOpen &&
+		(kindOpenQuestionPattern.MatchString(item.Title+" "+item.Body) ||
+			features.CurrentProblemPresent)
 
 	switch {
-	case strongAction && !preserveExplicitQuestion:
+	case features.CompletedActionPresent && !actionIntent &&
+		!openQuestion && !features.ProposalPresent && !features.UncertaintyPresent:
+		decision.CanonicalKind = "fact"
+		decision.CanonicalSubtype = ""
+		decision.Reason = "completed_action_is_historical_fact"
+		decision.Confidence = 0.98
+	case preserveExplicitQuestion:
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = issueSubtypeQuestion
+		decision.Reason = "explicit_question_preserved"
+		decision.Confidence = 0.98
+	case preserveOpenIssue:
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = originalSubtype
+		decision.Reason = "explicit_open_issue_preserved_from_companion_action"
+		decision.Confidence = 0.96
+	case unassignedNecessity:
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = issueSubtypeDiscussion
+		decision.Reason = "unassigned_action_necessity_remains_open"
+		decision.Confidence = 0.97
+	case strongAction && !features.ConfirmationSupersedesOpen:
 		decision.CanonicalKind = "todo"
 		decision.CanonicalSubtype = ""
 		decision.Reason = "committed_action"
@@ -310,7 +636,8 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		}
 	case features.ConfirmedEvidencePresent &&
 		(!features.UncertaintyPresent || features.ConfirmationSupersedesOpen) &&
-		(!openQuestion || features.ConfirmationSupersedesOpen) && !strongAction:
+		(!openQuestion || features.ConfirmationSupersedesOpen) &&
+		(!strongAction || features.ConfirmationSupersedesOpen):
 		decision.CanonicalKind = "fact"
 		decision.CanonicalSubtype = ""
 		decision.Reason = "confirmed_observed_or_reported_state"
@@ -324,7 +651,14 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		decision.CanonicalSubtype = issueSubtypeInvestigation
 		decision.Reason = "causal_hypothesis_requires_verification"
 		decision.Confidence = 0.97
-	case originalKind == "todo" && actionIntent && (features.CurrentProblemPresent || openQuestion):
+	case kindIncompletePurposePattern.MatchString(text) && !actionIntent:
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = issueSubtypeDiscussion
+		decision.Reason = "uncommitted_purpose_or_incomplete_action"
+		decision.Confidence = 0.92
+	case originalKind == "todo" && actionIntent &&
+		(features.CurrentProblemPresent || openQuestion) &&
+		(features.OwnerPresent || features.DeadlinePresent || features.DecisionOrCommitment):
 		decision.Decision = "tentative"
 		decision.Reason = "composite_issue_action_requires_split_or_more_evidence"
 		decision.Confidence = 0.70
@@ -344,13 +678,19 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		decision.CanonicalSubtype = ""
 		decision.Reason = "future_uncertain_adverse_outcome"
 		decision.Confidence = 0.97
-	case actionIntent && features.ProposalPresent:
-		if originalKind == "todo" {
-			decision.Decision = "tentative"
-			decision.Reason = "uncommitted_action_proposal"
-			decision.Confidence = 0.86
-			break
+	case features.ScheduledEventPresent && !actionIntent && !openQuestion:
+		decision.CanonicalKind = "fact"
+		decision.CanonicalSubtype = ""
+		decision.Reason = "scheduled_object_or_event_state"
+		decision.Confidence = 0.95
+	case actionIntent && uncommittedProposal:
+		decision.CanonicalKind = "issue"
+		if originalKind != "issue" || !validIssueSubtype(originalSubtype) {
+			decision.CanonicalSubtype = issueSubtypeDiscussion
 		}
+		decision.Reason = "uncommitted_action_proposal"
+		decision.Confidence = 0.94
+	case kindRecommendationPattern.MatchString(text) && features.ActionVerbPresent:
 		decision.CanonicalKind = "issue"
 		if originalKind != "issue" || !validIssueSubtype(originalSubtype) {
 			decision.CanonicalSubtype = issueSubtypeDiscussion
@@ -361,6 +701,13 @@ func evaluateLiveItemKind(item liveAnalysisItem, scope liveEvidenceScope, stage 
 		decision.CanonicalKind = "todo"
 		decision.CanonicalSubtype = ""
 		decision.Reason = "explicit_next_action"
+		decision.Confidence = 0.91
+	case originalKind == "todo" && !features.OwnerPresent &&
+		!features.DeadlinePresent && !features.DecisionOrCommitment &&
+		kindUnassignedManagementPattern.MatchString(text):
+		decision.CanonicalKind = "issue"
+		decision.CanonicalSubtype = issueSubtypeDiscussion
+		decision.Reason = "unassigned_management_or_followup_is_not_todo"
 		decision.Confidence = 0.91
 	default:
 		decision.Decision = "tentative"
@@ -386,6 +733,17 @@ func validateLiveItemKinds(items []liveAnalysisItem, scope liveEvidenceScope, mo
 	for index := range validated {
 		decision := evaluateLiveItemKind(validated[index], scope, stage)
 		if decision.Decision == "rewrite_candidate" && decision.Confidence >= threshold {
+			if decision.CanonicalKind == "todo" &&
+				decision.OriginalKind != "todo" &&
+				validated[index].Status == "resolved" {
+				// Resolution belonged to the old Issue/Risk classification.
+				// A newly recognized future commitment must be tracked as an
+				// open Todo unless separate completion evidence resolves it.
+				validated[index].Status = "open"
+				validated[index].ResolvedAtVersion = 0
+				validated[index].ResolutionEvidenceSequenceNos = nil
+				validated[index].ResolutionReason = ""
+			}
 			validated[index].Kind = decision.CanonicalKind
 			validated[index].Subtype = decision.CanonicalSubtype
 			repairNonResolvableStatus(&validated[index])
@@ -407,11 +765,6 @@ func validateLiveItemKinds(items []liveAnalysisItem, scope liveEvidenceScope, mo
 		}
 	}
 	return validated
-}
-
-func splitAndValidateLiveItemKinds(previous, items []liveAnalysisItem, assignments []treeAssignment, scope liveEvidenceScope, mode itemKindValidationMode, stage string, stats *liveAnalysisTreeMergeStats) ([]liveAnalysisItem, []treeAssignment) {
-	expanded, expandedAssignments := splitLiveItemKinds(previous, items, assignments, scope, stats)
-	return validateLiveItemKinds(expanded, scope, mode, stage, stats), expandedAssignments
 }
 
 func splitLiveItemKinds(previous, items []liveAnalysisItem, assignments []treeAssignment, scope liveEvidenceScope, stats *liveAnalysisTreeMergeStats) ([]liveAnalysisItem, []treeAssignment) {
@@ -454,7 +807,7 @@ func splitLiveItemKinds(previous, items []liveAnalysisItem, assignments []treeAs
 			candidate := item
 			candidate.Kind = fragment.Kind
 			candidate.Subtype = fragment.Subtype
-			candidate.Title = truncateRunes(fragment.Text, 40)
+			candidate.Title = semanticallyCompleteItemLabelOrOriginal(fragment.Text, fragment.Kind)
 			candidate.Body = truncateRunes(fragment.Text, liveAnalysisTreeDescriptionMaxRunes)
 			candidate.EvidenceSequenceNos = []int64{fragment.SequenceNo}
 			candidate.EvidenceSnippets = groundingSnippetsForFragment(item.EvidenceSnippets, fragment.Text, fragment.SequenceNo, scope)
@@ -499,9 +852,7 @@ func expectedSemanticKindRelations(items []liveAnalysisItem) int {
 	count := 0
 	for left := 0; left < len(items); left++ {
 		for right := left + 1; right < len(items); right++ {
-			if _, _, kind := semanticKindRelation(items[left], items[right]); kind != "" {
-				count++
-			}
+			count += len(semanticKindRelations(items[left], items[right], liveEvidenceScope{}))
 		}
 	}
 	return count
@@ -534,7 +885,12 @@ func strongKindFragments(item liveAnalysisItem, scope liveEvidenceScope) []stron
 		probe := item
 		probe.Title, probe.Body = sentence, sentence
 		probe.EvidenceSequenceNos = []int64{sequenceNo}
-		if finalItemIsLowInformation(probe) || liveItemTextNeedsReferent(probe) {
+		conditionalReferent := index > 0 &&
+			itemLabelConditionalWithoutSubjectPattern.MatchString(sentence) &&
+			(kindScheduledEventPattern.MatchString(sentences[index-1]) ||
+				kindFutureEventPattern.MatchString(sentences[index-1]))
+		if (finalItemIsLowInformation(probe) || liveItemTextNeedsReferent(probe)) &&
+			!conditionalReferent {
 			continue
 		}
 		decision := evaluateLiveItemKind(probe, liveEvidenceScope{}, "semantic_split")
@@ -668,15 +1024,18 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 		}
 
 		primary := 0
+		retainsSourceProposition := false
 		for index := range fragments {
 			if fragments[index].Kind == item.Kind {
 				primary = index
+				retainsSourceProposition = true
 				break
 			}
 		}
 		sourceRef := modelItemReference(item)
 		sourceNode, hasNode := nodeByID[item.ID]
 		created := make([]liveAnalysisItem, 0, len(fragments))
+		fragmentIDs := make([]string, 0, len(fragments))
 		fragmentKinds := make([]string, 0, len(fragments))
 		rejected := 0
 		for index, fragment := range fragments {
@@ -688,7 +1047,7 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 			candidate := item
 			candidate.Kind = fragment.Kind
 			candidate.Subtype = fragment.Subtype
-			candidate.Title = truncateRunes(fragment.Text, 40)
+			candidate.Title = semanticallyCompleteItemLabelOrOriginal(fragment.Text, fragment.Kind)
 			candidate.Body = truncateRunes(fragment.Text, liveAnalysisTreeDescriptionMaxRunes)
 			candidate.EvidenceSequenceNos = []int64{fragment.SequenceNo}
 			candidate.EvidenceSnippets = groundingSnippetsForFragment(item.EvidenceSnippets, fragment.Text, fragment.SequenceNo, scope)
@@ -696,7 +1055,7 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 			candidate.evidenceSpecified = true
 			candidate.modelReference = sourceRef
 			candidate.semanticSplitFragment = true
-			if index != primary {
+			if !retainsSourceProposition || index != primary {
 				candidate.ID = serverGeneratedItemID(candidate)
 				candidate.ClientKey = ""
 				if _, collision := usedIDs[candidate.ID]; collision {
@@ -705,7 +1064,17 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 				}
 				usedIDs[candidate.ID] = struct{}{}
 			}
+			candidate.Inactive = false
+			candidate.MergedIntoID = ""
+			candidate.SuppressionReason = ""
+			candidate.InformationStatus = informationStatusGrounded
+			candidate.SupersededByItemID = ""
+			candidate.SupersededByItemIDs = nil
+			candidate.SupersededAtTreeVersion = 0
+			candidate.SupersessionOrigin = ""
+			candidate.SupersessionEvidenceSequenceNos = nil
 			created = append(created, candidate)
+			fragmentIDs = append(fragmentIDs, candidate.ID)
 			allKnown = append(allKnown, candidate)
 
 			if hasNode {
@@ -716,7 +1085,7 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 				node.Label = candidate.Title
 				node.Description = candidate.Body
 				node.Status = candidate.Status
-				if index == primary {
+				if retainsSourceProposition && index == primary {
 					for nodeIndex := range state.Tree.Nodes {
 						if state.Tree.Nodes[nodeIndex].ID == item.ID {
 							state.Tree.Nodes[nodeIndex] = node
@@ -732,87 +1101,379 @@ func splitPersistedItemKinds(state *liveAnalysisPayload, scope liveEvidenceScope
 			expanded = append(expanded, item)
 			continue
 		}
+		replacementMode := "source_rewritten"
+		if !retainsSourceProposition {
+			replacementMode = "full_replacement"
+			source := item
+			source.Inactive = true
+			source.Status = "open"
+			source.InformationStatus = "superseded"
+			source.SuppressionReason = "semantic_split"
+			source.SupersessionOrigin = "semantic_split"
+			source.SupersededAtTreeVersion = state.TreeVersion
+			source.SupersessionEvidenceSequenceNos = append([]int64(nil), item.EvidenceSequenceNos...)
+			source.SupersededByItemIDs = append([]string(nil), fragmentIDs...)
+			if len(fragmentIDs) > 0 {
+				source.SupersededByItemID = fragmentIDs[0]
+				source.MergedIntoID = fragmentIDs[0]
+			}
+			expanded = append(expanded, source)
+			if hasNode {
+				keptNodes := state.Tree.Nodes[:0]
+				for _, node := range state.Tree.Nodes {
+					if node.ID != item.ID {
+						keptNodes = append(keptNodes, node)
+					}
+				}
+				state.Tree.Nodes = keptNodes
+			}
+			for relationIndex := range state.Tree.Relations {
+				relation := &state.Tree.Relations[relationIndex]
+				if relation.Source == item.ID || relation.Target == item.ID {
+					relation.Status = "inactive"
+					relation.UpdatedAtVersion = state.TreeVersion
+				}
+			}
+			addItemTombstone(state, item, "superseded", source.SupersededByItemID, "semantic_split", "", state.TreeVersion, state.TreeVersion, sourceNode.ParentID)
+		}
 		expanded = append(expanded, created...)
 		if stats != nil {
 			stats.KindSemanticSplits++
 			stats.KindSplitFragments += len(created)
 			stats.KindSplitRejected += rejected
 			stats.KindSplitDecisions = append(stats.KindSplitDecisions, itemKindSplitDecision{
-				SourceItemID: sourceRef, FragmentCount: len(created), FragmentKinds: fragmentKinds,
+				SourceItemID: sourceRef, SourceKind: item.Kind, FragmentCount: len(created),
+				FragmentItemIDs: fragmentIDs, FragmentKinds: fragmentKinds,
 				RejectedFragments: rejected, RelationsCreated: expectedSemanticKindRelations(created),
+				ReplacementMode: replacementMode, SourceActiveBefore: true,
+				SourceInactiveAfter: !retainsSourceProposition,
 			})
+			if !retainsSourceProposition && len(fragmentIDs) == 0 {
+				stats.SemanticSplitReplacementMissingCount++
+			}
 		}
 	}
 	state.Items = validateLiveItemKinds(expanded, scope, mode, stage, stats)
 	state.Tree.Nodes = append(state.Tree.Nodes, addedNodes...)
 	rebuildTreeAuditEdges(state.Tree)
+	evaluateSemanticSplitInvariants(state, stats)
 }
 
-func appendSemanticKindRelations(tree *liveAnalysisTree, items []liveAnalysisItem) int {
+func evaluateSemanticSplitInvariants(state *liveAnalysisPayload, stats *liveAnalysisTreeMergeStats) {
+	if state == nil || stats == nil {
+		return
+	}
+	for index := range stats.KindSplitDecisions {
+		decision := &stats.KindSplitDecisions[index]
+		if decision.ReplacementMode != "full_replacement" {
+			continue
+		}
+		var source *liveAnalysisItem
+		for itemIndex := range state.Items {
+			if canonicalReferenceKey(state.Items[itemIndex].ID) == canonicalReferenceKey(decision.SourceItemID) ||
+				canonicalReferenceKey(modelItemReference(state.Items[itemIndex])) == canonicalReferenceKey(decision.SourceItemID) {
+				source = &state.Items[itemIndex]
+				break
+			}
+		}
+		if source == nil {
+			stats.SemanticSplitReplacementMissingCount++
+			continue
+		}
+		decision.SourceInactiveAfter = source.Inactive && source.InformationStatus == "superseded"
+		if !decision.SourceInactiveAfter {
+			stats.SemanticSplitSourceActiveCount++
+		}
+		activeReplacements := 0
+		for _, fragmentID := range decision.FragmentItemIDs {
+			fragment := findItemByID(state.Items, fragmentID)
+			if fragment == nil || fragment.Inactive || fragment.MergedIntoID != "" {
+				continue
+			}
+			activeReplacements++
+			if !source.Inactive &&
+				(sameCanonicalProposition(*source, *fragment) ||
+					func() bool { matched, _ := sameKindSemanticDuplicate(*source, *fragment); return matched }()) {
+				decision.DuplicateDetected = true
+				stats.SemanticSplitSourceFragmentDuplicateCount++
+			}
+		}
+		if activeReplacements == 0 {
+			stats.SemanticSplitReplacementMissingCount++
+		}
+	}
+}
+
+const (
+	itemRelationSupportedBy = "supported_by"
+	itemRelationCausedBy    = "caused_by"
+	itemRelationLimits      = "limits"
+	itemRelationResolves    = "resolves"
+	itemRelationActionFor   = "action_for"
+	itemRelationContradicts = "contradicts"
+	itemRelationRefines     = "refines"
+)
+
+var itemRelationLimitPattern = regexp.MustCompile(
+	`(?:ただし|一方で|まで.{0,24}説明できるか|適用範囲|限定|限界|未確認)`,
+)
+
+func validItemRelationKind(kind string) bool {
+	switch kind {
+	case itemRelationSupportedBy, itemRelationCausedBy, itemRelationLimits,
+		itemRelationResolves, itemRelationActionFor, itemRelationContradicts,
+		itemRelationRefines:
+		return true
+	default:
+		return false
+	}
+}
+
+func relationKey(relation liveAnalysisTreeRelation) string {
+	return relation.Source + "\x00" + relation.Kind + "\x00" + relation.Target
+}
+
+func deterministicRelationID(source, kind, target string) string {
+	sum := sha256.Sum256([]byte(source + "\x00" + kind + "\x00" + target))
+	return fmt.Sprintf("relation-%x", sum[:8])
+}
+
+func reconcileSemanticKindRelations(
+	tree *liveAnalysisTree,
+	items []liveAnalysisItem,
+	scope liveEvidenceScope,
+	version int64,
+	origin string,
+) int {
 	if tree == nil {
 		return 0
 	}
 	active := make([]liveAnalysisItem, 0, len(items))
+	activeByID := make(map[string]liveAnalysisItem, len(items))
 	for _, item := range items {
-		if !item.Inactive && item.MergedIntoID == "" {
+		if !item.Inactive && item.MergedIntoID == "" && strings.TrimSpace(item.ID) != "" {
 			active = append(active, item)
+			activeByID[item.ID] = item
 		}
 	}
-	existing := make(map[string]struct{}, len(tree.Relations))
-	for _, relation := range tree.Relations {
-		existing[relation.Source+"\x00"+relation.Target] = struct{}{}
-	}
-	created := 0
+	desired := make(map[string]liveAnalysisTreeRelation)
 	for left := 0; left < len(active); left++ {
 		for right := left + 1; right < len(active); right++ {
-			source, target, kind := semanticKindRelation(active[left], active[right])
-			if kind == "" {
-				continue
+			for _, relation := range semanticKindRelations(active[left], active[right], scope) {
+				if !semanticRelationItemsRelated(tree, activeByID[relation.Source], activeByID[relation.Target], relation.Kind) {
+					continue
+				}
+				relation.ID = deterministicRelationID(relation.Source, relation.Kind, relation.Target)
+				relation.EvidenceSequenceNos = relationEvidenceSequenceNos(
+					activeByID[relation.Source], activeByID[relation.Target],
+				)
+				relation.Origin = origin
+				relation.Status = "active"
+				relation.CreatedAtVersion = version
+				relation.UpdatedAtVersion = version
+				desired[relationKey(relation)] = relation
 			}
-			leftText := active[left].Title + " " + active[left].Body
-			rightText := active[right].Title + " " + active[right].Body
-			related := itemEvidenceOverlaps(active[left], active[right]) ||
-				(itemEvidenceWithin(active[left], active[right], 2) &&
-					sharedTreeAuditSubjectTerm(leftText, rightText) &&
-					semanticItemSimilarity(leftText, rightText) >= 0.20)
-			if !related {
-				continue
-			}
-			key := source + "\x00" + target
-			if _, duplicate := existing[key]; duplicate {
-				continue
-			}
-			tree.Relations = append(tree.Relations, liveAnalysisTreeRelation{Source: source, Target: target, Kind: kind})
-			existing[key] = struct{}{}
-			created++
 		}
 	}
-	sort.SliceStable(tree.Relations, func(i, j int) bool {
-		if tree.Relations[i].Source != tree.Relations[j].Source {
-			return tree.Relations[i].Source < tree.Relations[j].Source
+
+	kept := make([]liveAnalysisTreeRelation, 0, len(tree.Relations)+len(desired))
+	existing := make(map[string]struct{}, len(tree.Relations))
+	for _, relation := range tree.Relations {
+		relation = canonicalizeLegacyItemRelation(relation, activeByID)
+		if !validSemanticTreeRelation(relation, activeByID) {
+			continue
 		}
-		return tree.Relations[i].Target < tree.Relations[j].Target
+		key := relationKey(relation)
+		if _, duplicate := existing[key]; duplicate {
+			continue
+		}
+		if replacement, ok := desired[key]; ok {
+			if relation.CreatedAtVersion > 0 {
+				replacement.CreatedAtVersion = relation.CreatedAtVersion
+			}
+			if strings.TrimSpace(relation.Origin) != "" {
+				replacement.Origin = relation.Origin
+			}
+			relation = replacement
+			delete(desired, key)
+		} else if relation.Origin == "deterministic_inference" || relation.Origin == "final_repair" {
+			// Canonical items are the source of truth. A deterministic relation
+			// whose evidence no longer satisfies the rule is retired here.
+			continue
+		}
+		if relation.ID == "" {
+			relation.ID = deterministicRelationID(relation.Source, relation.Kind, relation.Target)
+		}
+		if relation.Status == "" {
+			relation.Status = "active"
+		}
+		kept = append(kept, relation)
+		existing[key] = struct{}{}
+	}
+
+	created := 0
+	for key, relation := range desired {
+		if _, duplicate := existing[key]; duplicate {
+			continue
+		}
+		kept = append(kept, relation)
+		existing[key] = struct{}{}
+		created++
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		if kept[i].Source != kept[j].Source {
+			return kept[i].Source < kept[j].Source
+		}
+		if kept[i].Kind != kept[j].Kind {
+			return kept[i].Kind < kept[j].Kind
+		}
+		return kept[i].Target < kept[j].Target
 	})
+	tree.Relations = kept
 	return created
 }
 
-func semanticKindRelation(left, right liveAnalysisItem) (source, target, kind string) {
-	switch {
-	case left.Kind == "todo" && right.Kind == "risk":
-		return left.ID, right.ID, "mitigates"
-	case right.Kind == "todo" && left.Kind == "risk":
-		return right.ID, left.ID, "mitigates"
-	case left.Kind == "todo" && right.Kind == "issue":
-		return left.ID, right.ID, "addresses"
-	case right.Kind == "todo" && left.Kind == "issue":
-		return right.ID, left.ID, "addresses"
-	case left.Kind == "fact" && right.Kind == "issue":
-		return left.ID, right.ID, "supports"
-	case right.Kind == "fact" && left.Kind == "issue":
-		return right.ID, left.ID, "supports"
-	default:
-		return "", "", ""
+func semanticKindRelations(left, right liveAnalysisItem, scope liveEvidenceScope) []liveAnalysisTreeRelation {
+	result := make([]liveAnalysisTreeRelation, 0, 2)
+	for _, pair := range [][2]liveAnalysisItem{{left, right}, {right, left}} {
+		source, target := pair[0], pair[1]
+		sourceFeatures := inferItemSemanticFeatures(source, scope)
+		targetFeatures := inferItemSemanticFeatures(target, scope)
+		switch {
+		case source.Kind == "issue" && sourceFeatures.CausalHypothesisPresent &&
+			target.Kind == "fact" && targetFeatures.ConfirmedEvidencePresent:
+			result = append(result, liveAnalysisTreeRelation{
+				Source: source.ID, Target: target.ID, Kind: itemRelationSupportedBy, Confidence: 0.94,
+			})
+		case source.Kind == "risk" && sourceFeatures.UncertaintyPresent &&
+			sourceFeatures.NegativeImpactPresent && target.Kind == "fact" &&
+			(targetFeatures.FutureEventPresent || targetFeatures.ScheduledEventPresent || targetFeatures.EventDatePresent) &&
+			futureRiskSupportedByFact(source, target):
+			// A dated/scheduled fact about a concrete business object is evidence
+			// for the nearby conditional impact of leaving that object untreated.
+			// Keep this deliberately narrower than generic lexical similarity so
+			// unrelated future events cannot acquire causal-looking relations.
+			result = append(result, liveAnalysisTreeRelation{
+				Source: source.ID, Target: target.ID, Kind: itemRelationSupportedBy, Confidence: 0.92,
+			})
+		case source.Kind == "issue" && target.Kind == "issue" &&
+			itemRelationLimitPattern.MatchString(source.Title+" "+source.Body) &&
+			kindOpenQuestionPattern.MatchString(source.Title+" "+source.Body) &&
+			targetFeatures.CausalHypothesisPresent &&
+			evidenceFollowsWithin(source, target, 2):
+			result = append(result, liveAnalysisTreeRelation{
+				Source: source.ID, Target: target.ID, Kind: itemRelationLimits, Confidence: 0.91,
+			})
+		case source.Kind == "todo" && (target.Kind == "issue" || target.Kind == "risk" || target.Kind == "decision") &&
+			sourceFeatures.ActionVerbPresent:
+			result = append(result, liveAnalysisTreeRelation{
+				Source: source.ID, Target: target.ID, Kind: itemRelationActionFor, Confidence: 0.88,
+			})
+		}
 	}
+	return result
+}
+
+func futureRiskSupportedByFact(risk, fact liveAnalysisItem) bool {
+	if !itemEvidenceWithin(risk, fact, 2) {
+		return false
+	}
+	riskText := strings.TrimSpace(risk.Title + " " + risk.Body)
+	factText := strings.TrimSpace(fact.Title + " " + fact.Body)
+	riskSubject := normalizeForMatch(concreteBusinessSubject(riskText))
+	factSubject := normalizeForMatch(concreteBusinessSubject(factText))
+	if riskSubject != "" && riskSubject == factSubject {
+		return true
+	}
+	return specificSubjectOverlapLength(riskText, factText) >= 4
+}
+
+func semanticRelationItemsRelated(tree *liveAnalysisTree, source, target liveAnalysisItem, kind string) bool {
+	sourceText := source.Title + " " + source.Body
+	targetText := target.Title + " " + target.Body
+	sourceTopic, targetTopic := treeItemTopic(tree, source.ID), treeItemTopic(tree, target.ID)
+	crossTopic := sourceTopic != "" && targetTopic != "" && sourceTopic != targetTopic
+	sharedSubject := sharedTreeAuditSubjectTerm(sourceText, targetText)
+	similarity := semanticItemSimilarity(sourceText, targetText)
+	switch kind {
+	case itemRelationLimits:
+		if crossTopic {
+			return evidenceFollowsWithin(source, target, 2) &&
+				((sharedSubject && similarity >= 0.08) ||
+					(itemRelationLimitPattern.MatchString(sourceText) &&
+						evidenceFollowsWithin(source, target, 1)))
+		}
+		return evidenceFollowsWithin(source, target, 2) &&
+			(sharedSubject || itemLabelContextDependentPattern.MatchString(source.Title) ||
+				itemLabelDeicticSettingPattern.MatchString(sourceText) ||
+				(itemRelationLimitPattern.MatchString(sourceText) &&
+					evidenceFollowsWithin(source, target, 1)))
+	case itemRelationActionFor:
+		if crossTopic {
+			return itemEvidenceWithin(source, target, 3) && sharedSubject && similarity >= 0.08
+		}
+		return itemEvidenceWithin(source, target, 3) && sharedSubject
+	default:
+		if crossTopic {
+			return itemEvidenceWithin(source, target, 2) && sharedSubject && similarity >= 0.10
+		}
+		return itemEvidenceOverlaps(source, target) ||
+			(itemEvidenceWithin(source, target, 2) && sharedSubject && similarity >= 0.10)
+	}
+}
+
+func evidenceFollowsWithin(source, target liveAnalysisItem, maxDistance int64) bool {
+	for _, sourceSequence := range source.EvidenceSequenceNos {
+		for _, targetSequence := range target.EvidenceSequenceNos {
+			if sourceSequence > targetSequence && sourceSequence-targetSequence <= maxDistance {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func relationEvidenceSequenceNos(source, target liveAnalysisItem) []int64 {
+	sequenceNos := append([]int64(nil), source.EvidenceSequenceNos...)
+	sequenceNos = append(sequenceNos, target.EvidenceSequenceNos...)
+	sort.Slice(sequenceNos, func(i, j int) bool { return sequenceNos[i] < sequenceNos[j] })
+	kept := sequenceNos[:0]
+	for _, sequenceNo := range sequenceNos {
+		if sequenceNo <= 0 || (len(kept) > 0 && kept[len(kept)-1] == sequenceNo) {
+			continue
+		}
+		kept = append(kept, sequenceNo)
+	}
+	return kept
+}
+
+func canonicalizeLegacyItemRelation(
+	relation liveAnalysisTreeRelation,
+	active map[string]liveAnalysisItem,
+) liveAnalysisTreeRelation {
+	relation.Source = strings.TrimSpace(relation.Source)
+	relation.Target = strings.TrimSpace(relation.Target)
+	relation.Kind = strings.TrimSpace(relation.Kind)
+	switch relation.Kind {
+	case "supports":
+		// Legacy payloads used evidence -> proposition. The canonical relation
+		// vocabulary uses proposition --supported_by--> evidence.
+		relation.Source, relation.Target = relation.Target, relation.Source
+		relation.Kind = itemRelationSupportedBy
+	case "mitigates", "addresses":
+		relation.Kind = itemRelationActionFor
+	}
+	return relation
+}
+
+func validSemanticTreeRelation(relation liveAnalysisTreeRelation, active map[string]liveAnalysisItem) bool {
+	if relation.Source == "" || relation.Target == "" || relation.Source == relation.Target ||
+		!validItemRelationKind(relation.Kind) || relation.Status == "inactive" {
+		return false
+	}
+	_, sourceOK := active[relation.Source]
+	_, targetOK := active[relation.Target]
+	return sourceOK && targetOK
 }
 
 func recordItemKindDistribution(state *liveAnalysisPayload, scope liveEvidenceScope, stats *liveAnalysisTreeMergeStats) {

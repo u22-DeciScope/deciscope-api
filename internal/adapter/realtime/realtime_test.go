@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"deciscope-core-api/internal/application"
 	"deciscope-core-api/internal/domain"
 )
 
@@ -149,16 +151,9 @@ func TestTranscriptHubPublishFiltersBySessionID(t *testing.T) {
 	}
 }
 
-func TestTranscriptWebSocketConfigChecksTokenAndOrigin(t *testing.T) {
+func TestTranscriptWebSocketConfigChecksOrigin(t *testing.T) {
 	config := TranscriptWebSocketConfig{
-		ClientToken:    "client-token",
 		AllowedOrigins: "http://localhost:3000,http://127.0.0.1:3000",
-	}
-	if !config.authorized("client-token") {
-		t.Fatal("authorized token rejected")
-	}
-	if config.authorized("wrong-token") {
-		t.Fatal("wrong token accepted")
 	}
 	if !config.originAllowed("http://localhost:3000") {
 		t.Fatal("allowed origin rejected")
@@ -291,12 +286,13 @@ func TestTranscriptHubAIAnalysisWriteFailureIsolatedToSubscriber(t *testing.T) {
 }
 
 func TestMeetingAIAnalysisProtocolMessage(t *testing.T) {
+	relationSentinelPayload := json.RawMessage(`{"summary":"進行中です","items":[{"id":"item-source","kind":"issue","title":"原因仮説","labelResolution":{"status":"fallback_applied","reason":"context_dependent","sourceEvidenceSequenceNos":[16,17]}}],"tree":{"nodes":[{"id":"item-source","kind":"issue","label":"原因仮説","labelResolution":{"status":"fallback_applied","reason":"context_dependent","sourceEvidenceSequenceNos":[16,17]}}],"edges":[],"relations":[{"id":"relation-sentinel-websocket-v1","source":"item-source","target":"item-target","kind":"refines","confidence":0.73125,"evidenceSequenceNos":[17,29],"origin":"transport_sentinel","status":"active","createdAtVersion":41,"updatedAtVersion":43}]}}`)
 	analysis := domain.MeetingAIAnalysis{
 		SessionID:       "session_1",
 		Type:            domain.MeetingAIAnalysisLive,
 		Status:          domain.MeetingAIAnalysisCompleted,
 		Version:         4,
-		Payload:         json.RawMessage(`{"summary":"進行中です"}`),
+		Payload:         relationSentinelPayload,
 		Model:           "gpt-4o-mini",
 		UpdatedAt:       time.Date(2026, 6, 27, 0, 0, 3, 0, time.UTC),
 		IntervalSeconds: 10,
@@ -322,6 +318,17 @@ func TestMeetingAIAnalysisProtocolMessage(t *testing.T) {
 	if !strings.Contains(string(message.Data.Payload), "進行中です") {
 		t.Fatalf("payload = %s", string(message.Data.Payload))
 	}
+	var decoded meetingAIAnalysisMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode protocol message: %v", err)
+	}
+	var wantPayload, gotPayload any
+	if err := json.Unmarshal(relationSentinelPayload, &wantPayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(decoded.Data.Payload, &gotPayload); err != nil || !reflect.DeepEqual(gotPayload, wantPayload) {
+		t.Fatalf("WebSocket relation sentinel changed: got=%s want=%s err=%v", decoded.Data.Payload, relationSentinelPayload, err)
+	}
 }
 
 func TestMeetingAIAnalysisProtocolMessageNullPayloadOnFailure(t *testing.T) {
@@ -344,6 +351,35 @@ func TestMeetingAIAnalysisProtocolMessageNullPayloadOnFailure(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "intervalSeconds") {
 		t.Fatalf("encoded = %s, want intervalSeconds omitted when zero", string(encoded))
+	}
+}
+
+func TestMeetingAIAnalysisProtocolMessageRunningIsStatusOnly(t *testing.T) {
+	analysis := domain.MeetingAIAnalysis{
+		SessionID: "session_1", Type: domain.MeetingAIAnalysisLive,
+		Status: domain.MeetingAIAnalysisRunning, Version: 5,
+		Payload:                  json.RawMessage(`{"items":[{"id":"stale"}],"tree":{"nodes":[{"id":"root"}],"edges":[]}}`),
+		UpdatedAt:                time.Date(2026, 8, 3, 1, 2, 3, 0, time.UTC),
+		RequestedAnalysisVersion: 5,
+		TargetFromSequenceNo:     8,
+		TargetThroughSequenceNo:  9,
+		StartedAt:                time.Date(2026, 8, 3, 1, 2, 2, 0, time.UTC),
+	}
+	message := meetingAIAnalysisProtocolMessage(analysis, analysis.UpdatedAt)
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"stale"`) || strings.Contains(string(encoded), `"nodes"`) {
+		t.Fatalf("running event leaked stable projection: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"payload":null`) {
+		t.Fatalf("running payload is not null: %s", encoded)
+	}
+	for _, expected := range []string{`"requestedAnalysisVersion":5`, `"targetFromSequenceNo":8`, `"targetThroughSequenceNo":9`, `"startedAtUtc":"2026-08-03T01:02:02Z"`} {
+		if !strings.Contains(string(encoded), expected) {
+			t.Fatalf("running metadata %s missing: %s", expected, encoded)
+		}
 	}
 }
 
@@ -477,6 +513,63 @@ func TestTranscriptHubPublishMeetingSessionTranscriptHealthFiltersBySessionID(t 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("matching client did not receive transcript health event")
+	}
+	select {
+	case got := <-other.send:
+		t.Fatalf("other session unexpectedly received %+v", got)
+	default:
+	}
+}
+
+func TestMeetingSessionMediaHealthProtocolMessage(t *testing.T) {
+	health := application.BotMediaHealthState{
+		SessionID: "session_1", EventID: "stall-1:recovered", BotCallID: "call-1",
+		State: application.BotMediaHealthOK, Event: application.BotMediaHealthEventRecovered,
+		OccurredAt:           time.Date(2026, 8, 1, 0, 51, 3, 0, time.UTC),
+		StartedAt:            time.Date(2026, 8, 1, 0, 50, 20, 0, time.UTC),
+		DurationMilliseconds: 43000,
+	}
+	message := meetingSessionMediaHealthProtocolMessage(
+		health,
+		time.Date(2026, 8, 1, 0, 51, 3, 0, time.UTC),
+	)
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if message.Type != meetingSessionMediaHealthType ||
+		!strings.Contains(string(encoded), `"type":"meeting_session.media_health_changed"`) ||
+		!strings.Contains(string(encoded), `"eventId":"stall-1:recovered"`) ||
+		!strings.Contains(string(encoded), `"durationMs":43000`) {
+		t.Fatalf("message=%+v encoded=%s", message, string(encoded))
+	}
+}
+
+func TestTranscriptHubPublishMeetingSessionMediaHealthFiltersBySessionID(t *testing.T) {
+	hub := NewTranscriptHub()
+	matching := &transcriptClient{sessionID: "session_1", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	other := &transcriptClient{sessionID: "session_2", send: make(chan transcriptOutboundEvent, 1), done: make(chan struct{})}
+	hub.subscribe(matching)
+	hub.subscribe(other)
+	t.Cleanup(func() {
+		hub.unsubscribe(matching)
+		hub.unsubscribe(other)
+	})
+	health := application.BotMediaHealthState{
+		SessionID: "session_1", State: application.BotMediaHealthAudioReceiveStalled,
+		Event: application.BotMediaHealthEventStarted,
+	}
+
+	hub.PublishMeetingSessionMediaHealth(domain.MeetingSession{ID: "session_1"}, health)
+
+	select {
+	case got := <-matching.send:
+		if got.mediaHealth == nil || got.mediaHealth.SessionID != "session_1" ||
+			got.mediaHealth.State != application.BotMediaHealthAudioReceiveStalled {
+			t.Fatalf("matching got = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("matching client did not receive media health event")
 	}
 	select {
 	case got := <-other.send:

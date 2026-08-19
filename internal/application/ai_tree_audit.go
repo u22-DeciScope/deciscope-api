@@ -14,14 +14,15 @@ import (
 )
 
 type treeAuditExecution struct {
-	Payload        json.RawMessage
-	Version        int64
-	RunID          string
-	SnapshotHash   string
-	Result         string
-	Applied        bool
-	AuditedVersion int64
-	TriggerClass   domain.MeetingTreeAuditTriggerClass
+	Payload              json.RawMessage
+	Version              int64
+	ResultingTreeVersion int64
+	RunID                string
+	SnapshotHash         string
+	Result               string
+	Applied              bool
+	AuditedVersion       int64
+	TriggerClass         domain.MeetingTreeAuditTriggerClass
 	// ProviderCalled is true once the run reached the AI provider. Runs that
 	// fail before this point (repository errors, suppression) must not consume
 	// the provider-call min interval so they can retry after recovery.
@@ -55,8 +56,8 @@ type TreeAuditReplayResult struct {
 func (s *MeetingAnalysisService) ReplayTreeAudit(ctx context.Context, sessionID string, payload json.RawMessage, version int64) (TreeAuditReplayResult, error) {
 	execution, err := s.runTreeAudit(ctx, sessionID, "manual_replay", aiTaskTreeAudit, payload, version, false)
 	result := TreeAuditReplayResult{
-		Payload: append(json.RawMessage(nil), execution.Payload...), BaseTreeVersion: version,
-		ResultTreeVersion: execution.Version, AuditRunID: execution.RunID, Result: execution.Result,
+		Payload: append(json.RawMessage(nil), execution.Payload...), BaseTreeVersion: previousLiveAnalysisState(payload).TreeVersion,
+		ResultTreeVersion: execution.ResultingTreeVersion, AuditRunID: execution.RunID, Result: execution.Result,
 	}
 	if s.auditRepo != nil {
 		if run, latestErr := s.auditRepo.GetLatestMeetingTreeAuditRun(ctx, sessionID); latestErr == nil && run != nil {
@@ -90,12 +91,16 @@ func (s *MeetingAnalysisService) considerTreeAudit(ctx context.Context, sessionI
 		return
 	}
 	reasons := treeAuditConditionalTriggerReasons(previousPayload, payload, s.sessionMeetingContext(ctx, sessionID), s.config.TreeAudit)
+	treeVersion := previousLiveAnalysisState(payload).TreeVersion
+	if treeVersion <= 0 {
+		treeVersion = version
+	}
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
-	versionDue := version-state.lastAuditVersion >= s.config.TreeAudit.IntervalVersions
+	versionDue := treeVersion-state.lastAuditVersion >= s.config.TreeAudit.IntervalVersions
 	s.mu.Unlock()
 	if len(reasons) == 0 && !versionDue {
-		log.Printf("Tree audit skipped. sessionId=%s treeVersion=%d auditSkipped=true auditSkipReason=interval_not_reached", sessionID, version)
+		log.Printf("Tree audit skipped. sessionId=%s analysisVersion=%d treeVersion=%d auditSkipped=true auditSkipReason=interval_not_reached", sessionID, version, treeVersion)
 		return
 	}
 	if versionDue {
@@ -151,6 +156,9 @@ func treeAuditConditionalTriggerReasons(previousPayload, payload json.RawMessage
 			reasons = append(reasons, "topic_child_surge")
 		}
 	}
+	if computeSemanticTreeHealth(current).NeedsReorganization {
+		reasons = append(reasons, "semantic_topic_concentration")
+	}
 	sort.Strings(reasons)
 	return uniqueNonEmptyIDs(reasons)
 }
@@ -160,38 +168,42 @@ func (s *MeetingAnalysisService) scheduleTreeAudit(ctx context.Context, sessionI
 		return
 	}
 	now := s.now()
+	treeVersion := previousLiveAnalysisState(payload).TreeVersion
+	if treeVersion <= 0 {
+		treeVersion = version
+	}
 	triggerClass := treeAuditTriggerClass(triggerReason, false)
 	s.mu.Lock()
 	state := s.sessionStateLocked(sessionID)
 	if state.auditClosed {
 		s.mu.Unlock()
-		log.Printf("Tree audit skipped. sessionId=%s treeVersion=%d auditSkipped=true auditSkipReason=session_ending", sessionID, version)
+		log.Printf("Tree audit skipped. sessionId=%s analysisVersion=%d treeVersion=%d auditSkipped=true auditSkipReason=session_ending", sessionID, version, treeVersion)
 		return
 	}
 	if state.finalizing {
 		state.auditPending = true
 		state.auditPendingReason = coalesceTreeAuditReason(state.auditPendingReason, triggerReason)
 		s.mu.Unlock()
-		log.Printf("Tree audit coalesced. sessionId=%s treeVersion=%d auditCoalesced=true auditPending=true reason=finalizing", sessionID, version)
+		log.Printf("Tree audit coalesced. sessionId=%s analysisVersion=%d treeVersion=%d auditCoalesced=true auditPending=true reason=finalizing", sessionID, version, treeVersion)
 		return
 	}
 	if state.auditRunning {
 		state.auditPending = true
 		state.auditPendingReason = coalesceTreeAuditReason(state.auditPendingReason, triggerReason)
 		s.mu.Unlock()
-		log.Printf("Tree audit coalesced. sessionId=%s treeVersion=%d auditCoalesced=true auditPending=true reason=single_flight", sessionID, version)
+		log.Printf("Tree audit coalesced. sessionId=%s analysisVersion=%d treeVersion=%d auditCoalesced=true auditPending=true reason=single_flight", sessionID, version, treeVersion)
 		return
 	}
-	if state.lastAuditVersion >= version {
+	if state.lastAuditVersion >= treeVersion {
 		s.mu.Unlock()
-		log.Printf("Tree audit skipped. sessionId=%s treeVersion=%d auditSkipped=true auditSkipReason=tree_version_already_audited", sessionID, version)
+		log.Printf("Tree audit skipped. sessionId=%s analysisVersion=%d treeVersion=%d auditSkipped=true auditSkipReason=tree_version_already_audited", sessionID, version, treeVersion)
 		return
 	}
 	if now.Before(state.auditRepoBackoffUntil) {
 		state.auditPending = true
 		state.auditPendingReason = coalesceTreeAuditReason(state.auditPendingReason, triggerReason)
 		s.mu.Unlock()
-		log.Printf("Tree audit backing off after repository failure. sessionId=%s treeVersion=%d auditRepoBackoff=true auditPending=true", sessionID, version)
+		log.Printf("Tree audit backing off after repository failure. sessionId=%s analysisVersion=%d treeVersion=%d auditRepoBackoff=true auditPending=true", sessionID, version, treeVersion)
 		return
 	}
 	lastRateLimitedAt := state.lastAuditAt
@@ -204,7 +216,7 @@ func (s *MeetingAnalysisService) scheduleTreeAudit(ctx context.Context, sessionI
 		state.auditPending = true
 		state.auditPendingReason = coalesceTreeAuditReason(state.auditPendingReason, triggerReason)
 		s.mu.Unlock()
-		log.Printf("Tree audit rate limited. sessionId=%s treeVersion=%d auditRateLimited=true auditPending=true", sessionID, version)
+		log.Printf("Tree audit rate limited. sessionId=%s analysisVersion=%d treeVersion=%d auditRateLimited=true auditPending=true", sessionID, version, treeVersion)
 		return
 	}
 	state.auditRunning = true
@@ -214,12 +226,16 @@ func (s *MeetingAnalysisService) scheduleTreeAudit(ctx context.Context, sessionI
 	state.auditPending = false
 	state.auditPendingReason = ""
 	s.mu.Unlock()
-	log.Printf("Tree audit scheduled. sessionId=%s treeVersion=%d auditScheduled=true triggerReason=%s", sessionID, version, triggerReason)
+	log.Printf("Tree audit scheduled. sessionId=%s analysisVersion=%d treeVersion=%d auditScheduled=true triggerReason=%s", sessionID, version, treeVersion, triggerReason)
 	go s.executeScheduledTreeAudit(auditCtx, sessionID, triggerReason, append(json.RawMessage(nil), payload...), version)
 }
 
 func (s *MeetingAnalysisService) executeScheduledTreeAudit(ctx context.Context, sessionID, triggerReason string, payload json.RawMessage, version int64) {
-	execution := treeAuditExecution{Payload: payload, Version: version, AuditedVersion: version, TriggerClass: treeAuditTriggerClass(triggerReason, false)}
+	treeVersion := previousLiveAnalysisState(payload).TreeVersion
+	if treeVersion <= 0 {
+		treeVersion = version
+	}
+	execution := treeAuditExecution{Payload: payload, Version: version, AuditedVersion: treeVersion, ResultingTreeVersion: treeVersion, TriggerClass: treeAuditTriggerClass(triggerReason, false)}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			execution.Result = "panic"
@@ -252,10 +268,10 @@ func (s *MeetingAnalysisService) finishTreeAuditFlight(ctx context.Context, sess
 	}
 	auditedVersion := execution.AuditedVersion
 	if auditedVersion == 0 {
-		auditedVersion = requestedVersion
+		auditedVersion = previousLiveAnalysisState(execution.Payload).TreeVersion
 	}
-	if execution.Applied && execution.Version > auditedVersion {
-		auditedVersion = execution.Version
+	if execution.Applied && execution.ResultingTreeVersion > auditedVersion {
+		auditedVersion = execution.ResultingTreeVersion
 	}
 	auditFailed := execution.Result == "failed" || execution.Result == "timeout" || execution.Result == "canceled" || execution.Result == "invalid_schema" || execution.Result == "panic"
 	// Failures that never reached the provider (repository errors, panics
@@ -282,7 +298,8 @@ func (s *MeetingAnalysisService) finishTreeAuditFlight(ctx context.Context, sess
 		state.lastPayload = append(json.RawMessage(nil), execution.Payload...)
 		state.lastVersion = execution.Version
 	}
-	if state.lastVersion > auditedVersion && !state.auditClosed {
+	currentTreeVersion := previousLiveAnalysisState(state.lastPayload).TreeVersion
+	if currentTreeVersion > auditedVersion && !state.auditClosed {
 		state.auditPending = true
 		state.auditPendingReason = coalesceTreeAuditReason(state.auditPendingReason, "newer_tree_version")
 	}
@@ -330,14 +347,21 @@ func coalesceTreeAuditReason(left, right string) string {
 
 func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, triggerReason string, task aiTask, payload json.RawMessage, version int64, finalReview bool) (treeAuditExecution, error) {
 	triggerClass := treeAuditTriggerClass(triggerReason, finalReview)
-	execution := treeAuditExecution{Payload: payload, Version: version, AuditedVersion: version, TriggerClass: triggerClass}
+	execution := treeAuditExecution{Payload: payload, Version: version, TriggerClass: triggerClass}
 	if s.auditRepo == nil {
 		return execution, fmt.Errorf("tree audit repository is not configured")
 	}
 	state := previousLiveAnalysisState(payload)
-	if state.Tree == nil || state.TreeVersion != version {
-		return execution, fmt.Errorf("tree audit payload version=%d, expected %d", state.TreeVersion, version)
+	if state.Tree == nil {
+		return execution, fmt.Errorf("tree audit payload has no tree")
 	}
+	analysisVersion := version
+	treeVersion := state.TreeVersion
+	if treeVersion <= 0 {
+		treeVersion = analysisVersion
+	}
+	execution.AuditedVersion = treeVersion
+	execution.ResultingTreeVersion = treeVersion
 	transcriptLimit := 2000
 	if finalReview {
 		transcriptLimit = meetingAnalysisFinalTranscriptLimit
@@ -359,8 +383,8 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	}
 	latestTerminal := latest != nil && (latest.Status == domain.MeetingTreeAuditCompleted || latest.Status == domain.MeetingTreeAuditSkipped)
 	manualReplay := strings.Contains(triggerReason, "manual_replay")
-	if !manualReplay && latestTerminal && latest.Task == string(task) && latest.PromptVersion == task.promptVersion() && latest.Deployment == s.config.modelNameFor(task) && latest.SnapshotHash == snapshot.Hash && (latest.BasedOnTreeVersion == version || latest.ResultingTreeVersion == version) {
-		log.Printf("Tree audit skipped. sessionId=%s treeVersion=%d snapshotHash=%s auditSkipped=true auditSkipReason=duplicate_snapshot", sessionID, version, shortAuditHash(snapshot.Hash))
+	if !manualReplay && latestTerminal && latest.Task == string(task) && latest.PromptVersion == task.promptVersion() && latest.Deployment == s.config.modelNameFor(task) && latest.SnapshotHash == snapshot.Hash && (latest.BasedOnTreeVersion == treeVersion || latest.ResultingTreeVersion == treeVersion) {
+		log.Printf("Tree audit skipped. sessionId=%s analysisVersion=%d treeVersion=%d snapshotHash=%s auditSkipped=true auditSkipReason=duplicate_snapshot", sessionID, analysisVersion, treeVersion, shortAuditHash(snapshot.Hash))
 		execution.Result = "duplicate_snapshot"
 		return execution, nil
 	}
@@ -379,7 +403,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	meetingElapsedSeconds := s.treeAuditMeetingElapsedSeconds(ctx, sessionID, now)
 	inputSummary["meetingElapsedSeconds"] = meetingElapsedSeconds
 	run := domain.MeetingTreeAuditRun{
-		ID: runID, SessionID: sessionID, BasedOnTreeVersion: version,
+		ID: runID, SessionID: sessionID, BasedOnTreeVersion: treeVersion,
 		TriggerReason: truncateRunes(triggerReason, 300),
 		TriggerClass:  triggerClass, Task: string(task), Deployment: s.config.modelNameFor(task),
 		PromptVersion: task.promptVersion(), SnapshotHash: snapshot.Hash,
@@ -401,7 +425,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		return execution, err
 	}
 	if !claimed {
-		log.Printf("Tree audit skipped. sessionId=%s treeVersion=%d snapshotHash=%s auditSkipped=true auditSkipReason=duplicate_snapshot", sessionID, version, shortAuditHash(snapshot.Hash))
+		log.Printf("Tree audit skipped. sessionId=%s analysisVersion=%d treeVersion=%d snapshotHash=%s auditSkipped=true auditSkipReason=duplicate_snapshot", sessionID, analysisVersion, treeVersion, shortAuditHash(snapshot.Hash))
 		execution.Result = "duplicate_snapshot"
 		return execution, nil
 	}
@@ -420,7 +444,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 			return execution, err
 		}
 		execution.Result = run.Result
-		log.Printf("Tree audit rate limited. sessionId=%s treeVersion=%d triggerClass=%s suppressionReason=%s meetingElapsedSeconds=%d", sessionID, version, triggerClass, suppressionReason, meetingElapsedSeconds)
+		log.Printf("Tree audit rate limited. sessionId=%s analysisVersion=%d treeVersion=%d triggerClass=%s suppressionReason=%s meetingElapsedSeconds=%d", sessionID, analysisVersion, treeVersion, triggerClass, suppressionReason, meetingElapsedSeconds)
 		return execution, nil
 	}
 	integrity := validateTreeIntegrity(state.Tree, state.Items, mc)
@@ -467,7 +491,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		User:           buildTreeAuditUserPrompt(snapshot.InputJSON, finalReview),
 		MaxTokens:      s.config.TreeAudit.MaxOutputTokens,
 		ResponseSchema: &AIResponseSchema{Name: "discussion_tree_audit", Description: "Semantic findings and minimal validated tree patch operations", Strict: true, Schema: json.RawMessage(treeAuditResponseJSONSchema)},
-	}, version)
+	}, treeVersion)
 	elapsed := s.now().Sub(started)
 	run.Model = model
 	run.RawResponse = boundedAuditText(result.Content, s.config.TreeAudit.MaxPersistedJSONBytes)
@@ -491,7 +515,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		execution.Result = run.Result
 		return execution, callErr
 	}
-	response, parseErr := parseTreeAuditResponse(result.Content, version)
+	response, parseErr := parseTreeAuditResponse(result.Content, treeVersion)
 	logTaskSchemaResult(task, sessionID, parseErr)
 	if parseErr != nil {
 		completed := s.now().UTC()
@@ -508,7 +532,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		return execution, parseErr
 	}
 	canonicalizeTreeAuditResponse(response, state)
-	dry, validator := validateAndDryRunTreeAuditOperations(state, response.Operations, segments, mc, snapshot.EvidenceRoles, s.config.TreeAudit, runID, version+1, false)
+	dry, validator := validateAndDryRunTreeAuditOperations(state, response.Operations, segments, mc, snapshot.EvidenceRoles, s.config.TreeAudit, runID, treeVersion+1, false)
 	validator.ParserElementsRejected = len(response.ParseRejections)
 	validator.OperationsCanonicalized = response.CanonicalizedOperationCount
 	parserOperationRejections := 0
@@ -542,7 +566,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		threshold := s.config.TreeAudit.normalized().UnappliedWarningThreshold
 		if previousUnapplied+1 >= threshold {
 			validator.DeterministicFallbackEvaluated = true
-			repairedPayload, repairStats := applyDeterministicFinalTreeRepairs(payload, mc, version, finalRepairInput{
+			repairedPayload, repairStats := applyDeterministicFinalTreeRepairs(payload, mc, treeVersion, finalRepairInput{
 				Segments: segments,
 				Audit:    s.config.TreeAudit,
 			})
@@ -559,6 +583,9 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 				if validator.DeterministicFallbackReason == "" {
 					validator.DeterministicFallbackReason = "no_repairable_precheck"
 				}
+			case liveTreeHash(state.Tree) == liveTreeHash(previousLiveAnalysisState(repairedPayload).Tree):
+				validator.DeterministicFallbackAction = "no_safe_deterministic_change"
+				validator.DeterministicFallbackReason = "canonical_tree_no_op"
 			default:
 				current, currentErr := s.analysisRepo.GetMeetingAIAnalysis(ctx, sessionID, domain.MeetingAIAnalysisLive)
 				if currentErr != nil {
@@ -568,18 +595,25 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 				case ctx.Err() != nil || !s.treeAuditApplyAllowed(sessionID, finalReview):
 					validator.DeterministicFallbackAction = "preserve_last_good"
 					validator.DeterministicFallbackReason = "session_not_applyable"
-				case current.Version != version:
+				case current.Version != analysisVersion:
 					validator.DeterministicFallbackAction = "preserve_newer_version"
 					validator.DeterministicFallbackReason = "stale_tree_version"
 				default:
 					repairedState := previousLiveAnalysisState(repairedPayload)
-					repairedState.TreeVersion = version + 1
+					repairedState.TreeVersion = treeVersion + 1
 					repairedState.ChangeSource = "tree_audit_deterministic_fallback"
 					repairedState.AuditRunID = runID
-					repairedState.BasedOnTreeVersion = version
-					repairedState.TreeChanges = diffLiveAnalysisTrees(state.Tree, repairedState.Tree, version+1)
-					applyLiveTreeSnapshotMetadata(&repairedState, state.Tree, version, nil)
+					repairedState.BasedOnTreeVersion = treeVersion
+					repairedState.TreeChanges = diffLiveAnalysisTrees(state.Tree, repairedState.Tree, treeVersion+1)
+					applyLiveTreeSnapshotMetadata(&repairedState, state.Tree, treeVersion, nil)
 					repairedPayload, err = json.Marshal(repairedState)
+					if err != nil {
+						return execution, s.failTreeAuditRun(ctx, &run, "payload_encode_error", err)
+					}
+					repairedPayload, err = finalizeCompletedLiveProjection(
+						repairedPayload, payload, analysisVersion+1,
+						repairedState.HighestAvailableFinalSequenceNo, s.now().UTC(),
+					)
 					if err != nil {
 						return execution, s.failTreeAuditRun(ctx, &run, "payload_encode_error", err)
 					}
@@ -587,12 +621,12 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 					validator.DeterministicFallbackAction = "apply_safe_repair"
 					run.Result = "deterministic_fallback_applied"
 					run.Disposition = "applied"
-					run.ResultingTreeVersion = version + 1
+					run.ResultingTreeVersion = treeVersion + 1
 					run.ValidatorResult = boundedAuditJSON(validator, s.config.TreeAudit.MaxPersistedJSONBytes)
 					classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
-					saved, applied, applyErr := s.auditRepo.ApplyMeetingTreeAudit(ctx, run, version, domain.MeetingAIAnalysis{
+					saved, applied, applyErr := s.auditRepo.ApplyMeetingTreeAudit(ctx, run, analysisVersion, domain.MeetingAIAnalysis{
 						SessionID: sessionID, Type: domain.MeetingAIAnalysisLive,
-						Status: domain.MeetingAIAnalysisCompleted, Version: version + 1,
+						Status: domain.MeetingAIAnalysisCompleted, Version: analysisVersion + 1,
 						Payload: repairedPayload, Model: model,
 						SegmentCount: current.SegmentCount, InputChars: current.InputChars,
 						UpdatedAt: s.now().UTC(),
@@ -601,13 +635,14 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 						return execution, s.failTreeAuditRun(ctx, &run, "apply_transaction_error", applyErr)
 					}
 					if applied {
-						s.publishAnalysis(*saved)
+						s.publishCompletedLiveAnalysis(*saved, payload)
 						execution.Payload = repairedPayload
-						execution.Version = version + 1
+						execution.Version = analysisVersion + 1
+						execution.ResultingTreeVersion = treeVersion + 1
 						execution.Applied = true
 						execution.Result = run.Result
 						log.Printf("Tree audit deterministic fallback evaluated. sessionId=%s auditRunId=%s basedOnTreeVersion=%d resultingTreeVersion=%d consecutiveUnappliedBefore=%d fallbackAction=%s fallbackReason=%s lowInformationRewritten=%d lowInformationMerged=%d lowInformationRejected=%d kindValidationChanges=%d ambiguousKinds=%d kindSemanticSplits=%d kindSplitFragments=%d kindSplitRejected=%d kindRelationsCreated=%d sameEvidenceSynthesisMerged=%d sameKindDuplicatesMerged=%d recapDuplicatesMerged=%d",
-							sessionID, runID, version, version+1, previousUnapplied,
+							sessionID, runID, treeVersion, treeVersion+1, previousUnapplied,
 							validator.DeterministicFallbackAction, validator.DeterministicFallbackReason,
 							repairStats.LowInformationItemsRewritten, repairStats.LowInformationItemsMerged,
 							repairStats.LowInformationItemsRejected, repairStats.KindValidationChanges,
@@ -628,7 +663,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 				}
 			}
 			log.Printf("Tree audit deterministic fallback evaluated. sessionId=%s auditRunId=%s basedOnTreeVersion=%d consecutiveUnappliedBefore=%d fallbackAction=%s fallbackReason=%s applied=%t",
-				sessionID, runID, version, previousUnapplied, validator.DeterministicFallbackAction,
+				sessionID, runID, treeVersion, previousUnapplied, validator.DeterministicFallbackAction,
 				validator.DeterministicFallbackReason, validator.DeterministicFallbackApplied)
 		} else {
 			validator.DeterministicFallbackAction = "below_unapplied_threshold"
@@ -661,7 +696,7 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	if currentErr != nil {
 		return execution, s.failTreeAuditRun(ctx, &run, "analysis_repository_error", currentErr)
 	}
-	if current.Version != version {
+	if current.Version != analysisVersion {
 		validator.StaleOperationsRejected = validator.OperationsValid
 		validator.OperationsApplied = 0
 		for index := range validator.Evaluations {
@@ -683,6 +718,41 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 	if err != nil {
 		return execution, s.failTreeAuditRun(ctx, &run, "payload_encode_error", err)
 	}
+	if liveTreeHash(state.Tree) == liveTreeHash(dry.Tree) {
+		validator.OperationsApplied = 0
+		for index := range validator.Evaluations {
+			validator.Evaluations[index].Applied = false
+		}
+		run.Result = "no_op"
+		run.Disposition = "no_op"
+		run.ResultingTreeVersion = treeVersion
+		run.ValidatorResult = boundedAuditJSON(validator, s.config.TreeAudit.MaxPersistedJSONBytes)
+		classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
+		if saveErr := s.auditRepo.SaveMeetingTreeAuditRun(ctx, run); saveErr != nil {
+			return execution, saveErr
+		}
+		log.Printf("Tree audit no-op suppressed. sessionId=%s analysisVersion=%d treeVersion=%d noOpTreeVersionIncrementCount=0 noOpTreeBroadcastCount=0", sessionID, analysisVersion, treeVersion)
+		execution.Result = run.Result
+		return execution, nil
+	}
+	dry.TreeVersion = treeVersion + 1
+	dry.AnalysisVersion = analysisVersion + 1
+	dry.TreeAnalysisVersion = analysisVersion + 1
+	dry.TreeProjectionVersion = treeVersion + 1
+	dry.BasedOnTreeVersion = treeVersion
+	dry.TreeChanges = diffLiveAnalysisTrees(state.Tree, dry.Tree, treeVersion+1)
+	applyLiveTreeSnapshotMetadata(&dry, state.Tree, treeVersion, nil)
+	auditedPayload, err = marshalAuditedLivePayload(dry)
+	if err != nil {
+		return execution, s.failTreeAuditRun(ctx, &run, "payload_encode_error", err)
+	}
+	auditedPayload, err = finalizeCompletedLiveProjection(
+		auditedPayload, payload, analysisVersion+1,
+		dry.HighestAvailableFinalSequenceNo, s.now().UTC(),
+	)
+	if err != nil {
+		return execution, s.failTreeAuditRun(ctx, &run, "payload_encode_error", err)
+	}
 	markTreeAuditValidatorApplied(&validator)
 	if validator.OperationsApplied > 0 && validator.OperationsRejected > 0 {
 		run.Result = "partial_success"
@@ -690,12 +760,12 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		run.Result = "applied"
 	}
 	run.Disposition = "applied"
-	run.ResultingTreeVersion = version + 1
+	run.ResultingTreeVersion = treeVersion + 1
 	run.ValidatorResult = boundedAuditJSON(validator, s.config.TreeAudit.MaxPersistedJSONBytes)
 	classifyTreeAuditRun(&run, latest, s.config.TreeAudit)
-	saved, applied, applyErr := s.auditRepo.ApplyMeetingTreeAudit(ctx, run, version, domain.MeetingAIAnalysis{
+	saved, applied, applyErr := s.auditRepo.ApplyMeetingTreeAudit(ctx, run, analysisVersion, domain.MeetingAIAnalysis{
 		SessionID: sessionID, Type: domain.MeetingAIAnalysisLive,
-		Status: domain.MeetingAIAnalysisCompleted, Version: version + 1,
+		Status: domain.MeetingAIAnalysisCompleted, Version: analysisVersion + 1,
 		Payload: auditedPayload, Model: model,
 		SegmentCount: current.SegmentCount, InputChars: current.InputChars,
 		UpdatedAt: s.now().UTC(),
@@ -721,10 +791,11 @@ func (s *MeetingAnalysisService) runTreeAudit(ctx context.Context, sessionID, tr
 		execution.Result = run.Result
 		return execution, nil
 	}
-	s.publishAnalysis(*saved)
+	s.publishCompletedLiveAnalysis(*saved, payload)
 	logTreeAuditDetails(sessionID, runID, response, validator)
 	execution.Payload = auditedPayload
-	execution.Version = version + 1
+	execution.Version = analysisVersion + 1
+	execution.ResultingTreeVersion = treeVersion + 1
 	execution.Applied = true
 	execution.Result = run.Result
 	logTreeAuditRun(run, len(response.Findings), validator)

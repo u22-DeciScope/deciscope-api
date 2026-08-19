@@ -101,6 +101,57 @@ func TestAgendaNoAgendaSpanClosesAfterConsecutiveSemanticReentry(t *testing.T) {
 	}
 }
 
+func TestAgendaContinuationKeepsConcreteTurnsUntilExplicitExternalTransition(t *testing.T) {
+	mc := &meetingContext{
+		Title: "生成AI試験導入会議", Purpose: "試験導入の対象部署を決定する",
+		Agenda: []agendaItem{{
+			ID: "agenda-1", Title: "試験導入の対象部署",
+			Description:   "導入対象の部署と人数を決める",
+			SemanticHints: []string{"対象部署", "営業部", "対象人数"},
+			Role:          agendaRolePrimary,
+		}},
+	}
+	scope := evidenceScopeFromTexts(map[int64]string{
+		1: "まず対象部署ですが、営業部から始めるのがよいと思います。",
+		2: "営業部全体ではなく、資料作成が多い人に絞りましょう。",
+		3: "最初は5人くらいを対象にします。",
+		4: "ここからはアジェンダ外の別件ですが、懇親会の会場も確認が必要です。",
+	}, 1, 2, 3, 4)
+	stats := &liveAnalysisTreeMergeStats{}
+	spans := detectAgendaContextSpans(scope, mc, stats)
+
+	if mode, agendaID, _ := agendaContextForEvidence([]int64{1, 2, 3}, spans); mode != agendaContextModeFixed || agendaID != "agenda-1" {
+		t.Fatalf("agenda continuation lost: mode=%q agenda=%q spans=%+v", mode, agendaID, spans)
+	}
+	if mode, _, _ := agendaContextForEvidence([]int64{4}, spans); mode != agendaContextModeNoAgenda {
+		t.Fatalf("explicit detour not separated: mode=%q spans=%+v", mode, spans)
+	}
+	for _, falseStart := range []int64{2, 3} {
+		if containsInt64(stats.NoAgendaSpanStartSequences, falseStart) {
+			t.Fatalf("continuation opened no-agenda at %d: %+v", falseStart, stats.NoAgendaSpanStartSequences)
+		}
+	}
+}
+
+func TestStrongDifferentAgendaClosesFixedSpanWithoutOpeningNoAgenda(t *testing.T) {
+	mc := &meetingContext{Agenda: []agendaItem{
+		{ID: "agenda-1", Title: "試験導入の対象部署", SemanticHints: []string{"対象部署", "営業部"}, Role: agendaRolePrimary},
+		{ID: "agenda-2", Title: "試験導入の期間", SemanticHints: []string{"試験期間", "2週間"}, Role: agendaRolePrimary},
+	}}
+	scope := evidenceScopeFromTexts(map[int64]string{
+		1: "まず対象部署ですが、営業部から始めます。",
+		2: "営業部の5人に絞りましょう。",
+		3: "試験期間は2週間で進めましょう。",
+	}, 1, 2, 3)
+	spans := detectAgendaContextSpans(scope, mc, nil)
+	if mode, agendaID, _ := agendaContextForEvidence([]int64{2}, spans); mode != agendaContextModeFixed || agendaID != "agenda-1" {
+		t.Fatalf("continuation mode=%q agenda=%q spans=%+v", mode, agendaID, spans)
+	}
+	if mode, _, _ := agendaContextForEvidence([]int64{3}, spans); mode != "" {
+		t.Fatalf("new agenda was kept in old span: mode=%q spans=%+v", mode, spans)
+	}
+}
+
 func TestExplicitNoAgendaContentRemainsProtectedWithoutReentry(t *testing.T) {
 	mc := &meetingContext{Title: "出張申請", Agenda: []agendaItem{{ID: "agenda-1", Title: "申請フォーム", Role: agendaRolePrimary}}}
 	scope := evidenceScopeFromTexts(map[int64]string{

@@ -49,7 +49,12 @@ func TestNetworkAgendaAndVPNNoAgendaReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	state2 := previousLiveAnalysisState(raw)
-	if agendaTopicNodeByRef(state2.Tree, "agenda-2") != nil || len(state2.EmergingTopics) != 1 || stats2.FixedAgendaAssignmentRejectedByNoAgendaSpan < 2 {
+	candidateID, _ := canonicalCandidateID("在宅勤務VPN", "同時接続数と増強案")
+	dynamicID := stableDynamicTopicID(candidateID)
+	if agendaTopicNodeByRef(state2.Tree, "agenda-2") != nil || len(state2.EmergingTopics) != 0 ||
+		treeNodeByID(state2.Tree, dynamicID) == nil ||
+		stats2.FixedAgendaAssignmentRejectedByNoAgendaSpan < 2 ||
+		stats2.CandidatePromotedSingleBatch != 1 {
 		t.Fatalf("round2 tree=%+v candidates=%+v stats=%+v", state2.Tree.Nodes, state2.EmergingTopics, stats2)
 	}
 
@@ -64,20 +69,18 @@ func TestNetworkAgendaAndVPNNoAgendaReplay(t *testing.T) {
 	if replayed := agendaTopicNodeByRef(state3.Tree, "agenda-1"); replayed == nil || replayed.ID != agenda1Topic.ID {
 		t.Fatalf("agenda topic ID changed across rounds: first=%+v replayed=%+v", agenda1Topic, replayed)
 	}
-	dynamicID := ""
-	for _, node := range state3.Tree.Nodes {
-		if node.Kind == "topic" && node.Origin == topicOriginDynamic && node.Label == "在宅勤務VPN" {
-			dynamicID = node.ID
-		}
-	}
-	if dynamicID == "" || agendaTopicNodeByRef(state3.Tree, "agenda-2") != nil || agendaTopicNodeByRef(state3.Tree, "agenda-3") != nil || stats3.DynamicTopicsPromoted != 1 {
+	if topic := treeNodeByID(state3.Tree, dynamicID); topic == nil || topic.Origin != topicOriginDynamic ||
+		agendaTopicNodeByRef(state3.Tree, "agenda-2") != nil ||
+		agendaTopicNodeByRef(state3.Tree, "agenda-3") != nil ||
+		stats3.DynamicTopicsPromoted != 0 ||
+		itemTopicID(state3.Tree, findItemByTitlePart(state3.Items, "VPNライセンス数").ID) != dynamicID {
 		t.Fatalf("round3 dynamic=%q nodes=%+v stats=%+v", dynamicID, state3.Tree.Nodes, stats3)
 	}
 	if diagnostics := validateTreeIntegrity(state3.Tree, state3.Items, mc); !diagnostics.Valid || diagnostics.AgendaRecordCount != 3 || diagnostics.MaterializedAgendaCount != 1 || diagnostics.PlannedAgendaCount != 2 {
 		t.Fatalf("integrity=%+v", diagnostics)
 	}
 
-	finalRaw, err := finalizeAgendaLifecyclePayload(raw, mc, 3)
+	finalRaw, _, err := finalizeAgendaLifecyclePayloadWithEvidence(raw, mc, 3, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +306,7 @@ func TestIncidentRecoveryAgendaReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finalRaw, err := finalizeAgendaLifecyclePayload(raw, mc, 4)
+	finalRaw, _, err := finalizeAgendaLifecyclePayloadWithEvidence(raw, mc, 4, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +504,7 @@ func TestFinalAgendaLifecycleMergesOverlappingDynamicTopic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finalRaw, err := finalizeAgendaLifecyclePayload(raw, mc, 12)
+	finalRaw, _, err := finalizeAgendaLifecyclePayloadWithEvidence(raw, mc, 12, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

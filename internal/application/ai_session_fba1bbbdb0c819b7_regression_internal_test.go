@@ -534,17 +534,29 @@ func TestSessionFBAFixtureQualityMetricsImproveWithoutLosingModelItems(t *testin
 	after := sessionFBAFixtureQualityMetrics(previousLiveAnalysisState(repaired), segments, mc)
 	t.Logf("session_fba equivalent fixture quality before=%+v after=%+v repair=%+v", before, after, stats)
 
-	if after.ModelItems != before.ModelItems {
-		t.Fatalf("model items before/after=%d/%d", before.ModelItems, after.ModelItems)
+	// An explicitly contradicted model item is intentionally retired and
+	// replaced by a transcript-grounded deterministic Fact. Count that audited
+	// supersession as preservation rather than an unexplained item loss.
+	if after.ModelItems+stats.CorrectionItemsSuperseded < before.ModelItems {
+		t.Fatalf("model items before/after=%d/%d correctionSuperseded=%d",
+			before.ModelItems, after.ModelItems, stats.CorrectionItemsSuperseded)
 	}
 	if after.AnaphoraNodes >= before.AnaphoraNodes ||
 		after.SameEvidenceDuplicates >= before.SameEvidenceDuplicates {
 		t.Fatalf("low-information quality did not improve: before=%+v after=%+v", before, after)
 	}
+	// Evidence localization can expose one pre-existing structural finding per
+	// removed cross-proposition reference. That is preferable to retaining
+	// incorrect evidence, provided the total deterministic finding count still
+	// improves and no cross-agenda/topic-outlier regression is introduced.
+	allowedCandidateFragmentation := before.CandidateFragmentation + stats.EvidenceReferencesPruned
 	if after.CrossAgendaContamination > before.CrossAgendaContamination ||
-		after.CandidateFragmentation > before.CandidateFragmentation ||
+		after.CandidateFragmentation > allowedCandidateFragmentation ||
 		after.TopicOutliers > before.TopicOutliers {
 		t.Fatalf("structural quality regressed: before=%+v after=%+v", before, after)
+	}
+	if after.DeterministicAuditFindings >= before.DeterministicAuditFindings {
+		t.Fatalf("deterministic audit findings did not improve: before=%+v after=%+v", before, after)
 	}
 }
 
@@ -562,7 +574,9 @@ func sessionFBAFixtureQualityMetrics(state liveAnalysisPayload, segments []domai
 		if item.Inactive || item.MergedIntoID != "" {
 			continue
 		}
-		if item.AssignmentReason == issueSynthesisAssignmentReason {
+		if item.AssignmentReason == issueSynthesisAssignmentReason ||
+			item.AssignmentReason == deterministicTodoAssignmentReason ||
+			item.AssignmentReason == deterministicCorrectionAssignmentReason {
 			metrics.SynthesizedItems++
 		} else {
 			metrics.ModelItems++

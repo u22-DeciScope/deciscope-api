@@ -93,9 +93,9 @@ const (
 )
 
 var (
-	resolutionClosurePattern     = regexp.MustCompile(`(?:解決済み?|解消(?:した|済み)?|対応(?:できる|可能|済み|完了)|結論が出た|回答(?:した|済み|確定)|決定(?:した|事項|済み)?|確定(?:した|済み)?|採用(?:した)?|とすることに(?:する|します)|方針に(?:する|します)|完了(?:した|済み)?|実施済み|終え(?:た|ました)|復旧(?:した|しました|が?完了|済み)|正常(?:になった|になりました|化した|に戻った)|接続が正常|疎通(?:を|が)?確認)`)
+	resolutionClosurePattern     = regexp.MustCompile(`(?:解決済み?|解消(?:した|済み)?|対応(?:できる|可能|済み|完了)|結論が出た|回答(?:した|済み|確定)|決定(?:した|事項|済み)?|確定(?:した|済み)?|採用(?:した)?|とすることに(?:する|します)|方針に(?:する|します)|完了(?:した|済み)?|実施済み|終え(?:た|ました)|復旧(?:した|しました|が?完了|済み)|正常(?:になった|になりました|化した|に戻った)|接続が正常|疎通(?:を|が)?確認|(?:すべて|全て|全)(?:の)?端末.{0,16}接続(?:を|が)?確認)`)
 	resolutionOpenPattern        = regexp.MustCompile(`(?:未解決|未決定|未確定|まだ(?:決まって|決定して|確定して)い(?:ない|ません)|決まってい(?:ない|ません)|決定しない|次回(?:の会議で)?検討|再検討|持ち越し|今後も検討|判断を保留|まだ.{0,16}(?:接続できない|できていない|できない)|一部.{0,12}(?:接続できない|つながらない|できない)|未解決事項として残|未確定事項として残)`)
-	serverExplicitClosurePattern = regexp.MustCompile(`(?:解決済み|解決した|解消した|問題.{0,24}対応できる|対応できると判断|結論が出た|方針が確定した|この論点は閉じる|復旧(?:した|しました|が?完了|済み)|正常に(?:なった|なりました|戻った)|正常になったことを確認|接続が正常|疎通(?:を|が)確認)`)
+	serverExplicitClosurePattern = regexp.MustCompile(`(?:解決済み|解決した|解消した|問題.{0,24}対応できる|対応できると判断|結論が出た|方針が確定した|この論点は閉じる|復旧(?:した|しました|が?完了|済み)|正常に(?:なった|なりました|戻った)|正常になったことを確認|接続が正常|疎通(?:を|が)確認|(?:すべて|全て|全)(?:の)?端末.{0,16}接続(?:を|が)?確認)`)
 	// recoveryClosurePattern marks a serverExplicitClosurePattern match as a
 	// "recovery" closure (a fault/connectivity restoration statement) rather
 	// than an ordinary decision/agreement closure. synthesizeExplicitClosureUpdates
@@ -246,16 +246,17 @@ func synthesizeExplicitClosureUpdates(previous, diff []liveAnalysisItem, scope l
 // an open, non-investigation issue or risk whose subject is at least
 // loosely related to the recovery sentence. todo is excluded -- restoring
 // connectivity does not itself complete a follow-up action item --
-// investigation-subtype issues are excluded so a fault recovery never
-// silently resolves the root-cause investigation (recovery != root-cause
-// resolution), and items whose own title/body says their subject is still
-// under investigation (see itemUnderContinuedInvestigationPattern) are
-// excluded for the same reason, regardless of subtype.
+// investigation-subtype issues are eligible only when they describe an
+// explicit current/ongoing unresolved condition rather than a causal
+// hypothesis. This lets a recovered connectivity condition close while a
+// root-cause investigation remains open. Items whose own title/body says the
+// subject is still under investigation are excluded regardless of subtype.
 func recoveryClosureEligibleItem(item liveAnalysisItem, text string) bool {
-	if item.Kind != "issue" && item.Kind != "risk" {
+	if item.Inactive || strings.TrimSpace(item.MergedIntoID) != "" ||
+		strings.HasPrefix(strings.TrimSpace(item.SuppressionReason), "superseded") {
 		return false
 	}
-	if item.Subtype == issueSubtypeInvestigation {
+	if item.Kind != "issue" && item.Kind != "risk" {
 		return false
 	}
 	status := strings.ToLower(strings.TrimSpace(item.Status))
@@ -265,7 +266,20 @@ func recoveryClosureEligibleItem(item liveAnalysisItem, text string) bool {
 	if itemUnderContinuedInvestigationPattern.MatchString(item.Title + " " + item.Body) {
 		return false
 	}
-	return semanticItemSimilarity(item.Title+" "+item.Body, text) >= 0.12
+	if historicalResolutionTarget(item) {
+		return false
+	}
+	if item.Kind == "issue" && item.Subtype == issueSubtypeInvestigation {
+		features := inferItemSemanticFeatures(item, liveEvidenceScope{})
+		if (features.TemporalScope != "current" && features.TemporalScope != "ongoing") ||
+			features.EpistemicStatus != "unresolved" || features.CausalHypothesisPresent {
+			return false
+		}
+	}
+	itemText := item.Title + " " + item.Body
+	similarity := semanticItemSimilarity(itemText, text)
+	return similarity >= 0.12 ||
+		(sharedTreeAuditSubjectTerm(itemText, text) && similarity >= 0.08)
 }
 
 func bestExplicitClosureTarget(items []liveAnalysisItem, text string, sequenceNo int64, allowTodo bool) string {
@@ -279,12 +293,28 @@ func bestExplicitClosureTarget(items []liveAnalysisItem, text string, sequenceNo
 	if allowTodo {
 		priority["todo"] = 1
 	}
+	matchingText := text
+	if subject := explicitClosureIssueTitle(text); subject != "" && len([]rune(subject)) < len([]rune(text)) {
+		// A recap can place the closure and several unrelated decisions in one
+		// transcript segment. Match the clause's named subject, not the entire
+		// recap, or unrelated issues can make the canonical target ambiguous.
+		matchingText = subject
+	}
 	for _, item := range items {
 		kindPriority, eligible := priority[item.Kind]
-		if !eligible || item.Status == "dismissed" {
+		if !eligible || item.Status == "dismissed" || item.Inactive ||
+			strings.TrimSpace(item.MergedIntoID) != "" ||
+			strings.HasPrefix(strings.TrimSpace(item.SuppressionReason), "superseded") {
 			continue
 		}
-		score := semanticItemSimilarity(item.Title+" "+item.Body, text)
+		score := semanticItemSimilarity(item.Title+" "+item.Body, matchingText)
+		// Body is intentionally optional: the presentation repair may omit a
+		// description that only restates the headline. Keep explicit-closure
+		// matching stable by rewarding a concrete shared headline subject, so a
+		// recap closes the canonical issue instead of synthesizing a duplicate.
+		if sharedTreeAuditSubjectTerm(item.Title, matchingText) {
+			score += 0.10
+		}
 		near := false
 		for _, evidenceSequence := range item.EvidenceSequenceNos {
 			delta := sequenceNo - evidenceSequence
@@ -521,6 +551,12 @@ func validateResolutionUpdates(requested []resolutionUpdate, resolver *canonical
 			continue
 		}
 		evaluation.Kind, evaluation.OldStatus = item.Kind, item.Status
+		if item.Inactive || strings.TrimSpace(item.MergedIntoID) != "" ||
+			strings.HasPrefix(strings.TrimSpace(item.SuppressionReason), "superseded") {
+			evaluation.Result, evaluation.Reason = resolutionRejected, "inactive_or_superseded"
+			recordResolution(stats, evaluation)
+			continue
+		}
 		if status == "" {
 			evaluation.Result, evaluation.Reason = resolutionRejected, "invalid_status"
 			recordResolution(stats, evaluation)
@@ -528,6 +564,11 @@ func validateResolutionUpdates(requested []resolutionUpdate, resolver *canonical
 		}
 		if !resolvableItemKind(item.Kind) {
 			evaluation.Result, evaluation.Reason = resolutionRejected, "kind_not_resolvable"
+			recordResolution(stats, evaluation)
+			continue
+		}
+		if status == "resolved" && historicalResolutionTarget(item) {
+			evaluation.Result, evaluation.Reason = resolutionRejected, "historical_observation_not_resolvable"
 			recordResolution(stats, evaluation)
 			continue
 		}
@@ -606,7 +647,8 @@ func validateResolutionUpdates(requested []resolutionUpdate, resolver *canonical
 }
 
 func applyResolutionUpdate(item *liveAnalysisItem, update validatedResolutionUpdate) {
-	if item == nil {
+	if item == nil || item.Inactive || strings.TrimSpace(item.MergedIntoID) != "" ||
+		strings.HasPrefix(strings.TrimSpace(item.SuppressionReason), "superseded") {
 		return
 	}
 	if update.Status == "resolved" {
@@ -637,4 +679,19 @@ func repairNonResolvableStatus(item *liveAnalysisItem) {
 		return
 	}
 	item.Status = "open"
+	item.ResolvedAtVersion = 0
+	item.ResolutionEvidenceSequenceNos = nil
+	item.ResolutionReason = ""
+}
+
+func historicalResolutionTarget(item liveAnalysisItem) bool {
+	if item.Kind != "issue" && item.Kind != "open_issue" && item.Kind != "question" {
+		return false
+	}
+	text := item.Title + " " + item.Body
+	features := inferItemSemanticFeatures(item, liveEvidenceScope{})
+	return features.TemporalScope == "past" &&
+		kindPastObservationPattern.MatchString(text) &&
+		!kindExplicitCurrentIssuePattern.MatchString(text) &&
+		!kindOpenQuestionPattern.MatchString(text)
 }

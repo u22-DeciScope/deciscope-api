@@ -35,6 +35,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Capture build timestamp
+        shell: bash
+        run: echo "BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -47,6 +51,12 @@ jobs:
         with:
           context: .
           push: true
+          build-args: |
+            RELEASE_BUILD=true
+            BUILD_VERSION=${{ github.ref_name }}-${{ github.run_number }}
+            GIT_COMMIT_SHA=${{ github.sha }}
+            BUILD_TIMESTAMP=${{ env.BUILD_TIMESTAMP }}
+            DIRTY_BUILD=false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 

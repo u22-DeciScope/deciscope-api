@@ -1,0 +1,5224 @@
+{
+  "schemaVersion": 5,
+  "suite": "deterministic",
+  "metricSchema": [
+    "requiredPropositionRecall",
+    "unsupportedPropositionCount",
+    "classificationAccuracy",
+    "temporalScopeAccuracy",
+    "pastFactCount",
+    "issueCount",
+    "resolvedIssueCount",
+    "incorrectResolvedIssueCount",
+    "riskRecall",
+    "todoRecall",
+    "decisionRecall",
+    "semanticDuplicateCount",
+    "semantic_split_source_active_count",
+    "semantic_split_source_fragment_duplicate_count",
+    "semantic_split_replacement_missing_count",
+    "recap_duplicate_item_count",
+    "recap_existing_item_update_count",
+    "recap_new_information_item_count",
+    "lowInformationLabelCount",
+    "contextDependentLabelCount",
+    "truncatedLabelCount",
+    "hierarchyRelationAccuracy",
+    "candidateFragmentationCount",
+    "crossAgendaContaminationCount",
+    "label_description_exact_duplicate_count",
+    "label_description_high_similarity_count",
+    "description_unsupported_atom_count",
+    "description_added_grounded_detail_count",
+    "label_transcript_copy_ratio",
+    "label_compression_ratio",
+    "description_redundant_count",
+    "singletonAttachmentEligibleCount",
+    "singletonAttachmentAppliedCount",
+    "singletonAttachmentDeferredCount",
+    "singletonAttachmentAmbiguousCount",
+    "singletonAttachmentWrongParentCount",
+    "unclassifiedGroundedSingletonCount"
+  ],
+  "scenarios": [
+    {
+      "id": "agenda-misassignment",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.75,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "vpn-auth-risk",
+          "kind": "risk",
+          "parentPath": [
+            "VPN多要素認証未設定による不正接続リス"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "unexpected-candidate-promotion",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 2,
+        "label_transcript_copy_ratio": 0.5,
+        "label_compression_ratio": 0.7903703703703704,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "wetland-risk",
+          "kind": "risk",
+          "parentPath": [
+            "湿地・希少植物調査"
+          ]
+        },
+        {
+          "propositionId": "wetland-survey",
+          "kind": "todo",
+          "parentPath": [
+            "湿地・希少植物調査"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "same-batch-candidate-promotion",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.692970822281167,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "certificate-risk",
+          "kind": "risk",
+          "parentPath": [
+            "外部接続証明書更新の別管理"
+          ]
+        },
+        {
+          "propositionId": "certificate-todo",
+          "kind": "todo",
+          "parentPath": [
+            "外部接続証明書更新の別管理"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "recap-preserves-tree",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.8260869565217391,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "recovery",
+          "kind": "fact",
+          "parentPath": [
+            "ネットワーク復旧"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "unspoken-information-contamination",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0.5,
+        "label_compression_ratio": 1,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 2
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "procedure-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "semantic-kind-classification",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 1,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 4,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.7487102371312898,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 3,
+        "singletonAttachmentAppliedCount": 1,
+        "singletonAttachmentDeferredCount": 2,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 2
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "cause-issue",
+          "kind": "issue",
+          "parentPath": [
+            "通信障害の根本原因が未特定"
+          ]
+        },
+        {
+          "propositionId": "log-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "outage-fact",
+          "kind": "fact",
+          "parentPath": [
+            "通信障害の根本原因が未特定"
+          ]
+        },
+        {
+          "propositionId": "rollback-decision",
+          "kind": "decision",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "service-risk",
+          "kind": "risk",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        },
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "low-information-node-repair",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 1,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "certificate-expiry-check",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "correction-removes-stale-proposition",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.6666666666666666,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "corrected-deadline",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "semantic-evidence-mismatch",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 1,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "valid-estimate",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "split-fragment-future-evidence",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0.5,
+        "label_compression_ratio": 0.8571428571428572,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 2
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "outage",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "vlan",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "finalization-inflight-tail-flush",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0.5,
+        "label_compression_ratio": 0.8333333333333333,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "tail-risk",
+          "kind": "risk",
+          "parentPath": [
+            "VPN証明書更新"
+          ]
+        },
+        {
+          "propositionId": "tail-todo",
+          "kind": "todo",
+          "parentPath": [
+            "VPN証明書更新"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "label-rewrite-failure-preserves-risk",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.5365853658536586,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "important-risk",
+          "kind": "risk",
+          "parentPath": [
+            "VPN証明書失効"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "network-logical-hierarchy",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 2,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0.6666666666666666,
+        "label_compression_ratio": 0.6685689201053556,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "cause-hypothesis",
+          "kind": "issue",
+          "parentPath": [
+            "障害原因と適用範囲"
+          ]
+        },
+        {
+          "propositionId": "scope-limit",
+          "kind": "issue",
+          "parentPath": [
+            "障害原因と適用範囲"
+          ]
+        },
+        {
+          "propositionId": "vlan-fact",
+          "kind": "fact",
+          "parentPath": [
+            "障害原因と適用範囲"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "semantic-duplicate-proposition",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 2,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 1,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 2,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.7954545454545454,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 2
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "recovery",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "vpn-certificate-card-tree-consistency",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 2,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.7647058823529411,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "parentAssignments": [
+        {
+          "propositionId": "vpn-cert-risk",
+          "kind": "risk",
+          "parentPath": [
+            "VPN証明書更新の別管理"
+          ]
+        },
+        {
+          "propositionId": "vpn-cert-todo",
+          "kind": "todo",
+          "parentPath": [
+            "VPN証明書更新の別管理"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 0,
+      "treeVersion": 0
+    },
+    {
+      "id": "current-issue-resolution-lifecycle",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 1,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.4375,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "current-connectivity",
+          "expectedText": "現在も一部端末で接続できず原因不明で調査が必要",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            1
+          ],
+          "requiredTemporalScope": "current",
+          "requiredEpistemicStatus": "unresolved",
+          "requiredStatus": "resolved",
+          "matched": true,
+          "similarity": 0.6792452830188679,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-6be3d76c146b",
+            "kind": "issue",
+            "title": "現在も一部端末で接続できない",
+            "body": "現在も一部端末で接続できず、原因はまだ分かっていないため調査が必要",
+            "status": "resolved",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "current-connectivity",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "issue",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 2,
+      "treeVersion": 2
+    },
+    {
+      "id": "past-observation-remains-fact",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 2,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.6937960687960688,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 2
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "historical-connectivity",
+          "expectedText": "障害時に接続できる端末と接続できない端末が混在していた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.9555555555555555,
+          "bestActualCandidate": {
+            "id": "item-fact-a5cda5eec7c8",
+            "kind": "fact",
+            "title": "障害時に接続できる端末と接続できない端末が混在",
+            "body": "インターネットが完全に停止したわけではなく、接続できる端末と接続できない端末が混在していました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "recovery-fact",
+          "expectedText": "午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になった",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.9142857142857143,
+          "bestActualCandidate": {
+            "id": "item-fact-dc4842f9233d",
+            "kind": "fact",
+            "title": "午前10時5分に有線LAN・無線LAN・ファイルサーバー接続が正常化",
+            "body": "午前10時5分に有線LAN、無線LAN、ファイルサーバーへの接続が正常になりました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "historical-connectivity",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "recovery-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 2,
+      "treeVersion": 1
+    },
+    {
+      "id": "self-contained-correction-logical-relations",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 2,
+        "issueCount": 2,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0.25,
+        "label_compression_ratio": 0.48712494402149575,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "trunk-fact",
+          "expectedText": "トランク設定自体は入っていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.8571428571428571,
+          "bestActualCandidate": {
+            "id": "item-fact-8d08a3485149",
+            "kind": "fact",
+            "title": "トランク設定自体は入っていました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "vlan-fact",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.9090909090909091,
+          "bestActualCandidate": {
+            "id": "item-fact-a45546316d61",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "cause-hypothesis",
+          "expectedText": "VLAN30設定漏れが3階障害の直接原因である可能性が高い",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            2
+          ],
+          "requiredEpistemicStatus": "hypothesis",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.8307692307692308,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-be582ac23ed1",
+            "kind": "issue",
+            "title": "現時点では、VLAN30設定漏れが3階障害の直接原因である可能性が最も高いです",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "scope-limit",
+          "expectedText": "2階の通信遅延までVLAN30設定漏れで説明できるかは未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            3
+          ],
+          "requiredEpistemicStatus": "unresolved",
+          "requiredStatus": "open",
+          "matched": true,
+          "similarity": 0.8148148148148148,
+          "bestActualCandidate": {
+            "id": "item-issue-confirmation-3d9b2b13490c",
+            "kind": "issue",
+            "title": "2階の通信遅延までこの設定漏れで説明できるかは未確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "cause-hypothesis",
+          "kind": "issue",
+          "parentPath": [
+            "現時点では、VLAN30設定漏れが3階障"
+          ]
+        },
+        {
+          "propositionId": "scope-limit",
+          "kind": "issue",
+          "parentPath": [
+            "2階の通信遅延までこの設定漏れで説明でき"
+          ]
+        },
+        {
+          "propositionId": "trunk-fact",
+          "kind": "fact",
+          "parentPath": [
+            "現時点では、VLAN30設定漏れが3階障"
+          ]
+        },
+        {
+          "propositionId": "vlan-fact",
+          "kind": "fact",
+          "parentPath": [
+            "現時点では、VLAN30設定漏れが3階障"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "issue",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 3,
+      "treeVersion": 1
+    },
+    {
+      "id": "decision-issue-exclusivity",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 0.75,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "decision",
+          "expectedText": "ダブルチェック運用を次回の機器交換から適用",
+          "requiredKind": "decision",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-decision-3518c1e2615e",
+            "kind": "decision",
+            "title": "ダブルチェック運用を次回の機器交換から適用",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "decision",
+          "kind": "decision",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 1,
+      "treeVersion": 1
+    },
+    {
+      "id": "explicit-correction-overrides-relation-lock",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 2,
+        "issueCount": 2,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0.25,
+        "label_compression_ratio": 0.5768369932432432,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 4
+      },
+      "inputMode": "seeded_transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "trunk-fact",
+          "expectedText": "交換後スイッチにはトランク設定が入っていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 0.45714285714285713,
+          "bestActualCandidate": {
+            "id": "item-fact-8d08a3485149",
+            "kind": "fact",
+            "title": "トランク設定自体は入っていました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "vlan-fact",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 0.9090909090909091,
+          "bestActualCandidate": {
+            "id": "item-fact-a45546316d61",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "hypothesis",
+          "expectedText": "VLAN30設定漏れが3階障害の直接原因である可能性が高い",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 0.9,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-7c145379c7db",
+            "kind": "issue",
+            "title": "VLAN30設定漏れが3階障害の直接原因である可能性が最も高いです",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3,
+              4
+            ]
+          }
+        },
+        {
+          "propositionId": "limit",
+          "expectedText": "2階の遅延まで説明できるか未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            5
+          ],
+          "matched": true,
+          "similarity": 0.8484848484848485,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-623f575a1874",
+            "kind": "issue",
+            "title": "2階の遅延まで説明できるかは未確認です",
+            "status": "open",
+            "evidenceSequenceNos": [
+              5
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "hypothesis",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "limit",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "trunk-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "vlan-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "issue",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 5,
+      "treeVersion": 1
+    },
+    {
+      "id": "label-description-duplicate-decision",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 0.46153846153846156,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "decision",
+          "expectedText": "ダブルチェック運用を次回の機器交換から適用",
+          "requiredKind": "decision",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 0.9333333333333333,
+          "bestActualCandidate": {
+            "id": "item-decision-ff7e07e6d694",
+            "kind": "decision",
+            "title": "このダブルチェック運用を次回の機器交換から適用することにします",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "decision",
+          "kind": "decision",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 2,
+      "treeVersion": 1
+    },
+    {
+      "id": "vpn-risk-label-description-roles",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.5,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "vpn-risk",
+          "expectedText": "VPN証明書失効によりリモート接続できなくなるリスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            1,
+            2
+          ],
+          "matched": true,
+          "similarity": 0.42424242424242425,
+          "bestActualCandidate": {
+            "id": "item-risk-fec5c705096e",
+            "kind": "risk",
+            "title": "VPN証明書は来月末に期限切れとなり、放置するとリモート接続ができなくなる可能性があります",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "vpn-risk",
+          "kind": "risk",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 2,
+      "treeVersion": 1
+    },
+    {
+      "id": "ambiguous-assignee-grounded-todo",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 1,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "generic-owner-todo",
+          "expectedText": "担当者が今週中にVPN証明書の更新手順を確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 0.7450980392156863,
+          "bestActualCandidate": {
+            "id": "item-todo-191690e6d6cb",
+            "kind": "todo",
+            "title": "担当者に今週中にVPN証明書の更新手順を確認してもらいます",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "generic-owner-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 1,
+      "treeVersion": 1
+    },
+    {
+      "id": "confirmed-todo-speaker-assignee",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 1,
+        "label_compression_ratio": 1,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "vpn-todo",
+          "expectedText": "小橋が今週中にVPN証明書の更新手順と作業可能日を確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 0.7619047619047619,
+          "bestActualCandidate": {
+            "id": "item-todo-228f441c6b8a",
+            "kind": "todo",
+            "title": "小橋さんに今週中にVPN証明書の更新手順と作業可能日を確認してもらいます",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "vpn-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 1,
+      "treeVersion": 1
+    },
+    {
+      "id": "correction-superseded-resolution-guard",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 2,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.44285714285714284,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 2
+      },
+      "inputMode": "seeded_transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "trunk-fact",
+          "expectedText": "トランク設定は入っていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 0.631578947368421,
+          "bestActualCandidate": {
+            "id": "item-fact-9f0299b9efcb",
+            "kind": "fact",
+            "title": "トランク設定はあり",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "vlan-fact",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 0.9090909090909091,
+          "bestActualCandidate": {
+            "id": "item-fact-a45546316d61",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "trunk-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "vlan-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 3,
+      "treeVersion": 1
+    },
+    {
+      "id": "final-relation-metadata-persistence",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 2,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 1,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.735402097902098,
+        "description_redundant_count": 1,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 4
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "fact",
+          "expectedText": "VLAN30が許可一覧から漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-f0498bbf2dc3",
+            "kind": "fact",
+            "title": "VLAN30が許可一覧から漏れていた",
+            "body": "許可VLAN一覧からVLAN30が漏れていた",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "cause",
+          "expectedText": "VLAN30設定漏れが障害原因である可能性",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-d38129746efa",
+            "kind": "issue",
+            "title": "VLAN30設定漏れが障害原因である可能性",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "limit",
+          "expectedText": "2階の遅延まで説明できるか未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-dd60ba1ab78f",
+            "kind": "issue",
+            "title": "2階の遅延まで説明できるか未確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "todo",
+          "expectedText": "佐藤が来週火曜日までに標準設定との差分を確認",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-todo-45e8629448c0",
+            "kind": "todo",
+            "title": "佐藤が来週火曜日までに標準設定との差分を確認",
+            "body": "佐藤さんが来週火曜日までに標準設定との差分を確認する",
+            "status": "open",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "cause",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "limit",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 2
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 4,
+      "treeVersion": 1
+    },
+    {
+      "id": "intentionally-omitted-description",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.6428571428571429,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "router-fact",
+          "expectedText": "ルーターに異常はない",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "requiredDescriptionStatus": "intentionally_omitted",
+          "matched": true,
+          "similarity": 0.6153846153846154,
+          "bestActualCandidate": {
+            "id": "item-fact-e98056c72531",
+            "kind": "fact",
+            "title": "ルーターに異常なし",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "router-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 1,
+      "treeVersion": 1
+    },
+    {
+      "id": "monitoring-risk-issue-description",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.38181818181818183,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 2
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "monitoring-risk",
+          "expectedText": "監視対象拡大によるアラート過多リスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            2
+          ],
+          "requiredTemporalScope": "future",
+          "requiredEpistemicStatus": "uncertain",
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-5246728f8155",
+            "kind": "risk",
+            "title": "監視対象拡大によるアラート過多リスク",
+            "body": "ただし、監視対象を増やすとアラートが多くなりすぎる可能性があります",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "monitoring-issue",
+          "expectedText": "監視間隔と通知条件が未決定",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            2
+          ],
+          "requiredEpistemicStatus": "unresolved",
+          "matched": true,
+          "similarity": 0.43243243243243246,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-2c5f2801eb89",
+            "kind": "issue",
+            "title": "監視間隔と通知条件については、次回までに検討が必要です",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "monitoring-issue",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "monitoring-risk",
+          "kind": "risk",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 2,
+      "treeVersion": 1
+    },
+    {
+      "id": "recovery-atomic-fact-split",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 3,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.2537878787878788,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 3
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "rollback-fact",
+          "expectedText": "午前9時52分に旧スイッチへ一度切り戻した",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 0.9857142857142857,
+          "bestActualCandidate": {
+            "id": "item-fact-a15458580e64",
+            "kind": "fact",
+            "title": "午前9時52分に旧スイッチへ一度切り戻し",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "repair-fact",
+          "expectedText": "新しいスイッチのトランク設定を修正した",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 0.9473684210526315,
+          "bestActualCandidate": {
+            "id": "item-fact-9dbdf29112ec",
+            "kind": "fact",
+            "title": "新しいスイッチのトランク設定を修正しました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "recovery-fact",
+          "expectedText": "午前10時5分に接続が正常になったことを確認した",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 0.5714285714285714,
+          "bestActualCandidate": {
+            "id": "item-fact-b258dd0c42b7",
+            "kind": "fact",
+            "title": "ファイルサーバーへの接続が正常になったことを確認しています",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "recovery-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "repair-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "rollback-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 3
+        }
+      ],
+      "finalCoverage": 1,
+      "treeVersion": 1
+    },
+    {
+      "id": "unrelated-monitoring-vpn-candidates",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 2,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.4960087082728592,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 1,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 1,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "monitor-risk",
+          "expectedText": "監視対象拡大によるアラート過多リスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 0.9470588235294117,
+          "bestActualCandidate": {
+            "id": "item-risk-0ad1b91b9a80",
+            "kind": "risk",
+            "title": "監視対象拡大によるアラート過多",
+            "body": "監視対象を増やすとアラートが増えすぎる可能性がある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "vpn-risk",
+          "expectedText": "VPN証明書失効によるリモート接続不能リスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-6bf9af63ac8b",
+            "kind": "risk",
+            "title": "VPN証明書失効によるリモート接続不能リスク",
+            "body": "VPN証明書は来月末に期限切れとなり、未更新の場合はリモート接続できなくなる可能性がある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "monitor-risk",
+          "kind": "risk",
+          "parentPath": [
+            "監視運用"
+          ]
+        },
+        {
+          "propositionId": "vpn-risk",
+          "kind": "risk",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "risk",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 2,
+      "treeVersion": 2
+    },
+    {
+      "id": "multi-round-explicit-correction-monotonicity",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 2,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.5462409541677834,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 4
+      },
+      "inputMode": "seeded_transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "trunk-fact",
+          "expectedText": "トランク設定は入っていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 0.631578947368421,
+          "bestActualCandidate": {
+            "id": "item-fact-9f0299b9efcb",
+            "kind": "fact",
+            "title": "トランク設定はあり",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "vlan-fact",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-a45546316d61",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていた",
+            "status": "updated",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "prevention-todo",
+          "expectedText": "標準設定との差分確認手順を整備する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-todo-ddb093755e1d",
+            "kind": "todo",
+            "title": "標準設定との差分確認手順を整備する",
+            "status": "updated",
+            "evidenceSequenceNos": [
+              3,
+              6
+            ]
+          }
+        },
+        {
+          "propositionId": "second-floor-limit",
+          "expectedText": "2階の通信遅延までVLAN30設定漏れで説明できるか未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            5
+          ],
+          "matched": true,
+          "similarity": 0.84,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-5acce3d1020f",
+            "kind": "issue",
+            "title": "2階の通信遅延まで設定漏れで説明できるか未確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              5
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "prevention-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "second-floor-limit",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "trunk-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "vlan-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 7,
+      "treeVersion": 6
+    },
+    {
+      "id": "session-3d232d-completed-recovery-and-recap",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 0,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 1,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.3823696145124717,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 3
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "recovery-fact",
+          "expectedText": "午前9時52分に旧スイッチへ切り戻してトランク設定と許可VLANを修正した",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 0.6349206349206349,
+          "bestActualCandidate": {
+            "id": "item-fact-f05da00ed6c2",
+            "kind": "fact",
+            "title": "新しいスイッチのトランク設定と許可VLANを修正しました",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "settings-check-todo",
+          "expectedText": "佐藤が金曜日までに標準設定との差分を確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 0.9090909090909091,
+          "bestActualCandidate": {
+            "id": "item-todo-2eb759a1e76c",
+            "kind": "todo",
+            "title": "標準設定との差分確認",
+            "body": "佐藤さんが金曜日までに標準設定との差分を確認する",
+            "status": "updated",
+            "evidenceSequenceNos": [
+              2,
+              4
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "recovery-fact",
+          "kind": "fact",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "settings-check-todo",
+          "kind": "todo",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 5,
+      "treeVersion": 3
+    },
+    {
+      "id": "session-e1bb-vpn-candidate-cohesion",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 1,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.7459977623021102,
+        "description_redundant_count": 1,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "vpn-expiry-fact",
+          "expectedText": "VPN装置の証明書が来月末に期限切れになる",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-9c39e150bd59",
+            "kind": "fact",
+            "title": "VPN装置の証明書が来月末に期限切れになる",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "vpn-remote-risk",
+          "expectedText": "VPN装置の証明書を放置するとリモート接続できなくなる可能性がある",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            1,
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-784749a310cc",
+            "kind": "risk",
+            "title": "証明書失効によるリモート接続不能リスク",
+            "body": "VPN装置の証明書を放置するとリモート接続できなくなる可能性がある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "vpn-management-issue",
+          "expectedText": "VPN証明書更新を今回の障害とは別の対応事項として管理する",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            1,
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-confirmation-7f3d2b34e9b4",
+            "kind": "issue",
+            "title": "VPN証明書更新を今回の障害とは別の対応事項として管理する",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1,
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "vpn-renewal-todo",
+          "expectedText": "高橋がVPN証明書の更新手順と作業可能日を確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-todo-8784af4fba5c",
+            "kind": "todo",
+            "title": "高橋がVPN証明書の更新手順と作業可能日を確認する",
+            "body": "高橋さんがVPN証明書の更新手順と作業可能日を確認する",
+            "status": "open",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "vpn-expiry-fact",
+          "kind": "fact",
+          "parentPath": [
+            "VPN装置の証明書の期限切れ対応",
+            "VPN証明書更新を今回の障害とは別の対応"
+          ]
+        },
+        {
+          "propositionId": "vpn-management-issue",
+          "kind": "issue",
+          "parentPath": [
+            "VPN装置の証明書の期限切れ対応",
+            "VPN証明書更新を今回の障害とは別の対応"
+          ]
+        },
+        {
+          "propositionId": "vpn-remote-risk",
+          "kind": "risk",
+          "parentPath": [
+            "VPN装置の証明書の期限切れ対応",
+            "VPN証明書更新を今回の障害とは別の対応"
+          ]
+        },
+        {
+          "propositionId": "vpn-renewal-todo",
+          "kind": "todo",
+          "parentPath": [
+            "VPN装置の証明書の期限切れ対応"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 4,
+      "treeVersion": 4
+    },
+    {
+      "id": "session-fe947-publication-stitching-network-semantics",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 1,
+        "pastFactCount": 5,
+        "issueCount": 2,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 2,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 4,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.5360148219365315,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "third-floor",
+          "expectedText": "本日午前9時20分ごろ名古屋支社3階を中心に社内ネットワーク接続障害が発生",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2,
+            3
+          ],
+          "matched": true,
+          "similarity": 0.8571428571428571,
+          "bestActualCandidate": {
+            "id": "item-fact-72852d19c12b",
+            "kind": "fact",
+            "title": "本日午前9時20分ごろ名古屋支社3階を中心に社内ネットワークへ接続できない障害が発生した",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2,
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "second-floor",
+          "expectedText": "2階の一部でも通信遅延が発生していた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            4
+          ],
+          "requiredTemporalScope": "past",
+          "requiredEpistemicStatus": "confirmed",
+          "matched": true,
+          "similarity": 0.9333333333333333,
+          "bestActualCandidate": {
+            "id": "item-fact-ad6d007c84d9",
+            "kind": "fact",
+            "title": "2階の一部でも通信遅延が発生",
+            "status": "open",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        },
+        {
+          "propositionId": "services",
+          "expectedText": "有線LAN、無線LAN、ファイルサーバーへの接続に影響していた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            5
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-756dac0a7308",
+            "kind": "fact",
+            "title": "有線・無線・ファイルサーバー接続への影響",
+            "body": "有線LAN、無線LAN、ファイルサーバーへの接続に影響していた",
+            "status": "open",
+            "evidenceSequenceNos": [
+              5
+            ]
+          }
+        },
+        {
+          "propositionId": "network-devices",
+          "expectedText": "ルーターとファイアウォールには異常がなかった",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            7
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-b4f06a213e49",
+            "kind": "fact",
+            "title": "ルーターとファイアウォールに異常なし",
+            "body": "ルーターとファイアウォールには異常がなかった",
+            "status": "open",
+            "evidenceSequenceNos": [
+              7
+            ]
+          }
+        },
+        {
+          "propositionId": "trunk",
+          "expectedText": "トランク設定はあり",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            9
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-9f0299b9efcb",
+            "kind": "fact",
+            "title": "トランク設定はあり",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9
+            ]
+          }
+        },
+        {
+          "propositionId": "vlan-missing",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            9
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-000550e4d4ea",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていた",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9
+            ]
+          }
+        },
+        {
+          "propositionId": "cause",
+          "expectedText": "VLAN30設定漏れが障害の直接原因である可能性が高い",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            10
+          ],
+          "requiredEpistemicStatus": "hypothesis",
+          "matched": true,
+          "similarity": 0.9666666666666666,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-04c8ff5777f2",
+            "kind": "issue",
+            "title": "VLAN30設定漏れが障害の直接原因である可能性",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9,
+              10
+            ]
+          }
+        },
+        {
+          "propositionId": "limit",
+          "expectedText": "2階の通信遅延までVLAN30設定漏れで説明できるか未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            10
+          ],
+          "requiredEpistemicStatus": "unresolved",
+          "matched": true,
+          "similarity": 0.9473684210526315,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-3168f3dd6a03",
+            "kind": "issue",
+            "title": "2階の通信遅延まで説明できるか未確認",
+            "body": "2階の通信遅延までVLAN30設定漏れで説明できるかは未確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9,
+              10
+            ]
+          }
+        }
+      ],
+      "metricEvidence": [
+        {
+          "metric": "candidateFragmentationCount",
+          "expectationIds": [
+            "services",
+            "vlan-missing"
+          ],
+          "actualItemIds": [
+            "item-fact-000550e4d4ea",
+            "item-fact-756dac0a7308"
+          ],
+          "actualLabels": [
+            "許可VLAN一覧からVLAN30が漏れていた",
+            "有線・無線・ファイルサーバー接続への影響"
+          ],
+          "reason": "candidate_fragmentation: semantically similar evidence is split across top-level subjects"
+        },
+        {
+          "metric": "candidateFragmentationCount",
+          "expectationIds": [
+            "limit",
+            "second-floor"
+          ],
+          "actualItemIds": [
+            "item-fact-ad6d007c84d9",
+            "item-issue-investigation-3168f3dd6a03"
+          ],
+          "actualLabels": [
+            "2階の一部でも通信遅延が発生",
+            "2階の通信遅延まで説明できるか未確認"
+          ],
+          "reason": "candidate_fragmentation: semantically similar evidence is split across top-level subjects"
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "cause",
+          "kind": "issue",
+          "parentPath": [
+            "トランク設定はあり",
+            "2階の通信遅延まで説明できるか未確認"
+          ]
+        },
+        {
+          "propositionId": "limit",
+          "kind": "issue",
+          "parentPath": [
+            "トランク設定はあり",
+            "2階の通信遅延まで説明できるか未確認"
+          ]
+        },
+        {
+          "propositionId": "network-devices",
+          "kind": "fact",
+          "parentPath": [
+            "本日午前9時20分ごろ名古屋支社3階を中",
+            "2階の一部でも通信遅延が発生"
+          ]
+        },
+        {
+          "propositionId": "second-floor",
+          "kind": "fact",
+          "parentPath": [
+            "本日午前9時20分ごろ名古屋支社3階を中",
+            "2階の一部でも通信遅延が発生"
+          ]
+        },
+        {
+          "propositionId": "services",
+          "kind": "fact",
+          "parentPath": [
+            "本日午前9時20分ごろ名古屋支社3階を中",
+            "2階の一部でも通信遅延が発生"
+          ]
+        },
+        {
+          "propositionId": "third-floor",
+          "kind": "fact",
+          "parentPath": [
+            "本日午前9時20分ごろ名古屋支社3階を中",
+            "2階の一部でも通信遅延が発生"
+          ]
+        },
+        {
+          "propositionId": "trunk",
+          "kind": "fact",
+          "parentPath": [
+            "トランク設定はあり"
+          ]
+        },
+        {
+          "propositionId": "vlan-missing",
+          "kind": "fact",
+          "parentPath": [
+            "トランク設定はあり",
+            "2階の通信遅延まで説明できるか未確認"
+          ]
+        }
+      ],
+      "requiredParentSeparations": [
+        {
+          "from": "third-floor",
+          "to": "cause"
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 7
+        },
+        {
+          "kind": "issue",
+          "count": 2
+        }
+      ],
+      "finalCoverage": 10,
+      "treeVersion": 4
+    },
+    {
+      "id": "session-c01a27-stt-enumeration-label",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 2,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 4,
+        "label_transcript_copy_ratio": 0.5714285714285714,
+        "label_compression_ratio": 0.7744714609103404,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "vlan-missing",
+          "expectedText": "許可VLAN一覧からVLAN30が漏れていた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 0.9129032258064516,
+          "bestActualCandidate": {
+            "id": "item-fact-79ecc81676f1",
+            "kind": "fact",
+            "title": "許可VLAN一覧からVLAN30が漏れていました",
+            "body": "交換したスイッチの許可VLAN一覧からVLAN30が漏れていた",
+            "status": "open",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        },
+        {
+          "propositionId": "second-floor-unconfirmed",
+          "expectedText": "2階の遅延をVLAN設定漏れで説明できるかは未確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            6
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-investigation-1e56bf18d2e8",
+            "kind": "issue",
+            "title": "2階の遅延まで今回のVLAN設定漏れで説明できるかは未確認です",
+            "body": "2階の遅延をVLAN設定漏れで説明できるかは未確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              6
+            ]
+          }
+        },
+        {
+          "propositionId": "remote-access-risk",
+          "expectedText": "証明書を更新しないとリモート接続ができなくなる可能性がある",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            8
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-deb93c3e24f8",
+            "kind": "risk",
+            "title": "証明書失効によるリモート接続不能リスク",
+            "body": "証明書を更新しないとリモート接続ができなくなる可能性がある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "propositionId": "cert-todo",
+          "expectedText": "高橋がVPN証明書の更新手順と作業可能日を確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            9
+          ],
+          "matched": true,
+          "similarity": 0.8979591836734694,
+          "bestActualCandidate": {
+            "id": "item-todo-78eb193224c4",
+            "kind": "todo",
+            "title": "高橋がVPN証明書の更新手順と作業可能日を確認します",
+            "status": "open",
+            "evidenceSequenceNos": [
+              9
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "cert-todo",
+          "kind": "todo",
+          "parentPath": [
+            "2階の遅延まで今回のVLAN設定漏れで説"
+          ]
+        },
+        {
+          "propositionId": "remote-access-risk",
+          "kind": "risk",
+          "parentPath": [
+            "複数の対象が影響を受けた"
+          ]
+        },
+        {
+          "propositionId": "second-floor-unconfirmed",
+          "kind": "issue",
+          "parentPath": [
+            "2階の遅延まで今回のVLAN設定漏れで説"
+          ]
+        },
+        {
+          "propositionId": "vlan-missing",
+          "kind": "fact",
+          "parentPath": [
+            "2階の遅延まで今回のVLAN設定漏れで説"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 4
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 9,
+      "treeVersion": 3
+    },
+    {
+      "id": "fragmented-additional-subject",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 1,
+        "issueCount": 1,
+        "resolvedIssueCount": 1,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.688783833889507,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 1,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 1,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "recovery-fact",
+          "expectedText": "9時52分に旧スイッチへ切り戻して復旧した",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-d588ff127f1a",
+            "kind": "fact",
+            "title": "9時52分に旧スイッチへ切り戻して復旧した",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "cert-fact",
+          "expectedText": "VPN装置の証明書が来月末に期限切れになる",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-9c39e150bd59",
+            "kind": "fact",
+            "title": "VPN装置の証明書が来月末に期限切れになる",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "cert-risk",
+          "expectedText": "証明書放置によるリモート接続不能リスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-5d68ce59258c",
+            "kind": "risk",
+            "title": "証明書放置によるリモート接続不能リスク",
+            "body": "証明書を放置するとリモート接続ができなくなる可能性がある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "cert-todo",
+          "expectedText": "田中が証明書の更新手順と作業日を今週中に確認する",
+          "requiredKind": "todo",
+          "expectedEvidence": [
+            6
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-todo-ce0a7b5e2e7c",
+            "kind": "todo",
+            "title": "田中が証明書の更新手順と作業日を今週中に確認する",
+            "status": "open",
+            "evidenceSequenceNos": [
+              6
+            ]
+          }
+        },
+        {
+          "propositionId": "line-issue",
+          "expectedText": "拠点間回線が朝夕の時間帯に不安定",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-f26eaba60107",
+            "kind": "issue",
+            "title": "拠点間回線が朝夕の時間帯に不安定",
+            "status": "resolved",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "cert-fact",
+          "kind": "fact",
+          "parentPath": [
+            "証明書の期限切れ対応"
+          ]
+        },
+        {
+          "propositionId": "cert-risk",
+          "kind": "risk",
+          "parentPath": [
+            "証明書の期限切れ対応"
+          ]
+        },
+        {
+          "propositionId": "cert-todo",
+          "kind": "todo",
+          "parentPath": [
+            "証明書の期限切れ対応"
+          ]
+        },
+        {
+          "propositionId": "line-issue",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "recovery-fact",
+          "kind": "fact",
+          "parentPath": [
+            "9時52分に旧スイッチへ切り戻して復旧し"
+          ]
+        }
+      ],
+      "requiredParentSeparations": [
+        {
+          "from": "cert-risk",
+          "to": "line-issue"
+        },
+        {
+          "from": "cert-risk",
+          "to": "recovery-fact"
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        },
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        },
+        {
+          "kind": "todo",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 6,
+      "treeVersion": 1
+    },
+    {
+      "id": "singleton-generic-term-overlap-defer",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.8772727272727273,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 1,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 1,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "link-fact",
+          "expectedText": "拠点間回線が朝夕に不安定になっている",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-a45cf998b72e",
+            "kind": "fact",
+            "title": "拠点間回線が朝夕に不安定になっている",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "entry-risk",
+          "expectedText": "回線断による受発注入力のやり直しリスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-ff6f26699a71",
+            "kind": "risk",
+            "title": "回線断による受発注入力のやり直しリスク",
+            "body": "回線が切れると受発注の入力がやり直しになる",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "expense-issue",
+          "expectedText": "経費精算の入力手順が未決定",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 0.6,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-bb9808140571",
+            "kind": "issue",
+            "title": "経費精算の入力手順がまだ決まっていない",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "entry-risk",
+          "kind": "risk",
+          "parentPath": [
+            "拠点間回線の不安定"
+          ]
+        },
+        {
+          "propositionId": "expense-issue",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "link-fact",
+          "kind": "fact",
+          "parentPath": [
+            "拠点間回線の不安定"
+          ]
+        }
+      ],
+      "requiredParentSeparations": [
+        {
+          "from": "expense-issue",
+          "to": "link-fact"
+        },
+        {
+          "from": "expense-issue",
+          "to": "entry-risk"
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 3,
+      "treeVersion": 1
+    },
+    {
+      "id": "singleton-hiring-evaluation-attachment",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0.6666666666666666,
+        "label_compression_ratio": 0.9833333333333334,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "hiring-fact",
+          "expectedText": "面接評価プロセスの見直しを進めている",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-c050ac3b1e30",
+            "kind": "fact",
+            "title": "面接評価プロセスの見直しを進めている",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "evaluator-fact",
+          "expectedText": "評価者ごとに合否の基準がばらついている",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-3fdcdcc1800e",
+            "kind": "fact",
+            "title": "評価者ごとに合否の基準がばらついている",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "criteria-issue",
+          "expectedText": "最終判定の評価基準が未決定",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 0.6,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-2491a712d220",
+            "kind": "issue",
+            "title": "最終判定の評価基準がまだ決まっていない",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "criteria-issue",
+          "kind": "issue",
+          "parentPath": [
+            "面接評価プロセスの見直し"
+          ]
+        },
+        {
+          "propositionId": "evaluator-fact",
+          "kind": "fact",
+          "parentPath": [
+            "面接評価プロセスの見直し"
+          ]
+        },
+        {
+          "propositionId": "hiring-fact",
+          "kind": "fact",
+          "parentPath": [
+            "面接評価プロセスの見直し"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 2
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 3,
+      "treeVersion": 1
+    },
+    {
+      "id": "singleton-inventory-alert-attachment",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0.3333333333333333,
+        "label_compression_ratio": 0.906926406926407,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 0,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "inventory-fact",
+          "expectedText": "在庫アラート運用の見直しを始めた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-0958c0847468",
+            "kind": "fact",
+            "title": "在庫アラート運用の見直しを始めた",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "alert-risk",
+          "expectedText": "通知増加で重要な警告が埋もれるリスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-3093ae76fe46",
+            "kind": "risk",
+            "title": "通知増加で重要な警告が埋もれるリスク",
+            "body": "通知が増えると重要な警告が埋もれてしまう",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "threshold-issue",
+          "expectedText": "アラート通知の閾値が未決定",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 0.5714285714285714,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-23257a3f1051",
+            "kind": "issue",
+            "title": "アラート通知の閾値がまだ決まっていない",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "alert-risk",
+          "kind": "risk",
+          "parentPath": [
+            "在庫アラート運用の見直し"
+          ]
+        },
+        {
+          "propositionId": "inventory-fact",
+          "kind": "fact",
+          "parentPath": [
+            "在庫アラート運用の見直し"
+          ]
+        },
+        {
+          "propositionId": "threshold-issue",
+          "kind": "issue",
+          "parentPath": [
+            "在庫アラート運用の見直し"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 3,
+      "treeVersion": 1
+    },
+    {
+      "id": "singleton-monitoring-attachment",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 2,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.741614906832298,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 1,
+        "singletonAttachmentAppliedCount": 1,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "monitor-fact",
+          "expectedText": "監視対象のサーバーが20台に増えた",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-c751fd08ec2b",
+            "kind": "fact",
+            "title": "監視対象のサーバーが20台に増えた",
+            "body": "監視対象のサーバーが先月から20台に増えた",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "monitor-risk",
+          "expectedText": "監視対象拡大によるアラート過多のリスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 0.9333333333333333,
+          "bestActualCandidate": {
+            "id": "item-risk-10298b29adee",
+            "kind": "risk",
+            "title": "監視対象拡大によるアラート過多",
+            "body": "監視対象を増やすとアラートが多くなりすぎる可能性がある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "monitor-issue",
+          "expectedText": "監視間隔と通知条件が未決定",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 0.6,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-25ad1b450237",
+            "kind": "issue",
+            "title": "監視間隔と通知条件がまだ決まっていない",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "monitor-fact",
+          "kind": "fact",
+          "parentPath": [
+            "監視強化の方針"
+          ]
+        },
+        {
+          "propositionId": "monitor-issue",
+          "kind": "issue",
+          "parentPath": [
+            "監視強化の方針"
+          ]
+        },
+        {
+          "propositionId": "monitor-risk",
+          "kind": "risk",
+          "parentPath": [
+            "監視強化の方針"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 3,
+      "treeVersion": 1
+    },
+    {
+      "id": "singleton-release-rollback-attachment",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.6676379176379177,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 1,
+        "singletonAttachmentAppliedCount": 1,
+        "singletonAttachmentDeferredCount": 0,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 0
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "release-fact",
+          "expectedText": "段階的リリースで公開範囲を広げる",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-8d07cb14fbd2",
+            "kind": "fact",
+            "title": "段階的リリースで公開範囲を広げる",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "release-risk",
+          "expectedText": "一斉公開による障害拡大リスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-3415bad65661",
+            "kind": "risk",
+            "title": "一斉公開による障害拡大リスク",
+            "body": "一斉公開すると障害が広範囲に拡大する恐れがある",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "rollback-issue",
+          "expectedText": "ロールバック条件が未決定",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 0.5384615384615384,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-9750a0391e20",
+            "kind": "issue",
+            "title": "ロールバック条件がまだ決まっていない",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "release-fact",
+          "kind": "fact",
+          "parentPath": [
+            "段階的リリースで公開範囲を広げる"
+          ]
+        },
+        {
+          "propositionId": "release-risk",
+          "kind": "risk",
+          "parentPath": [
+            "段階的リリースで公開範囲を広げる"
+          ]
+        },
+        {
+          "propositionId": "rollback-issue",
+          "kind": "issue",
+          "parentPath": [
+            "段階的リリースで公開範囲を広げる"
+          ]
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 3,
+      "treeVersion": 1
+    },
+    {
+      "id": "singleton-unrelated-nearby-defer",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 1,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.8314393939393939,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 1,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 1,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "line-fact",
+          "expectedText": "拠点間回線が朝夕に不安定になっている",
+          "requiredKind": "fact",
+          "expectedEvidence": [
+            1
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-fact-a45cf998b72e",
+            "kind": "fact",
+            "title": "拠点間回線が朝夕に不安定になっている",
+            "status": "open",
+            "evidenceSequenceNos": [
+              1
+            ]
+          }
+        },
+        {
+          "propositionId": "order-risk",
+          "expectedText": "回線断による受発注入力のやり直しリスク",
+          "requiredKind": "risk",
+          "expectedEvidence": [
+            2
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-risk-ff6f26699a71",
+            "kind": "risk",
+            "title": "回線断による受発注入力のやり直しリスク",
+            "body": "回線が切れると受発注の入力がやり直しになる",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2
+            ]
+          }
+        },
+        {
+          "propositionId": "supply-issue",
+          "expectedText": "会議室備品の購入判断が保留",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-509694bf3dcf",
+            "kind": "issue",
+            "title": "会議室備品の購入判断が保留",
+            "status": "open",
+            "evidenceSequenceNos": [
+              3
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "line-fact",
+          "kind": "fact",
+          "parentPath": [
+            "拠点間回線の不安定"
+          ]
+        },
+        {
+          "propositionId": "order-risk",
+          "kind": "risk",
+          "parentPath": [
+            "拠点間回線の不安定"
+          ]
+        },
+        {
+          "propositionId": "supply-issue",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        }
+      ],
+      "requiredParentSeparations": [
+        {
+          "from": "supply-issue",
+          "to": "line-fact"
+        },
+        {
+          "from": "supply-issue",
+          "to": "order-risk"
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "fact",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        },
+        {
+          "kind": "risk",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 3,
+      "treeVersion": 1
+    },
+    {
+      "id": "agenda-continuity-logical-alias-and-confirmed-recap",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.291005291005291,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 1,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 1,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "target-decision",
+          "expectedText": "営業部の5人を試験対象にする",
+          "requiredKind": "decision",
+          "expectedEvidence": [
+            2,
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-decision-3b0444421113",
+            "kind": "decision",
+            "title": "営業部の5人を試験対象にする",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2,
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "social-issue",
+          "expectedText": "懇親会の会場確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-853a4795b17d",
+            "kind": "issue",
+            "title": "懇親会の会場確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "social-issue",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "target-decision",
+          "kind": "decision",
+          "parentPath": [
+            "営業部の5人を試験対象にする"
+          ]
+        }
+      ],
+      "requiredParentSeparations": [
+        {
+          "from": "target-decision",
+          "to": "social-issue"
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 4,
+      "treeVersion": 1
+    }
+  ]
+}

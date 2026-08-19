@@ -2,7 +2,6 @@ package contracttest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -17,7 +16,6 @@ import (
 type Repositories struct {
 	Meetings application.MeetingRepository
 	Events   application.EventRepository
-	Jobs     application.JobRepository
 	Auth     AuthWorkspaceRepository
 }
 
@@ -32,12 +30,11 @@ type AuthWorkspaceRepository interface {
 type Store interface {
 	application.MeetingRepository
 	application.EventRepository
-	application.JobRepository
 }
 
 func FromStore(store Store) Repositories {
 	return Repositories{
-		Meetings: store, Events: store, Jobs: store,
+		Meetings: store, Events: store,
 	}
 }
 
@@ -149,48 +146,6 @@ func Run(t *testing.T, factory Factory) {
 		events, err = repos.Events.ListEvents(ctx, meeting.ID, 0)
 		if err != nil || len(events) != 0 {
 			t.Fatalf("events after reset = %+v, error = %v", events, err)
-		}
-	})
-
-	t.Run("jobs", func(t *testing.T) {
-		repos := factory(t)
-		ctx := context.Background()
-
-		job, err := repos.Jobs.CreateJob(ctx, "w_test", "file.extract_audio", "", "")
-		if err != nil {
-			t.Fatalf("CreateJob() error = %v", err)
-		}
-		if job.Status != "queued" {
-			t.Fatalf("job status = %q, want queued", job.Status)
-		}
-		if err := repos.Jobs.CompleteJob(ctx, job.ID, map[string]any{"ok": true}); err != nil {
-			t.Fatalf("CompleteJob() error = %v", err)
-		}
-		completed, err := repos.Jobs.GetJob(ctx, job.ID)
-		if err != nil {
-			t.Fatalf("GetJob(completed) error = %v", err)
-		}
-		var result map[string]bool
-		if err := json.Unmarshal(completed.Result, &result); err != nil || !result["ok"] {
-			t.Fatalf("completed result = %s, error = %v", completed.Result, err)
-		}
-
-		failed, err := repos.Jobs.CreateJob(ctx, "w_test", "report.final", "", "running")
-		if err != nil {
-			t.Fatalf("CreateJob(failed) error = %v", err)
-		}
-		if err := repos.Jobs.FailJob(ctx, failed.ID, "boom"); err != nil {
-			t.Fatalf("FailJob() error = %v", err)
-		}
-		failed, err = repos.Jobs.GetJob(ctx, failed.ID)
-		if err != nil {
-			t.Fatalf("GetJob(failed) error = %v", err)
-		}
-		if failed.Status != "failed" || failed.Error != "boom" {
-			t.Fatalf("failed job = %+v", failed)
-		}
-		if _, err := repos.Jobs.GetJob(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
-			t.Fatalf("GetJob(missing) error = %v, want ErrNotFound", err)
 		}
 	})
 

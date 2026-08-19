@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"deciscope-core-api/internal/domain"
@@ -28,6 +29,11 @@ func (s *TranscriptIngestService) StoreTranscriptSegment(ctx context.Context, se
 	if err != nil {
 		return result, err
 	}
+	persistedAt := s.now().UTC()
+	log.Printf("Transcript final persisted. event=transcript_final_persisted sessionId=%s callId=%s sequenceNo=%d finalReceivedAt=%s persistedAt=%s persistenceLatencyMs=%d storeStatus=%s",
+		segment.SessionID, segment.CallID, segment.SequenceNo,
+		segment.ReceivedAtUTC.UTC().Format(time.RFC3339Nano), persistedAt.Format(time.RFC3339Nano),
+		durationSince(persistedAt, segment.ReceivedAtUTC).Milliseconds(), result.Status)
 	if result.Status == domain.TranscriptSegmentCreated && s.publisher != nil {
 		s.publisher.PublishTranscriptSegment(segment)
 	}

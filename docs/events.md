@@ -4,7 +4,8 @@ DeciScope の画面更新は、会議ごとのイベントを REST と WebSocket
 
 このドキュメントは `/v1/realtime` (meeting_id ベース) のイベントを扱います。Teams Bot
 会議セッションの `transcript_segment.created` / `meeting_session.status_changed` /
-`ai_analysis.updated` / `meeting_session.bot_health_changed` イベントは
+`ai_analysis.updated` / `meeting_session.bot_health_changed` /
+`meeting_session.transcript_health_changed` / `meeting_session.media_health_changed` イベントは
 `/v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream` で
 配信され、詳細は [api.md](./api.md) を参照してください。
 
@@ -156,9 +157,6 @@ transcript.partial
 }
 ```
 
-現在のmockレポート生成では、`decision`を決定事項へ、未解決の`risk`と
-`issue`（subtypeを含む）をリスク・未解決事項へMarkdown出力します。
-
 ### tree.update
 
 ```json
@@ -202,6 +200,12 @@ semantic hintsとfinal transcript/item evidenceを決定的に再照合します
 再検証し、採用時はprogressだけでなく`agendaRefs`とitem parentも修復します。
 owner/adminの手動statusは別レコードに保存され、配信時の`manualStatus` /
 `effectiveStatus`が自動算出した`computedStatus`より優先されます。
+
+予定外のdynamic candidateは、従来の複数ラウンド継続経路に加え、同一live analysis
+バッチ内に独立した根拠itemが複数揃った場合にもmaterializeします。単一バッチ経路では、
+grounding済み・非low-information・非split fragment・候補主題と整合するitemだけを対象に、
+semantic duplicateと同一evidenceを除外します。item kindの違いだけでは独立とみなしません。
+昇格時は候補に属する全itemを新topicへreparentし、再送時は同じ安定topic IDへ収束します。
 
 `status` は任意で、live analysis では `open` / `updated` / `resolved` を使います。`description` はノード内容を短く説明する任意フィールド、`relatedItemIds` は関連する `analysis.delta` / live analysis `items` のid配列です。live analysisでは存在しないitem idはサーバー側で除外されますが、解消済みitem idは `resolved` カードへの関連として保持されます。
 

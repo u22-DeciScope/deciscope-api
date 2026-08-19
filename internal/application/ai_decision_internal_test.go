@@ -28,6 +28,49 @@ func TestDetectDecisionCandidatesAcceptsExplicitAndRejectsUndecided(t *testing.T
 	}
 }
 
+func TestDecisionCandidatesTreatConfirmedDecisionSummaryAsGroundedDecisions(t *testing.T) {
+	segments := []domain.TranscriptSegment{finalSegment(21,
+		"今日決まったのは、営業部の5人を対象に2週間試験すること。開始前にセキュリティルールを確認すること。",
+	)}
+	candidates := detectDecisionCandidates(segments)
+	if len(candidates) != 2 {
+		t.Fatalf("candidates=%+v, want two confirmed summary decisions", candidates)
+	}
+	for _, candidate := range candidates {
+		if candidate.Recap || candidate.SequenceNo != 21 || len(candidate.SourceSequenceNos) != 1 {
+			t.Fatalf("candidate=%+v", candidate)
+		}
+	}
+}
+
+func TestConfirmedDecisionSummaryCreatesGroundedItemsAndRejectsNoDecisionSummary(t *testing.T) {
+	segments := []domain.TranscriptSegment{finalSegment(21,
+		"今日決まったのは、営業部の5人を対象に2週間試験すること。開始前にセキュリティルールを確認すること。",
+	)}
+	model := `{"summary":"会議終了","currentTopic":"","items":[],"newTopics":[],"assignments":[]}`
+	reconciled, audit, err := reconcileDecisionCandidates(model, nil, detectDecisionCandidates(segments))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff liveAnalysisPayload
+	if err := json.Unmarshal([]byte(reconciled), &diff); err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.Items) != 2 || audit.AcceptedDecisions != 2 {
+		t.Fatalf("items=%+v audit=%+v", diff.Items, audit)
+	}
+	for _, item := range diff.Items {
+		if item.Kind != "decision" || len(item.EvidenceSequenceNos) != 1 || item.EvidenceSequenceNos[0] != 21 {
+			t.Fatalf("item=%+v", item)
+		}
+	}
+	if candidates := detectDecisionCandidates([]domain.TranscriptSegment{
+		finalSegment(22, "今日決まったことは何もありません。期間は次回検討します。"),
+	}); len(candidates) != 0 {
+		t.Fatalf("negative summary candidates=%+v", candidates)
+	}
+}
+
 func TestDecisionCandidateJoinsAdjacentSameSpeakerFragments(t *testing.T) {
 	segments := []domain.TranscriptSegment{
 		{SequenceNo: 10, SpeakerID: "speaker-1", Text: "渡り鳥の調査については、海岸側、北側、南側の合計三地点で。", IsFinal: true},
