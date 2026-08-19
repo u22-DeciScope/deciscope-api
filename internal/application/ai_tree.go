@@ -353,6 +353,24 @@ func rebuildDiscussionTree(
 	// fixed-skeleton design. A later grounded assignment can materialize the
 	// same agenda again without losing its logical record.
 	agendaRecords := agendaRecordMap(mc)
+	// The model occasionally prefixes a logical agenda ID with "topic-" even
+	// though agenda topics receive a server-owned materialized hash. Treat only
+	// exact topic-agenda-* aliases as their existing logical agenda record; do
+	// not fuzzy-map arbitrary unknown topic IDs.
+	for index := range assignments {
+		rawParentID := strings.TrimSpace(assignments[index].ParentTopicID)
+		logicalAgendaID := strings.TrimPrefix(rawParentID, "topic-")
+		if logicalAgendaID == rawParentID || !strings.HasPrefix(logicalAgendaID, "agenda-") {
+			continue
+		}
+		if _, exists := agendaRecords[logicalAgendaID]; !exists {
+			continue
+		}
+		if strings.TrimSpace(assignments[index].ModelParentTopicID) == "" {
+			assignments[index].ModelParentTopicID = rawParentID
+		}
+		assignments[index].ParentTopicID = logicalAgendaID
+	}
 	// A model may restate a planned agenda as a new topic proposal. Resolve the
 	// proposal ID back to the agenda anchor before materialization so it cannot
 	// create a redundant dynamic candidate.

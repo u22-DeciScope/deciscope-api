@@ -2925,6 +2925,52 @@
       "applyFinalRepair": true
     },
     {
+      "id": "agenda-continuity-logical-alias-and-confirmed-recap",
+      "description": "短いagenda名の具体的な継続発言をagenda外へ落とさず、論理topic aliasと明示的な決定recapをcanonical agendaへ結び付ける",
+      "transcriptSegments": [
+        {"sequenceNo": 1, "speaker": "司会", "text": "まず試験導入の対象部署ですが、営業部から始めます。"},
+        {"sequenceNo": 2, "speaker": "佐藤", "text": "営業部全体ではなく、資料作成が多い5人に絞りましょう。"},
+        {"sequenceNo": 3, "speaker": "司会", "text": "今日決まったのは、営業部の5人を対象に試験することです。"},
+        {"sequenceNo": 4, "speaker": "佐藤", "text": "ここからはアジェンダ外の別件ですが、懇親会の会場も確認が必要です。"}
+      ],
+      "meetingContext": {
+        "title": "生成AI試験導入会議",
+        "purpose": "試験導入の対象部署を決定する",
+        "agendaItems": [
+          {"id": "agenda-1", "title": "試験導入の対象部署", "description": "導入対象の部署と人数を決める", "semanticHints": ["対象部署", "営業部", "対象人数"], "order": 1}
+        ]
+      },
+      "rounds": [
+        {
+          "sequenceNos": [1, 2, 3, 4],
+          "fixedAIResponse": {
+            "summary": "営業部の5人を対象に試験することを決定",
+            "currentTopic": "試験導入の対象部署",
+            "items": [
+              {"clientKey": "target-decision", "kind": "decision", "severity": "high", "title": "営業部の5人を試験対象にする", "body": "営業部のうち資料作成が多い5人を試験対象にする", "status": "open", "evidenceSequenceNos": [2, 3], "evidenceSnippets": ["営業部全体ではなく、資料作成が多い5人に絞りましょう", "営業部の5人を対象に試験することです"]},
+              {"clientKey": "social-issue", "kind": "issue", "subtype": "discussion", "severity": "low", "title": "懇親会の会場確認", "body": "懇親会の会場を確認する必要がある", "status": "open", "evidenceSequenceNos": [4], "evidenceSnippets": ["懇親会の会場も確認が必要です"]}
+            ],
+            "newTopics": [],
+            "assignments": [
+              {"nodeId": "target-decision", "parentTopicId": "topic-agenda-1", "confidence": 0.94}
+            ]
+          }
+        }
+      ],
+      "requiredPropositions": [
+        {"id": "target-decision", "text": "営業部の5人を試験対象にする", "requiredKind": "decision", "evidenceSequenceNos": [2, 3], "requiredAgendaId": "agenda-1"},
+        {"id": "social-issue", "text": "懇親会の会場確認", "requiredKind": "issue", "evidenceSequenceNos": [4]}
+      ],
+      "requiredParentSeparations": [
+        {"from": "target-decision", "to": "social-issue"}
+      ],
+      "forbiddenResults": [
+        {"type": "agenda_assignment", "text": "懇親会の会場確認", "agendaId": "agenda-1"}
+      ],
+      "finalCoverage": 4,
+      "applyFinalRepair": true
+    },
+    {
       "id": "singleton-unrelated-nearby-defer",
       "description": "直前の発話と近接し話者も同じでも、対象が異なる単独Issueは既存topicへ接続しない",
       "transcriptSegments": [

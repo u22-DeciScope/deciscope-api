@@ -4261,14 +4261,19 @@ func stableProjectionItemsForDelivery(items []liveAnalysisItem) []liveAnalysisIt
 			break
 		}
 	}
-	if !hasProjectionContract {
-		return items
-	}
 	stable := make([]liveAnalysisItem, 0, len(items))
 	for _, item := range items {
-		if item.ProjectionStatus == "stable" {
-			stable = append(stable, item)
+		if hasProjectionContract && item.ProjectionStatus != "stable" {
+			continue
 		}
+		filteredAgendaIDs := make([]string, 0, len(item.RelatedAgendaIDs))
+		for _, agendaID := range item.RelatedAgendaIDs {
+			if agendaID != virtualActionSummaryProjectionID {
+				filteredAgendaIDs = append(filteredAgendaIDs, agendaID)
+			}
+		}
+		item.RelatedAgendaIDs = filteredAgendaIDs
+		stable = append(stable, item)
 	}
 	return stable
 }

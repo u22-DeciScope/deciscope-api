@@ -104,6 +104,84 @@ func TestFinalAgendaProgressUsesMultiplePrimaryTranscriptStatementsWithoutItem(t
 	}
 }
 
+func TestFinalAgendaProgressUsesConcreteContinuationUnderShortAgendaTitle(t *testing.T) {
+	mc := &meetingContext{Agenda: []agendaItem{{
+		ID: "agenda-target", Title: "試験導入の対象部署",
+		Description:   "導入対象の部署と人数を決める",
+		SemanticHints: []string{"対象部署", "営業部", "対象人数"},
+		Order:         1, Role: agendaRolePrimary,
+	}}}
+	segments := agendaProgressEvidenceTestSegments(
+		"まず対象部署ですが、営業部から始めるのがよいと思います。",
+		"営業部全体ではなく、資料作成が多い人に絞りましょう。",
+		"最初は5人くらいを対象にします。",
+	)
+	state := &liveAnalysisPayload{}
+	state.AgendaAnchors = reconcileAgendaAnchors(nil, mc, nil, nil, 20, true)
+	state.AgendaProgress = synthesizeAgendaProgressFromAnchors(mc, state.AgendaAnchors, 20)
+
+	finalizeAgendaProgress(state, mc, 20, segments)
+	entry := agendaProgressEntryByID(state.AgendaProgress, "agenda-target")
+	if entry == nil || entry.ComputedStatus != agendaProgressDiscussed ||
+		entry.ProgressSource != agendaProgressEvidenceSourceTranscript ||
+		len(entry.EvidenceSequenceNos) < 2 || entry.DiscussionWeight <= 0 {
+		t.Fatalf("entry=%+v", entry)
+	}
+}
+
+func TestFinalAgendaProgressBackfillsTargetDepartmentFromRecordedSessionTranscript(t *testing.T) {
+	mc := &meetingContext{Agenda: []agendaItem{
+		{ID: "agenda-1", Title: "試験導入の対象部署", SemanticHints: []string{"対象部署"}, Order: 1, Role: agendaRolePrimary},
+		{ID: "agenda-2", Title: "試験導入の期間", SemanticHints: []string{"期間"}, Order: 2, Role: agendaRolePrimary},
+		{ID: "agenda-3", Title: "セキュリティ上の懸念", SemanticHints: []string{"セキュリティ"}, Order: 3, Role: agendaRolePrimary},
+	}}
+	segments := []domain.TranscriptSegment{
+		finalSegment(2, "まず対象部署なんですけど、営業部から始めるのがいいと思います。"),
+		finalSegment(3, "営業部全体では怖いですね。"),
+		finalSegment(4, "最初は5人くらいを対象にしましょう。"),
+		finalSegment(5, "試験期間はどれくらいにしますか。"),
+		finalSegment(6, "2週間で進めましょう。"),
+		finalSegment(7, "開始前にセキュリティ上のルールを確認したいです。"),
+		finalSegment(21, "今日決まったのは、営業部の5人を対象に2週間試験すること。開始前にセキュリティ上のルールを確認すること。"),
+	}
+	state := &liveAnalysisPayload{}
+	state.AgendaAnchors = reconcileAgendaAnchors(nil, mc, nil, nil, 21, true)
+	state.AgendaProgress = synthesizeAgendaProgressFromAnchors(mc, state.AgendaAnchors, 21)
+
+	finalizeAgendaProgress(state, mc, 21, segments)
+	entry := agendaProgressEntryByID(state.AgendaProgress, "agenda-1")
+	if entry == nil || entry.ComputedStatus != agendaProgressDiscussed ||
+		entry.ProgressSource != agendaProgressEvidenceSourceTranscript ||
+		len(entry.EvidenceSequenceNos) < 2 || entry.DiscussionWeight <= 0 {
+		t.Fatalf("entry=%+v", entry)
+	}
+}
+
+func TestAgendaProgressRepairsActiveItemsWithoutAccumulatedWeight(t *testing.T) {
+	mc := agendaProgressEvidenceTestContext()
+	item := liveAnalysisItem{
+		ID: "issue-impact", Kind: "issue", Title: "3階で接続障害が発生",
+		Body: "3階の業務端末が社内ネットワークへ接続できない", Status: "open",
+		ClassificationStatus: classificationAssigned, AssignmentConfidence: .9,
+		EvidenceSequenceNos: []int64{1},
+	}
+	tree, topicID := agendaProgressEvidenceTestTree(item)
+	previous := &agendaProgressState{Entries: []agendaProgressEntry{{
+		ID: "agenda-impact", Title: "ネットワーク障害の影響範囲", SourceType: agendaProgressSourceFixed,
+		ComputedStatus: agendaProgressNotStarted, MaterializedTopicIDs: []string{topicID},
+	}}}
+	anchors := []agendaAnchor{{AgendaID: "agenda-impact", Status: agendaStatusDiscussed, MaterializedTopicIDs: []string{topicID}}}
+	progress := evaluateAgendaProgress(agendaProgressInputs{
+		Previous: previous, MC: mc, Tree: tree, Items: []liveAnalysisItem{item}, Anchors: anchors,
+		TreeVersion: 12, Timeline: discourseTimeline{Roles: map[int64]liveEvidenceRole{1: liveEvidencePrimary}},
+	})
+	entry := agendaProgressEntryByID(progress, "agenda-impact")
+	if entry == nil || entry.ComputedStatus == agendaProgressNotStarted ||
+		entry.ActiveItemCount != 1 || entry.DiscussionWeight <= 0 || entry.WeightRaw <= 0 {
+		t.Fatalf("entry=%+v", entry)
+	}
+}
+
 func TestFinalAgendaProgressRejectsMaterializationAndRecapOnlySupport(t *testing.T) {
 	mc := agendaProgressEvidenceTestContext()
 	tree, _ := agendaProgressEvidenceTestTree()
@@ -135,7 +213,7 @@ func TestFinalAgendaProgressRejectsMaterializationAndRecapOnlySupport(t *testing
 	}
 }
 
-func TestFinalAgendaProgressReparentRecomputesWeightAndIsIdempotent(t *testing.T) {
+func TestFinalAgendaProgressReparentPreservesIndependentTranscriptSupportAndIsIdempotent(t *testing.T) {
 	mc := &meetingContext{Agenda: []agendaItem{
 		{
 			ID: "agenda-old", Title: "障害影響の確認", Description: "利用者影響を確認する",
@@ -172,7 +250,11 @@ func TestFinalAgendaProgressReparentRecomputesWeightAndIsIdempotent(t *testing.T
 		},
 	}}
 	rebuildTreeEdges(tree)
-	segments := agendaProgressEvidenceTestSegments("旧スイッチへ切り戻してトランク設定を修正しました。")
+	segments := agendaProgressEvidenceTestSegments(
+		"利用者への影響を確認したところ、3階の受注業務が停止していました。",
+		"2階でも利用者の一部に業務遅延が発生していました。",
+		"旧スイッチへ切り戻してトランク設定を修正しました。",
+	)
 	state := &liveAnalysisPayload{Tree: tree, Items: []liveAnalysisItem{item}}
 	state.AgendaAnchors = reconcileAgendaAnchors(nil, mc, tree, state.Items, 21, true)
 	state.AgendaProgress = synthesizeAgendaProgressFromAnchors(mc, state.AgendaAnchors, 21)
@@ -184,9 +266,9 @@ func TestFinalAgendaProgressReparentRecomputesWeightAndIsIdempotent(t *testing.T
 	finalizeAgendaProgress(state, mc, 21, segments)
 	oldEntry = agendaProgressEntryByID(state.AgendaProgress, "agenda-old")
 	newEntry := agendaProgressEntryByID(state.AgendaProgress, "agenda-new")
-	if oldEntry.ComputedStatus != agendaProgressNotStarted ||
-		oldEntry.ProgressSource != agendaProgressEvidenceSourceNone ||
-		oldEntry.DiscussionWeight != 0 || oldEntry.ActiveItemCount != 0 {
+	if oldEntry.ComputedStatus != agendaProgressDiscussed ||
+		oldEntry.ProgressSource != agendaProgressEvidenceSourceTranscript ||
+		oldEntry.DiscussionWeight <= 0 || oldEntry.ActiveItemCount != 0 || len(oldEntry.EvidenceSequenceNos) < 2 {
 		t.Fatalf("old entry=%+v", oldEntry)
 	}
 	if newEntry.ComputedStatus != agendaProgressDiscussed ||
@@ -212,7 +294,7 @@ func TestFinalAgendaProgressReparentRecomputesWeightAndIsIdempotent(t *testing.T
 		StatusOverrides: map[string]string{"agenda-old": agendaProgressDiscussed},
 	})
 	if got := agendaProgressEntryByID(effective, "agenda-old"); got == nil ||
-		got.ComputedStatus != agendaProgressNotStarted ||
+		got.ComputedStatus != agendaProgressDiscussed ||
 		got.EffectiveStatus != agendaProgressDiscussed {
 		t.Fatalf("manual override lost: %+v", got)
 	}

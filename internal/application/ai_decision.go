@@ -36,18 +36,19 @@ type decisionExtractionAudit struct {
 }
 
 var (
-	decisionClauseSplitPattern   = regexp.MustCompile(`[。！？!?\n]+`)
-	decisionPositivePattern      = regexp.MustCompile(`(?:決定(?:事項)?(?:と)?します|決定事項とします|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします|を必須にします|を必須とします|を必然にします|必須化します|を導入します|を義務付けます|を義務化します|(?:から|を)適用します$)`)
-	decisionRecapPattern         = regexp.MustCompile(`決定事項(?:は|として)`)
-	decisionNegativePattern      = regexp.MustCompile(`(?:未決定|決まってい(?:ない|ません)|決定してい(?:ない|ません)|決定せず|まだ決定|次回.{0,12}決定|決定.{0,12}(?:検討|候補)|採用.{0,12}(?:検討|候補)|候補にすぎ|したい|予定です)`)
-	decisionSuffixPattern        = regexp.MustCompile(`(?:する)?ことを決定(?:事項)?と?します|決定(?:事項)?と?します|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします`)
-	leadingParticlePattern       = regexp.MustCompile(`^(?:の|を|が|は|に|で|と)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
-	leadingAnaphoraPattern       = regexp.MustCompile(`^(?:この|その)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
-	decisionReferentPattern      = regexp.MustCompile(`(?:^|[、,。！？!?])([^、,。！？!?]{2,80}?)を(?:作成|策定|準備|定義|設定|整備|手順化|作(?:ります|る|りました))(?:します|する|しました|した)?$`)
-	checklistReferentPattern     = regexp.MustCompile(`^(.{2,24})で(.{2,32})を実施するチェックリスト$`)
-	todoCreationVerbPattern      = regexp.MustCompile(`作成|策定|準備|起票|ドラフト`)
-	decisionAdoptionVerbPattern  = regexp.MustCompile(`適用|運用|導入|施行`)
-	explicitMandateSuffixPattern = regexp.MustCompile(`^(.{4,128})を(必須|必然)(に|と)します$`)
+	decisionClauseSplitPattern      = regexp.MustCompile(`[。！？!?\n]+`)
+	decisionPositivePattern         = regexp.MustCompile(`(?:決定(?:事項)?(?:と)?します|決定事項とします|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします|を必須にします|を必須とします|を必然にします|必須化します|を導入します|を義務付けます|を義務化します|(?:から|を)適用します$)`)
+	decisionRecapPattern            = regexp.MustCompile(`決定事項(?:は|として)`)
+	confirmedDecisionSummaryPattern = regexp.MustCompile(`^(?:(?:今日|今回)[、, ]*)?決まった(?:こと|の)は[、,:： ]*`)
+	decisionNegativePattern         = regexp.MustCompile(`(?:未決定|決まってい(?:ない|ません)|決まった(?:こと|もの)?(?:は)?(?:特に|何も)?(?:ありません|ない)|決定してい(?:ない|ません)|決定せず|まだ決定|次回.{0,12}決定|決定.{0,12}(?:検討|候補)|採用.{0,12}(?:検討|候補)|候補にすぎ|したい|予定です)`)
+	decisionSuffixPattern           = regexp.MustCompile(`(?:する)?ことを決定(?:事項)?と?します|決定(?:事項)?と?します|を採用します|で確定します|を方針とします|方針にします|で進めます|ことにします`)
+	leadingParticlePattern          = regexp.MustCompile(`^(?:の|を|が|は|に|で|と)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
+	leadingAnaphoraPattern          = regexp.MustCompile(`^(?:この|その)(?:運用|対応|確認|実施|適用|更新|作成|検討|設定|管理|方針|手順|方法|内容|結果|影響|条件|対象|作業|処理|実行|導入|採用)`)
+	decisionReferentPattern         = regexp.MustCompile(`(?:^|[、,。！？!?])([^、,。！？!?]{2,80}?)を(?:作成|策定|準備|定義|設定|整備|手順化|作(?:ります|る|りました))(?:します|する|しました|した)?$`)
+	checklistReferentPattern        = regexp.MustCompile(`^(.{2,24})で(.{2,32})を実施するチェックリスト$`)
+	todoCreationVerbPattern         = regexp.MustCompile(`作成|策定|準備|起票|ドラフト`)
+	decisionAdoptionVerbPattern     = regexp.MustCompile(`適用|運用|導入|施行`)
+	explicitMandateSuffixPattern    = regexp.MustCompile(`^(.{4,128})を(必須|必然)(に|と)します$`)
 	// deliberativeTodoPattern matches a TODO whose own subject is still an
 	// open deliberation ("何をするか決める" 系: 検討/選定/判断/決める/どうするか)
 	// as opposed to an execution task (作成/実施/確認 等)。 Only a deliberative
@@ -79,17 +80,27 @@ func detectDecisionCandidates(segments []domain.TranscriptSegment) []decisionCan
 			clause := strings.TrimSpace(rawClause)
 			clauses = append(clauses, splitExplicitMandateClause(clause)...)
 		}
+		confirmedSummary := false
 		for clauseIndex, clause := range clauses {
+			originalClause := clause
+			if location := confirmedDecisionSummaryPattern.FindStringIndex(clause); location != nil {
+				confirmedSummary = true
+				clause = strings.TrimSpace(clause[location[1]:])
+			}
+			if decisionNegativePattern.MatchString(originalClause) {
+				confirmedSummary = false
+				continue
+			}
 			if clause == "" || decisionNegativePattern.MatchString(clause) {
 				continue
 			}
-			recap := decisionRecapPattern.MatchString(clause)
-			if !recap && !decisionPositivePattern.MatchString(clause) {
+			recap := !confirmedSummary && decisionRecapPattern.MatchString(clause)
+			if !confirmedSummary && !recap && !decisionPositivePattern.MatchString(clause) {
 				continue
 			}
 			sourceSequenceNos := []int64{segment.SequenceNo}
 			statement := clause
-			if !recap && (!completeDecisionStatement(statement) || decisionStatementNeedsReferent(statement)) {
+			if !confirmedSummary && !recap && (!completeDecisionStatement(statement) || decisionStatementNeedsReferent(statement)) {
 				repaired := false
 				normalized := normalizeDiscourseText(clause)
 				if leadingParticlePattern.MatchString(normalized) || leadingAnaphoraPattern.MatchString(normalized) {

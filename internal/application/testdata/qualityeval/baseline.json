@@ -5088,6 +5088,137 @@
       ],
       "finalCoverage": 3,
       "treeVersion": 1
+    },
+    {
+      "id": "agenda-continuity-logical-alias-and-confirmed-recap",
+      "passed": true,
+      "metrics": {
+        "requiredPropositionRecall": 1,
+        "unsupportedPropositionCount": 0,
+        "classificationAccuracy": 1,
+        "temporalScopeAccuracy": 0,
+        "pastFactCount": 0,
+        "issueCount": 1,
+        "resolvedIssueCount": 0,
+        "incorrectResolvedIssueCount": 0,
+        "riskRecall": 1,
+        "todoRecall": 1,
+        "decisionRecall": 1,
+        "semanticDuplicateCount": 0,
+        "semantic_split_source_active_count": 0,
+        "semantic_split_source_fragment_duplicate_count": 0,
+        "semantic_split_replacement_missing_count": 0,
+        "recap_duplicate_item_count": 0,
+        "recap_existing_item_update_count": 0,
+        "recap_new_information_item_count": 0,
+        "lowInformationLabelCount": 0,
+        "contextDependentLabelCount": 0,
+        "truncatedLabelCount": 0,
+        "hierarchyRelationAccuracy": 1,
+        "candidateFragmentationCount": 0,
+        "crossAgendaContaminationCount": 0,
+        "label_description_exact_duplicate_count": 0,
+        "label_description_high_similarity_count": 0,
+        "description_unsupported_atom_count": 0,
+        "description_added_grounded_detail_count": 0,
+        "label_transcript_copy_ratio": 0,
+        "label_compression_ratio": 0.291005291005291,
+        "description_redundant_count": 0,
+        "singletonAttachmentEligibleCount": 1,
+        "singletonAttachmentAppliedCount": 0,
+        "singletonAttachmentDeferredCount": 1,
+        "singletonAttachmentAmbiguousCount": 0,
+        "singletonAttachmentWrongParentCount": 0,
+        "unclassifiedGroundedSingletonCount": 1
+      },
+      "inputMode": "transcript_context_fixed_ai",
+      "productionStages": [
+        "live_extraction_result_application",
+        "semantic_grounding",
+        "kind_validation",
+        "evidence_normalization",
+        "candidate_lifecycle",
+        "dynamic_topic_promotion",
+        "grouping",
+        "finalization_repair",
+        "final_delivery_projection"
+      ],
+      "propositionMatches": [
+        {
+          "propositionId": "target-decision",
+          "expectedText": "営業部の5人を試験対象にする",
+          "requiredKind": "decision",
+          "expectedEvidence": [
+            2,
+            3
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-decision-3b0444421113",
+            "kind": "decision",
+            "title": "営業部の5人を試験対象にする",
+            "status": "open",
+            "evidenceSequenceNos": [
+              2,
+              3
+            ]
+          }
+        },
+        {
+          "propositionId": "social-issue",
+          "expectedText": "懇親会の会場確認",
+          "requiredKind": "issue",
+          "expectedEvidence": [
+            4
+          ],
+          "matched": true,
+          "similarity": 1,
+          "bestActualCandidate": {
+            "id": "item-issue-discussion-853a4795b17d",
+            "kind": "issue",
+            "title": "懇親会の会場確認",
+            "status": "open",
+            "evidenceSequenceNos": [
+              4
+            ]
+          }
+        }
+      ],
+      "parentAssignments": [
+        {
+          "propositionId": "social-issue",
+          "kind": "issue",
+          "parentPath": [
+            "追加論点"
+          ]
+        },
+        {
+          "propositionId": "target-decision",
+          "kind": "decision",
+          "parentPath": [
+            "営業部の5人を試験対象にする"
+          ]
+        }
+      ],
+      "requiredParentSeparations": [
+        {
+          "from": "target-decision",
+          "to": "social-issue"
+        }
+      ],
+      "kindDistribution": [
+        {
+          "kind": "decision",
+          "count": 1
+        },
+        {
+          "kind": "issue",
+          "count": 1
+        }
+      ],
+      "finalCoverage": 4,
+      "treeVersion": 1
     }
   ]
 }

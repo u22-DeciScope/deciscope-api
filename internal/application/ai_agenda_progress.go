@@ -608,6 +608,14 @@ func evaluateAgendaProgress(in agendaProgressInputs) *agendaProgressState {
 		}
 		return false
 	}
+	hasActiveCanonicalItem := func(agendaID string) bool {
+		for _, item := range relatedByID[agendaID] {
+			if agendaProgressItemIsActive(item, &in.Timeline) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, id := range order {
 		entry, ok := entriesByID[id]
 		if !ok {
@@ -623,7 +631,8 @@ func evaluateAgendaProgress(in agendaProgressInputs) *agendaProgressState {
 			_, reconciledThisRound := reconciledActive[id]
 			if backfilledPast && isFixed && grounded && id != newCurrent {
 				entry.ComputedStatus = agendaProgressDiscussed
-			} else if roundSegments[id] >= 2 ||
+			} else if hasActiveCanonicalItem(id) ||
+				roundSegments[id] >= 2 ||
 				(entry.SubstantiveSegments >= 2 && entry.ActiveRounds >= 2) ||
 				len(roundItemEvidenceSequenceNos[id]) >= 2 ||
 				(reconciledThisRound && len(relatedByID[id]) > 0) {
@@ -693,6 +702,11 @@ func evaluateAgendaProgress(in agendaProgressInputs) *agendaProgressState {
 			entry.EvidenceSequenceNos = nil
 		}
 		entry.DiscussionVolume = len(entry.EvidenceSequenceNos)
+		if len(activeIDs) > 0 && entry.WeightRaw <= 0 {
+			volume := maxAgendaProgressInt(1, entry.DiscussionVolume)
+			entry.WeightRaw = float64(volume) +
+				0.5*float64(minAgendaProgressInt(len(activeIDs), 2))
+		}
 	}
 
 	maxWeight := 0.0
@@ -1167,6 +1181,9 @@ func recomputeFinalAgendaProgressEvidence(
 	}
 
 	scope, timeline := agendaTimelineFromSegments(segments)
+	agendaSpans := detectAgendaContextSpans(scope, mc, nil, timeline)
+	fixedSpanBlocked := make(map[int64]bool)
+	fixedSpanInherited := make(map[int64]int)
 	transcriptByAgenda := make(map[string][]agendaProgressTranscriptEvidence)
 	for _, segment := range segments {
 		switch timeline.Roles[segment.SequenceNo] {
@@ -1185,12 +1202,40 @@ func recomputeFinalAgendaProgressEvidence(
 		agenda, score, _, _, rejectedReason := bestAgendaEvidenceMatch(
 			probe, text, eligibleAgendas, scope, timeline,
 		)
-		if rejectedReason != "" || agenda.ID == "" {
+		span, hasFixedSpan := agendaContextSpanForEvidence([]int64{segment.SequenceNo}, agendaSpans)
+		if hasFixedSpan && (span.Mode != agendaContextModeFixed || span.AgendaID == "") {
+			hasFixedSpan = false
+		}
+		if rejectedReason == "" && agenda.ID != "" {
+			transcriptByAgenda[agenda.ID] = append(
+				transcriptByAgenda[agenda.ID],
+				agendaProgressTranscriptEvidence{SequenceNo: segment.SequenceNo, Score: score},
+			)
+			if hasFixedSpan && agenda.ID != span.AgendaID && score >= 0.68 {
+				fixedSpanBlocked[span.StartSequenceNo] = true
+			}
 			continue
 		}
-		transcriptByAgenda[agenda.ID] = append(
-			transcriptByAgenda[agenda.ID],
-			agendaProgressTranscriptEvidence{SequenceNo: segment.SequenceNo, Score: score},
+		if !hasFixedSpan || fixedSpanBlocked[span.StartSequenceNo] ||
+			fixedSpanInherited[span.StartSequenceNo] >= 2 {
+			continue
+		}
+		// A strong match to another planned agenda is an implicit boundary for
+		// final backfill, even when the speaker did not say "next". This keeps
+		// explicit agenda continuity useful without making it unboundedly sticky.
+		if targetID, targetScore := strongAgendaSemanticTarget(text, mc); targetID != "" &&
+			targetID != span.AgendaID && targetScore >= 0.68 {
+			fixedSpanBlocked[span.StartSequenceNo] = true
+			continue
+		}
+		fixedSpanInherited[span.StartSequenceNo]++
+		inheritedScore := span.Confidence
+		if inheritedScore < 0.55 {
+			inheritedScore = 0.55
+		}
+		transcriptByAgenda[span.AgendaID] = append(
+			transcriptByAgenda[span.AgendaID],
+			agendaProgressTranscriptEvidence{SequenceNo: segment.SequenceNo, Score: inheritedScore},
 		)
 	}
 
