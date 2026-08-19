@@ -190,11 +190,15 @@ func TestFinalizationUsesLKGWhenTranscriptFetchFails(t *testing.T) {
 	if getErr != nil || snapshot == nil || snapshot.Status != domain.MeetingAIAnalysisCompleted {
 		t.Fatalf("transcript fetch failure stopped final tree snapshot: snapshot=%+v error=%v", snapshot, getErr)
 	}
+	// The pipeline finished and produced a summary, so finalization terminates
+	// as completed. The coverage gap stays observable through the payload (and
+	// through the error returned to the caller above) rather than by leaving a
+	// finished finalization in a failed state the web would have to guess at.
 	progress, getErr := base.GetMeetingAIAnalysis(
 		context.Background(), "session-transcript-failure", domain.MeetingAIAnalysisFinalization,
 	)
-	if getErr != nil || progress == nil || progress.Status != domain.MeetingAIAnalysisFailed {
-		t.Fatalf("finalization progress=%+v error=%v, want observable incomplete result", progress, getErr)
+	if getErr != nil || progress == nil || progress.Status != domain.MeetingAIAnalysisCompleted {
+		t.Fatalf("finalization progress=%+v error=%v, want a completed finalization", progress, getErr)
 	}
 	var progressPayload finalizationProgressPayload
 	if err := json.Unmarshal(progress.Payload, &progressPayload); err != nil {
@@ -202,6 +206,13 @@ func TestFinalizationUsesLKGWhenTranscriptFetchFails(t *testing.T) {
 	}
 	if !progressPayload.TranscriptFallbackUsed || !progressPayload.FinalizationIncomplete {
 		t.Fatalf("progress payload=%+v, want transcript fallback/incomplete", progressPayload)
+	}
+	if progressPayload.FinalizationStatus != finalizationStatusCompleted ||
+		progressPayload.FinalizationErrorCode != finalizationErrorCodeIncompleteCoverage {
+		t.Fatalf("progress payload=%+v, want completed with an incomplete-coverage error code", progressPayload)
+	}
+	if progressPayload.SummaryVersion == 0 {
+		t.Fatalf("progress payload=%+v, want the produced summary version recorded", progressPayload)
 	}
 	transcripts.mu.Lock()
 	listCalls := transcripts.listCalls

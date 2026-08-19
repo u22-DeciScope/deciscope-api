@@ -40,6 +40,7 @@ type MeetingAIAnalysisUseCases interface {
 	GetMeetingAIAnalyses(ctx context.Context, sessionID string) (*application.MeetingAIAnalysesSnapshot, error)
 	ListFinalSummaryPreviews(ctx context.Context, sessionIDs []string) ([]application.MeetingFinalSummaryPreview, error)
 	UpdateAgendaProgressOverride(ctx context.Context, sessionID string, input application.AgendaProgressOverrideInput) (json.RawMessage, error)
+	StartMeetingSessionFinalizationRetry(ctx context.Context, sessionID string) error
 }
 
 type MeetingSessionAPI struct {
@@ -48,7 +49,14 @@ type MeetingSessionAPI struct {
 	transcriptRealtime http.HandlerFunc
 	aiAnalysis         MeetingAIAnalysisUseCases
 	metricsStore       *application.BotMediaMetricsStore
+	mediaHealth        *application.BotMediaHealthService
 	apiKey             string
+}
+
+func WithMeetingSessionBotMediaHealth(service *application.BotMediaHealthService) MeetingSessionAPIOption {
+	return func(api *MeetingSessionAPI) {
+		api.mediaHealth = service
+	}
 }
 
 type MeetingSessionAPIOption func(*MeetingSessionAPI)
@@ -404,6 +412,46 @@ func (api *MeetingSessionAPI) GetWorkspaceAIAnalyses(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, meetingAIAnalysesResponseFromSnapshot(session.ID, snapshot))
 }
 
+// RetryWorkspaceFinalization re-runs the finalization pipeline for a session
+// that ended without a usable final summary. The pass itself runs outside the
+// request; clients observe the outcome through the finalization state on the
+// AI analyses endpoint.
+func (api *MeetingSessionAPI) RetryWorkspaceFinalization(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	if api.aiAnalysis == nil {
+		writeError(w, http.StatusServiceUnavailable, "ai_analysis_unavailable", "AI analysis service is unavailable")
+		return
+	}
+	err := api.aiAnalysis.StartMeetingSessionFinalizationRetry(r.Context(), session.ID)
+	switch {
+	case err == nil:
+	case errors.Is(err, application.ErrMeetingFinalizationAlreadyCompleted):
+		writeError(w, http.StatusConflict, "finalization_already_completed", "meeting finalization already completed")
+		return
+	case errors.Is(err, application.ErrMeetingFinalizationRetryUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "finalization_retry_unavailable", "meeting finalization retry is unavailable")
+		return
+	case errors.Is(err, domain.ErrInvalidArgument):
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	default:
+		log.Printf("Workspace finalization retry failed. workspaceId=%s sessionId=%s error=%v", session.WorkspaceID, session.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	log.Printf("Workspace finalization retry accepted. workspaceId=%s sessionId=%s", session.WorkspaceID, session.ID)
+	snapshot, snapshotErr := api.aiAnalysis.GetMeetingAIAnalyses(r.Context(), session.ID)
+	if snapshotErr != nil {
+		log.Printf("Workspace finalization retry snapshot fetch failed. workspaceId=%s sessionId=%s error=%v", session.WorkspaceID, session.ID, snapshotErr)
+		writeJSON(w, http.StatusAccepted, meetingAIAnalysesResponse{SessionID: session.ID, LiveHistory: []meetingAIAnalysisResponse{}})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, meetingAIAnalysesResponseFromSnapshot(session.ID, snapshot))
+}
+
 // UpdateAgendaProgressForWorkspace applies exactly one manual agenda-progress
 // override (a per-entry status override, or a current-topic override) and
 // returns the freshly stamped agendaProgress projection. Role enforcement
@@ -669,6 +717,11 @@ func (api *MeetingSessionAPI) RecordBotHeartbeat(w http.ResponseWriter, r *http.
 	if api.metricsStore != nil {
 		if metrics, ok := request.botMediaMetrics(); ok {
 			api.metricsStore.Record(sessionID, metrics)
+			if metrics.BotGitCommitSHA != "" {
+				log.Printf("Meeting session component fingerprint. sessionId=%s botBuildVersion=%s botGitCommitSha=%s botBuildTimestamp=%s botDirtyBuild=%s",
+					sessionID, metrics.BotBuildVersion, metrics.BotGitCommitSHA,
+					metrics.BotBuildTimestamp, metrics.BotDirtyBuild)
+			}
 		}
 	}
 	session, err := api.service.RecordMeetingSessionHeartbeat(r.Context(), sessionID)
@@ -679,8 +732,82 @@ func (api *MeetingSessionAPI) RecordBotHeartbeat(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, meetingSessionResponseFromDomain(*session))
 }
 
+func (api *MeetingSessionAPI) RecordBotMediaHealth(w http.ResponseWriter, r *http.Request) {
+	if !authorizedSecret(r.Header.Get("X-DeciScope-Api-Key"), api.apiKey) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
+		return
+	}
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+	var request meetingSessionMediaHealthRequest
+	if !decodeLimitedJSONAllowUnknown(w, r, meetingSessionBodyLimitBytes, &request) {
+		return
+	}
+	if api.mediaHealth == nil {
+		writeError(w, http.StatusServiceUnavailable, "media_health_unavailable", "media health service is unavailable")
+		return
+	}
+	sessionID := strings.TrimSpace(chi.URLParam(r, "session_id"))
+	session, err := api.service.GetMeetingSession(r.Context(), sessionID)
+	if err != nil {
+		writeMeetingSessionError(w, err)
+		return
+	}
+	if callID := strings.TrimSpace(request.BotCallID); callID != "" && session.BotCallID != "" && callID != session.BotCallID {
+		writeError(w, http.StatusConflict, "bot_call_mismatch", "bot call id does not match the meeting session")
+		return
+	}
+	state, _, err := api.mediaHealth.Record(*session, application.BotMediaHealthUpdate{
+		EventID: request.EventID, BotCallID: request.BotCallID, State: request.State,
+		Event: request.Event, Source: request.Source,
+		OccurredAt:           parseOptionalRFC3339(request.OccurredAtUTC),
+		StartedAt:            parseOptionalRFC3339(request.StartedAtUTC),
+		LastAudioFrameAt:     parseOptionalRFC3339(request.LastAudioFrameAtUTC),
+		DurationMilliseconds: request.DurationMilliseconds,
+	})
+	if err != nil {
+		writeMeetingSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (api *MeetingSessionAPI) GetWorkspaceBotMediaHealth(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.workspaceMeetingSession(w, r)
+	if !ok {
+		return
+	}
+	if api.mediaHealth == nil {
+		now := time.Now().UTC()
+		writeJSON(w, http.StatusOK, application.BotMediaHealthState{
+			SessionID: session.ID, State: application.BotMediaHealthOK, Event: "snapshot",
+			OccurredAt: now, UpdatedAt: now,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, api.mediaHealth.Get(session.ID))
+}
+
+type meetingSessionMediaHealthRequest struct {
+	EventID              string `json:"eventId"`
+	BotCallID            string `json:"botCallId"`
+	State                string `json:"state"`
+	Event                string `json:"event"`
+	Source               string `json:"source"`
+	OccurredAtUTC        string `json:"occurredAtUtc"`
+	StartedAtUTC         string `json:"startedAtUtc"`
+	LastAudioFrameAtUTC  string `json:"lastAudioFrameAtUtc"`
+	DurationMilliseconds int64  `json:"durationMs"`
+}
+
 type meetingSessionHeartbeatRequest struct {
 	BotCallID                        string  `json:"botCallId"`
+	BotBuildVersion                  string  `json:"botBuildVersion"`
+	BotGitCommitSHA                  string  `json:"botGitCommitSha"`
+	BotBuildTimestamp                string  `json:"botBuildTimestamp"`
+	BotDirtyBuild                    string  `json:"botDirtyBuild"`
 	LastAudioFrameAtUTC              string  `json:"lastAudioFrameAtUtc"`
 	LastNonZeroAudioAtUTC            string  `json:"lastNonZeroAudioAtUtc"`
 	LastNonEmptyTranscriptAtUTC      string  `json:"lastNonEmptyTranscriptAtUtc"`
@@ -696,6 +823,16 @@ type meetingSessionHeartbeatRequest struct {
 	LastAudioSocketReceiveStallAtUTC string  `json:"lastAudioSocketReceiveStallAtUtc"`
 	AudioSocketReceiveStallCount     int64   `json:"audioSocketReceiveStallCount"`
 	AudioStalled                     bool    `json:"audioStalled"`
+	SpeechPipelineReady              *bool   `json:"speechPipelineReady"`
+	SpeechStarted                    *bool   `json:"speechStarted"`
+	SpeechAcceptingFrames            *bool   `json:"speechAcceptingFrames"`
+	RecognizerCreated                *bool   `json:"recognizerCreated"`
+	PushStreamOpen                   *bool   `json:"pushStreamOpen"`
+	PipelineGeneration               *int64  `json:"pipelineGeneration"`
+	RecognizerInstanceIDHash         string  `json:"recognizerInstanceIdHash"`
+	LastRecognizerStartedAtUTC       string  `json:"lastRecognizerStartedAtUtc"`
+	LastSpeechPartialAtUTC           string  `json:"lastSpeechPartialAtUtc"`
+	LastSpeechFinalAtUTC             string  `json:"lastSpeechFinalAtUtc"`
 }
 
 // botMediaMetrics builds an application.BotMediaMetrics from the decoded
@@ -705,7 +842,25 @@ type meetingSessionHeartbeatRequest struct {
 // recorded, so it does not overwrite/refresh previously stored metrics with
 // an all-zero value.
 func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.BotMediaMetrics, bool) {
+	hasBuildFingerprint := strings.TrimSpace(request.BotBuildVersion) != "" ||
+		strings.TrimSpace(request.BotGitCommitSHA) != "" ||
+		strings.TrimSpace(request.BotBuildTimestamp) != "" ||
+		strings.TrimSpace(request.BotDirtyBuild) != ""
+	hasSpeechPipelineMetrics := request.SpeechPipelineReady != nil ||
+		request.SpeechStarted != nil ||
+		request.SpeechAcceptingFrames != nil ||
+		request.RecognizerCreated != nil ||
+		request.PushStreamOpen != nil ||
+		request.PipelineGeneration != nil ||
+		strings.TrimSpace(request.RecognizerInstanceIDHash) != "" ||
+		strings.TrimSpace(request.LastRecognizerStartedAtUTC) != "" ||
+		strings.TrimSpace(request.LastSpeechPartialAtUTC) != "" ||
+		strings.TrimSpace(request.LastSpeechFinalAtUTC) != ""
 	m := application.BotMediaMetrics{
+		BotBuildVersion:               strings.TrimSpace(request.BotBuildVersion),
+		BotGitCommitSHA:               strings.TrimSpace(request.BotGitCommitSHA),
+		BotBuildTimestamp:             strings.TrimSpace(request.BotBuildTimestamp),
+		BotDirtyBuild:                 strings.TrimSpace(request.BotDirtyBuild),
 		LastAudioFrameAt:              parseOptionalRFC3339(request.LastAudioFrameAtUTC),
 		LastNonZeroAudioAt:            parseOptionalRFC3339(request.LastNonZeroAudioAtUTC),
 		LastNonEmptyTranscriptAt:      parseOptionalRFC3339(request.LastNonEmptyTranscriptAtUTC),
@@ -721,8 +876,19 @@ func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.Bot
 		LastAudioSocketReceiveStallAt: parseOptionalRFC3339(request.LastAudioSocketReceiveStallAtUTC),
 		AudioSocketReceiveStallCount:  request.AudioSocketReceiveStallCount,
 		AudioStalled:                  request.AudioStalled,
+		SpeechPipelineReady:           boolValue(request.SpeechPipelineReady),
+		SpeechStarted:                 boolValue(request.SpeechStarted),
+		SpeechAcceptingFrames:         boolValue(request.SpeechAcceptingFrames),
+		RecognizerCreated:             boolValue(request.RecognizerCreated),
+		PushStreamOpen:                boolValue(request.PushStreamOpen),
+		PipelineGeneration:            int64Value(request.PipelineGeneration),
+		RecognizerInstanceIDHash:      strings.TrimSpace(request.RecognizerInstanceIDHash),
+		LastRecognizerStartedAt:       parseOptionalRFC3339(request.LastRecognizerStartedAtUTC),
+		LastSpeechPartialAt:           parseOptionalRFC3339(request.LastSpeechPartialAtUTC),
+		LastSpeechFinalAt:             parseOptionalRFC3339(request.LastSpeechFinalAtUTC),
+		HasSpeechPipelineMetrics:      hasSpeechPipelineMetrics,
 	}
-	m.HasMetrics = !m.LastAudioFrameAt.IsZero() ||
+	m.HasMetrics = hasBuildFingerprint || !m.LastAudioFrameAt.IsZero() ||
 		!m.LastNonZeroAudioAt.IsZero() ||
 		!m.LastNonEmptyTranscriptAt.IsZero() ||
 		!m.LastFinalTranscriptAt.IsZero() ||
@@ -736,8 +902,20 @@ func (request meetingSessionHeartbeatRequest) botMediaMetrics() (application.Bot
 		m.UnmixedAudioSeen ||
 		!m.LastAudioSocketReceiveStallAt.IsZero() ||
 		m.AudioSocketReceiveStallCount != 0 ||
-		m.AudioStalled
+		m.AudioStalled ||
+		m.HasSpeechPipelineMetrics
 	return m, m.HasMetrics
+}
+
+func boolValue(value *bool) bool {
+	return value != nil && *value
+}
+
+func int64Value(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 // parseOptionalRFC3339 parses an optional RFC3339 timestamp string, treating

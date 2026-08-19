@@ -15,6 +15,10 @@ type BotMediaMetrics struct {
 	// timestamp); the watchdog uses it to decide whether these metrics are
 	// still fresh enough to trust.
 	ReceivedAt                    time.Time
+	BotBuildVersion               string
+	BotGitCommitSHA               string
+	BotBuildTimestamp             string
+	BotDirtyBuild                 string
 	LastAudioFrameAt              time.Time
 	LastNonZeroAudioAt            time.Time
 	LastNonEmptyTranscriptAt      time.Time
@@ -30,6 +34,17 @@ type BotMediaMetrics struct {
 	LastAudioSocketReceiveStallAt time.Time
 	AudioSocketReceiveStallCount  int64
 	AudioStalled                  bool
+	SpeechPipelineReady           bool
+	SpeechStarted                 bool
+	SpeechAcceptingFrames         bool
+	RecognizerCreated             bool
+	PushStreamOpen                bool
+	PipelineGeneration            int64
+	RecognizerInstanceIDHash      string
+	LastRecognizerStartedAt       time.Time
+	LastSpeechPartialAt           time.Time
+	LastSpeechFinalAt             time.Time
+	HasSpeechPipelineMetrics      bool
 	// HasMetrics reports whether this value actually carries at least one
 	// audio/transcript metric, as opposed to a bare/empty heartbeat. The
 	// watchdog must not classify against an all-zero value.

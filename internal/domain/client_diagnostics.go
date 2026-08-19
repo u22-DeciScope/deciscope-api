@@ -8,47 +8,75 @@ import "time"
 type ClientDiagnosticEventName string
 
 const (
-	ClientDiagnosticTreeStoreInitialized   ClientDiagnosticEventName = "tree_store_initialized"
-	ClientDiagnosticTreeComponentMounted   ClientDiagnosticEventName = "tree_component_mounted"
-	ClientDiagnosticTreeComponentUnmounted ClientDiagnosticEventName = "tree_component_unmounted"
-	ClientDiagnosticSessionHookCreated     ClientDiagnosticEventName = "session_hook_created"
-	ClientDiagnosticSessionHookDisposed    ClientDiagnosticEventName = "session_hook_disposed"
-	ClientDiagnosticRestFetchStarted       ClientDiagnosticEventName = "rest_fetch_started"
-	ClientDiagnosticRestSnapshotReceived   ClientDiagnosticEventName = "rest_snapshot_received"
-	ClientDiagnosticWSConnected            ClientDiagnosticEventName = "ws_connected"
-	ClientDiagnosticWSDisconnected         ClientDiagnosticEventName = "ws_disconnected"
-	ClientDiagnosticWSReconnecting         ClientDiagnosticEventName = "ws_reconnecting"
-	ClientDiagnosticWSSnapshotReceived     ClientDiagnosticEventName = "ws_snapshot_received"
-	ClientDiagnosticSnapshotAdopted        ClientDiagnosticEventName = "snapshot_adopted"
-	ClientDiagnosticSnapshotRejected       ClientDiagnosticEventName = "snapshot_rejected"
-	ClientDiagnosticTreeStateChanged       ClientDiagnosticEventName = "tree_state_changed"
-	ClientDiagnosticTreeBecameEmpty        ClientDiagnosticEventName = "tree_became_empty"
-	ClientDiagnosticStoreResetRequested    ClientDiagnosticEventName = "store_reset_requested"
-	ClientDiagnosticStoreResetExecuted     ClientDiagnosticEventName = "store_reset_executed"
-	ClientDiagnosticRouteChanged           ClientDiagnosticEventName = "route_changed"
-	ClientDiagnosticReactErrorCaptured     ClientDiagnosticEventName = "react_error_captured"
+	ClientDiagnosticTreeStoreInitialized    ClientDiagnosticEventName = "tree_store_initialized"
+	ClientDiagnosticTreeComponentMounted    ClientDiagnosticEventName = "tree_component_mounted"
+	ClientDiagnosticTreeComponentUnmounted  ClientDiagnosticEventName = "tree_component_unmounted"
+	ClientDiagnosticSessionHookCreated      ClientDiagnosticEventName = "session_hook_created"
+	ClientDiagnosticSessionHookDisposed     ClientDiagnosticEventName = "session_hook_disposed"
+	ClientDiagnosticRestFetchStarted        ClientDiagnosticEventName = "rest_fetch_started"
+	ClientDiagnosticRestSnapshotReceived    ClientDiagnosticEventName = "rest_snapshot_received"
+	ClientDiagnosticWSConnected             ClientDiagnosticEventName = "ws_connected"
+	ClientDiagnosticWSDisconnected          ClientDiagnosticEventName = "ws_disconnected"
+	ClientDiagnosticWSReconnecting          ClientDiagnosticEventName = "ws_reconnecting"
+	ClientDiagnosticWSSnapshotReceived      ClientDiagnosticEventName = "ws_snapshot_received"
+	ClientDiagnosticSnapshotAdopted         ClientDiagnosticEventName = "snapshot_adopted"
+	ClientDiagnosticSnapshotRejected        ClientDiagnosticEventName = "snapshot_rejected"
+	ClientDiagnosticTreeStateChanged        ClientDiagnosticEventName = "tree_state_changed"
+	ClientDiagnosticTreeBecameEmpty         ClientDiagnosticEventName = "tree_became_empty"
+	ClientDiagnosticTreeRenderState         ClientDiagnosticEventName = "tree_render_state"
+	ClientDiagnosticTreeRenderAnomaly       ClientDiagnosticEventName = "tree_render_anomaly"
+	ClientDiagnosticTreeRenderRecovery      ClientDiagnosticEventName = "tree_render_recovery"
+	ClientDiagnosticTreeVisibilityUnhealthy ClientDiagnosticEventName = "tree_visibility_unhealthy"
+	ClientDiagnosticTreeVisibilityRecovered ClientDiagnosticEventName = "tree_visibility_recovered"
+	ClientDiagnosticTreeManualViewReset     ClientDiagnosticEventName = "tree_manual_view_reset"
+	ClientDiagnosticTreeSwapStarted         ClientDiagnosticEventName = "tree_swap_started"
+	ClientDiagnosticTreePendingReady        ClientDiagnosticEventName = "tree_pending_ready"
+	ClientDiagnosticTreeSwapCommitted       ClientDiagnosticEventName = "tree_swap_committed"
+	ClientDiagnosticTreeSwapFailed          ClientDiagnosticEventName = "tree_swap_failed"
+	ClientDiagnosticTreeSwapKeptPrevious    ClientDiagnosticEventName = "tree_swap_kept_previous"
+	ClientDiagnosticTreeManualResetStarted  ClientDiagnosticEventName = "tree_manual_reset_started"
+	ClientDiagnosticTreeManualResetIgnored  ClientDiagnosticEventName = "tree_manual_reset_ignored_duplicate"
+	ClientDiagnosticTreeManualResetComplete ClientDiagnosticEventName = "tree_manual_reset_completed"
+	ClientDiagnosticStoreResetRequested     ClientDiagnosticEventName = "store_reset_requested"
+	ClientDiagnosticStoreResetExecuted      ClientDiagnosticEventName = "store_reset_executed"
+	ClientDiagnosticRouteChanged            ClientDiagnosticEventName = "route_changed"
+	ClientDiagnosticReactErrorCaptured      ClientDiagnosticEventName = "react_error_captured"
 )
 
 var clientDiagnosticEventNames = map[ClientDiagnosticEventName]struct{}{
-	ClientDiagnosticTreeStoreInitialized:   {},
-	ClientDiagnosticTreeComponentMounted:   {},
-	ClientDiagnosticTreeComponentUnmounted: {},
-	ClientDiagnosticSessionHookCreated:     {},
-	ClientDiagnosticSessionHookDisposed:    {},
-	ClientDiagnosticRestFetchStarted:       {},
-	ClientDiagnosticRestSnapshotReceived:   {},
-	ClientDiagnosticWSConnected:            {},
-	ClientDiagnosticWSDisconnected:         {},
-	ClientDiagnosticWSReconnecting:         {},
-	ClientDiagnosticWSSnapshotReceived:     {},
-	ClientDiagnosticSnapshotAdopted:        {},
-	ClientDiagnosticSnapshotRejected:       {},
-	ClientDiagnosticTreeStateChanged:       {},
-	ClientDiagnosticTreeBecameEmpty:        {},
-	ClientDiagnosticStoreResetRequested:    {},
-	ClientDiagnosticStoreResetExecuted:     {},
-	ClientDiagnosticRouteChanged:           {},
-	ClientDiagnosticReactErrorCaptured:     {},
+	ClientDiagnosticTreeStoreInitialized:    {},
+	ClientDiagnosticTreeComponentMounted:    {},
+	ClientDiagnosticTreeComponentUnmounted:  {},
+	ClientDiagnosticSessionHookCreated:      {},
+	ClientDiagnosticSessionHookDisposed:     {},
+	ClientDiagnosticRestFetchStarted:        {},
+	ClientDiagnosticRestSnapshotReceived:    {},
+	ClientDiagnosticWSConnected:             {},
+	ClientDiagnosticWSDisconnected:          {},
+	ClientDiagnosticWSReconnecting:          {},
+	ClientDiagnosticWSSnapshotReceived:      {},
+	ClientDiagnosticSnapshotAdopted:         {},
+	ClientDiagnosticSnapshotRejected:        {},
+	ClientDiagnosticTreeStateChanged:        {},
+	ClientDiagnosticTreeBecameEmpty:         {},
+	ClientDiagnosticTreeRenderState:         {},
+	ClientDiagnosticTreeRenderAnomaly:       {},
+	ClientDiagnosticTreeRenderRecovery:      {},
+	ClientDiagnosticTreeVisibilityUnhealthy: {},
+	ClientDiagnosticTreeVisibilityRecovered: {},
+	ClientDiagnosticTreeManualViewReset:     {},
+	ClientDiagnosticTreeSwapStarted:         {},
+	ClientDiagnosticTreePendingReady:        {},
+	ClientDiagnosticTreeSwapCommitted:       {},
+	ClientDiagnosticTreeSwapFailed:          {},
+	ClientDiagnosticTreeSwapKeptPrevious:    {},
+	ClientDiagnosticTreeManualResetStarted:  {},
+	ClientDiagnosticTreeManualResetIgnored:  {},
+	ClientDiagnosticTreeManualResetComplete: {},
+	ClientDiagnosticStoreResetRequested:     {},
+	ClientDiagnosticStoreResetExecuted:      {},
+	ClientDiagnosticRouteChanged:            {},
+	ClientDiagnosticReactErrorCaptured:      {},
 }
 
 // IsKnownClientDiagnosticEvent は既知のイベント名かどうかを返す。
@@ -74,6 +102,14 @@ func ClientDiagnosticEventNames() []string {
 func IsCriticalClientDiagnosticEvent(name string) bool {
 	switch ClientDiagnosticEventName(name) {
 	case ClientDiagnosticTreeBecameEmpty,
+		ClientDiagnosticTreeRenderAnomaly,
+		ClientDiagnosticTreeRenderRecovery,
+		ClientDiagnosticTreeVisibilityUnhealthy,
+		ClientDiagnosticTreeVisibilityRecovered,
+		ClientDiagnosticTreeManualViewReset,
+		ClientDiagnosticTreeSwapFailed,
+		ClientDiagnosticTreeSwapKeptPrevious,
+		ClientDiagnosticTreeManualResetComplete,
 		ClientDiagnosticReactErrorCaptured,
 		ClientDiagnosticTreeStoreInitialized,
 		ClientDiagnosticTreeComponentMounted,

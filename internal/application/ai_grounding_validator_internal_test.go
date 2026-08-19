@@ -360,8 +360,8 @@ func TestGroundingRunsBeforeKindValidationAndLaterEvidenceIsStrict(t *testing.T)
 }
 
 func TestLiveAnalysisGroundingSchemaRequiresEvidenceSnippets(t *testing.T) {
-	if liveAnalysisPromptVersion != "v18" {
-		t.Fatalf("prompt version=%s, want v18", liveAnalysisPromptVersion)
+	if liveAnalysisPromptVersion != "v20" {
+		t.Fatalf("prompt version=%s, want v20", liveAnalysisPromptVersion)
 	}
 	for _, value := range []string{liveAnalysisSchemaDescription, liveAnalysisResponseJSONSchema} {
 		if !strings.Contains(value, "evidenceSnippets") {

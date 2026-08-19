@@ -14,12 +14,12 @@ HTTP/WebSocket
   -> application service
   -> application port
   -> repository/storage adapter
-  -> PostgreSQL/filesystem/external SDK
+  -> PostgreSQL/file sink/external service SDK
 ```
 
 `internal/app/server.go` is the composition root. It creates concrete database,
-repository, storage, Firebase, realtime, and HTTP objects and injects
-them into the application.
+repository, Azure OpenAI, Bot control, client diagnostics, email, Firebase,
+realtime, and HTTP objects and injects them into the application.
 
 ## Current package layout
 
@@ -32,7 +32,8 @@ internal/
   adapter/http/        router, handlers, DTOs, middleware
   adapter/realtime/    hub, WebSocket handler/client, protocol
   adapter/repository/  Memory/PostgreSQL repositories and contract tests
-  infrastructure/      database, Firebase, local storage
+  infrastructure/      database, Azure OpenAI, Bot control, client diagnostics,
+                       email, Firebase
   architecture/        automated dependency checks
 ```
 
@@ -73,7 +74,8 @@ deployments. The Memory implementation remains available only as a test double.
 
 - `/v1` meeting and realtime routes are protected by session cookie
   auth plus workspace/resource access checks. The legacy `/api/v1` VM Bot and
-  transcript routes use API-key/client-token checks instead.
+  transcript routes use an API-key check instead. The removed shared-token
+  browser WebSocket route is not registered.
 - Firebase login persists users, workspaces, and sessions through PostgreSQL.
 - Redis Streams, MinIO/Object Storage, raw-audio Media Ingress, and a separate
   Python worker are not part of the current Docker-first product path.

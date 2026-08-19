@@ -54,6 +54,19 @@ type discourseTimeline struct {
 	Roles         map[int64]liveEvidenceRole
 	DetectedRoles map[int64]liveUtteranceRole
 	Transitions   []discourseTimelineTransition
+	RecapSpan     recapSpanState
+}
+
+type recapSpanState struct {
+	Active                   bool     `json:"active"`
+	StartSequenceNo          int64    `json:"startSequenceNo,omitempty"`
+	EndSequenceNo            int64    `json:"endSequenceNo,omitempty"`
+	LastSequenceNo           int64    `json:"lastSequenceNo,omitempty"`
+	SegmentCount             int      `json:"segmentCount,omitempty"`
+	Disposition              string   `json:"disposition,omitempty"`
+	MatchedExistingItemIDs   []string `json:"matchedExistingItemIds,omitempty"`
+	NewInformationAtoms      int      `json:"newInformationAtoms,omitempty"`
+	NewItemsCreatedFromRecap int      `json:"newItemsCreatedFromRecap,omitempty"`
 }
 
 type discourseTimelineTransition struct {
@@ -80,6 +93,8 @@ const (
 // 前後に付いても判定が揺れないようにする。
 var discourseFillerPattern = regexp.MustCompile(`^(それでは|それじゃ|では|じゃあ|はい|ええと|えっと|ええ|あの|さて|続いて|最後に|次に|一旦|それで)+`)
 
+const maxRecapSpanSegments = 12
+
 // 各discourse actの中核表現。正規化(句読点・空白除去)済みの発話全体が
 // これらで構成される場合のみ制御発話とみなす。部分一致では内容発話を
 // 巻き込むため、アンカー付きで全体一致に近い形にしている。
@@ -96,12 +111,14 @@ var (
 	meetingControlPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`^(会議|ミーティング|定例)(を|は)?(開始|終了|再開|中断)(します|しましょう|とします)?$`),
 		regexp.MustCompile(`^(よろしくお願いします|お疲れ様でした|ありがとうございました|聞こえますか|始めましょう|終わりましょう)$`),
+		regexp.MustCompile(`(?i)^(?:DeciScope|デシスコープ|Bot|ボット)?(?:が|は|を)?(?:会議に参加|録音を開始|録音を停止|文字起こしを開始|文字起こしを終了|会議から退出)(?:しました|します|完了しました)$`),
 	}
 	meetingEndControlPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`^(?:今日|本日)(?:の(?:会議|ミーティング|議事))?(?:は)?(?:これで|ここまで|以上)(?:に|で|と)?(?:します|しましょう|です|終了します|終わります|とします)?(?:ありがとうございました)?$`),
 		regexp.MustCompile(`^(?:今日|本日)?(?:は)?(?:これで|ここまで|以上で)(?:会議|ミーティング|議事)?(?:を|は)?(?:終了|終わり|終わります|終了します|終えます|お開き)(?:に|と)?(?:します|しましょう|です)?(?:ありがとうございました)?$`),
 		regexp.MustCompile(`^(?:今日|本日)(?:の)?(?:会議|ミーティング|議事)(?:を)?(?:ここで)?(?:打ち切る|終了する|終える)(?:決定)?$`),
 	}
+	recapEndPattern = regexp.MustCompile(`^(?:以上(?:です|となります)?|以上で(?:振り返り|まとめ|確認)(?:を)?(?:終了|終わり|終え)(?:します|ます)?|これで(?:振り返り|まとめ|確認)(?:を)?(?:終了|終わり|終え)(?:します|ます)?)$`)
 )
 
 // Structural transition detection intentionally combines three independent
@@ -116,7 +133,18 @@ var (
 	discourseConcretePattern            = regexp.MustCompile(`(?i)(?:[0-9Ａ-Ｚａ-ｚA-Za-z]|まで|期限|担当|さん|氏|影響|不能|停止|遅延|漏れ|期限切れ|承認|決定|実施|作成|更新|修正|調査|確認して|依頼|対応する|リスク|可能性)`)
 )
 
-var discourseCorrectionPattern = regexp.MustCompile(`(?:訂正|修正|変更|撤回|取り消|追加事項|新たな(?:決定|論点|課題)|まとめに追加|先ほどの.+(?:ではなく|を改め))`)
+// discourseCorrectionPattern is intentionally limited to explicit
+// self-correction language. Generic business actions such as
+// 「設定を修正しました」 are substantive facts, not corrections.
+var discourseCorrectionPattern = regexp.MustCompile(
+	`(?:訂正(?:します|すると|です)?|撤回(?:します|する)?|取り消(?:します|す)?|正確には|厳密には|言い直すと|(?:先ほど|先程|さっき)(?:の(?:説明|発言|内容))?.{0,40}(?:ではなく|じゃなく|違|誤|改め)|いえ[、,]?(?:正確には|厳密には|そうではなく)|完全な[^。！？]{1,80}ではありません[。！？][^。！？]{1,180}(?:でした|ました))`,
+)
+
+// A recap may quote a past corrective action ("設定を修正しました") without
+// introducing a new correction now. The legacy broad marker is retained only
+// as a recap-boundary escape hatch so such substantive recovery text is not
+// downgraded to reference-only evidence.
+var discourseRecapCorrectionPattern = regexp.MustCompile(`(?:訂正|修正|変更|撤回|取り消|追加事項|新たな(?:決定|論点|課題)|まとめに追加|先ほどの.+(?:ではなく|を改め))`)
 
 // 議論再開の判定は、前置きマーカー(これから何をするかの宣言)と審議述語
 // (決める・検討する・議論する等、これから行う行為)の共起で行う。単独の語句
@@ -164,6 +192,9 @@ func classifyDiscourseAct(text string) discourseAct {
 		return discourseFiller
 	}
 	if isMeetingEndControlNormalized(stripped) {
+		return discourseMeetingControl
+	}
+	if recapEndPattern.MatchString(stripped) {
 		return discourseMeetingControl
 	}
 	for _, pattern := range recapIntroPatterns {
@@ -320,6 +351,19 @@ func classifyDiscourseTimelineWithModel(scope liveEvidenceScope, modelRoles []li
 	}
 	sort.Slice(sequenceNos, func(i, j int) bool { return sequenceNos[i] < sequenceNos[j] })
 	mode := "content"
+	recapState := scope.RecapSpan
+	replayIncludesPriorSpan := false
+	for _, sequenceNo := range sequenceNos {
+		if recapState.StartSequenceNo > 0 && sequenceNo <= recapState.LastSequenceNo {
+			replayIncludesPriorSpan = true
+			break
+		}
+	}
+	if recapState.Active && !replayIncludesPriorSpan {
+		mode = "recap"
+	} else if replayIncludesPriorSpan {
+		recapState = recapSpanState{}
+	}
 	for _, sequenceNo := range sequenceNos {
 		text := scope.TranscriptText[sequenceNo]
 		if segment, exists := scope.Segments[sequenceNo]; exists && strings.TrimSpace(segment.Text) != "" {
@@ -332,14 +376,27 @@ func classifyDiscourseTimelineWithModel(scope liveEvidenceScope, modelRoles []li
 			timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
 			timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "recap", Act: act})
 			mode = "recap"
+			recapState = recapSpanState{Active: true, StartSequenceNo: sequenceNo, LastSequenceNo: sequenceNo, Disposition: segmentDispositionRecap}
 		case discourseTopicTransition:
 			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
 			timeline.DetectedRoles[sequenceNo] = liveUtteranceDiscourseTransition
 			timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "content", Act: act})
 			mode = "content"
+			if recapState.Active {
+				recapState.Active = false
+				recapState.EndSequenceNo = sequenceNo
+				recapState.LastSequenceNo = sequenceNo
+			}
 		case discourseMeetingControl:
 			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
 			timeline.DetectedRoles[sequenceNo] = liveUtteranceFiller
+			if mode == "recap" && recapEndPattern.MatchString(normalizeDiscourseText(text)) {
+				timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "content", Act: act})
+				mode = "content"
+				recapState.Active = false
+				recapState.EndSequenceNo = sequenceNo
+				recapState.LastSequenceNo = sequenceNo
+			}
 		case discourseFiller:
 			timeline.Roles[sequenceNo] = liveEvidenceDiscourseOnly
 			timeline.DetectedRoles[sequenceNo] = liveUtteranceFiller
@@ -347,6 +404,7 @@ func classifyDiscourseTimelineWithModel(scope liveEvidenceScope, modelRoles []li
 			if mode != "recap" && hasLeadingRecapIntroClause(text) {
 				timeline.Transitions = append(timeline.Transitions, discourseTimelineTransition{SequenceNo: sequenceNo, From: mode, To: "recap", Act: discourseRecapIntro})
 				mode = "recap"
+				recapState = recapSpanState{Active: true, StartSequenceNo: sequenceNo, LastSequenceNo: sequenceNo, Disposition: segmentDispositionRecap}
 				timeline.Roles[sequenceNo] = liveEvidenceReferenceRecap
 				timeline.DetectedRoles[sequenceNo] = liveUtteranceRecap
 				continue
@@ -389,7 +447,7 @@ func classifyDiscourseTimelineWithModel(scope liveEvidenceScope, modelRoles []li
 						mode = "content"
 						continue
 					}
-					if discourseCorrectionPattern.MatchString(text) {
+					if discourseRecapCorrectionPattern.MatchString(text) {
 						timeline.Roles[sequenceNo] = liveEvidenceCorrection
 						timeline.DetectedRoles[sequenceNo] = liveUtteranceCorrection
 					} else {
@@ -402,7 +460,18 @@ func classifyDiscourseTimelineWithModel(scope liveEvidenceScope, modelRoles []li
 				}
 			}
 		}
+		if mode == "recap" {
+			recapState.Active = true
+			recapState.LastSequenceNo = sequenceNo
+			recapState.SegmentCount++
+			if recapState.SegmentCount >= maxRecapSpanSegments {
+				recapState.Active = false
+				recapState.EndSequenceNo = sequenceNo
+				mode = "content"
+			}
+		}
 	}
+	timeline.RecapSpan = recapState
 	return timeline
 }
 

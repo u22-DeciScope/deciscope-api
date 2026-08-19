@@ -213,7 +213,7 @@ func TestSession0f9e20497397cedfDeterministicReplay(t *testing.T) {
 		t.Fatalf("bird issue=%+v topic=%s", birdIssue, itemTopicID(state.Tree, birdIssue.ID))
 	}
 	if !containsSequence(birdIssue.ResolutionEvidenceSequenceNos, 7) || !containsSequence(birdIssue.ResolutionEvidenceSequenceNos, 27) {
-		t.Fatalf("resolution evidence=%v", birdIssue.ResolutionEvidenceSequenceNos)
+		t.Fatalf("resolution evidence=%v item=%+v decisions=%+v", birdIssue.ResolutionEvidenceSequenceNos, birdIssue, finalStats.ResolutionDecisions)
 	}
 	for _, titlePart := range []string{"強風日の測定条件", "住民説明会の開催日", "専門家による予備調査"} {
 		item := findItemByTitlePart(state.Items, titlePart)

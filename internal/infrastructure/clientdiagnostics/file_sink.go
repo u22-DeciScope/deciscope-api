@@ -56,25 +56,13 @@ func (c FileSinkConfig) withDefaults() FileSinkConfig {
 
 // FileSink は sessionId 単位のJSONLファイルへ追記する。
 type FileSink struct {
-	config FileSinkConfig
-	now    func() time.Time
-
+	config      FileSinkConfig
 	mu          sync.Mutex
 	lastCleanup time.Time
 }
 
-type FileSinkOption func(*FileSink)
-
-func WithFileSinkClock(now func() time.Time) FileSinkOption {
-	return func(s *FileSink) {
-		if now != nil {
-			s.now = now
-		}
-	}
-}
-
 // NewFileSink は出力ディレクトリを作成して sink を返す。
-func NewFileSink(config FileSinkConfig, options ...FileSinkOption) (*FileSink, error) {
+func NewFileSink(config FileSinkConfig) (*FileSink, error) {
 	resolved := config.withDefaults()
 	if resolved.Directory == "" {
 		return nil, errors.New("client diagnostics: file sink directory is required")
@@ -89,10 +77,7 @@ func NewFileSink(config FileSinkConfig, options ...FileSinkOption) (*FileSink, e
 	if err := probeWritable(resolved.Directory); err != nil {
 		return nil, err
 	}
-	sink := &FileSink{config: resolved, now: time.Now}
-	for _, option := range options {
-		option(sink)
-	}
+	sink := &FileSink{config: resolved}
 	sink.PurgeExpired()
 	return sink, nil
 }
@@ -155,7 +140,7 @@ func (s *FileSink) rotateIfNeededLocked(path string, incomingBytes int64) error 
 }
 
 func (s *FileSink) maybeCleanupLocked() {
-	now := s.now()
+	now := time.Now()
 	if !s.lastCleanup.IsZero() && now.Sub(s.lastCleanup) < s.config.CleanupInterval {
 		return
 	}
@@ -167,7 +152,7 @@ func (s *FileSink) maybeCleanupLocked() {
 func (s *FileSink) PurgeExpired() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.now()
+	now := time.Now()
 	s.lastCleanup = now
 	s.purgeExpiredLocked(now)
 }

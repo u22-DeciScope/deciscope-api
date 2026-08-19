@@ -1,6 +1,7 @@
 package application
 
 import (
+	"sort"
 	"strings"
 
 	"deciscope-core-api/internal/domain"
@@ -22,18 +23,161 @@ func finalRepairStatsChanged(stats finalRepairStats) bool {
 		stats.KindValidationChanges > 0 ||
 		stats.KindSemanticSplits > 0 ||
 		stats.KindRelationsCreated > 0 ||
+		stats.CorrectionItemsSuperseded > 0 ||
+		stats.CorrectionItemsReconstructed > 0 ||
+		stats.CorrectionItemsPending > 0 ||
+		stats.UnclassifiedItemsReparented > 0 ||
+		stats.UnclassifiedTopicsMaterialized > 0 ||
+		stats.UnclassifiedItemsRetained > 0 ||
+		stats.StrongTodosSynthesized > 0 ||
+		stats.StrongDecisionsSynthesized > 0 ||
+		stats.EvidenceReferencesPruned > 0 ||
+		stats.IssuesRecoveredFromTodoEvidence > 0 ||
+		stats.ConfirmedTodoCandidatesPromoted > 0 ||
+		stats.ConfirmedTodoCandidatesFolded > 0 ||
 		stats.DanglingCandidatesPruned > 0
 }
 
-func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.TranscriptSegment, mc *meetingContext, version int64, stats *finalRepairStats) {
-	if state == nil || state.Tree == nil || len(state.Items) == 0 || len(segments) == 0 || stats == nil {
+// promoteConfirmedFinalTodoCandidates is a finalization-only escape hatch for
+// a single, explicit action commitment that is still parked under the
+// unclassified staging topic. It does not alter the normal multi-round or
+// independent-evidence promotion thresholds: the candidate is consumed only
+// after final grounding proves owner, action, object, and commitment.
+func promoteConfirmedFinalTodoCandidates(state *liveAnalysisPayload, version int64, stats *finalRepairStats) {
+	if state == nil || state.Tree == nil || len(state.EmergingTopics) == 0 {
 		return
 	}
-	scope, _ := agendaTimelineFromSegments(segments)
+	itemByID := make(map[string]*liveAnalysisItem, len(state.Items))
+	for index := range state.Items {
+		itemByID[state.Items[index].ID] = &state.Items[index]
+	}
+	topics := make(map[string]liveAnalysisTreeNode)
+	for _, node := range state.Tree.Nodes {
+		if node.Kind == "topic" {
+			topics[node.ID] = node
+		}
+	}
+	kept := make([]emergingTopicCandidate, 0, len(state.EmergingTopics))
+	for _, candidate := range state.EmergingTopics {
+		evidenceIDs := uniqueNonEmptyIDs(candidate.EvidenceItemIDs)
+		if candidate.Inactive || len(evidenceIDs) != 1 {
+			kept = append(kept, candidate)
+			continue
+		}
+		item := itemByID[evidenceIDs[0]]
+		if !confirmedFinalTodoCandidateItem(item, candidate.ID) {
+			kept = append(kept, candidate)
+			continue
+		}
+		node := liveTreeNodeByID(state.Tree, item.ID)
+		if node == nil || treeAuditIsManualChangeSource(node.LastParentChangeSource) {
+			kept = append(kept, candidate)
+			continue
+		}
+		initializeCandidateSubject(&candidate)
+		if candidateSubjectIncoherenceReason(candidate, func(id string) *liveAnalysisItem { return itemByID[id] }, TreeClassificationConfig{}) != "" {
+			kept = append(kept, candidate)
+			continue
+		}
+		label := truncateRunes(strings.TrimSpace(candidate.Label), liveAnalysisTopicLabelMaxRunes)
+		if label == "" || genericTopicLabel(label) {
+			label = truncateRunes(strings.TrimSpace(item.Title), liveAnalysisTopicLabelMaxRunes)
+		}
+		if label == "" || genericTopicLabel(label) || emergingTopicCore(label) == "" {
+			kept = append(kept, candidate)
+			continue
+		}
+
+		parentID := semanticExistingTopicID(label, candidate.Description, topics)
+		if parentID != "" {
+			stats.ConfirmedTodoCandidatesFolded++
+		} else {
+			parentID = stableDynamicTopicID(candidate.ID)
+			if existing := liveTreeNodeByID(state.Tree, parentID); existing == nil {
+				topic := liveAnalysisTreeNode{
+					ID: parentID, Kind: "topic", ParentID: treeRootNodeID,
+					Label:             label,
+					Description:       truncateRunes(strings.TrimSpace(candidate.Description), liveAnalysisTreeDescriptionMaxRunes),
+					SourceCandidateID: candidate.ID, Origin: topicOriginDynamic,
+					CreatedAtVersion: version, UpdatedAtVersion: version,
+				}
+				state.Tree.Nodes = append(state.Tree.Nodes, topic)
+				topics[parentID] = topic
+			}
+			stats.ConfirmedTodoCandidatesPromoted++
+		}
+		node.ParentID = parentID
+		node.LastParentChangeSource = "final_confirmed_todo"
+		node.LastParentChangeVersion = version
+		node.ParentConfidence = 0.95
+		item.ClassificationStatus = classificationAssigned
+		item.CandidateTopicID = ""
+		item.CandidateInactive = false
+		item.AssignmentConfidence = 0.95
+		item.AssignmentSource = "rule"
+		item.AssignmentReason = "final_explicit_owner_action_commitment"
+	}
+	state.EmergingTopics = kept
+	rebuildTreeAuditEdges(state.Tree)
+}
+
+func confirmedFinalTodoCandidateItem(item *liveAnalysisItem, candidateID string) bool {
+	if item == nil || item.Inactive || item.MergedIntoID != "" || item.Kind != "todo" ||
+		item.Status == "resolved" || item.Status == "dismissed" ||
+		item.ClassificationStatus != classificationTentative || item.CandidateTopicID != candidateID ||
+		(item.GroundingDecision != "accepted" && item.GroundingDecision != "rewritten") ||
+		len(item.EvidenceSequenceNos) == 0 {
+		return false
+	}
+	text := strings.TrimSpace(item.Title + " " + item.Body)
+	features := inferItemSemanticFeatures(*item, liveEvidenceScope{})
+	return features.OwnerPresent && features.ActionVerbPresent &&
+		features.DecisionOrCommitment && futureActionIntent(text) &&
+		deterministicTodoObjectPattern.MatchString(text) &&
+		!kindUnassignedNecessityPattern.MatchString(text)
+}
+
+func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.TranscriptSegment, mc *meetingContext, version int64, stats *finalRepairStats) {
+	if state == nil || state.Tree == nil || len(segments) == 0 || stats == nil {
+		return
+	}
+	scope, timeline := agendaTimelineFromSegments(segments)
 	kindStats := &liveAnalysisTreeMergeStats{}
+	splitPersistedMultiAssignmentTodos(state, scope, kindStats)
+	synthesized := synthesizeStrongTodoItems(state.Items, nil, scope, timeline, kindStats)
+	synthesized = append(synthesized, synthesizeCorrectionFactItems(
+		state.Items, synthesized, scope, timeline, kindStats,
+	)...)
+	synthesized = append(synthesized, synthesizeExplicitDecisionItems(
+		append(append([]liveAnalysisItem(nil), state.Items...), synthesized...),
+		segments, kindStats,
+	)...)
+	synthesized = append(synthesized, synthesizeExplicitScopeLimitIssues(
+		append(append([]liveAnalysisItem(nil), state.Items...), synthesized...),
+		scope, timeline,
+	)...)
+	synthesized = append(synthesized, synthesizeExplicitOpenIssueItems(
+		state.Items, synthesized, scope, timeline,
+	)...)
+	synthesized = append(synthesized, synthesizeExplicitRiskItems(
+		state.Items, synthesized, scope, timeline, kindStats,
+	)...)
+	addOrUpdateFinalSynthesizedItems(state, synthesized, version)
+	splitPersistedRecoveryFacts(state, scope, version, kindStats)
 	splitPersistedItemKinds(state, scope, itemKindValidationFinal, "final_semantic_split", kindStats)
+	// Kind repair can turn a legacy compound Issue into a Todo. Split its
+	// owner-local assignments before semantic dedup; otherwise the combined
+	// body becomes a bridge that collapses different owners back together.
+	splitPersistedMultiAssignmentTodos(state, scope, kindStats)
+	restoreIssuesFromPollutedTodoEvidence(state, scope, version, kindStats)
 	repairFinalItemGrounding(state, scope, mc, version, kindStats)
 	repairPersistedItemKinds(state, scope, itemKindValidationFinal, "final_deterministic_repair", kindStats)
+	splitPersistedMultiAssignmentTodos(state, scope, kindStats)
+	localizePersistedItemEvidence(state.Items, scope, kindStats)
+	repairCorrectionSupersessions(state, scope, timeline, version, kindStats)
+	repairIncompletePersistedItemLabels(state, scope, timeline, version, kindStats)
+	repairPersistedItemDescriptions(state, scope)
+	suppressIssuesDuplicatingClearDecisions(state, scope, version)
 	recordItemKindDistribution(state, scope, kindStats)
 	stats.KindValidationChanges += kindStats.KindValidationChanges
 	stats.KindValidationAmbiguous += kindStats.KindValidationAmbiguous
@@ -42,8 +186,30 @@ func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.Transcri
 	stats.KindSplitFragments += kindStats.KindSplitFragments
 	stats.KindSplitRejected += kindStats.KindSplitRejected
 	stats.KindSplitDecisions = append(stats.KindSplitDecisions, kindStats.KindSplitDecisions...)
-	stats.KindRelationsCreated += appendSemanticKindRelations(state.Tree, state.Items)
+	stats.SemanticSplitSourceActiveCount += kindStats.SemanticSplitSourceActiveCount
+	stats.SemanticSplitSourceFragmentDuplicateCount += kindStats.SemanticSplitSourceFragmentDuplicateCount
+	stats.SemanticSplitReplacementMissingCount += kindStats.SemanticSplitReplacementMissingCount
+	stats.KindRelationsCreated += reconcileSemanticKindRelations(
+		state.Tree, state.Items, scope, version, "final_repair",
+	)
 	stats.KindDistributionWarnings = append(stats.KindDistributionWarnings, kindStats.KindDistributionWarnings...)
+	stats.CorrectionItemsSuperseded += kindStats.CorrectionItemsSuperseded
+	stats.CorrectionItemsReconstructed += kindStats.CorrectionItemsReconstructed
+	stats.CorrectionItemsPending += kindStats.CorrectionItemsPending
+	stats.CorrectionDecisions = append(stats.CorrectionDecisions, kindStats.CorrectionDecisions...)
+	stats.StrongTodoCandidates += kindStats.StrongTodoCandidates
+	stats.StrongTodosSynthesized += kindStats.StrongTodosSynthesized
+	stats.StrongTodoDuplicatesSuppressed += kindStats.StrongTodoDuplicatesSuppressed
+	stats.StrongDecisionCandidates += kindStats.StrongDecisionCandidates
+	stats.StrongDecisionsSynthesized += kindStats.StrongDecisionsSynthesized
+	stats.DeterministicSynthesisDecisions = append(
+		stats.DeterministicSynthesisDecisions,
+		kindStats.DeterministicSynthesisDecisions...,
+	)
+	stats.EvidenceReferencesPruned += kindStats.EvidenceReferencesPruned
+	stats.EvidenceLocalizationDecisions = append(stats.EvidenceLocalizationDecisions, kindStats.EvidenceLocalizationDecisions...)
+	stats.IssuesRecoveredFromTodoEvidence += kindStats.IssuesRecoveredFromTodoEvidence
+	stats.IssueRecoveryDecisions = append(stats.IssueRecoveryDecisions, kindStats.IssueRecoveryDecisions...)
 	stats.GroundingAccepted += kindStats.GroundingAccepted
 	stats.GroundingRewritten += kindStats.GroundingRewritten
 	stats.GroundingTentative += kindStats.GroundingTentative
@@ -53,6 +219,8 @@ func repairFinalItemKinds(state *liveAnalysisPayload, segments []domain.Transcri
 	stats.GroundingContextOnlyAtoms += kindStats.GroundingContextOnlyAtoms
 	stats.FutureInformationLeaksPrevented += kindStats.GroundingFutureLeaksPrevented
 	stats.GroundingDecisions = append(stats.GroundingDecisions, kindStats.GroundingDecisions...)
+	stats.LabelQuality = kindStats.LabelQuality
+	stats.ManualLabelsPreserved += kindStats.ManualLabelsPreserved
 }
 
 func repairFinalItemGrounding(state *liveAnalysisPayload, scope liveEvidenceScope, mc *meetingContext, version int64, stats *liveAnalysisTreeMergeStats) {
@@ -94,12 +262,33 @@ func repairFinalItemGrounding(state *liveAnalysisPayload, scope liveEvidenceScop
 			// successful full live-round grounding decision.
 			continue
 		}
+		if previouslyGrounded && decision.Decision == "rewritten" &&
+			finalGroundingRewriteDegradesLabel(item, safe, scope) {
+			// The canonical label may combine an antecedent with the immediately
+			// following conditional/deictic clause. A per-sentence grounding
+			// rewrite must not regress that independently readable label back to
+			// the contextual transcript fragment when both cited sequences remain.
+			continue
+		}
 		switch decision.Decision {
 		case "accepted", "rewritten":
-			safe.GroundingDecision = decision.Decision
-			safe.GroundingConfidence = decision.Confidence
+			if item.GroundingDecision == "rewritten" && decision.Decision == "accepted" {
+				// "rewritten" is durable provenance: a later validation of
+				// the already-sanitized proposition must not make it appear
+				// as though the original model wording was accepted.
+				safe.GroundingDecision = item.GroundingDecision
+				safe.GroundingConfidence = item.GroundingConfidence
+				safe.GroundingUnsupportedAtomHashes = append(
+					[]string(nil), item.GroundingUnsupportedAtomHashes...,
+				)
+			} else {
+				safe.GroundingDecision = decision.Decision
+				safe.GroundingConfidence = decision.Confidence
+				safe.GroundingUnsupportedAtomHashes = append(
+					[]string(nil), decision.UnsupportedAtomHashes...,
+				)
+			}
 			safe.GroundingSourceTypes = append([]groundingSourceType(nil), decision.SourceTypes...)
-			safe.GroundingUnsupportedAtomHashes = append([]string(nil), decision.UnsupportedAtomHashes...)
 			updateFinalItemAndNode(state, safe)
 		default:
 			rejectFinalItem(state, item.ID, "final_semantic_grounding_rejected", version)
@@ -107,6 +296,99 @@ func repairFinalItemGrounding(state *liveAnalysisPayload, scope liveEvidenceScop
 	}
 	pruneEmptyDynamicTopics(state.Tree)
 	rebuildTreeAuditEdges(state.Tree)
+}
+
+// suppressIssuesDuplicatingClearDecisions removes only the artificial
+// question-shaped copy of an explicit decision. An independently unresolved
+// clause survives because its own evidence contains an open-question marker
+// or is not one of the detected decision source sequences.
+func suppressIssuesDuplicatingClearDecisions(
+	state *liveAnalysisPayload,
+	scope liveEvidenceScope,
+	version int64,
+) {
+	if state == nil || state.Tree == nil {
+		return
+	}
+	segments := make([]domain.TranscriptSegment, 0, len(scope.Segments))
+	for _, segment := range scope.Segments {
+		segments = append(segments, segment)
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].SequenceNo < segments[j].SequenceNo })
+	explicitDecisionSequences := make(map[int64]struct{})
+	for _, candidate := range detectDecisionCandidates(segments) {
+		if candidate.Recap {
+			continue
+		}
+		for _, sequenceNo := range candidate.SourceSequenceNos {
+			explicitDecisionSequences[sequenceNo] = struct{}{}
+		}
+	}
+	if len(explicitDecisionSequences) == 0 {
+		return
+	}
+	decisions := make([]liveAnalysisItem, 0)
+	for _, item := range state.Items {
+		if item.Kind == "decision" && !item.Inactive && item.MergedIntoID == "" {
+			decisions = append(decisions, item)
+		}
+	}
+	for _, issueID := range activeFinalItemIDs(state.Items) {
+		issue, ok := finalItemByID(state.Items, issueID)
+		if !ok || issue.Kind != "issue" || finalItemManualProtected(state, issue.ID) ||
+			issueHasIndependentOpenEvidence(issue, scope, explicitDecisionSequences) {
+			continue
+		}
+		for _, decision := range decisions {
+			if !itemEvidenceOverlaps(issue, decision) {
+				continue
+			}
+			if qualityPropositionSimilarity(
+				issue.Title+" "+issue.Body,
+				decision.Title+" "+decision.Body,
+			) < 0.40 {
+				continue
+			}
+			rejectFinalItem(state, issue.ID, "duplicate_of_explicit_decision", version)
+			break
+		}
+	}
+	pruneEmptyDynamicTopics(state.Tree)
+	rebuildTreeAuditEdges(state.Tree)
+}
+
+func issueHasIndependentOpenEvidence(
+	issue liveAnalysisItem,
+	scope liveEvidenceScope,
+	explicitDecisionSequences map[int64]struct{},
+) bool {
+	for _, sequenceNo := range issue.EvidenceSequenceNos {
+		text := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+		if _, decisionEvidence := explicitDecisionSequences[sequenceNo]; !decisionEvidence {
+			return true
+		}
+		if kindOpenQuestionPattern.MatchString(text) || kindUncertaintyPattern.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func finalGroundingRewriteDegradesLabel(item, rewritten liveAnalysisItem, scope liveEvidenceScope) bool {
+	if incompleteItemLabelEnding(item) != "" || incompleteItemLabelEnding(rewritten) == "" ||
+		len(item.GroundingUnsupportedAtomHashes) > 0 {
+		return false
+	}
+	timeline := classifyDiscourseTimeline(scope)
+	if !labelFailureRetentionEligible(item, scope, timeline) {
+		return false
+	}
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		if sequenceSuppliesItemReferent(item, sequenceNo, scope) {
+			return true
+		}
+	}
+	return false
 }
 
 // repairFinalReferenceAndLowInformationItems is the deterministic final-review
@@ -156,10 +438,26 @@ func repairFinalReferenceAndLowInformationItems(state *liveAnalysisPayload, segm
 		if !ok || !finalItemIsLowInformation(item) {
 			continue
 		}
+		var incompleteDecision *incompleteItemLabelDecision
+		if incompleteItemLabelEnding(item) != "" {
+			repaired, decision, changed := repairIncompleteItemLabel(item, scope, timeline)
+			incompleteDecision = &decision
+			if changed {
+				updateFinalItemAndNode(state, repaired)
+				stats.LowInformationItemsRewritten++
+				stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, decision)
+				continue
+			}
+		}
 		targets := finalLowInformationMergeTargets(state.Items, item)
 		if len(targets) == 1 {
 			if mergeFinalItemInto(state, item.ID, targets[0], "final_low_information_merge", version) {
 				stats.LowInformationItemsMerged++
+				if incompleteDecision != nil {
+					incompleteDecision.RewriteResult = "merged"
+					incompleteDecision.FinalDecision = "merged"
+					stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
+				}
 			}
 			continue
 		}
@@ -167,20 +465,48 @@ func repairFinalReferenceAndLowInformationItems(state *liveAnalysisPayload, segm
 			repaired := item
 			if concrete := uniqueFinalIssueRepairText(item, scope, timeline); concrete != "" {
 				concrete = normalizeIssueStatementForSubtype(concrete, item.Subtype)
-				repaired.Title = truncateRunes(concrete, 40)
-				repaired.Body = truncateRunes(concrete, liveAnalysisTreeDescriptionMaxRunes)
-				repaired.Subtype = inferIssueSubtype(concrete, item.Subtype)
-				repaired.InformationStatus = informationStatusGrounded
-				if reason, _ := validateLiveItemInformation(repaired, true, timeline, scope); reason == "" &&
-					splitIssueFragmentGrounded(repaired, scope) {
-					updateFinalItemAndNode(state, repaired)
-					stats.LowInformationItemsRewritten++
-					continue
+				if title := semanticallyCompleteItemLabel(concrete, item.Kind); title != "" {
+					repaired.Title = title
+					repaired.Body = truncateRunes(concrete, liveAnalysisTreeDescriptionMaxRunes)
+					repaired.Subtype = inferIssueSubtype(concrete, item.Subtype)
+					repaired.InformationStatus = informationStatusGrounded
+					if reason, _ := validateLiveItemInformation(repaired, true, timeline, scope); reason == "" &&
+						splitIssueFragmentGrounded(repaired, scope) {
+						updateFinalItemAndNode(state, repaired)
+						stats.LowInformationItemsRewritten++
+						if incompleteDecision != nil {
+							incompleteDecision.RewriteResult = "success"
+							incompleteDecision.FinalDecision = "rewritten"
+							stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
+						}
+						continue
+					}
 				}
 			}
 		}
+		if item.Kind == "fact" {
+			if repaired, ok := reconstructFinalFactFragment(item, scope, timeline); ok {
+				updateFinalItemAndNode(state, repaired)
+				stats.LowInformationItemsRewritten++
+				if incompleteDecision != nil {
+					incompleteDecision.RewriteResult = "success"
+					incompleteDecision.FinalDecision = "rewritten"
+					stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
+				}
+				continue
+			}
+		}
+		if incompleteDecision != nil &&
+			labelFailureRetentionEligible(item, scope, timeline) {
+			incompleteDecision.FinalDecision = "retained_degraded"
+			stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
+			continue
+		}
 		if rejectFinalItem(state, item.ID, "final_low_information_rejected", version) {
 			stats.LowInformationItemsRejected++
+		}
+		if incompleteDecision != nil {
+			stats.IncompleteLabelDecisions = append(stats.IncompleteLabelDecisions, *incompleteDecision)
 		}
 	}
 	pruneEmptyDynamicTopics(state.Tree)
@@ -208,10 +534,51 @@ func finalItemByID(items []liveAnalysisItem, id string) (liveAnalysisItem, bool)
 
 func finalItemIsLowInformation(item liveAnalysisItem) bool {
 	return liveItemTextNeedsReferent(item) ||
+		incompleteItemLabelEnding(item) != "" ||
 		metaOnlyLiveItemText(strings.TrimSpace(item.Title+" "+item.Body)) ||
 		isDiscourseOnlyItem(item.Title, item.Body) ||
 		isMeetingEndOnlyItem(item.Title, item.Body) ||
 		recapArtifactOnlyItem(item.Title, item.Body)
+}
+
+func reconstructFinalFactFragment(
+	item liveAnalysisItem,
+	scope liveEvidenceScope,
+	timeline discourseTimeline,
+) (liveAnalysisItem, bool) {
+	primary := make([]string, 0, 1)
+	for _, sequenceNo := range item.EvidenceSequenceNos {
+		switch timeline.Roles[sequenceNo] {
+		case liveEvidenceReferenceRecap, liveEvidenceDiscourseOnly:
+			continue
+		}
+		text := strings.Trim(strings.TrimSpace(scope.TranscriptText[sequenceNo]), "。.!！ ")
+		if text == "" || isDiscourseOnlyItem(text, "") {
+			continue
+		}
+		if !containsExactString(primary, text) {
+			primary = append(primary, text)
+		}
+	}
+	if len(primary) != 1 {
+		return item, false
+	}
+	repaired := item
+	repaired.Title = semanticallyCompleteItemLabel(primary[0], item.Kind)
+	if repaired.Title == "" {
+		return item, false
+	}
+	repaired.Body = truncateRunes(primary[0], liveAnalysisTreeDescriptionMaxRunes)
+	repaired.EvidenceSnippets = []string{primary[0]}
+	repaired.InformationStatus = informationStatusGrounded
+	repaired.GroundingDecision = "rewritten"
+	repaired.GroundingConfidence = 0.91
+	repaired.GroundingSourceTypes = []groundingSourceType{groundingSourceFinalTranscript}
+	decision := evaluateLiveItemKind(repaired, scope, "final_low_information_fact_repair")
+	if decision.CanonicalKind != "fact" || decision.Decision == "tentative" {
+		return item, false
+	}
+	return repaired, true
 }
 
 func finalLowInformationMergeTargets(items []liveAnalysisItem, item liveAnalysisItem) []string {
@@ -290,6 +657,8 @@ func updateFinalItemAndNode(state *liveAnalysisPayload, repaired liveAnalysisIte
 		node.Label = repaired.Title
 		node.Description = repaired.Body
 		node.Subtype = repaired.Subtype
+		node.LabelResolution = cloneLabelResolution(repaired.LabelResolution)
+		node.DescriptionResolution = cloneDescriptionResolution(repaired.DescriptionResolution)
 	}
 }
 

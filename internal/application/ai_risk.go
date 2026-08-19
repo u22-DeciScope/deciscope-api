@@ -15,7 +15,7 @@ import (
 var (
 	riskFuturePattern  = regexp.MustCompile(`(?:可能性があ(?:る|ります)|お(?:それ|それ)があ|恐れがあ|リスクがあ|なりかねな(?:い|く)|なりかねません)`)
 	riskExcludePattern = regexp.MustCompile(`(?:である可能性|可能性が(?:最も)?(?:高い|低い)|可能性が高いと)`)
-	riskSupportPattern = regexp.MustCompile(`(?:すると|しないと|放置すると|のままだと|なければ|場合|できなくな|停止|障害|過多|多くなりすぎ|期限切れ|失われ|漏れ|遅延|接続できな)`)
+	riskSupportPattern = regexp.MustCompile(`(?:すると|しないと|放置すると|のままだと|なければ|場合|できなくな|停止|障害|過多|多くなりすぎ|増えすぎ|通知が多発|アラート疲れ|運用負荷が高く|監視ノイズが増え|見落としにつなが|期限切れ|失われ|漏れ|遅延|接続できな)`)
 	// riskTitleTrailingPattern strips the sentence-final risk boilerplate
 	// ("という可能性があります" etc.) that explicitRiskItemTitle would
 	// otherwise carry verbatim into the card title.
@@ -28,7 +28,9 @@ var (
 	// については、次回までに検討が必要です。」). A bare possibility statement
 	// without this marker (「放置するとリモート接続に影響する可能性がある」)
 	// does not match and keeps the existing migrate/dedup behavior.
-	issueDistinctActionPropositionPattern = regexp.MustCompile(`(?:検討|確認|調査|対応|見直し)が必要|次回までに(?:検討|確認|調査)|を(?:検討|確認|調査)します`)
+	issueDistinctActionPropositionPattern = regexp.MustCompile(`(?:検討|確認|調査|対応|見直し)(?:すること|する)?が必要|次回までに.{0,40}(?:検討|確認|調査)|を(?:検討|確認|調査)します`)
+	riskExcessTitlePattern                = regexp.MustCompile(`^(.+?)を増やすと(.+?)(?:が)?(?:多くなりすぎる|増えすぎる|過多になる)$`)
+	openIssueTitlePattern                 = regexp.MustCompile(`^(.+?)(?:について)?は?[、,]?(?:次回までに)?(?:検討|確認|調査|対応|見直し)(?:すること)?が必要(?:です)?$`)
 )
 
 // issueCarriesDistinctActionProposition reports whether item's own text
@@ -79,7 +81,8 @@ func synthesizeExplicitRiskItems(previous, diff []liveAnalysisItem, scope liveEv
 			break
 		}
 		text := strings.TrimSpace(scope.TranscriptText[sequenceNo])
-		if text == "" || !riskFuturePattern.MatchString(text) || riskExcludePattern.MatchString(text) || !riskSupportPattern.MatchString(text) {
+		riskSentence := explicitRiskSentence(text)
+		if text == "" || riskSentence == "" || riskExcludePattern.MatchString(riskSentence) || !riskSupportPattern.MatchString(riskSentence) {
 			continue
 		}
 		if evidenceRoleIsReference(sequenceNo, timeline) {
@@ -90,7 +93,7 @@ func synthesizeExplicitRiskItems(previous, diff []liveAnalysisItem, scope liveEv
 			continue
 		}
 		probe := liveAnalysisItem{
-			Kind: "risk", Title: title, Body: explicitRiskSentence(text), Status: "open",
+			Kind: "risk", Title: title, Body: riskSentence, Status: "open",
 			EvidenceSequenceNos: []int64{sequenceNo},
 		}
 		validation := evaluateLiveItemKind(probe, liveEvidenceScope{}, "risk_synthesis")
@@ -113,7 +116,7 @@ func synthesizeExplicitRiskItems(previous, diff []liveAnalysisItem, scope liveEv
 			continue
 		}
 		item := liveAnalysisItem{
-			Kind: "risk", Severity: "medium", Title: title, Body: text, Status: "open",
+			Kind: "risk", Severity: "medium", Title: title, Body: riskSentence, Status: "open",
 			EvidenceSequenceNos: []int64{sequenceNo}, evidenceSpecified: true,
 		}
 		item.ID = serverGeneratedItemID(item)
@@ -208,10 +211,100 @@ func explicitRiskItemTitle(text string) string {
 	}
 	subject = riskTitleTrailingPattern.ReplaceAllString(subject, "")
 	subject = strings.Trim(strings.TrimSpace(subject), "、。 ")
+	subject = strings.TrimPrefix(subject, "ただし、")
+	subject = strings.TrimPrefix(subject, "ただし")
+	if matches := riskExcessTitlePattern.FindStringSubmatch(subject); len(matches) == 3 {
+		subject = strings.TrimSpace(matches[1]) + "拡大による" + strings.TrimSpace(matches[2]) + "過多リスク"
+	}
 	if subject == "" {
 		return ""
 	}
 	return truncateRunes(subject, 40)
+}
+
+// synthesizeExplicitOpenIssueItems keeps a pending decision/action named in a
+// compound risk utterance as its own Issue. It also rewrites a model-proposed
+// aggregate Issue to the atomic sentence, preventing the adjacent Risk from
+// being absorbed into the open question merely because they cite one segment.
+func synthesizeExplicitOpenIssueItems(previous, diff []liveAnalysisItem, scope liveEvidenceScope, timeline discourseTimeline) []liveAnalysisItem {
+	known := append(append([]liveAnalysisItem(nil), previous...), diff...)
+	var synthesized []liveAnalysisItem
+	for _, sequenceNo := range currentEvidenceSequenceNos(scope) {
+		if evidenceRoleIsReference(sequenceNo, timeline) {
+			continue
+		}
+		evidenceText := strings.TrimSpace(scope.TranscriptText[sequenceNo])
+		riskSentence := explicitRiskSentence(evidenceText)
+		// This repair is intentionally limited to a compound utterance that
+		// contains both a future adverse impact and a separate pending action.
+		// A normal current issue such as "原因不明で調査が必要" must retain its
+		// full proposition and resolution identity.
+		if riskSentence == "" || riskExcludePattern.MatchString(riskSentence) ||
+			!riskSupportPattern.MatchString(riskSentence) {
+			continue
+		}
+		for _, sentence := range kindSentenceBoundaryPattern.Split(evidenceText, -1) {
+			sentence = strings.Trim(strings.TrimSpace(sentence), "、。.!！ ")
+			if sentence == "" || !issueDistinctActionPropositionPattern.MatchString(sentence) {
+				continue
+			}
+			title := explicitOpenIssueTitle(sentence)
+			if title == "" {
+				continue
+			}
+			rewritten := false
+			for index := range diff {
+				if diff[index].Kind != "issue" || !containsInt64(diff[index].EvidenceSequenceNos, sequenceNo) ||
+					!issueCarriesDistinctActionProposition(diff[index]) {
+					continue
+				}
+				diff[index].Title = title
+				diff[index].Body = sentence
+				diff[index].Subtype = issueSubtypeDiscussion
+				diff[index].EvidenceSequenceNos = []int64{sequenceNo}
+				diff[index].EvidenceSnippets = []string{sentence}
+				rewritten = true
+				break
+			}
+			if rewritten || explicitOpenIssueRepresented(known, sentence, sequenceNo) {
+				continue
+			}
+			item := liveAnalysisItem{
+				Kind: "issue", Subtype: issueSubtypeDiscussion, Severity: "medium",
+				Title: title, Body: sentence, Status: "open",
+				InformationStatus:   informationStatusGrounded,
+				EvidenceSequenceNos: []int64{sequenceNo}, EvidenceSnippets: []string{sentence},
+				evidenceSpecified: true,
+			}
+			item.ID = serverGeneratedItemID(item)
+			synthesized = append(synthesized, item)
+			known = append(known, item)
+		}
+	}
+	return synthesized
+}
+
+func explicitOpenIssueTitle(sentence string) string {
+	trimmed := strings.Trim(strings.TrimSpace(sentence), "、。.!！ ")
+	if matches := openIssueTitlePattern.FindStringSubmatch(trimmed); len(matches) == 2 {
+		return truncateRunes(strings.TrimSpace(matches[1])+"が未決定", 40)
+	}
+	return semanticallyCompleteItemLabelOrOriginal(trimmed, "issue")
+}
+
+func explicitOpenIssueRepresented(items []liveAnalysisItem, sentence string, sequenceNo int64) bool {
+	for _, item := range items {
+		if item.Inactive || item.MergedIntoID != "" || item.Kind != "issue" ||
+			!containsInt64(item.EvidenceSequenceNos, sequenceNo) {
+			continue
+		}
+		itemText := item.Title + " " + item.Body
+		if semanticItemSimilarity(itemText, sentence) >= 0.18 ||
+			sharedTreeAuditSubjectTerm(itemText, sentence) {
+			return true
+		}
+	}
+	return false
 }
 
 func explicitRiskSentence(text string) string {

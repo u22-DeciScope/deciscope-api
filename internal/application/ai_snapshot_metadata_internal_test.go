@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// 対象session(session_497ed2b0aedf9dc6)のversion 11→12相当: dynamic topic昇格
+// 対象session(session_497ed2b0aedf9dc6)のanalysis version 11→12相当: dynamic topic昇格
 // ラウンドでも既存ノードは全て保持され、completed payloadはfull snapshotとして
 // 自身のノード数・エッジ数・ハッシュ・削除ノード一覧を持つ。
 func TestFullSnapshotMetadataAndNodePreservationOnPromotion(t *testing.T) {
@@ -32,6 +32,9 @@ func TestFullSnapshotMetadataAndNodePreservationOnPromotion(t *testing.T) {
 	}
 	if state1.TreeHash == "" {
 		t.Fatalf("treeHash must be set on full snapshots")
+	}
+	if state1.TreeVersion != 1 {
+		t.Fatalf("initial treeVersion=%d, want independent revision 1", state1.TreeVersion)
 	}
 
 	round2 := `{
@@ -81,7 +84,7 @@ func TestFullSnapshotMetadataAndNodePreservationOnPromotion(t *testing.T) {
 	if state2.PayloadKind != "full_snapshot" || state2.NodeCount != len(state2.Tree.Nodes) {
 		t.Fatalf("v12 metadata: payloadKind=%q nodeCount=%d want full_snapshot/%d", state2.PayloadKind, state2.NodeCount, len(state2.Tree.Nodes))
 	}
-	if state2.BasedOnTreeVersion != 11 {
-		t.Fatalf("basedOnTreeVersion = %d, want 11", state2.BasedOnTreeVersion)
+	if state2.TreeVersion != state1.TreeVersion+1 || state2.BasedOnTreeVersion != state1.TreeVersion {
+		t.Fatalf("tree revision=%d basedOn=%d, want %d based on %d", state2.TreeVersion, state2.BasedOnTreeVersion, state1.TreeVersion+1, state1.TreeVersion)
 	}
 }

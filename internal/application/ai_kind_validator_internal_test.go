@@ -3,6 +3,7 @@ package application
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
 
 	"deciscope-core-api/internal/domain"
@@ -44,6 +45,255 @@ func TestCommonItemKindValidatorSemanticBoundaries(t *testing.T) {
 				t.Fatalf("decision confidence=%.2f below live threshold", decision.Confidence)
 			}
 		})
+	}
+}
+
+func TestJapaneseActionAspectAndDeadlineAttachment(t *testing.T) {
+	tests := []struct {
+		name         string
+		originalKind string
+		text         string
+		wantKind     string
+		wantDeadline bool
+	}{
+		{name: "completed configuration", originalKind: "todo", text: "設定を修正しました。", wantKind: "fact"},
+		{name: "completed rollback", originalKind: "todo", text: "旧機器へ切り戻しました。", wantKind: "fact"},
+		{name: "completed connectivity check", originalKind: "todo", text: "疎通を確認しました。", wantKind: "fact"},
+		{name: "future configuration", originalKind: "fact", text: "設定を修正します。", wantKind: "todo"},
+		{name: "imperative configuration", originalKind: "fact", text: "設定を修正してください。", wantKind: "todo"},
+		{name: "future check with deadline", originalKind: "fact", text: "明日までに設定を確認します。", wantKind: "todo", wantDeadline: true},
+		{name: "delegated check", originalKind: "fact", text: "佐藤さんに確認してもらいます。", wantKind: "todo"},
+		{name: "object expiry", originalKind: "todo", text: "証明書が来月末に期限切れになります。", wantKind: "fact"},
+		{name: "contract end date", originalKind: "todo", text: "契約は3月31日に終了します。", wantKind: "fact"},
+		{name: "update deadline", originalKind: "fact", text: "来月末までに証明書を更新します。", wantKind: "todo", wantDeadline: true},
+		{name: "assigned action deadline", originalKind: "fact", text: "佐藤さんが火曜日までに設定差分を確認します。", wantKind: "todo", wantDeadline: true},
+		{name: "need is open issue", originalKind: "todo", text: "設定を修正する必要があります。", wantKind: "issue"},
+		{name: "recommendation is proposal", originalKind: "todo", text: "設定を確認した方がよさそうです。", wantKind: "issue"},
+		{name: "incomplete purpose is discussion", originalKind: "todo", text: "通信断を早期に検知できるように。", wantKind: "issue"},
+		{name: "committed check", originalKind: "issue", text: "設定を確認することになりました。", wantKind: "todo"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			item := liveAnalysisItem{
+				ID: "item-aspect", Kind: test.originalKind, Subtype: issueSubtypeDiscussion,
+				Title: test.text, Body: test.text, Status: "open",
+			}
+			decision := evaluateLiveItemKind(item, liveEvidenceScope{}, "aspect_test")
+			if decision.CanonicalKind != test.wantKind ||
+				decision.Confidence < itemKindValidationThreshold(itemKindValidationLive) {
+				t.Fatalf("decision=%+v, want kind=%s", decision, test.wantKind)
+			}
+			if decision.Features.DeadlinePresent != test.wantDeadline {
+				t.Fatalf("deadline=%t, want=%t decision=%+v", decision.Features.DeadlinePresent, test.wantDeadline, decision)
+			}
+			if (test.name == "object expiry" || test.name == "contract end date") &&
+				(!decision.Features.EventDatePresent || decision.Features.DeadlinePresent) {
+				t.Fatalf("event date was not separated from action deadline: %+v", decision)
+			}
+		})
+	}
+
+	ongoing := liveAnalysisItem{
+		ID: "item-ongoing", Kind: "fact", Title: "設定を確認しています。",
+		Body: "設定を確認しています。", Status: "open",
+	}
+	decision := evaluateLiveItemKind(ongoing, liveEvidenceScope{}, "aspect_test")
+	if decision.CanonicalKind == "todo" && decision.Confidence >= itemKindValidationThreshold(itemKindValidationLive) {
+		t.Fatalf("ongoing aspect was forced to TODO without commitment context: %+v", decision)
+	}
+}
+
+func TestJapaneseCompletedRecoveryAndTemporalFeatures(t *testing.T) {
+	tests := []struct {
+		name                string
+		text                string
+		wantKind            string
+		wantPastTime        bool
+		wantFutureDeadline  bool
+		wantFutureScheduled bool
+		wantCompleted       bool
+	}{
+		{
+			name:     "completed compound recovery",
+			text:     "午前9時52分に旧スイッチへ一度切り戻し、その後、新しいスイッチのトランク設定と許可VLANを修正しました。",
+			wantKind: "fact", wantPastTime: true, wantCompleted: true,
+		},
+		{
+			name:     "past clock time",
+			text:     "9時52分に旧スイッチへ切り戻した。",
+			wantKind: "fact", wantPastTime: true, wantCompleted: true,
+		},
+		{
+			name:     "future deadline",
+			text:     "金曜日までに旧スイッチへ切り戻します。",
+			wantKind: "todo", wantFutureDeadline: true,
+		},
+		{
+			name:     "future scheduled clock time",
+			text:     "明日の9時52分に旧スイッチへ切り戻します。",
+			wantKind: "todo", wantFutureScheduled: true,
+		},
+		{
+			name:     "committed maintenance verb",
+			text:     "再発防止として標準設定との差分確認手順を整備します。",
+			wantKind: "todo",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			item := liveAnalysisItem{
+				ID: "item-recovery", Kind: "todo", Title: test.text,
+				Body: test.text, Status: "open", EvidenceSequenceNos: []int64{1},
+			}
+			decision := evaluateLiveItemKind(item, liveEvidenceScope{}, "temporal_test")
+			if decision.CanonicalKind != test.wantKind {
+				t.Fatalf("decision=%+v, want kind=%s", decision, test.wantKind)
+			}
+			features := decision.Features
+			if features.PastEventTimePresent != test.wantPastTime ||
+				features.FutureDeadlinePresent != test.wantFutureDeadline ||
+				features.FutureScheduledTimePresent != test.wantFutureScheduled ||
+				features.CompletedPredicatePresent != test.wantCompleted {
+				t.Fatalf("temporal features=%+v", features)
+			}
+			if test.wantPastTime && (features.CommitmentPresent || features.RequestPresent ||
+				features.AssigneePresent || features.FutureDeadlinePresent) {
+				t.Fatalf("past action leaked future TODO features: %+v", features)
+			}
+		})
+	}
+}
+
+func TestFactRiskTodoCompositeUsesFragmentLocalSemantics(t *testing.T) {
+	text := "証明書が来月末に期限切れになります。放置すると接続できなくなる可能性があります。高橋さんが今週中に更新手順を確認します。"
+	scope := evidenceScopeFromTexts(map[int64]string{19: text}, 19)
+	item := liveAnalysisItem{
+		ID: "item-composite-three", Kind: "todo", Severity: "high",
+		Title: "証明書対応", Body: text, Status: "open",
+		EvidenceSequenceNos: []int64{19}, EvidenceSnippets: []string{
+			"証明書が来月末に期限切れになります",
+			"放置すると接続できなくなる可能性があります",
+			"高橋さんが今週中に更新手順を確認します",
+		}, evidenceSpecified: true,
+	}
+	stats := &liveAnalysisTreeMergeStats{}
+	items, _ := splitLiveItemKinds(nil, []liveAnalysisItem{item}, nil, scope, stats)
+	items = validateLiveItemKinds(items, scope, itemKindValidationLive, "three_way_split", stats)
+	if len(items) != 3 {
+		t.Fatalf("items=%+v, want three semantic fragments", items)
+	}
+	byKind := make(map[string]liveAnalysisItem)
+	for _, split := range items {
+		byKind[split.Kind] = split
+		if !equalInt64s(split.EvidenceSequenceNos, []int64{19}) {
+			t.Fatalf("fragment evidence=%v", split.EvidenceSequenceNos)
+		}
+		if split.Title != split.Body || strings.Contains(split.Title, "。") {
+			t.Fatalf("fragment label/body was not regenerated locally: %+v", split)
+		}
+	}
+	if len(byKind) != 3 || byKind["fact"].ID == "" || byKind["risk"].ID == "" || byKind["todo"].ID == "" {
+		t.Fatalf("kinds=%v items=%+v", byKind, items)
+	}
+	factFeatures := inferItemSemanticFeatures(byKind["fact"], liveEvidenceScope{})
+	riskFeatures := inferItemSemanticFeatures(byKind["risk"], liveEvidenceScope{})
+	todoFeatures := inferItemSemanticFeatures(byKind["todo"], liveEvidenceScope{})
+	if factFeatures.DeadlinePresent || riskFeatures.OwnerPresent || riskFeatures.DeadlinePresent ||
+		!todoFeatures.OwnerPresent || !todoFeatures.DeadlinePresent {
+		t.Fatalf("fragment metadata leaked: fact=%+v risk=%+v todo=%+v", factFeatures, riskFeatures, todoFeatures)
+	}
+}
+
+func TestIssueTodoCrossKindUpdateIsDetached(t *testing.T) {
+	previous := []liveAnalysisItem{{
+		ID: "item-issue-delay", Kind: "issue", Subtype: issueSubtypeInvestigation,
+		Title: "2階の通信遅延原因", Body: "2階の通信遅延原因はまだ分かっていません。",
+		Status: "open", EvidenceSequenceNos: []int64{10},
+	}}
+	diff := []liveAnalysisItem{{
+		ClientKey: "item-issue-delay", Kind: "todo", Severity: "high",
+		Title: "設定差分の確認", Body: "佐藤さんが火曜日までに設定差分を確認します。",
+		Status: "open", EvidenceSequenceNos: []int64{24},
+	}}
+	assignments := []treeAssignment{{NodeID: "item-issue-delay", ParentTopicID: "topic-network"}}
+	stats := &liveAnalysisTreeMergeStats{}
+	diff, assignments = detachCrossKindActionUpdates(previous, diff, assignments, liveEvidenceScope{}, stats)
+	if stats.CrossKindUpdatesDetached != 1 || diff[0].ClientKey == "item-issue-delay" ||
+		assignments[0].NodeID != diff[0].ClientKey {
+		t.Fatalf("diff=%+v assignments=%+v stats=%+v", diff, assignments, stats)
+	}
+	resolver := itemReferenceResolver(previous, diff, nil, stats)
+	_ = resolver
+	if diff[0].ID == "" || diff[0].ID == previous[0].ID {
+		t.Fatalf("detached item did not receive a distinct canonical id: %+v", diff[0])
+	}
+	merged := mergeLiveAnalysisItems(previous, diff, nil)
+	if len(merged) != 2 || merged[0].Kind != "issue" || merged[1].Kind != "todo" {
+		t.Fatalf("issue/todo did not coexist: %+v", merged)
+	}
+}
+
+func TestUpdatedTodoEvidenceIsLocalizedToAction(t *testing.T) {
+	previous := []liveAnalysisItem{{
+		ID: "item-todo-certificate", Kind: "todo", Title: "証明書対応",
+		Body: "証明書対応を検討する", EvidenceSequenceNos: []int64{19, 20},
+	}}
+	diff := []liveAnalysisItem{{
+		ID: "item-todo-certificate", Kind: "todo",
+		Title: "証明書の更新手順を確認", Body: "高橋さんが今週中に証明書の更新手順と作業可能日を確認します。",
+		EvidenceSequenceNos: []int64{21}, evidenceSpecified: true,
+	}}
+	merged := mergeLiveAnalysisItems(previous, diff, nil)
+	appendItemEvidenceSequenceNos(merged, diff, []int64{21})
+	scope := evidenceScopeFromTexts(map[int64]string{
+		19: "証明書が来月末に期限切れになることがわかりました。放置すると接続できなくなる可能性があります。",
+		20: "証明書の更新は別件として扱います。",
+		21: "高橋さんに今週中に、証明書の更新手順と作業可能日を確認してもらいます。",
+	}, 19, 20, 21)
+	stats := &liveAnalysisTreeMergeStats{}
+	localizeUpdatedItemEvidence(previous, merged, diff, scope, stats)
+	if !equalInt64s(merged[0].EvidenceSequenceNos, []int64{21}) ||
+		stats.EvidenceReferencesPruned != 2 {
+		t.Fatalf("item=%+v stats=%+v", merged[0], stats)
+	}
+}
+
+func TestExplicitCorrectionSupersedesPriorItem(t *testing.T) {
+	state := liveAnalysisPayload{
+		Items: []liveAnalysisItem{
+			{
+				ID: "item-old-port", Kind: "issue", Subtype: issueSubtypeInvestigation,
+				Title: "上位接続ポートがアクセスポート", Body: "上位スイッチへの接続ポートがトランクではなくアクセスポートでした。",
+				Status: "open", EvidenceSequenceNos: []int64{7},
+			},
+			{
+				ID: "item-corrected-port", Kind: "fact",
+				Title: "トランク許可一覧の設定漏れ", Body: "正確にはトランク設定で、許可一覧からVLAN30だけが漏れていました。",
+				Status: "open", EvidenceSequenceNos: []int64{8},
+			},
+		},
+		Tree: &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+			{ID: treeRootNodeID, Kind: "topic", Label: "会議全体"},
+			{ID: "topic-network", Kind: "topic", ParentID: treeRootNodeID, Label: "ネットワーク"},
+			{ID: "item-old-port", Kind: "issue", ParentID: "topic-network", Label: "上位接続ポートがアクセスポート"},
+			{ID: "item-corrected-port", Kind: "fact", ParentID: "topic-network", Label: "トランク許可一覧の設定漏れ"},
+		}},
+	}
+	rebuildTreeAuditEdges(state.Tree)
+	scope := evidenceScopeFromTexts(map[int64]string{
+		7: "上位スイッチへ接続するポートは、トランクポートではなくアクセスポートになっていました。",
+		8: "いえ、正確には完全なアクセスポート設定ではありません。トランク設定自体は入っていましたが、許可するVLANの一覧からVLAN30が漏れていました。",
+	}, 7, 8)
+	stats := &liveAnalysisTreeMergeStats{}
+	repairCorrectionSupersessions(&state, scope, classifyDiscourseTimeline(scope), 2, stats)
+	if stats.CorrectionItemsSuperseded != 1 || !state.Items[0].Inactive ||
+		state.Items[0].MergedIntoID != "item-corrected-port" ||
+		liveTreeNodeByID(state.Tree, "item-old-port") != nil ||
+		liveTreeNodeByID(state.Tree, "item-corrected-port") == nil {
+		t.Fatalf("state=%+v stats=%+v", state, stats)
+	}
+	if len(state.ItemTombstones) != 1 || state.ItemTombstones[0].Reason != "superseded" {
+		t.Fatalf("tombstones=%+v", state.ItemTombstones)
 	}
 }
 
@@ -118,11 +368,13 @@ func TestCommonItemKindValidatorSplitsCompositeSemanticRoles(t *testing.T) {
 				Title: "複合命題", Body: test.body, Status: "open",
 				EvidenceSequenceNos: []int64{1}, evidenceSpecified: true,
 			}
-			items, assignments := splitAndValidateLiveItemKinds(
+			stats := &liveAnalysisTreeMergeStats{}
+			items, assignments := splitLiveItemKinds(
 				nil, []liveAnalysisItem{item},
 				[]treeAssignment{{NodeID: item.ID, ParentTopicID: "topic-network"}},
-				liveEvidenceScope{}, itemKindValidationLive, "test_split", &liveAnalysisTreeMergeStats{},
+				liveEvidenceScope{}, stats,
 			)
+			items = validateLiveItemKinds(items, liveEvidenceScope{}, itemKindValidationLive, "test_split", stats)
 			got := make([]string, 0, len(items))
 			for _, split := range items {
 				got = append(got, split.Kind)
@@ -148,33 +400,126 @@ func TestCommonItemKindValidatorSplitsCompositeSemanticRoles(t *testing.T) {
 	}
 }
 
-func TestCommonItemKindRelationsPreserveDistinctPropositions(t *testing.T) {
-	items := []liveAnalysisItem{
-		{ID: "risk-vpn", Kind: "risk", Title: "VPN証明書期限切れによる接続不能", EvidenceSequenceNos: []int64{6}},
-		{ID: "todo-vpn", Kind: "todo", Title: "VPN証明書の更新手順を確認", EvidenceSequenceNos: []int64{6}},
-		{ID: "issue-vlan", Kind: "issue", Title: "VLAN30が障害原因か未確認", EvidenceSequenceNos: []int64{1, 2}},
-		{ID: "fact-vlan", Kind: "fact", Title: "VLAN30が許可一覧から漏れていた", EvidenceSequenceNos: []int64{1}},
-		{ID: "todo-vlan", Kind: "todo", Title: "VLAN30の監視を追加", EvidenceSequenceNos: []int64{2}},
+func TestSemanticSplitFullyReplacesSourceWhenNoSourceKindFragmentRemains(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		1: "許可VLAN一覧からVLAN30が漏れていました。監視対象を増やすとアラートが多くなりすぎる可能性があります。",
+	}, 1)
+	state := liveAnalysisPayload{
+		Items: []liveAnalysisItem{{
+			ID: "wrong-source-todo", Kind: "todo", Status: "open",
+			Title: "VLAN設定と監視対応", Body: scope.TranscriptText[1],
+			EvidenceSequenceNos: []int64{1}, EvidenceSnippets: []string{
+				"許可VLAN一覧からVLAN30が漏れていました",
+				"監視対象を増やすとアラートが多くなりすぎる可能性があります",
+			},
+		}},
+		Tree: &liveAnalysisTree{Nodes: []liveAnalysisTreeNode{
+			{ID: treeRootNodeID, Kind: "topic", Label: "会議全体"},
+			{ID: "wrong-source-todo", Kind: "todo", ParentID: treeRootNodeID, Label: "VLAN設定と監視対応"},
+		}},
 	}
-	tree := &liveAnalysisTree{}
-	if created := appendSemanticKindRelations(tree, items); created != 3 {
-		t.Fatalf("created=%d relations=%+v", created, tree.Relations)
+	rebuildTreeAuditEdges(state.Tree)
+	stats := &liveAnalysisTreeMergeStats{}
+	splitPersistedItemKinds(&state, scope, itemKindValidationFinal, "replacement_test", stats)
+
+	source := findItemByID(state.Items, "wrong-source-todo")
+	if source == nil || !source.Inactive || source.InformationStatus != "superseded" ||
+		source.SupersessionOrigin != "semantic_split" {
+		t.Fatalf("source remained active after full replacement: source=%+v items=%+v", source, state.Items)
 	}
-	got := map[string]string{}
-	for _, relation := range tree.Relations {
-		got[relation.Source+"->"+relation.Target] = relation.Kind
-	}
-	for pair, kind := range map[string]string{
-		"todo-vpn->risk-vpn":    "mitigates",
-		"fact-vlan->issue-vlan": "supports",
-		"todo-vlan->issue-vlan": "addresses",
-	} {
-		if got[pair] != kind {
-			t.Fatalf("relation %s=%q, want=%q all=%+v", pair, got[pair], kind, tree.Relations)
+	activeKinds := map[string]int{}
+	for _, item := range state.Items {
+		if !item.Inactive && item.MergedIntoID == "" {
+			activeKinds[item.Kind]++
+			if item.ID == source.ID {
+				t.Fatalf("source id was reused by an active fragment: %+v", item)
+			}
 		}
 	}
-	if created := appendSemanticKindRelations(tree, items); created != 0 {
+	if activeKinds["fact"] != 1 || activeKinds["risk"] != 1 || activeKinds["todo"] != 0 {
+		t.Fatalf("activeKinds=%v items=%+v", activeKinds, state.Items)
+	}
+}
+
+func TestCommonItemKindRelationsPreserveDistinctPropositions(t *testing.T) {
+	items := []liveAnalysisItem{
+		{ID: "fact-vlan", Kind: "fact", Title: "交換後スイッチの許可VLAN一覧からVLAN30が漏れていた", EvidenceSequenceNos: []int64{1}},
+		{ID: "cause-hypothesis", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "VLAN30設定漏れが3階障害の直接原因である可能性が高い", EvidenceSequenceNos: []int64{2}},
+		{ID: "scope-limit", Kind: "issue", Subtype: issueSubtypeConfirmation, Title: "2階の通信遅延までこの設定漏れで説明できるかは未確認", EvidenceSequenceNos: []int64{3}},
+	}
+	tree := &liveAnalysisTree{}
+	if created := reconcileSemanticKindRelations(tree, items, liveEvidenceScope{}, 0, "deterministic_inference"); created != 2 {
+		t.Fatalf("created=%d relations=%+v", created, tree.Relations)
+	}
+	got := map[string]liveAnalysisTreeRelation{}
+	for _, relation := range tree.Relations {
+		got[relation.Source+"->"+relation.Target] = relation
+	}
+	for pair, kind := range map[string]string{
+		"cause-hypothesis->fact-vlan":   "supported_by",
+		"scope-limit->cause-hypothesis": "limits",
+	} {
+		relation, ok := got[pair]
+		if !ok || relation.Kind != kind {
+			t.Fatalf("relation %s=%+v, want kind=%q all=%+v", pair, relation, kind, tree.Relations)
+		}
+	}
+	if created := reconcileSemanticKindRelations(tree, items, liveEvidenceScope{}, 0, "deterministic_inference"); created != 0 {
 		t.Fatalf("relations duplicated: created=%d relations=%+v", created, tree.Relations)
+	}
+}
+
+func TestSemanticRelationsRejectFalseLinksAndDanglingEndpoints(t *testing.T) {
+	tests := []struct {
+		name  string
+		items []liveAnalysisItem
+	}{
+		{
+			name: "different subjects",
+			items: []liveAnalysisItem{
+				{ID: "fact-db", Kind: "fact", Title: "DB容量不足を確認した", EvidenceSequenceNos: []int64{1}},
+				{ID: "hypothesis-vlan", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "VLAN30設定漏れが障害原因である可能性が高い", EvidenceSequenceNos: []int64{2}},
+			},
+		},
+		{
+			name: "same subject but distant evidence",
+			items: []liveAnalysisItem{
+				{ID: "fact-vlan", Kind: "fact", Title: "VLAN30設定漏れを確認した", EvidenceSequenceNos: []int64{1}},
+				{ID: "hypothesis-vlan", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "VLAN30設定漏れが障害原因である可能性が高い", EvidenceSequenceNos: []int64{10}},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tree := &liveAnalysisTree{}
+			if created := reconcileSemanticKindRelations(tree, test.items, liveEvidenceScope{}, 0, "deterministic_inference"); created != 0 || len(tree.Relations) != 0 {
+				t.Fatalf("false relation created: created=%d relations=%+v", created, tree.Relations)
+			}
+		})
+	}
+
+	items := []liveAnalysisItem{
+		{ID: "fact-vlan", Kind: "fact", Title: "VLAN30設定漏れを確認した", EvidenceSequenceNos: []int64{1}},
+		{ID: "hypothesis-vlan", Kind: "issue", Subtype: issueSubtypeInvestigation, Title: "VLAN30設定漏れが障害原因である可能性が高い", EvidenceSequenceNos: []int64{2}},
+	}
+	tree := &liveAnalysisTree{Relations: []liveAnalysisTreeRelation{
+		{Source: "hypothesis-vlan", Target: "fact-vlan", Kind: itemRelationSupportedBy},
+		{Source: "hypothesis-vlan", Target: "fact-vlan", Kind: itemRelationSupportedBy},
+		{Source: "missing", Target: "fact-vlan", Kind: itemRelationSupportedBy},
+		{Source: "fact-vlan", Target: "hypothesis-vlan", Kind: itemRelationCausedBy},
+	}}
+	reconcileSemanticKindRelations(tree, items, liveEvidenceScope{}, 4, "final_repair")
+	if len(tree.Relations) != 2 {
+		t.Fatalf("dedup/dangling validation failed: %+v", tree.Relations)
+	}
+	for _, relation := range tree.Relations {
+		if relation.Source == "missing" || relation.Source == relation.Target {
+			t.Fatalf("invalid relation retained: %+v", relation)
+		}
+		if relation.Kind == itemRelationSupportedBy &&
+			(relation.Source != "hypothesis-vlan" || relation.Target != "fact-vlan") {
+			t.Fatalf("supported_by direction reversed: %+v", relation)
+		}
 	}
 }
 
@@ -395,9 +740,9 @@ func TestSession2345b804296ee2a1EquivalentFinalKindRepair(t *testing.T) {
 		relationKinds[relation.Source+"->"+relation.Target] = relation.Kind
 	}
 	for pair, wantKind := range map[string]string{
-		"todo-alert-condition->risk-alert-overload":   "mitigates",
-		"risk-vpn-owner->risk-vpn-expiry":             "mitigates",
-		"todo-alert-condition->issue-alert-condition": "addresses",
+		"todo-alert-condition->risk-alert-overload":   "action_for",
+		"risk-vpn-owner->risk-vpn-expiry":             "action_for",
+		"todo-alert-condition->issue-alert-condition": "action_for",
 	} {
 		if relationKinds[pair] != wantKind {
 			t.Fatalf("relation %s=%q, want=%q all=%+v", pair, relationKinds[pair], wantKind, repaired.Tree.Relations)
@@ -424,5 +769,22 @@ func TestCommonItemKindValidatorPureFutureRiskIsStrong(t *testing.T) {
 	}
 	if !sameSentenceDiscussionIssueEvidence(item, text, 18) {
 		t.Fatalf("sameSentenceDiscussionIssueEvidence=false")
+	}
+}
+
+func TestCommonItemKindValidatorKeepsScheduledAdverseOutcomeAsRisk(t *testing.T) {
+	scope := evidenceScopeFromTexts(map[int64]string{
+		1: "VPN証明書は来週失効するため接続不能のリスクがあります。",
+	}, 1)
+	item := liveAnalysisItem{
+		ID: "tail-risk", Kind: "risk",
+		Title:               "VPN証明書失効による接続不能リスク",
+		Body:                "来週の失効により接続できなくなる可能性がある",
+		EvidenceSequenceNos: []int64{1},
+		EvidenceSnippets:    []string{"VPN証明書は来週失効するため接続不能のリスクがあります"},
+	}
+	decision := evaluateLiveItemKind(item, scope, "test")
+	if decision.CanonicalKind != "risk" {
+		t.Fatalf("decision=%+v", decision)
 	}
 }

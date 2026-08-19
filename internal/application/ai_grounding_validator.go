@@ -457,7 +457,7 @@ func unsupportedGroundingAtoms(itemText, evidenceText string) []groundingAtom {
 		len(groundingPersonPattern.FindAllString(itemText, -1)) == 0 {
 		unsupported = append(unsupported, groundingAtom{Category: "owner", Value: "generic_owner"})
 	}
-	if kindDeadlinePattern.MatchString(itemText) && !kindDeadlinePattern.MatchString(evidenceText) &&
+	if kindDateMentionPattern.MatchString(itemText) && !kindDateMentionPattern.MatchString(evidenceText) &&
 		len(groundingDeadlinePattern.FindAllString(itemText, -1)) == 0 {
 		unsupported = append(unsupported, groundingAtom{Category: "deadline", Value: "deadline_semantics"})
 	}
@@ -566,7 +566,7 @@ func rewriteItemToGroundedEvidence(item liveAnalysisItem, scope liveEvidenceScop
 		probe.Body = body
 		if decision, _ := evaluateItemGroundingWithoutRewrite(probe, scope, "grounding_body_contraction", item.semanticSplitFragment); decision.Decision == "accepted" {
 			rewritten := item
-			rewritten.Title = truncateRunes(body, 40)
+			rewritten.Title = semanticallyCompleteItemLabelOrOriginal(body, item.Kind)
 			return rewritten, maxEvidenceSequence(rewritten), true
 		}
 	}
@@ -613,13 +613,40 @@ func rewriteItemToGroundedEvidence(item liveAnalysisItem, scope liveEvidenceScop
 		return item, 0, false
 	}
 	rewritten := item
-	rewritten.Title = truncateRunes(bestText, 40)
+	if groundingRewriteCanPreserveCompleteTitle(item, bestText) {
+		// The model title can be the concise canonical proposition while the
+		// cited transcript sentence is the authoritative evidence/body. Do not
+		// replace a complete, concrete title merely because an unsupported
+		// qualifier elsewhere in the item required contraction.
+		rewritten.Title = strings.TrimSpace(item.Title)
+	} else {
+		rewritten.Title = semanticallyCompleteItemLabelOrOriginal(bestText, item.Kind)
+	}
 	rewritten.Body = truncateRunes(bestText, liveAnalysisTreeDescriptionMaxRunes)
 	rewritten.EvidenceSequenceNos = []int64{bestSequence}
 	rewritten.EvidenceSnippets = []string{bestText}
 	rewritten.EvidenceRoles = semanticFragmentEvidenceRoles(item.EvidenceRoles, bestSequence)
 	rewritten.evidenceSpecified = true
 	return rewritten, bestSequence, true
+}
+
+func groundingRewriteCanPreserveCompleteTitle(item liveAnalysisItem, evidence string) bool {
+	title := strings.TrimSpace(item.Title)
+	if title == "" || incompleteItemLabelEnding(item) != "" {
+		return false
+	}
+	titleOnly := liveAnalysisItem{Kind: item.Kind, Title: title, Body: title}
+	if liveItemTextNeedsReferent(titleOnly) ||
+		!groundingSubjectSupported(title, evidence) {
+		return false
+	}
+	evidencePredicates := groundingPredicateSet(evidence)
+	for _, predicate := range groundingPredicateNames(title) {
+		if _, supported := evidencePredicates[predicate]; !supported {
+			return false
+		}
+	}
+	return semanticItemSimilarity(title, evidence) >= 0.08
 }
 
 func groundingRewriteCandidates(text string) []string {

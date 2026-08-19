@@ -399,14 +399,15 @@ func TestSession83c10700ReplayRepairsDecisionsGroupsAndActionSummary(t *testing.
 		t.Fatalf("materialized agenda topics missing: %+v", state.Tree)
 	}
 	noiseGroupID := stableGroupID(noiseTopic.ID, "夜間測定")
+	groupStats := &liveAnalysisTreeMergeStats{}
 	reorganized, applied := applyTreeOperations(state.Tree, mc, []treeOperation{
 		{Type: "create_group", ParentTopicID: birdTopic.ID, Label: "観測地点の不足", EvidenceItemIDs: []string{"risk-bird-route", "fact-bird-sites", "todo-bird-sites"}},
-		{Type: "create_group", ParentTopicID: noiseTopic.ID, Label: "夜間測定", EvidenceItemIDs: []string{"todo-noise-count", "open-wind-speed", "todo-weather-data"}},
-		{Type: "create_group", ParentID: noiseGroupID, Label: "強風日の条件", EvidenceItemIDs: []string{"open-wind-speed", "todo-weather-data"}},
+		{Type: "create_group", ParentTopicID: noiseTopic.ID, Label: "夜間測定", EvidenceItemIDs: []string{"todo-noise-count", "question-wind-speed", "open-wind-speed"}},
+		{Type: "create_group", ParentID: noiseGroupID, Label: "強風日の条件", EvidenceItemIDs: []string{"question-wind-speed", "open-wind-speed"}},
 		{Type: "create_group", ParentTopicID: residentTopic.ID, Label: "公開方法と説明会", EvidenceItemIDs: []string{"todo-web-publish", "todo-meeting-date"}},
-	}, TreeClassificationConfig{}, &liveAnalysisTreeMergeStats{})
+	}, TreeClassificationConfig{}, groupStats)
 	if applied != 3 {
-		t.Fatalf("groups applied=%d", applied)
+		t.Fatalf("groups applied=%d decisions=%+v skipReasons=%v", applied, groupStats.GroupDecisions, groupStats.GroupSkipReasons)
 	}
 	health := computeTreeHealth(reorganized)
 	if health.GroupCount != 3 || health.NestedGroupCount != 0 || treeDepthOf(reorganized) != 3 || health.SingleChildGroupCount != 0 {

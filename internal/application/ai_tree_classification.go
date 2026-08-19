@@ -54,11 +54,13 @@ type TreeClassificationConfig struct {
 	// env: AI_TREE_AGENDA_ASSIGNMENT_THRESHOLD
 	AgendaAssignmentThreshold float64
 	// PromotionMinItems は emerging topic を正式な dynamic topic へ昇格させる
-	// ために必要な、現存する証拠itemの最小数。1にすると単一発言でtopicが
-	// 生まれるため、既定は2。env: AI_TREE_TOPIC_PROMOTION_MIN_ITEMS
+	// ために必要な証拠itemの最小数。複数ラウンド経路では現存item数、
+	// 単一バッチ経路では独立した現バッチitem数へ適用する。単一発言では
+	// topicを作らないため既定は2。env: AI_TREE_TOPIC_PROMOTION_MIN_ITEMS
 	PromotionMinItems int
-	// PromotionMinRounds は昇格に必要な、候補に証拠が集まった分析ラウンドの
-	// 最小数。同一ラウンド内の言い換え連投だけで昇格しないよう既定は2。
+	// PromotionMinRounds は複数ラウンド経路で昇格に必要な、候補に証拠が
+	// 集まった分析ラウンドの最小数。独立した複数itemが同一バッチ内に
+	// 揃う経路には適用しない。既定は2。
 	// env: AI_TREE_TOPIC_PROMOTION_MIN_ROUNDS
 	PromotionMinRounds int
 	// MaxDynamicTopics は1会議あたりの dynamic topic(origin=dynamic)の上限。
@@ -324,14 +326,23 @@ const (
 
 // emergingDecision は新topic候補に対するサーバー判定(ログ専用)。
 type emergingDecision struct {
-	CandidateID        string
-	EvidenceItemCount  int
-	RoundCount         int
-	Decision           string
-	TopicID            string
-	Reason             string
-	SubjectKey         string
-	MergedCandidateIDs []string
+	CandidateID                  string
+	EvidenceItemCount            int
+	RoundCount                   int
+	BatchRound                   int64
+	CurrentBatchItemCount        int
+	IndependenceDedupBeforeCount int
+	IndependenceDedupAfterCount  int
+	IndependentItemIDs           []string
+	ExcludedEvidence             []string
+	DistinctEvidenceCount        int
+	Decision                     string
+	TopicID                      string
+	Reason                       string
+	PromotionPath                string
+	ReparentedItemCount          int
+	SubjectKey                   string
+	MergedCandidateIDs           []string
 }
 
 const (
