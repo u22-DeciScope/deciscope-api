@@ -155,72 +155,126 @@ func (s *SampleMeetingSeeder) CreateSampleMeeting(ctx context.Context, workspace
 		}
 	}
 
-	// AI分析レコード (meeting_session_ai_analyses)。実際の会議終了後と同じく、
-	// ライブ分析(live)と最終要約(final)の completed 行を投入する。
-	// これが無いと、サマリー画面の最終要約パネルが数分間ポーリングした末に
-	// 「AI分析なし」の表示になってしまう。
+	// AI分析レコード (meeting_session_ai_analyses)。現行の会議終了フローと同じく、
+	// 構造化会議コンテキスト(context)、ライブ分析(live)、確定ツリー(tree)、
+	// 最終要約(final)、終了処理状態(finalization)を一式投入する。
+	// historyにもライブ版を残し、サマリー画面の「カードの更新」を表示できるようにする。
 	inputChars := 0
 	for _, segment := range segments {
 		inputChars += len([]rune(segment.text))
 	}
+	finalizedAt := at(33 * time.Minute)
 	for _, analysis := range []struct {
 		analysisType string
 		payload      string
 		version      int
 		at           string
+		segmentCount int
+		inputChars   int
 	}{
-		{"live", sampleLiveAnalysisPayload, 4, at(30 * time.Minute)},
-		{"final", sampleFinalAnalysisPayload, 1, at(33 * time.Minute)},
+		{"context", sampleMeetingContextPayload, 1, at(0), 0, 0},
+		{"live", sampleLiveAnalysisPayload, 8, at(30 * time.Minute), len(segments), inputChars},
+		{"tree", sampleTreeSnapshotPayload(finalizedAt), 8, finalizedAt, len(segments), inputChars},
+		{"final", sampleFinalAnalysisPayload, 1, finalizedAt, len(segments), inputChars},
+		{"finalization", sampleFinalizationPayload(finalizedAt), 6, finalizedAt, 0, 0},
 	} {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO meeting_session_ai_analyses (
 				session_id, analysis_type, status, version, payload, model, segment_count, input_chars, created_at, updated_at
 			) VALUES ($1, $2, 'completed', $3, $4, 'sample', $5, $6, $7, $7)
-		`, sessionID, analysis.analysisType, analysis.version, analysis.payload, len(segments), inputChars, analysis.at); err != nil {
+		`, sessionID, analysis.analysisType, analysis.version, analysis.payload, analysis.segmentCount, analysis.inputChars, analysis.at); err != nil {
 			return fmt.Errorf("insert sample ai analysis %s: %w", analysis.analysisType, err)
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO meeting_session_ai_analysis_live_history (
+			session_id, version, payload, model, updated_at
+		) VALUES ($1, 8, $2, 'sample', $3)
+	`, sessionID, sampleLiveAnalysisPayload, at(30*time.Minute)); err != nil {
+		return fmt.Errorf("insert sample live analysis history: %w", err)
 	}
 
 	return tx.Commit()
 }
 
-// sampleTreeNodesEdgesJSON は議論ツリーの nodes/edges 部分。durable イベント
-// (tree.update) とライブ分析payloadの tree の両方から同じ内容を参照する。
+// sampleMeetingContextPayload は会議開始時に正規化・保存される現行の
+// structured meeting context。agenda ID はツリーノードIDとは分離する。
+const sampleMeetingContextPayload = `{` +
+	`"title":"【サンプル】価格改定方針の検討会議",` +
+	`"purpose":"来期の価格改定方針を決める。値上げの対象顧客・値上げ率・適用開始時期を決定し、対象顧客リストの作成につなげる。",` +
+	`"background":"昨年から原価が上昇しており、価格据え置きでは利益率が悪化している。中小顧客は解約リスクが高い点が懸念。",` +
+	`"agendaItems":[` +
+	`{"id":"agenda-1","title":"値上げ対象顧客の範囲","order":1,"role":"primary"},` +
+	`{"id":"agenda-2","title":"値上げ率","order":2,"role":"primary"},` +
+	`{"id":"agenda-3","title":"適用タイミング","order":3,"role":"primary"}` +
+	`],` +
+	`"aiDirectives":["財務影響は数値で示すこと"]` +
+	`}`
+
+// sampleTreeNodesEdgesJSON は現行canonical treeの nodes/edges/relations 部分。
+// 親子関係は parentId を正とし、detail同士を親子にせず root → topic → detail
+// に揃える。agendaRefs と materializedTopicIds は双方向に対応する。
 const sampleTreeNodesEdgesJSON = `"nodes":[` +
-	`{"id":"topic-root","kind":"topic","label":"価格改定方針","status":"open","description":"来期の価格改定方針(対象顧客・値上げ率・適用時期)を決める。"},` +
-	`{"id":"topic-scope","kind":"topic","label":"対象顧客","status":"open","description":"値上げ対象とする顧客セグメントの検討。"},` +
-	`{"id":"topic-rollout","kind":"topic","label":"適用方法・時期","status":"open","description":"値上げの適用タイミングと段階適用の検討。"},` +
-	`{"id":"issue-target-scope","kind":"issue","label":"値上げ対象顧客の範囲","status":"resolved","description":"エンタープライズ限定か全顧客か。エンタープライズ限定で合意。","relatedItemIds":["issue-target-scope"]},` +
-	`{"id":"risk-smb-churn","kind":"risk","label":"中小顧客の解約リスク","status":"resolved","description":"中小への値上げは解約リスクが高い。据え置きで回避。","relatedItemIds":["risk-smb-churn"]},` +
-	`{"id":"decision-ent-repricing","kind":"decision","label":"ENT8%値上げ・中小据え置き","status":"open","description":"エンタープライズは更新月から8%値上げ、中小は据え置きで決定。","relatedItemIds":["decision-ent-repricing"]},` +
-	`{"id":"todo-customer-list","kind":"issue","label":"対象顧客リストの展開","status":"open","description":"値上げ対象顧客リストを今週中に作成・共有(担当: 佐藤)。","relatedItemIds":["todo-customer-list"]},` +
-	`{"id":"question-renewal-timing","kind":"issue","subtype":"question","label":"更新タイミングのばらつき","status":"resolved","description":"契約更新月が顧客ごとに異なる。更新月にあわせ段階適用で解決。","relatedItemIds":["question-renewal-timing"]},` +
-	`{"id":"risk-revenue-timing","kind":"risk","label":"値上げ効果の発現遅延","status":"open","description":"段階適用のため効果が全顧客に及ぶまで最長1年。","relatedItemIds":["risk-revenue-timing"]}` +
+	`{"id":"root","kind":"topic","label":"【サンプル】価格改定方針の検討会議","status":"open","description":"来期の価格改定方針を決め、対象顧客リストの作成につなげる。","origin":"system"},` +
+	`{"id":"topic-price-scope","kind":"topic","parentId":"root","label":"値上げ対象顧客の範囲","status":"resolved","description":"値上げ対象とする顧客セグメントの検討。","origin":"agenda","agendaRefs":["agenda-1"],"materialized":true},` +
+	`{"id":"topic-price-rate","kind":"topic","parentId":"root","label":"値上げ率","status":"resolved","description":"原価上昇を踏まえた値上げ率の検討。","origin":"agenda","agendaRefs":["agenda-2"],"materialized":true},` +
+	`{"id":"topic-price-rollout","kind":"topic","parentId":"root","label":"適用タイミング","status":"resolved","description":"契約更新月にあわせた段階適用の検討。","origin":"agenda","agendaRefs":["agenda-3"],"materialized":true},` +
+	`{"id":"issue-target-scope","kind":"issue","subtype":"discussion","parentId":"topic-price-scope","label":"値上げ対象顧客の範囲","status":"resolved","description":"エンタープライズ限定か全顧客かを検討し、エンタープライズ限定で合意した。","relatedItemIds":["issue-target-scope"]},` +
+	`{"id":"risk-smb-churn","kind":"risk","parentId":"topic-price-scope","label":"中小顧客の解約リスク","status":"resolved","description":"中小顧客への値上げは解約リスクが高く、据え置きで回避する。","relatedItemIds":["risk-smb-churn"]},` +
+	`{"id":"decision-ent-repricing","kind":"decision","parentId":"topic-price-rate","label":"ENTは8%値上げ・中小は据え置き","status":"open","description":"エンタープライズは更新月から8%値上げし、中小は据え置く。","relatedItemIds":["decision-ent-repricing"]},` +
+	`{"id":"question-renewal-timing","kind":"issue","subtype":"question","parentId":"topic-price-rollout","label":"更新タイミングのばらつき","status":"resolved","description":"顧客ごとに異なる契約更新月にあわせ、段階適用する。","relatedItemIds":["question-renewal-timing"]},` +
+	`{"id":"risk-revenue-timing","kind":"risk","parentId":"topic-price-rollout","label":"値上げ効果の発現遅延","status":"open","description":"段階適用のため効果が全顧客に及ぶまで最長1年かかる。","relatedItemIds":["risk-revenue-timing"]},` +
+	`{"id":"todo-customer-list","kind":"todo","parentId":"topic-price-rollout","label":"対象顧客リストの展開","status":"open","description":"佐藤が値上げ対象顧客リストを今週中に作成・共有する。","relatedItemIds":["todo-customer-list"]}` +
 	`],"edges":[` +
-	`{"id":"e-root-scope","source":"topic-root","target":"topic-scope"},` +
-	`{"id":"e-root-rollout","source":"topic-root","target":"topic-rollout"},` +
-	`{"id":"e-scope-issue","source":"topic-scope","target":"issue-target-scope"},` +
-	`{"id":"e-issue-churn","source":"issue-target-scope","target":"risk-smb-churn"},` +
-	`{"id":"e-issue-decision","source":"issue-target-scope","target":"decision-ent-repricing"},` +
-	`{"id":"e-decision-todo","source":"decision-ent-repricing","target":"todo-customer-list"},` +
-	`{"id":"e-rollout-question","source":"topic-rollout","target":"question-renewal-timing"},` +
-	`{"id":"e-question-delay","source":"question-renewal-timing","target":"risk-revenue-timing"}` +
+	`{"source":"root","target":"topic-price-scope"},` +
+	`{"source":"root","target":"topic-price-rate"},` +
+	`{"source":"root","target":"topic-price-rollout"},` +
+	`{"source":"topic-price-scope","target":"issue-target-scope"},` +
+	`{"source":"topic-price-scope","target":"risk-smb-churn"},` +
+	`{"source":"topic-price-rate","target":"decision-ent-repricing"},` +
+	`{"source":"topic-price-rollout","target":"question-renewal-timing"},` +
+	`{"source":"topic-price-rollout","target":"risk-revenue-timing"},` +
+	`{"source":"topic-price-rollout","target":"todo-customer-list"}` +
+	`],"relations":[` +
+	`{"id":"relation-decision-resolves-scope","source":"decision-ent-repricing","target":"issue-target-scope","kind":"resolves","confidence":1,"evidenceSequenceNos":[7],"origin":"sample","status":"active"},` +
+	`{"id":"relation-todo-for-rollout","source":"todo-customer-list","target":"question-renewal-timing","kind":"action_for","confidence":1,"evidenceSequenceNos":[8],"origin":"sample","status":"active"}` +
 	`]`
 
-// sampleLiveAnalysisPayload はライブ分析v2形式(summary/currentTopic/items/tree)の
-// 最終スナップショット。itemsのidはツリーのノードidと共有する。
+const sampleAgendaAnchorsJSON = `[` +
+	`{"agendaId":"agenda-1","originalTitle":"値上げ対象顧客の範囲","normalizedSubject":"値上げ対象顧客の範囲","order":1,"role":"primary","status":"discussed","materializedTopicIds":["topic-price-scope"]},` +
+	`{"agendaId":"agenda-2","originalTitle":"値上げ率","normalizedSubject":"値上げ率","order":2,"role":"primary","status":"discussed","materializedTopicIds":["topic-price-rate"]},` +
+	`{"agendaId":"agenda-3","originalTitle":"適用タイミング","normalizedSubject":"適用タイミング","order":3,"role":"primary","status":"discussed","materializedTopicIds":["topic-price-rollout"]}` +
+	`]`
+
+const sampleAgendaProgressJSON = `{` +
+	`"entries":[` +
+	`{"id":"agenda-1","sourceType":"fixed_agenda","title":"値上げ対象顧客の範囲","order":1,"computedStatus":"discussed","outcomeStatus":"concluded","focusNodeIds":["topic-price-scope","issue-target-scope","risk-smb-churn"],"materializedTopicIds":["topic-price-scope"],"primaryNodeId":"topic-price-scope","linkState":"materialized-topic","lastProgressAtVersion":8},` +
+	`{"id":"agenda-2","sourceType":"fixed_agenda","title":"値上げ率","order":2,"computedStatus":"discussed","outcomeStatus":"concluded","focusNodeIds":["topic-price-rate","decision-ent-repricing"],"materializedTopicIds":["topic-price-rate"],"primaryNodeId":"topic-price-rate","linkState":"materialized-topic","lastProgressAtVersion":8},` +
+	`{"id":"agenda-3","sourceType":"fixed_agenda","title":"適用タイミング","order":3,"computedStatus":"discussed","outcomeStatus":"concluded","focusNodeIds":["topic-price-rollout","question-renewal-timing","risk-revenue-timing","todo-customer-list"],"materializedTopicIds":["topic-price-rollout"],"primaryNodeId":"topic-price-rollout","linkState":"materialized-topic","lastProgressAtVersion":8}` +
+	`],"updatedAtVersion":8` +
+	`}`
+
+// sampleLiveAnalysisPayload は終了時に同期された現行のfull snapshot。
+// itemsには分類・根拠・agenda関連・投影状態を含める。
 const sampleLiveAnalysisPayload = `{` +
-	`"summary":"来期の価格改定方針について、値上げ対象顧客の範囲と適用方法を議論した。原価上昇により価格据え置きでは利益率が悪化するため、エンタープライズ顧客は契約更新月から8%値上げし、中小顧客は解約リスクを考慮して据え置きとすることで合意した。対象顧客リストは佐藤が今週中に展開する。",` +
-	`"currentTopic":"価格改定の適用方法",` +
+	`"summary":"来期の価格改定方針について、値上げ対象顧客の範囲・値上げ率・適用タイミングを議論した。エンタープライズ顧客は契約更新月から8%値上げし、中小顧客は解約リスクを考慮して据え置くことで合意した。対象顧客リストは佐藤が今週中に展開する。",` +
+	`"currentTopic":"会議終了",` +
 	`"items":[` +
-	`{"id":"issue-target-scope","kind":"issue","severity":"high","title":"値上げ対象顧客の範囲","body":"値上げ対象をエンタープライズ顧客に限定するか全体にするかの論点。エンタープライズ限定で合意した。","status":"resolved"},` +
-	`{"id":"risk-smb-churn","kind":"risk","severity":"medium","title":"中小顧客の解約リスク","body":"中小顧客への値上げは解約につながる懸念。今回は据え置きとして回避した。","status":"resolved"},` +
-	`{"id":"question-renewal-timing","kind":"issue","subtype":"question","severity":"medium","title":"契約更新タイミングのばらつき","body":"顧客ごとに契約更新月が異なり一斉適用が難しい。更新月にあわせた段階適用で対応する。","status":"resolved"},` +
-	`{"id":"decision-ent-repricing","kind":"decision","severity":"high","title":"ENTは更新月から8%値上げ・中小は据え置き","body":"エンタープライズ顧客は契約更新月から8%値上げし、中小顧客は当面据え置きとする。","status":"open"},` +
-	`{"id":"todo-customer-list","kind":"todo","severity":"medium","title":"対象顧客リストの展開","body":"値上げ対象顧客リストを作成して共有する(担当: 佐藤、今週中)。","status":"open"},` +
-	`{"id":"risk-revenue-timing","kind":"risk","severity":"low","title":"値上げ効果の発現遅延","body":"更新月ごとの段階適用のため、値上げ効果が全顧客に行き渡るまで最長1年かかる。","status":"open"}` +
+	`{"id":"issue-target-scope","kind":"issue","subtype":"discussion","severity":"high","title":"値上げ対象顧客の範囲","body":"値上げ対象をエンタープライズ顧客に限定するか全体にするかを検討し、エンタープライズ限定で合意した。","status":"resolved","projectionStatus":"stable","classificationStatus":"assigned","assignmentSource":"rule","evidenceSequenceNos":[1,2,4,7],"relatedAgendaIds":["agenda-1"]},` +
+	`{"id":"risk-smb-churn","kind":"risk","severity":"medium","title":"中小顧客の解約リスク","body":"中小顧客への値上げは解約につながる懸念があり、今回は据え置きとして回避した。","status":"resolved","projectionStatus":"stable","classificationStatus":"assigned","assignmentSource":"rule","evidenceSequenceNos":[2,7],"relatedAgendaIds":["agenda-1"]},` +
+	`{"id":"decision-ent-repricing","kind":"decision","severity":"high","title":"ENTは更新月から8%値上げ・中小は据え置き","body":"エンタープライズ顧客は契約更新月から8%値上げし、中小顧客は当面据え置きとする。","status":"open","projectionStatus":"stable","classificationStatus":"assigned","assignmentSource":"rule","evidenceSequenceNos":[3,7],"relatedAgendaIds":["agenda-1","agenda-2","agenda-3"]},` +
+	`{"id":"question-renewal-timing","kind":"issue","subtype":"question","severity":"medium","title":"契約更新タイミングのばらつき","body":"顧客ごとに契約更新月が異なり一斉適用が難しいため、更新月にあわせて段階適用する。","status":"resolved","projectionStatus":"stable","classificationStatus":"assigned","assignmentSource":"rule","evidenceSequenceNos":[5,6],"relatedAgendaIds":["agenda-3"]},` +
+	`{"id":"risk-revenue-timing","kind":"risk","severity":"low","title":"値上げ効果の発現遅延","body":"更新月ごとの段階適用のため、値上げ効果が全顧客に行き渡るまで最長1年かかる。","status":"open","projectionStatus":"stable","classificationStatus":"assigned","assignmentSource":"rule","evidenceSequenceNos":[6],"relatedAgendaIds":["agenda-3"]},` +
+	`{"id":"todo-customer-list","kind":"todo","severity":"medium","title":"対象顧客リストの展開","body":"佐藤が値上げ対象顧客リストを今週中に作成して共有する。","status":"open","projectionStatus":"stable","classificationStatus":"assigned","assignmentSource":"rule","evidenceSequenceNos":[8],"relatedAgendaIds":["agenda-3"]}` +
 	`],` +
-	`"tree":{` + sampleTreeNodesEdgesJSON + `}` +
+	`"tree":{` + sampleTreeNodesEdgesJSON + `},` +
+	`"agendaAnchors":` + sampleAgendaAnchorsJSON + `,` +
+	`"agendaProgress":` + sampleAgendaProgressJSON + `,` +
+	`"treeVersion":8,"analysisVersion":8,"aiAssistantAnalysisVersion":8,"treeAnalysisVersion":8,` +
+	`"highestAvailableFinalSequenceNo":8,"itemProjectionVersion":8,"treeProjectionVersion":8,` +
+	`"itemProjectionCompleted":true,"treeProjectionCompleted":true,"treeProjectionDisposition":"updated",` +
+	`"payloadKind":"full_snapshot","nodeCount":10,"edgeCount":9,"coveredThroughSequenceNo":8,` +
+	`"meaningfullyCoveredThroughSequenceNo":8,"pendingTreeProjectionItemCount":0` +
 	`}`
 
 // sampleFinalAnalysisPayload は最終要約(final)のpayload。
@@ -247,5 +301,31 @@ const sampleFinalAnalysisPayload = `{` +
 	`"nextMeetingTopics":[` +
 	`"中小顧客向け価格の再検討時期",` +
 	`"値上げの顧客向けアナウンス方法"` +
-	`]` +
+	`],` +
+	`"coveredThroughSequenceNo":8,"segmentCount":8,"treeVersion":8,"final":true` +
 	`}`
+
+func sampleTreeSnapshotPayload(generatedAt string) string {
+	return `{` +
+		`"treeVersion":8,"reason":"meeting_ended","final":true,` +
+		`"coveredThroughSequenceNo":8,"segmentCount":8,` +
+		`"generatedAtUtc":"` + generatedAt + `","reorganizationStatus":"not_needed",` +
+		`"tree":{` + sampleTreeNodesEdgesJSON + `},` +
+		`"agendaAnchors":` + sampleAgendaAnchorsJSON + `,` +
+		`"agendaProgress":` + sampleAgendaProgressJSON +
+		`}`
+}
+
+func sampleFinalizationPayload(finalizedAt string) string {
+	return `{` +
+		`"finalizationId":"finalization_sample","stage":"completed",` +
+		`"latestPersistedFinalSequence":8,"lastSuccessfullyAnalyzedSequence":8,` +
+		`"finalizationTargetSequence":8,"pendingSegmentCount":0,` +
+		`"treeCoveredThroughSequenceNo":8,"summaryCoveredThroughSequenceNo":8,` +
+		`"waitTimedOut":false,"finalizationIncomplete":false,"retryCount":0,` +
+		`"finalizationStatus":"completed","finalizationStartedAt":"` + finalizedAt + `",` +
+		`"finalizationUpdatedAt":"` + finalizedAt + `","finalizationCompletedAt":"` + finalizedAt + `",` +
+		`"retryable":false,"attemptCount":1,"sourceTreeVersion":8,` +
+		`"sourceAnalysisVersion":8,"summaryVersion":1` +
+		`}`
+}
