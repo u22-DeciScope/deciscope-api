@@ -106,9 +106,10 @@ func TestSession5e4da9dc40d50940OfflineQualityReplay(t *testing.T) {
 	}
 	after := previousLiveAnalysisState(replayed)
 
-	// 1. VLAN sibling dedup: the two confirmed VLAN observations become one
-	// fact with the evidence union of 6 and 8. The separate monitoring
-	// proposal remains an issue and is not part of this duplicate count.
+	// 1. VLAN sibling dedup + correction reconstruction: the incorrect/mixed
+	// prior proposition is retired and the corrected Fact is grounded only in
+	// the explicit correction at seq8. Evidence from seq6 must not leak into
+	// the replacement.
 	vlanItems := 0
 	var survivor liveAnalysisItem
 	for _, item := range after.Items {
@@ -121,7 +122,11 @@ func TestSession5e4da9dc40d50940OfflineQualityReplay(t *testing.T) {
 		}
 	}
 	if vlanItems != 1 {
-		t.Fatalf("expected exactly 1 surviving VLAN fact after sibling dedup, got %d items=%+v", vlanItems, after.Items)
+		t.Logf("correction reconstructed=%d superseded=%d pending=%d grounding rejected=%d treeRejected=%d preserved=%d",
+			stats.CorrectionItemsReconstructed, stats.CorrectionItemsSuperseded,
+			stats.CorrectionItemsPending, stats.GroundingRejected,
+			stats.TreePayloadRejected, stats.PreviousTreePreserved)
+		t.Fatalf("expected exactly 1 surviving VLAN fact after sibling dedup, got %d items=%+v tombstones=%+v stats=%+v", vlanItems, after.Items, after.ItemTombstones, stats)
 	}
 	hasSix, hasEight := false, false
 	for _, sequenceNo := range survivor.EvidenceSequenceNos {
@@ -132,8 +137,8 @@ func TestSession5e4da9dc40d50940OfflineQualityReplay(t *testing.T) {
 			hasEight = true
 		}
 	}
-	if !hasSix || !hasEight {
-		t.Fatalf("expected surviving VLAN item evidence to include 6 and 8, got %v", survivor.EvidenceSequenceNos)
+	if hasSix || !hasEight {
+		t.Fatalf("expected corrected VLAN Fact evidence to be local to seq8, got %v", survivor.EvidenceSequenceNos)
 	}
 	siblingTombstoneFound := false
 	for _, tombstone := range after.ItemTombstones {
@@ -173,7 +178,8 @@ func TestSession5e4da9dc40d50940OfflineQualityReplay(t *testing.T) {
 	// closure path does not apply a resolved lifecycle state to this item.
 	resolvedIssueCount := 0
 	for _, item := range after.Items {
-		if item.Kind == "issue" && item.Status == "resolved" {
+		if item.Kind == "issue" && item.Status == "resolved" &&
+			!item.Inactive && item.MergedIntoID == "" {
 			resolvedIssueCount++
 		}
 	}

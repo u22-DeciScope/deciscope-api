@@ -304,6 +304,19 @@ func legitimateTombstoneReopen(state *liveAnalysisPayload, tombstone *liveAnalys
 	if explicit {
 		return true
 	}
+	// A deterministic replacement backed by an explicit correction is not a
+	// resurrection of a duplicate proposition. A same-evidence "merged"
+	// tombstone can exist because an earlier malformed item absorbed the
+	// correction sequence before the replacement was reconstructed. Never use
+	// this exception for a proposition already superseded by a correction.
+	if item.AssignmentReason == deterministicCorrectionAssignmentReason &&
+		tombstone.Reason == "merged" {
+		for _, sequenceNo := range item.EvidenceSequenceNos {
+			if discourseCorrectionPattern.MatchString(scope.TranscriptText[sequenceNo]) {
+				return true
+			}
+		}
+	}
 	if tombstone.MergedIntoItemID != "" {
 		for _, target := range state.Items {
 			if target.ID == tombstone.MergedIntoItemID && (target.Inactive || target.MergedIntoID != "") {

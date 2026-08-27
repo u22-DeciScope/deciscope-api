@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -441,7 +442,21 @@ func TestMeetingSessionAPIRecordBotHeartbeatRecordsBotMediaMetrics(t *testing.T)
 		"lastNonZeroAudioAtUtc": "2026-06-27T00:04:50Z",
 		"lastNonEmptyTranscriptAtUtc": "2026-06-27T00:04:30Z",
 		"audioStalled": true,
-		"audioSocketReceiveStallCount": 3
+		"audioSocketReceiveStallCount": 3,
+		"speechPipelineReady": true,
+		"speechStarted": true,
+		"speechAcceptingFrames": true,
+		"recognizerCreated": true,
+		"pushStreamOpen": true,
+		"pipelineGeneration": 4,
+		"recognizerInstanceIdHash": "abc123",
+		"lastRecognizerStartedAtUtc": "2026-06-27T00:04:20Z",
+		"lastSpeechPartialAtUtc": "2026-06-27T00:04:29Z",
+		"lastSpeechFinalAtUtc": "2026-06-27T00:04:30Z",
+		"botBuildVersion": "main-42",
+		"botGitCommitSha": "0123456789abcdef0123456789abcdef01234567",
+		"botBuildTimestamp": "2026-06-27T00:00:00Z",
+		"botDirtyBuild": "false"
 	}`
 	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/heartbeat", body)
 	req.Header.Set("Content-Type", "application/json")
@@ -463,8 +478,54 @@ func TestMeetingSessionAPIRecordBotHeartbeatRecordsBotMediaMetrics(t *testing.T)
 	if metrics.LastAudioFrameAt.IsZero() || metrics.LastNonZeroAudioAt.IsZero() || metrics.LastNonEmptyTranscriptAt.IsZero() {
 		t.Fatalf("recorded metrics timestamps not parsed: %+v", metrics)
 	}
+	if !metrics.HasSpeechPipelineMetrics || !metrics.SpeechPipelineReady || !metrics.SpeechStarted ||
+		!metrics.SpeechAcceptingFrames || !metrics.RecognizerCreated || !metrics.PushStreamOpen ||
+		metrics.PipelineGeneration != 4 || metrics.RecognizerInstanceIDHash != "abc123" {
+		t.Fatalf("recorded pipeline metrics = %+v", metrics)
+	}
+	if metrics.LastRecognizerStartedAt.IsZero() || metrics.LastSpeechPartialAt.IsZero() || metrics.LastSpeechFinalAt.IsZero() {
+		t.Fatalf("recorded pipeline timestamps not parsed: %+v", metrics)
+	}
 	if metrics.ReceivedAt.IsZero() {
 		t.Fatalf("recorded metrics ReceivedAt should be stamped by the store, got zero value")
+	}
+	if metrics.BotBuildVersion != "main-42" ||
+		metrics.BotGitCommitSHA != "0123456789abcdef0123456789abcdef01234567" ||
+		metrics.BotBuildTimestamp != "2026-06-27T00:00:00Z" || metrics.BotDirtyBuild != "false" {
+		t.Fatalf("recorded bot build fingerprint = %+v", metrics)
+	}
+}
+
+func TestMeetingSessionAPIRecordBotHeartbeatRecordsExplicitFalsePipelineFlags(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			Status:      domain.MeetingSessionRecording,
+			BotCallID:   "call-1",
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:05:00Z"),
+		},
+	}
+	metricsStore := application.NewBotMediaMetricsStore()
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionBotMetricsStore(metricsStore))
+	req := requestWithSessionParam(
+		http.MethodPost,
+		"/api/v1/bot/meeting-sessions/session_1/heartbeat",
+		`{"botCallId":"call-1","speechPipelineReady":false,"speechStarted":false,"recognizerCreated":false,"pushStreamOpen":false}`,
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotHeartbeat(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
+	}
+	metrics, ok := metricsStore.Get("session_1")
+	if !ok || !metrics.HasMetrics || !metrics.HasSpeechPipelineMetrics {
+		t.Fatalf("explicit false pipeline metrics were not preserved: ok=%t metrics=%+v", ok, metrics)
 	}
 }
 
@@ -493,6 +554,76 @@ func TestMeetingSessionAPIRecordBotHeartbeatBareBodyDoesNotRecordMetrics(t *test
 	}
 	if _, ok := metricsStore.Get("session_1"); ok {
 		t.Fatalf("a heartbeat with only botCallId (no audio/transcript metrics) must not be recorded")
+	}
+}
+
+func TestMeetingSessionAPIRecordsAndReloadsTransientMediaHealth(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{session: domain.MeetingSession{
+		ID: "session_1", WorkspaceID: "workspace_1", Status: domain.MeetingSessionRecording,
+		BotCallID: "call-1",
+	}}
+	mediaHealth := application.NewBotMediaHealthService(nil)
+	api := NewMeetingSessionAPI(service, testTranscriptAPIKey, WithMeetingSessionBotMediaHealth(mediaHealth))
+	requestBody := `{
+		"eventId":"audio-stall:call-1:1:started",
+		"botCallId":"call-1",
+		"state":"audio_receive_stalled",
+		"event":"started",
+		"occurredAtUtc":"2026-08-01T00:50:25Z",
+		"startedAtUtc":"2026-08-01T00:50:20Z",
+		"lastAudioFrameAtUtc":"2026-08-01T00:50:20Z",
+		"durationMs":5000,
+		"source":"audio_frame_watchdog"
+	}`
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/media-health", requestBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotMediaHealth(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("record response = %d %s", resp.Code, resp.Body.String())
+	}
+
+	getReq := requestWithWorkspaceSessionParams(http.MethodGet, "/v1/workspaces/workspace_1/meeting-sessions/session_1/media-health", "")
+	getResp := httptest.NewRecorder()
+	api.GetWorkspaceBotMediaHealth(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("get response = %d %s", getResp.Code, getResp.Body.String())
+	}
+	var got application.BotMediaHealthState
+	if err := json.Unmarshal(getResp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode media health: %v", err)
+	}
+	if got.SessionID != "session_1" || got.State != application.BotMediaHealthAudioReceiveStalled ||
+		got.Event != application.BotMediaHealthEventStarted || got.DurationMilliseconds != 5000 {
+		t.Fatalf("media health = %+v", got)
+	}
+	if service.update.SessionID != "" || service.endInput.SessionID != "" {
+		t.Fatalf("media health must not change meeting lifecycle: update=%+v end=%+v", service.update, service.endInput)
+	}
+}
+
+func TestMeetingSessionAPIRejectsMediaHealthFromDifferentBotCall(t *testing.T) {
+	service := &fakeMeetingSessionUseCases{session: domain.MeetingSession{
+		ID: "session_1", Status: domain.MeetingSessionRecording, BotCallID: "call-current",
+	}}
+	api := NewMeetingSessionAPI(
+		service,
+		testTranscriptAPIKey,
+		WithMeetingSessionBotMediaHealth(application.NewBotMediaHealthService(nil)),
+	)
+	req := requestWithSessionParam(http.MethodPost, "/api/v1/bot/meeting-sessions/session_1/media-health", `{
+		"botCallId":"call-stale","state":"audio_receive_stalled","event":"started"
+	}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DeciScope-Api-Key", testTranscriptAPIKey)
+	resp := httptest.NewRecorder()
+
+	api.RecordBotMediaHealth(resp, req)
+
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("response = %d %s", resp.Code, resp.Body.String())
 	}
 }
 
@@ -536,6 +667,7 @@ func TestMeetingSessionAPIStreamWorkspaceTranscriptSegmentsForwardsSessionID(t *
 }
 
 func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
+	relationSentinelPayload := json.RawMessage(`{"summary":"進行中です","items":[{"id":"item-source","kind":"issue","title":"原因仮説","labelResolution":{"status":"fallback_applied","reason":"context_dependent","sourceEvidenceSequenceNos":[16,17]}}],"tree":{"nodes":[{"id":"item-source","kind":"issue","label":"原因仮説","labelResolution":{"status":"fallback_applied","reason":"context_dependent","sourceEvidenceSequenceNos":[16,17]}}],"edges":[],"relations":[{"id":"relation-sentinel-rest-v1","source":"item-source","target":"item-target","kind":"refines","confidence":0.73125,"evidenceSequenceNos":[17,29],"origin":"transport_sentinel","status":"active","createdAtVersion":41,"updatedAtVersion":43}]}}`)
 	service := &fakeMeetingSessionUseCases{
 		session: domain.MeetingSession{
 			ID:          "session_1",
@@ -554,7 +686,7 @@ func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
 				Type:      domain.MeetingAIAnalysisLive,
 				Status:    domain.MeetingAIAnalysisCompleted,
 				Version:   4,
-				Payload:   json.RawMessage(`{"summary":"進行中です"}`),
+				Payload:   relationSentinelPayload,
 				Model:     "gpt-4o-mini",
 				UpdatedAt: mustTime(t, "2026-06-27T00:00:02Z"),
 			},
@@ -595,8 +727,92 @@ func TestMeetingSessionAPIGetWorkspaceAIAnalysesReturnsSnapshot(t *testing.T) {
 	if !strings.Contains(string(body.Live.Payload), "進行中です") {
 		t.Fatalf("body.Live.Payload = %s", string(body.Live.Payload))
 	}
+	var wantPayload, gotPayload any
+	if err := json.Unmarshal(relationSentinelPayload, &wantPayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body.Live.Payload, &gotPayload); err != nil || !reflect.DeepEqual(gotPayload, wantPayload) {
+		t.Fatalf("REST relation sentinel changed: got=%s want=%s err=%v", body.Live.Payload, relationSentinelPayload, err)
+	}
 	if body.LiveIntervalSeconds != 10 {
 		t.Fatalf("body.LiveIntervalSeconds = %d, want 10", body.LiveIntervalSeconds)
+	}
+}
+
+func retryFinalizationTestSession(t *testing.T) *fakeMeetingSessionUseCases {
+	t.Helper()
+	return &fakeMeetingSessionUseCases{
+		session: domain.MeetingSession{
+			ID:          "session_1",
+			WorkspaceID: "workspace_1",
+			Status:      domain.MeetingSessionEnded,
+			RequestedAt: mustTime(t, "2026-06-27T00:00:00Z"),
+			CreatedAt:   mustTime(t, "2026-06-27T00:00:00Z"),
+			UpdatedAt:   mustTime(t, "2026-06-27T00:00:01Z"),
+		},
+	}
+}
+
+func TestMeetingSessionAPIRetryWorkspaceFinalizationAcceptsRetryableSession(t *testing.T) {
+	analysis := &fakeMeetingAIAnalysisUseCases{snapshot: &application.MeetingAIAnalysesSnapshot{
+		SessionID: "session_1",
+		Finalization: &domain.MeetingAIAnalysis{
+			SessionID: "session_1", Type: domain.MeetingAIAnalysisFinalization,
+			Status: domain.MeetingAIAnalysisRunning, Version: 2,
+			Payload:   json.RawMessage(`{"stage":"waiting_for_transcript_drain","finalizationStatus":"waiting_for_transcript_drain"}`),
+			UpdatedAt: mustTime(t, "2026-06-27T00:00:03Z"),
+		},
+	}}
+	api := NewMeetingSessionAPI(retryFinalizationTestSession(t), testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPost, "/v1/workspaces/workspace_1/meeting-sessions/session_1/finalization/retry", "")
+	resp := httptest.NewRecorder()
+
+	api.RetryWorkspaceFinalization(resp, req)
+
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("response = %d %s, want 202", resp.Code, resp.Body.String())
+	}
+	if len(analysis.gotRetrySessionIDs) != 1 || analysis.gotRetrySessionIDs[0] != "session_1" {
+		t.Fatalf("retry session ids = %v", analysis.gotRetrySessionIDs)
+	}
+	var body meetingAIAnalysesResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Finalization == nil || body.Finalization.Status != "running" {
+		t.Fatalf("body.Finalization = %+v, want the current finalization state", body.Finalization)
+	}
+}
+
+func TestMeetingSessionAPIRetryWorkspaceFinalizationRejectsCompletedFinalization(t *testing.T) {
+	analysis := &fakeMeetingAIAnalysisUseCases{
+		retryErr: application.ErrMeetingFinalizationAlreadyCompleted,
+		snapshot: &application.MeetingAIAnalysesSnapshot{SessionID: "session_1"},
+	}
+	api := NewMeetingSessionAPI(retryFinalizationTestSession(t), testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPost, "/v1/workspaces/workspace_1/meeting-sessions/session_1/finalization/retry", "")
+	resp := httptest.NewRecorder()
+
+	api.RetryWorkspaceFinalization(resp, req)
+
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("response = %d %s, want 409", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMeetingSessionAPIRetryWorkspaceFinalizationReportsUnavailableAnalysis(t *testing.T) {
+	analysis := &fakeMeetingAIAnalysisUseCases{
+		retryErr: application.ErrMeetingFinalizationRetryUnavailable,
+		snapshot: &application.MeetingAIAnalysesSnapshot{SessionID: "session_1"},
+	}
+	api := NewMeetingSessionAPI(retryFinalizationTestSession(t), testTranscriptAPIKey, WithMeetingSessionAIAnalysisService(analysis))
+	req := requestWithWorkspaceSessionParams(http.MethodPost, "/v1/workspaces/workspace_1/meeting-sessions/session_1/finalization/retry", "")
+	resp := httptest.NewRecorder()
+
+	api.RetryWorkspaceFinalization(resp, req)
+
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response = %d %s, want 503", resp.Code, resp.Body.String())
 	}
 }
 
@@ -917,6 +1133,14 @@ type fakeMeetingAIAnalysisUseCases struct {
 	overrideErr          error
 	gotOverrideSessionID string
 	gotOverrideInput     application.AgendaProgressOverrideInput
+
+	retryErr           error
+	gotRetrySessionIDs []string
+}
+
+func (f *fakeMeetingAIAnalysisUseCases) StartMeetingSessionFinalizationRetry(_ context.Context, sessionID string) error {
+	f.gotRetrySessionIDs = append(f.gotRetrySessionIDs, sessionID)
+	return f.retryErr
 }
 
 func (f *fakeMeetingAIAnalysisUseCases) UpdateAgendaProgressOverride(_ context.Context, sessionID string, input application.AgendaProgressOverrideInput) (json.RawMessage, error) {

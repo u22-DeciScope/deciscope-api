@@ -104,7 +104,6 @@ type ClientDiagnosticsConfig struct {
 }
 
 type TranscriptWebSocketConfig struct {
-	ClientToken    string
 	AllowedOrigins string
 }
 
@@ -133,10 +132,6 @@ type AIConfig struct {
 	TaskModels              AITaskModelsConfig
 	TreeAudit               application.TreeAuditConfig
 	TreeAuditEnabledInvalid bool
-	// TreeAuditModeDeprecated is true when TREE_AUDIT_MODE is set to any
-	// non-empty value. The mode switch was removed; the audit AI now runs a
-	// single enabled/disabled pipeline controlled solely by TREE_AUDIT_ENABLED.
-	TreeAuditModeDeprecated bool
 	// TreeClassification は議論ツリーの意味分類ポリシー(AI_TREE_*)。ゼロ値の
 	// 項目は application 側の既定値が使われる。
 	TreeClassification application.TreeClassificationConfig
@@ -206,7 +201,6 @@ func ConfigFromEnv() Config {
 			APIKey: strings.TrimSpace(os.Getenv("DECISCOPE_INGEST_API_KEY")),
 		},
 		TranscriptWebSocket: TranscriptWebSocketConfig{
-			ClientToken:    strings.TrimSpace(os.Getenv("DECISCOPE_WS_CLIENT_TOKEN")),
 			AllowedOrigins: os.Getenv("DECISCOPE_WS_ALLOWED_ORIGINS"),
 		},
 		TranscriptOnly: transcriptOnly,
@@ -324,7 +318,6 @@ func aiConfigFromEnv() AIConfig {
 			UnappliedWarningThreshold:  positiveIntFromEnv(os.Getenv("TREE_AUDIT_UNAPPLIED_WARNING_THRESHOLD"), 3),
 		},
 		TreeAuditEnabledInvalid: treeAuditEnabledInvalid,
-		TreeAuditModeDeprecated: strings.TrimSpace(os.Getenv("TREE_AUDIT_MODE")) != "",
 		// ゼロ値(未設定・不正値)は application 側の既定値に正規化されるため、
 		// 既定値をここで二重管理しない。
 		TreeClassification: application.TreeClassificationConfig{
@@ -408,7 +401,7 @@ func secondsDurationFromEnv(value string, defaultSeconds, minSeconds int) time.D
 
 func millisecondsDurationFromEnv(value string, defaultMilliseconds, minMilliseconds int) time.Duration {
 	milliseconds, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil || milliseconds <= 0 {
+	if err != nil || milliseconds < 0 || (milliseconds == 0 && minMilliseconds > 0) {
 		milliseconds = defaultMilliseconds
 	}
 	if milliseconds < minMilliseconds {

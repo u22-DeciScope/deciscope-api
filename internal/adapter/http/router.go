@@ -54,6 +54,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 		r.Patch("/api/v1/bot/meeting-sessions/{session_id}/metadata", deps.MeetingSessionAPI.UpdateBotMetadata)
 		r.Patch("/api/v1/bot/meeting-sessions/{session_id}/status", deps.MeetingSessionAPI.UpdateBotStatus)
 		r.Post("/api/v1/bot/meeting-sessions/{session_id}/heartbeat", deps.MeetingSessionAPI.RecordBotHeartbeat)
+		r.Post("/api/v1/bot/meeting-sessions/{session_id}/media-health", deps.MeetingSessionAPI.RecordBotMediaHealth)
 	}
 	// クライアント診断ログ受け口。会議画面の議論ツリー消失を事後追跡するためのもので、
 	// 認証必須・ワークスペース/セッション単位の認可はハンドラ側で行う。
@@ -101,7 +102,9 @@ func NewRouter(deps RouterDependencies) http.Handler {
 						r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Delete("/", deps.MeetingSessionAPI.DeleteForWorkspace)
 						r.Get("/transcript-segments", deps.MeetingSessionAPI.ListWorkspaceTranscriptSegments)
 						r.Get("/transcript-stream", deps.MeetingSessionAPI.StreamWorkspaceTranscriptSegments)
+						r.Get("/media-health", deps.MeetingSessionAPI.GetWorkspaceBotMediaHealth)
 						r.Get("/ai-analyses", deps.MeetingSessionAPI.GetWorkspaceAIAnalyses)
+						r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Post("/finalization/retry", deps.MeetingSessionAPI.RetryWorkspaceFinalization)
 						r.With(requireWorkspaceAdminOrOwner(deps.Workspace)).Patch("/agenda-progress", deps.MeetingSessionAPI.UpdateAgendaProgressForWorkspace)
 					})
 				}

@@ -193,18 +193,6 @@ type MeetingSessionMetadataUpdate struct {
 	UpdatedAt                   time.Time
 }
 
-type Job struct {
-	ID          string
-	WorkspaceID string
-	Type        string
-	Status      string
-	MeetingID   string
-	Result      json.RawMessage
-	Error       string
-	CreatedAt   string
-	UpdatedAt   string
-}
-
 type User struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`

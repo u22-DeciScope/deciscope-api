@@ -24,13 +24,6 @@ type EventRepository interface {
 	ListSegments(ctx context.Context, meetingID string, afterSeq int64) ([]domain.Segment, error)
 }
 
-type JobRepository interface {
-	CreateJob(ctx context.Context, workspaceID, jobType, meetingID, status string) (*domain.Job, error)
-	CompleteJob(ctx context.Context, jobID string, result any) error
-	FailJob(ctx context.Context, jobID, message string) error
-	GetJob(ctx context.Context, jobID string) (*domain.Job, error)
-}
-
 type TranscriptSegmentRepository interface {
 	SaveTranscriptSegment(ctx context.Context, segment domain.TranscriptSegment) (domain.TranscriptSegmentStoreResult, error)
 	ListTranscriptSegments(ctx context.Context, callID, sessionID string, limit int) ([]domain.TranscriptSegment, error)
@@ -120,6 +113,10 @@ type TranscriptActivityReader interface {
 // same signal as a lost bot heartbeat.
 type MeetingSessionTranscriptHealthPublisher interface {
 	PublishMeetingSessionTranscriptHealth(session domain.MeetingSession, transcriptHealth string, secondsSinceLastTranscript int)
+}
+
+type MeetingSessionMediaHealthPublisher interface {
+	PublishMeetingSessionMediaHealth(session domain.MeetingSession, health BotMediaHealthState)
 }
 
 // BotMediaMetricsReader is the read side of BotMediaMetricsStore that the

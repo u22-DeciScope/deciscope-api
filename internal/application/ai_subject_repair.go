@@ -2,6 +2,66 @@ package application
 
 import "strings"
 
+var incompleteDynamicTopicLabelSuffixes = []string{
+	"にな", "とな", "であ", "されてい", "してい", "なってい", "できてい",
+}
+
+// completeDynamicTopicLabel applies the same grammatical completion rules as
+// item labels before enforcing the compact topic presentation target. A raw
+// rune cut must never leave a conjugation such as 「期限切れにな」 visible.
+func completeDynamicTopicLabel(value, description string) string {
+	raw := strings.Trim(strings.Join(strings.Fields(strings.TrimSpace(value)), " "), "、。！？!? ")
+	if raw == "" {
+		return ""
+	}
+	compact := truncateRunes(raw, liveAnalysisTopicLabelMaxRunes)
+	if !dynamicTopicLabelNeedsRepair(compact, raw) {
+		return compact
+	}
+
+	combined := strings.TrimSpace(raw + " " + description)
+	if subject := concreteBusinessSubject(combined); subject != "" {
+		var normalized string
+		switch {
+		case strings.Contains(combined, "期限切れ") || strings.Contains(combined, "有効期限") || strings.Contains(combined, "失効"):
+			normalized = subject + "の期限切れ対応"
+		case strings.Contains(combined, "更新"):
+			normalized = subject + "の更新対応"
+		default:
+			normalized = subject + "の対応"
+		}
+		normalized = truncateRunes(normalized, liveAnalysisTopicLabelMaxRunes)
+		if normalized != "" && !dynamicTopicLabelNeedsRepair(normalized, normalized) {
+			return normalized
+		}
+	}
+
+	// Preserve a complete proposition when no generic compact noun phrase can
+	// be derived. The 20-rune value is a presentation preference; grammatical
+	// completeness is the stronger user-visible invariant.
+	if complete := semanticallyCompleteItemLabel(raw, "issue"); complete != "" {
+		return complete
+	}
+	return raw
+}
+
+func dynamicTopicLabelNeedsRepair(label, source string) bool {
+	trimmed := strings.TrimSpace(label)
+	for _, suffix := range incompleteDynamicTopicLabelSuffixes {
+		if strings.HasSuffix(trimmed, suffix) {
+			return true
+		}
+	}
+	if incompleteItemLabelEnding(liveAnalysisItem{Kind: "issue", Title: label, Body: source}) != "" {
+		return true
+	}
+	if len([]rune(source)) <= len([]rune(label)) || !strings.HasPrefix(source, label) {
+		return false
+	}
+	return !itemLabelCompletePredicatePattern.MatchString(trimmed) &&
+		!itemLabelNaturalNominalizationPattern.MatchString(trimmed)
+}
+
 // genericTopicLabel reports staging/meta labels that do not identify a
 // discussion subject. The system-owned topic-unclassified container may use
 // one internally, but it must disappear from the visible tree when all of its
@@ -318,7 +378,7 @@ func specificSubjectText(text string) string {
 	key := semanticItemKey(text)
 	for _, generic := range []string{
 		"確認", "検討", "実施", "対応", "更新", "作成", "決定", "可能性", "リスク", "影響", "予定", "必要",
-		"する", "します", "した", "なる", "なります", "こと", "について", "今回", "次回", "今週", "来週",
+		"する", "します", "した", "なる", "なります", "ある", "こと", "について", "による", "により", "場合", "今回", "次回", "今週", "来週",
 	} {
 		key = strings.ReplaceAll(key, generic, "")
 	}

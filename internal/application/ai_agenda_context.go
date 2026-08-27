@@ -66,6 +66,26 @@ func agendaTransitionTarget(text string, mc *meetingContext) (string, float64) {
 		}
 		core := semanticTopicCore(agenda.Title)
 		score := semanticItemSimilarity(agenda.Title, text)
+		// Semantic hints disambiguate an explicit transition such as "まず対象部署".
+		// They must not globally turn every content turn into a transition signal;
+		// normal assignment/reconciliation has its own stricter evidence scorer.
+		if agendaTransitionPattern.MatchString(text) {
+			hintHits := 0
+			textSemanticKey := semanticItemKey(text)
+			for _, hint := range agenda.SemanticHints {
+				hintKey := semanticItemKey(hint)
+				if len([]rune(hintKey)) >= 2 &&
+					(strings.Contains(textSemanticKey, hintKey) || semanticHintComponentMatch(hint, textSemanticKey)) {
+					hintHits++
+				}
+			}
+			switch {
+			case hintHits >= 2 && score < 0.90:
+				score = 0.90
+			case hintHits == 1 && score < 0.72:
+				score = 0.72
+			}
+		}
 		normalizedAgenda, normalizedText := normalizeForMatch(agenda.Title), normalizeForMatch(text)
 		if (strings.Contains(normalizedAgenda, "再発防止") || strings.Contains(normalizedAgenda, "今後の対応")) &&
 			(strings.Contains(normalizedText, "今後の対応") || strings.Contains(normalizedText, "再発防止") || strings.Contains(normalizedText, "改善策")) && score < 0.90 {
@@ -79,6 +99,49 @@ func agendaTransitionTarget(text string, mc *meetingContext) (string, float64) {
 		}
 	}
 	if bestScore < 0.12 {
+		return "", bestScore
+	}
+	return bestID, bestScore
+}
+
+// strongAgendaSemanticTarget is used only to bound an already explicit fixed
+// span. It requires both a high evidence score and the normal agenda margin,
+// so a detailed continuation is not displaced by a weakly similar agenda.
+func strongAgendaSemanticTarget(text string, mc *meetingContext) (string, float64) {
+	if mc == nil {
+		return "", 0
+	}
+	probe := liveAnalysisItem{Kind: "fact", Title: text, Body: text}
+	evidenceCore := semanticTopicCore(text)
+	evidenceKey := semanticItemKey(text)
+	bestID, bestScore, secondScore := "", 0.0, 0.0
+	for _, agenda := range mc.Agenda {
+		if effectiveAgendaRole(agenda.Role, agenda.Title, agenda.Description) != agendaRolePrimary {
+			continue
+		}
+		titleCore := semanticTopicCore(agenda.Title)
+		directTitleMatch := len([]rune(titleCore)) >= 3 &&
+			(strings.Contains(evidenceCore, titleCore) || strings.Contains(titleCore, evidenceCore))
+		hintMatch := false
+		for _, hint := range agenda.SemanticHints {
+			hintKey := semanticItemKey(hint)
+			if len([]rune(hintKey)) >= 2 &&
+				(strings.Contains(evidenceKey, hintKey) || semanticHintComponentMatch(hint, evidenceKey)) {
+				hintMatch = true
+				break
+			}
+		}
+		if !directTitleMatch && !hintMatch {
+			continue
+		}
+		score := agendaEvidenceScore(agenda, probe, text, text)
+		if score > bestScore {
+			bestID, secondScore, bestScore = agenda.ID, bestScore, score
+		} else if score > secondScore {
+			secondScore = score
+		}
+	}
+	if bestScore < 0.68 || bestScore-secondScore < agendaReconciliationMinMargin {
 		return "", bestScore
 	}
 	return bestID, bestScore
@@ -291,10 +354,23 @@ func detectAgendaContextSpans(scope liveEvidenceScope, mc *meetingContext, stats
 		}
 		// An explicitly selected fixed-agenda span already carries stronger
 		// evidence than generic lexical mismatch. Only an explicit external
-		// transition may open a detour inside it; this avoids treating detailed
-		// measurements or implementation steps as off-topic merely because they
-		// do not repeat the short agenda title.
+		// transition may open a detour inside it. A strong match to a different
+		// planned agenda does, however, close the span without opening no-agenda;
+		// this avoids making the selected agenda sticky across a natural agenda
+		// change that omits an explicit "next" marker.
 		if activeAt >= 0 && spans[activeAt].Mode == agendaContextModeFixed {
+			continuation := agendaContinuationPattern.MatchString(strings.TrimSpace(text))
+			if !continuation {
+				if semanticAgendaID, semanticConfidence := strongAgendaSemanticTarget(contextText, mc); semanticAgendaID != "" && semanticAgendaID != spans[activeAt].AgendaID && semanticConfidence > reentryConfidence {
+					reentryAgendaID, reentryConfidence = semanticAgendaID, semanticConfidence
+				}
+			}
+			if !continuation && reentryAgendaID != "" && reentryAgendaID != spans[activeAt].AgendaID && reentryConfidence >= 0.68 {
+				closeActive(sequenceNo-1, "semantic_agenda_transition")
+				baselineAgendaSeen = true
+				pendingExternal = pendingExternal[:0]
+				continue
+			}
 			baselineAgendaSeen = true
 			pendingExternal = pendingExternal[:0]
 			continue
@@ -485,25 +561,42 @@ func applyAgendaContextAssignments(assignments []treeAssignment, newTopics []liv
 		}
 		bestID, bestScore := "", 0.0
 		bestWasPrior := false
+		bestPriorID, bestPriorScore, bestPriorText := "", 0.0, ""
 		for _, candidate := range priorCandidates {
-			score := semanticItemSimilarity(candidate.Label+" "+candidate.Description, contextText)
-			if sharesSemanticTopicBigram(candidate.Label+" "+candidate.Description, contextText) && score < 0.75 {
+			candidateText := candidate.Label + " " + candidate.Description
+			score := semanticItemSimilarity(candidateText, contextText)
+			if sharesSemanticTopicBigram(candidateText, contextText) && score < 0.75 {
 				score = 0.75
+			}
+			if score > bestPriorScore {
+				bestPriorID, bestPriorScore, bestPriorText = candidate.ID, score, candidateText
 			}
 			if score > bestScore {
 				bestID, bestScore = candidate.ID, score
 				bestWasPrior = true
 			}
 		}
+		bestNewText := ""
 		for _, topic := range newTopics {
-			score := semanticItemSimilarity(topic.Label+" "+topic.Description, contextText)
-			if sharesSemanticTopicBigram(topic.Label+" "+topic.Description, contextText) && score < 0.35 {
+			topicText := topic.Label + " " + topic.Description
+			score := semanticItemSimilarity(topicText, contextText)
+			if sharesSemanticTopicBigram(topicText, contextText) && score < 0.35 {
 				score = 0.35
 			}
 			if score > bestScore {
 				bestID, bestScore = topic.ID, score
 				bestWasPrior = false
+				bestNewText = topicText
 			}
+		}
+		// An explicit no-agenda span owns one durable candidate anchor. A later
+		// proposal can be more lexically similar to the current action while still
+		// describing the same concrete subject as the prior candidate. Preserve
+		// the durable anchor only when the two candidate subjects themselves share
+		// a specific business-object fragment; generic risk wording is insufficient.
+		if !bestWasPrior && bestPriorID != "" && bestNewText != "" &&
+			specificSubjectOverlapLength(bestPriorText, bestNewText) >= 3 {
+			bestID, bestScore, bestWasPrior = bestPriorID, bestPriorScore, true
 		}
 		if bestScore < 0.08 {
 			bestID = ""

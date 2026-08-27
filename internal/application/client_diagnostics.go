@@ -212,10 +212,6 @@ func NewClientDiagnosticsService(options ...ClientDiagnosticsServiceOption) *Cli
 	return service
 }
 
-func (s *ClientDiagnosticsService) Limits() ClientDiagnosticsLimits {
-	return s.limits
-}
-
 // Record は1バッチを検証・サニタイズして sink へ書き出す。
 // 個々のイベントが不正でもバッチ全体は失敗させず、理由別の件数を返す。
 func (s *ClientDiagnosticsService) Record(ctx context.Context, batch ClientDiagnosticsBatchInput) (ClientDiagnosticsResult, error) {

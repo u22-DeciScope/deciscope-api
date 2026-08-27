@@ -16,4 +16,3 @@ func NewStore(db *sql.DB) *Store {
 
 var _ application.MeetingRepository = (*Store)(nil)
 var _ application.EventRepository = (*Store)(nil)
-var _ application.JobRepository = (*Store)(nil)

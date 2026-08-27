@@ -39,7 +39,7 @@ and every per-session timer.
 | `debounce_scheduled` | eligible final is waiting for debounce, cooldown, max-wait, or retry backoff | timer dispatch, replacement by an earlier bounded deadline, or meeting ending |
 | `running` | target sequence range has been frozen | successful persist, failure restoration, or stale CAS handling |
 | `rerun_pending` | a final arrived while `running` | current run completes, then the remaining range is evaluated once |
-| `finalizing` | meeting ending cancels the normal timer and closes tree audit scheduling | in-flight live run finishes, then finalization flush owns the uncovered range |
+| `finalizing` | meeting ending cancels the normal timer and closes tree audit scheduling | sealed live round finishes or is superseded by the finalization barrier, then the finalization flush owns the uncovered range |
 | `stopped` | meeting is ended, failed, stale, or finalization has completed | terminal |
 
 The maps, timers, watermarks, and single-flight flags are keyed by session ID.
@@ -65,6 +65,21 @@ Different sessions therefore do not share cooldown or running state.
 - A stale CAS filters the range through the newer durable exact-key watermark
   before retrying.
 - A duplicate timer callback is rejected by its per-session generation number.
+
+## Finalization barrier
+
+Every sealed round carries a per-session generation and an operation id. A live
+round is one unit of work through its tree reorganization, so the barrier at
+meeting end waits for the whole round, not just the extraction call.
+
+When the wait times out, finalization does not abandon the meeting. It marks the
+round superseded, records the awaited operation
+(`finalization_operation_awaited`), and continues from the latest fully projected
+and persisted live snapshot (`finalization_fallback_selected`). A superseded
+round that finishes later discards its result instead of persisting or
+publishing it (`live_round_superseded`), so it can never rewind the finalized
+tree, and `finishLiveRunLocked` ignores it so it cannot release the round that
+replaced it.
 
 Coverage-only changes are meaningful: even if the canonical tree, evidence,
 and agenda progress are unchanged, advancing `coveredThroughSequenceNo` lets

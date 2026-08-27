@@ -356,7 +356,8 @@ func TestParseAndMergeLiveAnalysisPayloadRemapsDuplicateTitleToExistingID(t *tes
 		t.Fatalf("tree must not contain a node for the duplicate id")
 	}
 	riskB := merged.Items[1]
-	if riskB.ID != "risk-b" || riskB.Status != "updated" || riskB.Body != "また同じ懸念" {
+	if riskB.ID != "risk-b" || riskB.Status != "updated" || riskB.Body != "" ||
+		riskB.DescriptionResolution == nil || riskB.DescriptionResolution.Status != descriptionStatusRejectedUnsupported {
 		t.Fatalf("existing item = %+v, want updated in place via dedup remap", riskB)
 	}
 }

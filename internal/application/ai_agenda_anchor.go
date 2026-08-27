@@ -395,6 +395,12 @@ func reconcileAgendaAnchors(previous []agendaAnchor, mc *meetingContext, tree *l
 
 	nodes := make(map[string]liveAnalysisTreeNode)
 	children := make(map[string][]string)
+	activeItemIDs := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if agendaProgressItemIsCanonicalActive(item) {
+			activeItemIDs[item.ID] = struct{}{}
+		}
+	}
 	if tree != nil {
 		for _, node := range tree.Nodes {
 			nodes[node.ID] = node
@@ -418,7 +424,10 @@ func reconcileAgendaAnchors(previous []agendaAnchor, mc *meetingContext, tree *l
 				continue
 			}
 			if node.Kind != "topic" && node.Kind != "group" {
-				return true
+				if _, active := activeItemIDs[node.ID]; active {
+					return true
+				}
+				continue
 			}
 			queue = append(queue, children[id]...)
 		}
@@ -449,7 +458,8 @@ func reconcileAgendaAnchors(previous []agendaAnchor, mc *meetingContext, tree *l
 		if anchor.Role == agendaRoleActionSummary {
 			materialized = nil
 			for _, item := range items {
-				if containsExactString(item.RelatedAgendaIDs, agenda.ID) {
+				if agendaProgressItemIsCanonicalActive(item) &&
+					containsExactString(item.RelatedAgendaIDs, agenda.ID) {
 					discussed = true
 					break
 				}

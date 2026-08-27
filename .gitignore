@@ -41,3 +41,5 @@ bin
 .gocache/
 .gotmp/
 .docker-config/
+
+AGENTS.md

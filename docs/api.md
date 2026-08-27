@@ -36,6 +36,25 @@ PUT  /v1/session/current-workspace
 `/health`、`/debug`、`/login`、`/register` は現在のRouterには
 登録されていません。
 
+## クライアント診断
+
+```http
+POST /internal/client-diagnostics
+```
+
+- `DECISCOPE_CLIENT_DIAGNOSTICS_ENABLED=true` のときだけ登録されます。
+- `deciscope_session` Cookieによる認証、workspace所属、`sessionId` がその
+  workspaceに属することの検査を行います。
+- `workspaceId`、`sessionId`、1件以上の`events`を含むJSONを受け取り、
+  `accepted`、`rejected`、`suppressed`、`reasons`を`202 Accepted`で返します。
+- 議論ツリーの描画観測には`tree_render_state`、`tree_render_anomaly`、
+  `tree_render_recovery`を使用します。`details`にはcanonical/store/filter/layout/
+  React Flow/DOMのnode・edge件数、container/ResizeObserver寸法、viewport、
+  layout・commit状態、LKG復旧結果を含められます。異常と復旧イベントは
+  高頻度抑制の対象外で、JSONLとAPIの構造化標準出力の両方へ記録されます。
+- リクエスト上限、保存先、ローテーション、保持期間は
+  [configuration.md](./configuration.md) のクライアント診断設定を参照してください。
+
 ## Workspace
 
 ```http
@@ -257,11 +276,22 @@ AI分析更新（`sessionId` 指定クライアントにのみ配信。`callId` 
 - `items[].evidenceSequenceNos` は、そのitemを直接裏付けた発言のsequence番号をJSON整数で保持します。
   モデル互換のため受信時はnumeric stringも整数へ正規化しますが、不正文字列・小数・当該ラウンドに
   実在しないsequenceは値単位で除外し、保存・配信時は整数だけになります
-- live extraction v18では、モデル出力の各itemに`evidenceSnippets`を必須とし、引用した
+- live extraction v18以降では、モデル出力の各itemに`evidenceSnippets`を必須とし、引用した
   final transcript sequence内に正規化後も実在して中心命題を支持する短い抜粋だけを保存します。
   `evidenceSequenceNos`が構造上正しくても、subject / predicate / entity / qualifierが発言に
   groundingされなければ表示可能itemにはなりません。事前入力、agenda metadata、semantic hints、
   existing treeは分類・親候補には利用しますが、detail itemの一次証拠にはなりません
+- live extraction v19以降では、完了した作業を`fact`、担当・期限・commitmentのある将来行動を
+  `todo`として区別します。対象物の満了日・失効日は作業期限として扱わず、同じ発言に状態・
+  将来悪影響・対策が含まれる場合は、それぞれ`fact`・`risk`・`todo`へ分離します。
+  IssueとTodoは相互上書きせず、担当・期限・証拠sequenceは該当する行動節だけから引き継ぎます
+- 担当者（話者本人を含む）・具体的な将来行動・行動対象・commitmentが同一節に揃う場合は、
+  モデル結果とは独立した決定論的safety netでも`todo`を補完します。1 sequenceあたり3件を
+  上限とし、候補密度の異常は本文なしの構造化ログへ記録します。方針の採用・必須化・
+  適用開始は担当作業ではなく`decision`として分離します。低情報発話と同一batchにある後続Todoも
+  対象で、追加のAI呼び出しは行いません。明示訂正の置換Factが一時的にgroundingされない場合は
+  旧Itemをtentative/inactive候補として退避し、final repairで置換を再構築して旧Itemと
+  tombstoneを監査可能な形で保持します
 - `items[].groundingDecision`（`accepted | rewritten`）、
   `groundingConfidence`、`groundingSourceTypes`、`groundingUnsupportedAtoms`は任意の
   サーバー所有監査メタデータです。`groundingUnsupportedAtoms`には本文ではなくcategory付きhashを
@@ -354,6 +384,10 @@ X-DeciScope-Api-Key: <shared secret>
   `503 bot_control_not_configured` を返します。
 - Bot制御APIの4xx/5xx/timeout時は `meeting_sessions.status=failed` と
   `last_error` を保存し、HTTPでは `502 bot_control_command_failed` を返します。
+- 参加命令は設定した `DECISCOPE_BOT_CONTROL_URL`（通常
+  `/internal/bot/join`）へ送ります。終了命令は同じURLの末尾の`/join`を除き、
+  `/internal/bot/meeting-sessions/{sessionId}/end`へ送ります。Go APIホストから
+  Botホストへのfirewall/proxyでは両方のパスを許可してください。
 
 取得 (APIキー必須):
 
@@ -409,7 +443,17 @@ X-DeciScope-Api-Key: <shared secret>
 
 ```json
 {
-  "botCallId": "09005080-cce6-4132-9404-1e823df47ff9"
+  "botCallId": "09005080-cce6-4132-9404-1e823df47ff9",
+  "speechPipelineReady": true,
+  "speechStarted": true,
+  "speechAcceptingFrames": true,
+  "recognizerCreated": true,
+  "pushStreamOpen": true,
+  "pipelineGeneration": 2,
+  "recognizerInstanceIdHash": "2f41d34e34b75d7d",
+  "lastRecognizerStartedAtUtc": "2026-08-01T00:50:20Z",
+  "lastSpeechPartialAtUtc": "2026-08-01T00:50:24Z",
+  "lastSpeechFinalAtUtc": "2026-08-01T00:50:25Z"
 }
 ```
 
@@ -419,6 +463,60 @@ X-DeciScope-Api-Key: <shared secret>
 - terminal状態（`ended` / `failed` / `stale`）のセッションは更新されず、現在のセッションをそのまま200で返します
   （終了済みセッションを誤って復活させないため）。存在しないセッションは404です。
 - Bot接続の生死判定・自動終了は次項の常駐watchdogが行います。
+- 音声・文字起こし・認識器フィールドは任意です。認識器の状態は複数インスタンスのフラグを混ぜず、
+  実際に選択された1インスタンス・1世代のスナップショットです。`recognizerInstanceIdHash`は
+  Bot内の識別値を一方向ハッシュ化した値で、生値は送信しません。これらはwatchdog用の短命な
+  メモリ内状態であり、DBには保存しません。
+
+Botからの音声受信transport状態（APIキー必須）:
+
+```http
+POST /api/v1/bot/meeting-sessions/{sessionId}/media-health
+Content-Type: application/json
+X-DeciScope-Api-Key: <shared secret>
+```
+
+```json
+{
+  "eventId": "audio-receive-stall:call-id:1:started",
+  "botCallId": "09005080-cce6-4132-9404-1e823df47ff9",
+  "state": "audio_receive_stalled",
+  "event": "started",
+  "occurredAtUtc": "2026-08-01T00:50:25Z",
+  "startedAtUtc": "2026-08-01T00:50:20Z",
+  "lastAudioFrameAtUtc": "2026-08-01T00:50:20Z",
+  "durationMs": 5000,
+  "source": "audio_frame_watchdog"
+}
+```
+
+- 無音を含む最後のAudioSocket受信フレームから5秒間フレームが届かないと、Botは
+  `audio_receive_stalled` / `started` を一度だけ送ります。次の最初のフレームで
+  `ok` / `recovered` と実停止時間を送ります。
+- transport監視なので通常の会議中の無音は停止扱いになりません。通知は通話終了、再参加、
+  recognizer再作成、meeting status変更を行いません。
+- 状態はAPIメモリ内だけに保持され、DBへ保存されません。古い`botCallId`は409、同一
+  `eventId`と時刻逆行イベントは冪等に無視されます。
+- WebSocketでは対象sessionだけへ次を配信します。
+
+```json
+{
+  "type": "meeting_session.media_health_changed",
+  "sentAtUtc": "2026-08-01T00:51:03Z",
+  "data": {
+    "sessionId": "session_...",
+    "eventId": "audio-receive-stall:call-id:1:recovered",
+    "botCallId": "09005080-cce6-4132-9404-1e823df47ff9",
+    "state": "ok",
+    "event": "recovered",
+    "occurredAtUtc": "2026-08-01T00:51:03Z",
+    "startedAtUtc": "2026-08-01T00:50:20Z",
+    "lastAudioFrameAtUtc": "2026-08-01T00:51:03Z",
+    "durationMs": 42917,
+    "source": "audio_frame_watchdog"
+  }
+}
+```
 
 Bot接続死活監視（常駐watchdog）:
 
@@ -462,6 +560,23 @@ WebSocketイベント形式（[events.md](./events.md) と同じ配信経路。`
 }
 ```
 
+文字起こしの流入状態が変化した場合は、Botの生死とは別に次を配信します。
+`transcriptHealth` は通常 `ok` / `transcript_delayed` /
+`transcript_stalled` で、Botの音声メトリクスが利用できる場合は `silent` /
+`audio_stalled` / `speech_stalled` に細分類されます。
+
+```json
+{
+  "type": "meeting_session.transcript_health_changed",
+  "sentAtUtc": "2026-07-07T00:01:30.000000000Z",
+  "data": {
+    "sessionId": "session_...",
+    "transcriptHealth": "transcript_stalled",
+    "secondsSinceLastTranscript": 90
+  }
+}
+```
+
 保守/デバッグ用（`X-DeciScope-Api-Key` が必要）:
 
 ```http
@@ -476,25 +591,54 @@ Workspace配下の会議セッション（認証必須、フロントエンド�
 
 ```http
 GET  /v1/workspaces/{workspace_code}/meeting-sessions
+GET  /v1/workspaces/{workspace_code}/meeting-sessions/final-summaries
 POST /v1/workspaces/{workspace_code}/meeting-sessions
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}
 POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/end
+DELETE /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-segments
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/transcript-stream
+GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/media-health
 GET  /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/ai-analyses
+POST /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/finalization/retry
+PATCH /v1/workspaces/{workspace_code}/meeting-sessions/{session_id}/agenda-progress
 ```
 
-- `POST`（作成）と `POST .../end`（終了）はworkspaceのadmin/ownerロールが必要です。
+- `POST`（作成）、`POST .../end`（終了）、`DELETE`、`POST .../finalization/retry`、
+  `PATCH .../agenda-progress` はworkspaceのadmin/ownerロールが必要です。
+- `final-summaries` はworkspace内の完了済み最終要約を一括取得し、
+  `{"items":[{"sessionId":"...","overview":"..."}]}` を返します。最終要約がない
+  セッションは含まれず、AI分析が無効な場合は空配列です。
 - `POST .../end` はまずセッションを `ending` にしてBotへ終了コマンドを送ります。Botのdrain通知後に
   final flush → tree再編成/snapshot → summaryの順で処理し、完了後にだけ `ended` へ進みます。
   Botへの終了コマンドがタイムアウト・エラーになった場合も、DB静穏判定を使ってfinalizationを開始し、
   最終的には `ended` として終了します（不完全時は`lastError`と`finalization`分析に記録）。
   Bot制御が未設定（`503 bot_control_not_configured`）の場合のみ終了に失敗します。
+- `DELETE` は `ended` / `failed` / `stale` の終了済みセッションだけを、その
+  transcriptとAI分析を含めて完全削除し、`204 No Content`を返します。進行中は`400`です。
 - `transcript-segments` は保存済みSegmentの取得、`transcript-stream` はWebSocketでの
   リアルタイム配信です。どちらもSession Cookie認証とworkspace所属検査を通ります。
+- `media-health` はリロード・WebSocket再接続時に現在の一時transport状態を復元します。
+  未検知またはAPI再起動後は`state: "ok", event: "snapshot"`です。
 - `ai-analyses` は最新のライブ分析・最終要約・durable tree・finalization進行状態を返します。
   存在しない分析は `null` で、`404` にはなりません。`finalization.payload` にはtarget sequence、
-  tree/summaryのcoverage、timeout、retry回数、不完全終了の有無が入ります。
+  tree/summaryのcoverage、timeout、retry回数、不完全終了の有無が入ります。さらに
+  `finalizationStatus`（`not_started` / `waiting_for_transcript_drain` /
+  `waiting_for_live_analysis` / `building_final_tree` / `generating_summary` /
+  `completed` / `failed`）、`finalizationErrorCode`、`retryable`、`attemptCount`、
+  `sourceTreeVersion`、`summaryVersion`、`waitingOperations` を持ちます。
+  クライアントはこの状態だけで「生成中」「完了」「失敗」「不完全終了」を判別します
+  （最終要約が無いことを理由に生成中と表示してはいけません）。
+  所有プロセスが消えた `running` の行は、読み出し時に `failed` + `retryable` として返します。
+- `finalization/retry` は最終要約まで到達しなかったセッションの終了処理を再実行します。
+  検証だけを同期で行い、処理自体はリクエスト外で走るため `202 Accepted` と現在の
+  `ai-analyses` 相当のスナップショットを返します。セッション単位のsingle-flightで、
+  すでに完了している場合は `409 finalization_already_completed`、
+  最終分析が無効な構成では `503 finalization_retry_unavailable` を返します。
+- `agenda-progress` は手動上書きを1操作ずつ受け付けます。本文は
+  `{"entryId":"agenda-1","manualStatus":"discussed"}`（`null`で解除）、または
+  `{"manualCurrentTopicId":"agenda-1"}`（`null`で解除）のどちらか一方です。
+  応答は更新後の`agendaProgress`です。
 
 ```json
 {

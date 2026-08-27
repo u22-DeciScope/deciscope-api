@@ -1938,13 +1938,23 @@ func rebuildTreeAuditEdges(tree *liveAnalysisTree) {
 		edges = append(edges, liveAnalysisTreeEdge{Source: node.ParentID, Target: node.ID})
 	}
 	validRelations := tree.Relations[:0]
+	seenRelations := make(map[string]struct{}, len(tree.Relations))
 	for _, relation := range tree.Relations {
+		relation = canonicalizeLegacyItemRelation(relation, nil)
+		if relation.Source == relation.Target || !validItemRelationKind(relation.Kind) || relation.Status == "inactive" {
+			continue
+		}
 		if _, source := ids[relation.Source]; !source {
 			continue
 		}
 		if _, target := ids[relation.Target]; !target {
 			continue
 		}
+		key := relationKey(relation)
+		if _, duplicate := seenRelations[key]; duplicate {
+			continue
+		}
+		seenRelations[key] = struct{}{}
 		validRelations = append(validRelations, relation)
 	}
 	tree.Edges = edges

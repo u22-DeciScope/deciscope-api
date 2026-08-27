@@ -1,8 +1,6 @@
 package realtime
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -10,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"deciscope-core-api/internal/application"
 	"deciscope-core-api/internal/domain"
 )
 
@@ -19,6 +18,7 @@ const (
 	meetingAIAnalysisUpdatedType       = "ai_analysis.updated"
 	meetingSessionBotHealthType        = "meeting_session.bot_health_changed"
 	meetingSessionTranscriptHealthType = "meeting_session.transcript_health_changed"
+	meetingSessionMediaHealthType      = "meeting_session.media_health_changed"
 )
 
 var defaultTranscriptAllowedOrigins = []string{
@@ -31,7 +31,6 @@ var defaultTranscriptAllowedOrigins = []string{
 }
 
 type TranscriptWebSocketConfig struct {
-	ClientToken    string
 	AllowedOrigins string
 	// ResolveMember はworkspace経由の接続で認証済みユーザーを接続に紐づける。
 	// 設定されている場合、メンバー削除時に CloseWorkspaceMember で該当接続を切断できる。
@@ -147,6 +146,22 @@ func (h *TranscriptHub) PublishMeetingSessionTranscriptHealth(session domain.Mee
 	}
 }
 
+func (h *TranscriptHub) PublishMeetingSessionMediaHealth(session domain.MeetingSession, health application.BotMediaHealthState) {
+	h.mu.RLock()
+	clients := make([]*transcriptClient, 0, len(h.clients))
+	for c := range h.clients {
+		if c.matchesSession(session) {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+	log.Printf("Meeting session media health broadcast. sessionId=%s state=%s event=%s eventId=%s subscriberCount=%d",
+		session.ID, health.State, health.Event, health.EventID, len(clients))
+	for _, c := range clients {
+		c.enqueueMediaHealth(health)
+	}
+}
+
 func (h *TranscriptHub) ServeTranscriptSegments(config TranscriptWebSocketConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -155,11 +170,6 @@ func (h *TranscriptHub) ServeTranscriptSegments(config TranscriptWebSocketConfig
 		sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 		log.Printf("Transcript websocket request received. path=%s callId=%s sessionId=%s origin=%s remoteAddr=%s", path, callID, sessionID, origin, r.RemoteAddr)
 
-		if !config.authorized(r.URL.Query().Get("token")) {
-			log.Printf("Transcript websocket request rejected. path=%s callId=%s sessionId=%s origin=%s reason=unauthorized", path, callID, sessionID, origin)
-			writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
-			return
-		}
 		if !config.originAllowed(origin) {
 			log.Printf("Transcript websocket request rejected. path=%s callId=%s sessionId=%s origin=%s reason=forbidden_origin", path, callID, sessionID, origin)
 			writeError(w, http.StatusForbidden, "forbidden_origin", "origin is not allowed")
@@ -224,19 +234,6 @@ func (h *TranscriptHub) unsubscribe(c *transcriptClient) {
 		close(c.done)
 		log.Printf("Transcript websocket subscriber removed. callId=%s sessionId=%s subscriberCount=%d", c.callID, c.sessionID, count)
 	})
-}
-
-func (config TranscriptWebSocketConfig) authorized(token string) bool {
-	secret := strings.TrimSpace(config.ClientToken)
-	if secret == "" {
-		return true
-	}
-	if strings.TrimSpace(token) == "" {
-		return false
-	}
-	got := sha256.Sum256([]byte(token))
-	want := sha256.Sum256([]byte(secret))
-	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
 }
 
 func (config TranscriptWebSocketConfig) originAllowed(origin string) bool {
@@ -308,6 +305,10 @@ func (c *transcriptClient) enqueueBotHealth(session domain.MeetingSession, healt
 
 func (c *transcriptClient) enqueueTranscriptHealth(session domain.MeetingSession, transcriptHealth string, seconds int) {
 	c.enqueue(transcriptOutboundEvent{transcriptHealth: &meetingSessionTranscriptHealthEvent{session: session, transcriptHealth: transcriptHealth, seconds: seconds}})
+}
+
+func (c *transcriptClient) enqueueMediaHealth(health application.BotMediaHealthState) {
+	c.enqueue(transcriptOutboundEvent{mediaHealth: &health})
 }
 
 func (c *transcriptClient) enqueue(event transcriptOutboundEvent) {
@@ -419,6 +420,8 @@ func (c *transcriptClient) writeEvent(h *TranscriptHub, event transcriptOutbound
 		return writeJSON(c.conn, meetingSessionBotHealthProtocolMessage(event.botHealth.session, event.botHealth.healthy, h.now()))
 	case event.transcriptHealth != nil:
 		return writeJSON(c.conn, meetingSessionTranscriptHealthProtocolMessage(event.transcriptHealth.session, event.transcriptHealth.transcriptHealth, event.transcriptHealth.seconds, h.now()))
+	case event.mediaHealth != nil:
+		return writeJSON(c.conn, meetingSessionMediaHealthProtocolMessage(*event.mediaHealth, h.now()))
 	default:
 		return nil
 	}
@@ -430,6 +433,7 @@ type transcriptOutboundEvent struct {
 	aiAnalysis       *domain.MeetingAIAnalysis
 	botHealth        *meetingSessionBotHealthEvent
 	transcriptHealth *meetingSessionTranscriptHealthEvent
+	mediaHealth      *application.BotMediaHealthState
 }
 
 type meetingSessionBotHealthEvent struct {
@@ -599,6 +603,18 @@ func meetingSessionTranscriptHealthProtocolMessage(session domain.MeetingSession
 	}
 }
 
+type meetingSessionMediaHealthMessage struct {
+	Type      string                          `json:"type"`
+	SentAtUTC string                          `json:"sentAtUtc"`
+	Data      application.BotMediaHealthState `json:"data"`
+}
+
+func meetingSessionMediaHealthProtocolMessage(health application.BotMediaHealthState, sentAt time.Time) meetingSessionMediaHealthMessage {
+	return meetingSessionMediaHealthMessage{
+		Type: meetingSessionMediaHealthType, SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano), Data: health,
+	}
+}
+
 type meetingAIAnalysisMessage struct {
 	Type      string                `json:"type"`
 	SentAtUTC string                `json:"sentAtUtc"`
@@ -606,31 +622,45 @@ type meetingAIAnalysisMessage struct {
 }
 
 type meetingAIAnalysisData struct {
-	SessionID       string          `json:"sessionId"`
-	AnalysisType    string          `json:"analysisType"`
-	Status          string          `json:"status"`
-	Version         int64           `json:"version"`
-	Payload         json.RawMessage `json:"payload"`
-	Model           string          `json:"model,omitempty"`
-	UpdatedAtUTC    string          `json:"updatedAtUtc"`
-	IntervalSeconds int             `json:"intervalSeconds,omitempty"`
-	Error           string          `json:"error,omitempty"`
+	SessionID                string          `json:"sessionId"`
+	AnalysisType             string          `json:"analysisType"`
+	Status                   string          `json:"status"`
+	Version                  int64           `json:"version"`
+	Payload                  json.RawMessage `json:"payload"`
+	Model                    string          `json:"model,omitempty"`
+	UpdatedAtUTC             string          `json:"updatedAtUtc"`
+	IntervalSeconds          int             `json:"intervalSeconds,omitempty"`
+	Error                    string          `json:"error,omitempty"`
+	RequestedAnalysisVersion int64           `json:"requestedAnalysisVersion,omitempty"`
+	TargetFromSequenceNo     int64           `json:"targetFromSequenceNo,omitempty"`
+	TargetThroughSequenceNo  int64           `json:"targetThroughSequenceNo,omitempty"`
+	StartedAtUTC             string          `json:"startedAtUtc,omitempty"`
 }
 
 func meetingAIAnalysisProtocolMessage(analysis domain.MeetingAIAnalysis, sentAt time.Time) meetingAIAnalysisMessage {
+	payload := analysis.Payload
+	if analysis.Status == domain.MeetingAIAnalysisRunning {
+		// Defense in depth: callers cannot accidentally make running a stale
+		// item/tree snapshot delivery path.
+		payload = nil
+	}
 	return meetingAIAnalysisMessage{
 		Type:      meetingAIAnalysisUpdatedType,
 		SentAtUTC: sentAt.UTC().Format(time.RFC3339Nano),
 		Data: meetingAIAnalysisData{
-			SessionID:       analysis.SessionID,
-			AnalysisType:    string(analysis.Type),
-			Status:          string(analysis.Status),
-			Version:         analysis.Version,
-			Payload:         analysis.Payload,
-			Model:           analysis.Model,
-			UpdatedAtUTC:    analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
-			IntervalSeconds: analysis.IntervalSeconds,
-			Error:           analysis.LastError,
+			SessionID:                analysis.SessionID,
+			AnalysisType:             string(analysis.Type),
+			Status:                   string(analysis.Status),
+			Version:                  analysis.Version,
+			Payload:                  payload,
+			Model:                    analysis.Model,
+			UpdatedAtUTC:             analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			IntervalSeconds:          analysis.IntervalSeconds,
+			Error:                    analysis.LastError,
+			RequestedAnalysisVersion: analysis.RequestedAnalysisVersion,
+			TargetFromSequenceNo:     analysis.TargetFromSequenceNo,
+			TargetThroughSequenceNo:  analysis.TargetThroughSequenceNo,
+			StartedAtUTC:             optionalProtocolTime(analysis.StartedAt),
 		},
 	}
 }
